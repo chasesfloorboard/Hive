@@ -1,0 +1,9 @@
+BeehiveMusicBrainz 2.24.4
+
+Library search resize UI fix:
+- Removed the native bottom-right resize affordance from the Search library field.
+- The vertical divider immediately to the left of Search library is now the draggable resize handle.
+- Drag left to make the search field longer; drag right to make it shorter.
+- The search field's right edge remains anchored.
+- Width is persisted in localStorage.
+- The resize respects the global Lock resize setting.

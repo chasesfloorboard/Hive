@@ -1,0 +1,21 @@
+Beehive 2.24.1 - Artwork + top-bar polish
+
+- Add Picture now always uses a dedicated blank artwork slot.
+- The blank slot can be assigned any supported picture type, including Album Cover,
+  Album Cover (back), Leaflet Page, Media Label, Artist, etc.
+- Adding artwork never replaces an existing picture.
+- Existing artwork cards explicitly use Replace for replacement operations.
+- Paste now follows the same add workflow and does not silently replace the front cover.
+- MP3/APIC writes now preserve multiple pictures even when their visible comments are
+  identical or empty. A zero-width suffix is used internally only when Mutagen needs
+  unique APIC keys; Beehive strips it when displaying the comment.
+- Delete removes only the selected artwork item.
+- Existing front-cover replacement remains available through the existing artwork card.
+- Existing metadata is protected by the existing before/after fingerprint verification.
+
+
+2.24.1 UI fixes
+- Full-size artwork preview opened from the online artwork picker now renders above the picker modal.
+- Startup status is docked inside the top bar immediately to the left of a dedicated divider.
+- The library search field is horizontally resizable (220px minimum, responsive maximum).
+- Search bar width remains independent of the startup loader so resizing the search field does not move the loader.
