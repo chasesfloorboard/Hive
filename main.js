@@ -7,6 +7,7 @@ const zlib = require('zlib');
 const { pathToFileURL } = require('url');
 const { Readable } = require('stream');
 const { fork, spawn, execFileSync, execFile } = require('child_process');
+const { readWavMusicBeeLove: readSharedWavMusicBeeLove, readWavMusicBeePopmRaw: readSharedWavMusicBeePopmRaw } = require('./wav-id3');
 const { createClient: createMusicBrainzClient } = require('./musicbrainz');
 const { canonicalize } = require('./canonical-metadata');
 const { normalizeText: normalizeArtworkText, scoreResult: scoreArtworkResult, createArtworkCache, providers: artworkProviders } = require('./artwork-providers');
@@ -1540,47 +1541,11 @@ async function readWavId3TagLight(filePath) {
 }
 
 async function readWavMusicBeeLove(filePath) {
-  try {
-    const tag = await readWavId3TagLight(filePath);
-    if (!tag) return false;
-    const version = tag[3] >= 4 ? 4 : 3;
-    const size = readId3Size(tag);
-    const payload = tag.subarray(10, Math.min(tag.length, 10 + size));
-    for (const frame of parseId3Frames(payload, version).frames) {
-      if (frame.id !== 'TXXX') continue;
-      const desc = txxxDescription(frame.data).trim().toUpperCase();
-      if (!isBeehiveLoveFieldName(desc)) continue;
-      const encoding = frame.data[0];
-      const body = frame.data.subarray(1);
-      if (encoding === 0 || encoding === 3) {
-        const nul = body.indexOf(0);
-        const value = body.subarray(nul >= 0 ? nul + 1 : 0).toString(encoding === 3 ? 'utf8' : 'latin1').trim().toUpperCase();
-        if (isFavoriteLoveValue(value)) return true;
-      }
-    }
-  } catch {}
-  return false;
+  return readSharedWavMusicBeeLove(filePath);
 }
 
 async function readWavMusicBeePopmRaw(filePath) {
-  try {
-    const tag = await readWavId3TagLight(filePath);
-    if (!tag) return 0;
-    const version = tag[3] >= 4 ? 4 : 3;
-    const size = readId3Size(tag);
-    const payload = tag.subarray(10, Math.min(tag.length, 10 + size));
-    let best = 0;
-    for (const frame of parseId3Frames(payload, version).frames) {
-      if (frame.id !== 'POPM') continue;
-      const nul = frame.data.indexOf(0);
-      if (nul < 0 || nul + 1 >= frame.data.length) continue;
-      const email = frame.data.subarray(0, nul).toString('latin1').trim().toLowerCase();
-      if (email !== 'musicbee') continue;
-      best = Math.max(best, musicBeePopmByte(frame.data[nul + 1]));
-    }
-    return best;
-  } catch {}
-  return 0;
+  return readSharedWavMusicBeePopmRaw(filePath);
 }
 
 async function updateWavMusicBeeTags(trackPath, { stars = null, loved = null } = {}) {

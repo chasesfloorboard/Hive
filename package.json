@@ -1,28 +1,38 @@
 {
   "name": "beehive-musicbrainz",
   "productName": "Hive",
-  "version": "0.9.0-beta.9",
+  "desktopName": "hive",
+  "version": "1.0.0-rc.1",
   "description": "Hive \u2014 an offline-first professional music library manager and player for Linux.",
   "main": "main.js",
   "private": true,
   "scripts": {
     "start": "NODE_OPTIONS=\"--max-old-space-size=8192\" electron --js-flags=\"--max-old-space-size=8192 --expose-gc\" .",
+    "test": "node --test test/*.test.js",
+    "test:unit": "node --test test/*.test.js",
+    "check": "node scripts/check.js",
     "build:linux": "electron-builder --linux AppImage deb"
   },
-  "author": "",
+  "author": {
+    "name": "Hive Contributors",
+    "email": "hive@localhost"
+  },
+  "homepage": "http://localhost",
   "license": "MIT",
   "dependencies": {
-    "music-metadata": "^7.14.0",
+    "music-metadata": "^11.15.0",
     "dbus-next": "^0.10.2"
   },
   "devDependencies": {
-    "electron": "^33.2.0",
-    "electron-builder": "^25.1.8"
+    "electron": "^44.3.0",
+    "electron-builder": "^26.15.3"
   },
   "build": {
     "appId": "com.local.beehive",
     "productName": "Hive",
     "linux": {
+      "maintainer": "Hive Contributors <hive@localhost>",
+      "syncDesktopName": true,
       "target": [
         "AppImage",
         "deb"

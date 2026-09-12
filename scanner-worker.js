@@ -2,6 +2,7 @@ const path = require('path');
 const fs = require('fs');
 const fsp = fs.promises;
 const crypto = require('crypto');
+const { readWavMusicBeeTags: readSharedWavMusicBeeTags } = require('./wav-id3');
 
 let mm;
 let metadataLib;
@@ -578,7 +579,7 @@ async function parseTrack(filePath, coversDir) {
   } else if (ext === '.wav') {
     // music-metadata supplies the broad native/common inventory for WAV; keep
     // the direct ID3 reader authoritative for MusicBee Love/rating compatibility.
-    const wavTags = await readWavMusicBeeTags(filePath);
+    const wavTags = await readSharedWavMusicBeeTags(filePath);
     rating = wavTags.rating;
     loved = wavTags.loved;
   } else if (ext === '.m4a' || ext === '.m4b' || ext === '.mp4') {

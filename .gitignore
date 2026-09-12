@@ -1,0 +1,14 @@
+node_modules/
+dist/
+build/
+out/
+coverage/
+*.log
+*.sqlite
+*.sqlite3
+*.db
+startup-debug.jsonl
+scan-live.log
+beehive-crash-debug.log
+tag-scan-*/
+.DS_Store

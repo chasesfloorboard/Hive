@@ -91,3 +91,15 @@
 - Fixed the library scan UI appearing stuck at `0 / N` while the filesystem walk and initial stat phase were still running.
 - The scan now reports live file-discovery progress during recursive enumeration and live stat progress before metadata parsing begins.
 - Expanded the scanner-worker's format extension set to stay aligned with the main library walker and tag-census coverage.
+## 1.0.0-rc.1 — release-candidate reliability foundation
+
+- Added a lockfile, reproducible install path, Node regression tests, and static
+  validation scripts.
+- Unified WAV RIFF/ID3 Love and rating reads across scanner and main/metadata
+  processes, including all valid ID3 chunks and UTF-16 compatibility.
+- Updated Electron, music-metadata, and electron-builder to audit-remediated
+  release lines; documented the remaining unresolved optional MPRIS dependency chain.
+- Added reproducible Linux AppImage/DEB metadata, desktop integration naming, and
+  package/lockfile version consistency checks.
+- Added the missing release, architecture, testing, security, development, and
+  contributor documentation.

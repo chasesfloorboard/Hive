@@ -15,7 +15,7 @@ Act as a senior engineering partner. Inspect the existing implementation before 
 - User-facing product name: **Hive**. Refer to the player as Hive in normal conversation and UI copy.
 - Preserve existing internal identifiers, IPC namespaces, storage paths, and database keys unless there is a migration plan; rebranding must not silently break existing installations.
 - Use Semantic Versioning for releases. Pre-1.0 development uses `0.x.y`; prereleases use explicit labels such as `0.9.0-alpha.1`, `0.9.0-beta.1`, and `1.0.0-rc.1`.
-- The current release track is `0.9.0-beta.9`: feature-complete beta hardening toward 1.0, not a claim of production readiness.
+- The current release track is `1.0.0-rc.1`: release-candidate hardening after the `0.9.0-beta.9` baseline, not a claim of production readiness.
 - `1.0.0` means the core player, metadata/artwork editing, recovery, security, performance, testing, packaging, and documentation gates have been proven—not merely that the UI is polished.
 
 Beehive should become a polished, trustworthy, maintainable, community-ready desktop music player. Rapid/vibe coding is welcome; engineering discipline must surround it.
