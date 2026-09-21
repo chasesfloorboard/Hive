@@ -1,0 +1,134 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>Hive Yearly Wrap</title>
+<style>
+:root{--bg:#08090d;--text:#f6f7fb;--muted:#a9adba;--accent-rgb:124,92,255;--accent2-rgb:38,208,206;--card:rgba(255,255,255,.075)}
+*{box-sizing:border-box}html,body{margin:0;width:100%;height:100%;overflow:hidden;background:var(--bg);color:var(--text);font-family:Inter,ui-sans-serif,system-ui,-apple-system,BlinkMacSystemFont,"Segoe UI",sans-serif}
+button,input{font:inherit;color:inherit}.wrap{height:100%;position:relative;overflow:hidden;background:radial-gradient(circle at 75% 20%,rgba(var(--accent-rgb),.27),transparent 35%),radial-gradient(circle at 20% 80%,rgba(var(--accent2-rgb),.13),transparent 35%),#08090d;transition:background 900ms ease}
+.wrap:before{content:"";position:absolute;inset:-20%;background:conic-gradient(from 180deg at 50% 50%,transparent,rgba(var(--accent-rgb),.08),transparent,rgba(var(--accent2-rgb),.06),transparent);filter:blur(45px);animation:drift 16s linear infinite;pointer-events:none;transition:background 900ms ease}
+@keyframes drift{to{transform:rotate(360deg)}}
+.slides{height:100%;position:relative;z-index:1}.slide{position:absolute;inset:0;padding:82px 7vw 80px;display:flex;flex-direction:column;justify-content:center;opacity:0;transform:translateX(35px) scale(.985);pointer-events:none;transition:opacity .5s ease,transform .65s cubic-bezier(.2,.8,.2,1)}.slide.active{opacity:1;transform:none;pointer-events:auto}
+.eyebrow{font-size:11px;letter-spacing:.2em;text-transform:uppercase;color:rgba(var(--accent-rgb),.9);font-weight:750;transition:color 900ms ease}.year{font-size:clamp(72px,13vw,190px);line-height:.82;font-weight:800;letter-spacing:-.07em;background:linear-gradient(120deg,#fff 10%,rgba(var(--accent-rgb),.88) 48%,rgba(var(--accent2-rgb),.88) 90%);-webkit-background-clip:text;background-clip:text;color:transparent;transition:background 900ms ease}.title{font-size:clamp(42px,7vw,92px);line-height:.94;letter-spacing:-.055em;margin:12px 0 18px;max-width:900px}.subtitle{font-size:clamp(16px,1.7vw,22px);color:var(--muted);max-width:720px}.hint{position:absolute;bottom:35px;left:7vw;color:#777d8c;font-size:12px}.big-stat{font-size:clamp(80px,14vw,190px);font-weight:800;letter-spacing:-.075em;line-height:.9}.unit{font-size:clamp(20px,2.4vw,32px);color:var(--muted);margin-top:8px}
+.grid{display:grid;grid-template-columns:repeat(4,1fr);gap:12px;margin-top:34px;max-width:1100px}.card{background:var(--card);border:1px solid rgba(255,255,255,.11);border-radius:18px;padding:18px;backdrop-filter:blur(18px)}.card span{display:block;color:#858b9a;font-size:10px;letter-spacing:.14em;text-transform:uppercase}.card strong{display:block;margin-top:8px;font-size:27px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}.card small{display:block;margin-top:4px;color:#858b9a;font-size:10px}.two{display:grid;grid-template-columns:1.1fr .9fr;gap:40px;align-items:center}.cover{width:min(32vw,380px);aspect-ratio:1;border-radius:20px;object-fit:cover;box-shadow:0 30px 90px rgba(0,0,0,.5);background:#171923}.rank-list{margin-top:24px;max-width:900px}.rank{display:grid;grid-template-columns:45px 62px minmax(0,1fr) auto;align-items:center;gap:16px;padding:15px 0;border-bottom:1px solid rgba(255,255,255,.08)}.rank-num{font-size:13px;color:#767c8b}.rank-art{width:62px;height:62px;border-radius:10px;object-fit:cover;background:#171923;box-shadow:0 10px 25px rgba(0,0,0,.25)}.rank-main{min-width:0}.rank-main strong{display:block;font-size:18px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}.rank-main small{display:block;color:#8d93a2;margin-top:3px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}.rank-count{color:#c5c8d2;font-size:13px}.bars{display:flex;align-items:flex-end;gap:9px;height:210px;margin-top:30px;max-width:900px}.bar{flex:1;min-width:8px;border-radius:8px 8px 3px 3px;background:linear-gradient(180deg,rgba(var(--accent-rgb),.92),rgba(var(--accent2-rgb),.92));box-shadow:0 8px 30px rgba(var(--accent-rgb),.16);height:var(--h);transform-origin:bottom;animation:barIn .7s ease both;position:relative;transition:background 900ms ease}.bar label{position:absolute;margin-top:218px;color:#747a89;font-size:9px;transform:translateX(-4px)}@keyframes barIn{from{transform:scaleY(0)}}.note{margin-top:20px;color:#777d8c;font-size:12px}.close{position:absolute;top:18px;right:20px;z-index:20;border:1px solid rgba(255,255,255,.12);background:rgba(255,255,255,.06);border-radius:999px;padding:7px 12px;cursor:pointer}.tools{position:absolute;top:18px;left:20px;z-index:20;display:flex;align-items:center;gap:7px;flex-wrap:wrap}.year-picker{display:flex;align-items:center;gap:6px;padding:7px 10px;border:1px solid rgba(255,255,255,.12);background:rgba(255,255,255,.04);border-radius:999px;color:#a9adba;font-size:11px}.year-picker select{border:0;background:transparent;color:#f6f7fb;outline:none;font:inherit}.year-picker option{background:#11131a;color:#f6f7fb}.tool{border:1px solid rgba(255,255,255,.12);background:rgba(255,255,255,.06);border-radius:999px;padding:7px 11px;cursor:pointer;font-size:11px}.tool:hover,.nav button:hover,.close:hover{background:rgba(255,255,255,.1)}.brand-toggle{display:flex;align-items:center;gap:7px;padding:7px 10px;border:1px solid rgba(255,255,255,.12);background:rgba(255,255,255,.04);border-radius:999px;color:#a9adba;font-size:11px}.brand-toggle input{accent-color:rgb(var(--accent-rgb))}.brand{position:absolute;top:18px;left:50%;transform:translateX(-50%);z-index:15;display:flex;align-items:center;gap:7px;color:#d9d8e4;font-size:11px;letter-spacing:.16em;font-weight:750;text-transform:uppercase;pointer-events:none;transition:opacity .2s ease}.brand.hidden{opacity:0}.brand img{width:22px;height:22px;object-fit:contain;opacity:.88}.nav{position:absolute;right:7vw;bottom:30px;display:flex;gap:8px;z-index:20}.nav button{border:1px solid rgba(255,255,255,.12);background:rgba(255,255,255,.06);border-radius:999px;width:42px;height:34px;cursor:pointer}.dots{position:absolute;left:50%;bottom:43px;transform:translateX(-50%);display:flex;gap:6px;z-index:20}.dot{width:5px;height:5px;border-radius:50%;background:#4f5360}.dot.active{background:#fff;width:18px;border-radius:8px}.estimate{display:inline-flex;margin-top:14px;padding:6px 10px;border-radius:999px;background:rgba(var(--accent-rgb),.12);border:1px solid rgba(var(--accent-rgb),.25);color:rgba(var(--accent-rgb),.95);font-size:11px;transition:background 900ms ease,color 900ms ease}.status{position:absolute;right:7vw;bottom:72px;color:#9ba0ae;font-size:11px;z-index:20;opacity:0;transition:opacity .2s ease}.status.show{opacity:1}.error{display:flex;align-items:center;justify-content:center;height:100%;font-size:18px;color:#ffb4b4;padding:40px;text-align:center}
+@media(max-width:850px){.slide{padding:78px 6vw 85px}.grid{grid-template-columns:repeat(2,1fr)}.two{grid-template-columns:1fr}.cover{width:220px}.title{font-size:48px}.bars{height:150px}.bar label{margin-top:158px}.tools{right:80px}.rank{grid-template-columns:35px 48px minmax(0,1fr) auto}.rank-art{width:48px;height:48px}.rank-main strong{font-size:15px}}
+</style>
+</head>
+<body>
+<div class="wrap" id="wrap">
+  <div class="tools">
+    <button class="tool" id="share">Share</button>
+    <button class="tool" id="copy">Copy image</button>
+    <button class="tool" id="save">Save image</button>
+    <label class="year-picker">Year <select id="year-select" aria-label="Yearly Wrap year"></select></label>
+    <label class="brand-toggle"><input id="show-brand" type="checkbox"> Hive icon</label>
+  </div>
+  <div class="brand hidden" id="brand"><img id="brand-icon" alt=""><span>Hive</span></div>
+  <button class="close" id="close">Close</button>
+  <div class="slides" id="slides"></div><div class="dots" id="dots"></div>
+  <div class="nav"><button id="prev" aria-label="Previous">←</button><button id="next" aria-label="Next">→</button></div>
+  <div class="status" id="status"></div>
+  <div class="hint">← → or swipe to move through your year</div>
+</div>
+<script>
+const esc=s=>String(s??'').replace(/[&<>"']/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));
+const fmtTime=s=>{s=Math.max(0,Math.round(Number(s)||0));const h=Math.floor(s/3600),m=Math.floor((s%3600)/60);if(h)return `${h}h ${m}m`;return `${m} min`};
+const fmtDate=s=>{const d=new Date(`${s}T12:00:00`);return Number.isNaN(d.getTime())?s:d.toLocaleDateString([], {month:'long',day:'numeric'})};
+let slides=[],index=0,data=null,brandIconData=null;
+const showBrandInput=document.getElementById('show-brand');
+const savedBrand=localStorage.getItem('hive.yearlyWrap.showBrand');
+showBrandInput.checked=savedBrand==='1';
+function syncBrand(){const visible=showBrandInput.checked;document.getElementById('brand').classList.toggle('hidden',!visible);localStorage.setItem('hive.yearlyWrap.showBrand',visible?'1':'0');}
+showBrandInput.addEventListener('change',syncBrand);
+
+// Theme this window to whatever's currently playing in the main app, the
+// same way every other frosted-glass surface follows the track's accent.
+function applyYearlyWrapTheme(theme){
+  const rgb=v=>/^\s*\d{1,3}\s*,\s*\d{1,3}\s*,\s*\d{1,3}\s*$/.test(String(v||''))?String(v):null;
+  const accent=rgb(theme?.accent);
+  if(!accent) return;
+  document.documentElement.style.setProperty('--accent-rgb',accent);
+  document.documentElement.style.setProperty('--accent2-rgb',rgb(theme?.accent2)||accent);
+}
+applyYearlyWrapTheme({accent:new URLSearchParams(location.search).get('accent'),accent2:new URLSearchParams(location.search).get('accent2')});
+window.beehive.onYearlyWrapTheme?.(applyYearlyWrapTheme);
+function setStatus(text){const el=document.getElementById('status');el.textContent=text;el.classList.add('show');clearTimeout(setStatus.timer);setStatus.timer=setTimeout(()=>el.classList.remove('show'),2600)}
+function setSlide(n){if(!slides.length)return;index=Math.max(0,Math.min(slides.length-1,n));slides.forEach((s,i)=>s.classList.toggle('active',i===index));document.querySelectorAll('.dot').forEach((d,i)=>d.classList.toggle('active',i===index));}
+function wrapCoverSrc(src){const s=String(src||'').trim();if(!s)return null;if(/^(?:https?:\/\/|data:image\/|blob:|mbcover:)/i.test(s))return s;try{return window.beehive.coverUrl(s)||s;}catch{return s;}}
+function coverImg(src,cls='cover'){const resolved=wrapCoverSrc(src);return resolved?`<img class="${cls}" src="${esc(resolved)}" alt="" onerror="this.style.visibility='hidden'">`:`<div class="${cls}"></div>`}
+function makeRank(items,album=false){return items.map((x,i)=>`<div class="rank"><div class="rank-num">${String(i+1).padStart(2,'0')}</div>${coverImg(x.cover,'rank-art')}<div class="rank-main"><strong>${esc(album?x.album:x.name)}</strong>${album?`<small>${esc(x.artist)}</small>`:''}</div><div class="rank-count">${x.plays.toLocaleString()} plays</div></div>`).join('')}
+function render(dataIn){
+ data=dataIn;
+ const total=data.totalSeconds||0, top=data.topTrack;
+ const monthly=data.monthly||[]; const max=Math.max(1,...monthly.map(x=>x.seconds||0));
+ const bars=monthly.map(x=>`<div class="bar" style="--h:${Math.max(4,Math.round((x.seconds/max)*190))}px"><label>${esc(x.month.slice(5))}</label></div>`).join('');
+ const cover=top?.cover?coverImg(top.cover,'cover'):`<div class="cover"></div>`;
+ const artist=data.topArtists?.[0];
+ const artistCover=artist?.cover?coverImg(artist.cover,'cover'):`<div class="cover"></div>`;
+ const estimated=data.estimated?`<div class="estimate">Estimated from saved history — exact Wrap tracking starts with this build</div>`:'';
+ const imported=data.imported?`<div class="estimate imported">Imported from MusicBee Wrapped · session metadata preserved locally</div>`:'';
+ document.getElementById('slides').innerHTML=`
+ <section class="slide active"><div class="eyebrow">HIVE · YEARLY WRAP</div><div class="year">${data.year}</div><h1 class="title">Your year in music.</h1><div class="subtitle">A visual look at what you actually listened to — kept local, personal, and focused on the music.</div>${estimated}${imported}</section>
+ <section class="slide"><div class="eyebrow">LISTENING TIME</div><div class="big-stat">${fmtTime(total)}</div><div class="unit">spent with music</div><div class="grid"><div class="card"><span>Plays</span><strong>${data.totalPlays.toLocaleString()}</strong></div><div class="card"><span>Artists</span><strong>${data.uniqueArtists.toLocaleString()}</strong></div><div class="card"><span>Albums</span><strong>${data.uniqueAlbums.toLocaleString()}</strong></div><div class="card"><span>Longest streak</span><strong>${data.longestStreak} days</strong></div></div></section>
+ <section class="slide"><div class="two">${cover}<div><div class="eyebrow">YOUR TOP TRACK</div><h2 class="title">${esc(top?.key?.split('\u0000')[0]||'—')}</h2><div class="subtitle">${esc(top?.key?.split('\u0000')[1]||'')}</div>${top?.album?`<div class="note">${esc(top.album)}</div>`:''}<div class="card" style="display:inline-block;margin-top:24px"><span>Played</span><strong>${(top?.plays||0).toLocaleString()} times</strong></div></div></div></section>
+ <section class="slide"><div class="two"><div><div class="eyebrow">THE ARTIST WHO SHAPED YOUR YEAR</div><h2 class="title">${esc(artist?.name||'—')}</h2><div class="subtitle">${(artist?.plays||0).toLocaleString()} plays</div></div>${artistCover}</div></section>
+ <section class="slide"><div class="eyebrow">THE RECORDS YOU RETURNED TO</div><h2 class="title">Your top albums.</h2><div class="rank-list">${makeRank(data.topAlbums||[],true)}</div></section>
+ <section class="slide"><div class="eyebrow">WHEN YOU LISTENED</div><h2 class="title">Your year, by month.</h2><div class="bars">${bars||'<div class="subtitle">Not enough listening history yet.</div>'}</div><div class="grid"><div class="card"><span>Biggest day</span><strong>${data.topDay?fmtDate(data.topDay.date):'—'}</strong><small>${data.topDay?fmtTime(data.topDay.seconds):''}</small></div><div class="card"><span>Biggest month</span><strong>${data.topMonth?.month||'—'}</strong><small>${data.topMonth?fmtTime(data.topMonth.seconds):''}</small></div></div></section>
+ <section class="slide"><div class="eyebrow">THAT'S YOUR YEAR</div><h2 class="title">The music stays with you.</h2><div class="grid"><div class="card"><span>Listening time</span><strong>${fmtTime(total)}</strong></div><div class="card"><span>Top artist</span><strong>${esc(data.topArtists?.[0]?.name||'—')}</strong></div><div class="card"><span>Top track</span><strong>${esc(top?.key?.split('\u0000')[0]||'—')}</strong></div><div class="card"><span>Top album</span><strong>${esc(data.topAlbums?.[0]?.album||'—')}</strong></div></div>${estimated}${imported}<div class="note">Hive keeps this information on your machine. No account is required.</div></section>`;
+ slides=[...document.querySelectorAll('.slide')];document.getElementById('dots').innerHTML=slides.map((_,i)=>`<span class="dot ${i===0?'active':''}"></span>`).join('');setSlide(0);syncBrand();
+}
+function roundRect(ctx,x,y,w,h,r){if(ctx.roundRect){ctx.beginPath();ctx.roundRect(x,y,w,h,r);return;}ctx.beginPath();ctx.moveTo(x+r,y);ctx.arcTo(x+w,y,x+w,y+h,r);ctx.arcTo(x+w,y+h,x,y+h,r);ctx.arcTo(x,y+h,x,y,r);ctx.arcTo(x,y,x+w,y,r);ctx.closePath();}
+function wrapText(ctx,text,x,y,maxWidth,lineHeight,maxLines=4){const words=String(text||'').split(/\s+/);let line='',lines=[];for(const word of words){const test=line?`${line} ${word}`:word;if(ctx.measureText(test).width<=maxWidth)line=test;else{if(line)lines.push(line);line=word;if(lines.length>=maxLines-1)break;}}if(line&&lines.length<maxLines)lines.push(line);lines.forEach((l,i)=>ctx.fillText(l,x,y+i*lineHeight));return y+lines.length*lineHeight;}
+function loadImage(src){return new Promise(resolve=>{if(!src)return resolve(null);const img=new Image();if(/^https?:\/\//i.test(src))img.crossOrigin='anonymous';img.onload=()=>resolve(img);img.onerror=()=>resolve(null);img.src=wrapCoverSrc(src)||src;});}
+async function makeShareCanvas(){
+ const size=1080, c=document.createElement('canvas');c.width=size;c.height=size;const ctx=c.getContext('2d');
+ const bg=ctx.createLinearGradient(0,0,size,size);bg.addColorStop(0,'#0a0b10');bg.addColorStop(.55,'#171327');bg.addColorStop(1,'#08201f');ctx.fillStyle=bg;ctx.fillRect(0,0,size,size);
+ const glow=ctx.createRadialGradient(size*.72,size*.15,20,size*.72,size*.15,500);glow.addColorStop(0,'rgba(124,92,255,.32)');glow.addColorStop(1,'rgba(124,92,255,0)');ctx.fillStyle=glow;ctx.fillRect(0,0,size,size);
+ const glow2=ctx.createRadialGradient(size*.15,size*.82,20,size*.15,size*.82,420);glow2.addColorStop(0,'rgba(38,208,206,.16)');glow2.addColorStop(1,'rgba(38,208,206,0)');ctx.fillStyle=glow2;ctx.fillRect(0,0,size,size);
+ const pad=74;
+ if(showBrandInput.checked){
+   if(brandIconData){const icon=await loadImage(brandIconData);if(icon){ctx.drawImage(icon,pad,58,34,34);}}
+   ctx.fillStyle='#e2e1ea';ctx.font='700 20px Inter,Arial,sans-serif';ctx.fillText('HIVE',pad+48,83);
+ }
+ ctx.fillStyle='#8f87ff';ctx.font='700 15px Inter,Arial,sans-serif';ctx.letterSpacing='3px';ctx.fillText(`YEARLY WRAP · ${data.year}`,pad,128);
+ const title=(i=>{if(i===0)return 'Your year in music.';if(i===1)return 'You spent time with music.';if(i===2)return 'Your top track.';if(i===3)return 'Your top artist.';if(i===4)return 'Your top albums.';if(i===5)return 'Your listening year.';return 'The music stays with you.'})(index);
+ ctx.fillStyle='#f7f7fb';ctx.font='800 64px Inter,Arial,sans-serif';wrapText(ctx,title,pad,218,size-pad*2,72,2);
+ const top=data.topTrack, artist=data.topArtists?.[0];
+ if(index===0){
+   const albums=(data.topAlbums||[]).slice(0,4);const imgs=await Promise.all(albums.map(x=>loadImage(x.cover)));const x0=pad,y0=360,w=190,g=22;imgs.forEach((img,i)=>{const x=x0+i*(w+g);roundRect(ctx,x,y0,w,w,18);ctx.save();ctx.clip();if(img)ctx.drawImage(img,x,y0,w,w);else{ctx.fillStyle='#1c1e28';ctx.fillRect(x,y0,w,w);}ctx.restore();});
+   ctx.fillStyle='#b7bbc8';ctx.font='400 24px Inter,Arial,sans-serif';ctx.fillText('A year of listening, kept local to Hive.',pad,675);
+   ctx.fillStyle='#fff';ctx.font='800 46px Inter,Arial,sans-serif';ctx.fillText(fmtTime(data.totalSeconds),pad,758);
+   ctx.fillStyle='#8e93a2';ctx.font='400 22px Inter,Arial,sans-serif';ctx.fillText(`${data.totalPlays.toLocaleString()} plays · ${data.uniqueArtists.toLocaleString()} artists · ${data.uniqueAlbums.toLocaleString()} albums`,pad,800);
+ } else if(index===1){
+   ctx.fillStyle='#fff';ctx.font='800 110px Inter,Arial,sans-serif';ctx.fillText(fmtTime(data.totalSeconds),pad,405);
+   const cards=[['PLAYS',data.totalPlays.toLocaleString()],['ARTISTS',data.uniqueArtists.toLocaleString()],['ALBUMS',data.uniqueAlbums.toLocaleString()],['LONGEST STREAK',`${data.longestStreak} days`]];
+   cards.forEach((a,i)=>{const x=pad+(i%2)*470,y=500+Math.floor(i/2)*145;roundRect(ctx,x,y,430,110,18);ctx.fillStyle='rgba(255,255,255,.07)';ctx.fill();ctx.fillStyle='#858b9a';ctx.font='700 14px Inter,Arial,sans-serif';ctx.fillText(a[0],x+22,y+32);ctx.fillStyle='#fff';ctx.font='800 30px Inter,Arial,sans-serif';ctx.fillText(a[1],x+22,y+76);});
+ } else if(index===2){
+   const img=await loadImage(top?.cover);if(img){roundRect(ctx,pad,320,400,400,24);ctx.save();ctx.clip();ctx.drawImage(img,pad,320,400,400);ctx.restore();}
+   ctx.fillStyle='#fff';ctx.font='800 48px Inter,Arial,sans-serif';wrapText(ctx,top?.key?.split('\u0000')[0]||'—',540,365,460,58,3);ctx.fillStyle='#aeb2c0';ctx.font='400 28px Inter,Arial,sans-serif';wrapText(ctx,top?.key?.split('\u0000')[1]||'',540,555,460,38,2);ctx.fillStyle='#fff';ctx.font='800 30px Inter,Arial,sans-serif';ctx.fillText(`${(top?.plays||0).toLocaleString()} plays`,540,675);
+ } else if(index===3){
+   const img=await loadImage(artist?.cover);if(img){roundRect(ctx,620,300,330,330,24);ctx.save();ctx.clip();ctx.drawImage(img,620,300,330,330);ctx.restore();}
+   ctx.fillStyle='#fff';ctx.font='800 58px Inter,Arial,sans-serif';wrapText(ctx,artist?.name||'—',pad,370,500,68,3);ctx.fillStyle='#aeb2c0';ctx.font='400 28px Inter,Arial,sans-serif';ctx.fillText(`${(artist?.plays||0).toLocaleString()} plays`,pad,610);
+ } else if(index===4){
+   const albums=(data.topAlbums||[]).slice(0,4);const imgs=await Promise.all(albums.map(x=>loadImage(x.cover)));imgs.forEach((img,i)=>{const x=pad+(i%2)*250,y=315+Math.floor(i/2)*285;roundRect(ctx,x,y,220,220,18);ctx.save();ctx.clip();if(img)ctx.drawImage(img,x,y,220,220);else{ctx.fillStyle='#1c1e28';ctx.fillRect(x,y,220,220);}ctx.restore();ctx.fillStyle='#fff';ctx.font='700 20px Inter,Arial,sans-serif';wrapText(ctx,albums[i]?.album||'—',x,y+248,220,25,2);});
+ } else if(index===5){
+   const monthly=data.monthly||[], max=Math.max(1,...monthly.map(x=>x.seconds||0));const base=760;monthly.forEach((m,i)=>{const h=Math.max(5,Math.round((m.seconds/max)*360));const x=pad+i*78;ctx.fillStyle='rgba(255,255,255,.08)';ctx.fillRect(x,base-360,48,360);const grad=ctx.createLinearGradient(0,base-h,0,base);grad.addColorStop(0,'#9d8cff');grad.addColorStop(1,'#37d7d0');ctx.fillStyle=grad;ctx.fillRect(x,base-h,48,h);ctx.fillStyle='#777d8c';ctx.font='12px Inter,Arial,sans-serif';ctx.fillText(m.month.slice(5),x+2,base+25);});
+   ctx.fillStyle='#fff';ctx.font='800 30px Inter,Arial,sans-serif';ctx.fillText(data.topMonth?`${data.topMonth.month} was your biggest month`:'Your year, month by month',pad,250);
+ } else {
+   ctx.fillStyle='#fff';ctx.font='800 52px Inter,Arial,sans-serif';wrapText(ctx,'The music stays with you.',pad,300,900,64,2);
+   const stats=[['LISTENING TIME',fmtTime(data.totalSeconds)],['TOP ARTIST',artist?.name||'—'],['TOP TRACK',top?.key?.split('\u0000')[0]||'—'],['TOP ALBUM',data.topAlbums?.[0]?.album||'—']];
+   stats.forEach((a,i)=>{const x=pad+(i%2)*470,y=470+Math.floor(i/2)*155;roundRect(ctx,x,y,430,120,18);ctx.fillStyle='rgba(255,255,255,.07)';ctx.fill();ctx.fillStyle='#858b9a';ctx.font='700 13px Inter,Arial,sans-serif';ctx.fillText(a[0],x+20,y+31);ctx.fillStyle='#fff';ctx.font='800 25px Inter,Arial,sans-serif';wrapText(ctx,a[1],x+20,y+72,390,31,2);});
+ }
+ ctx.fillStyle='#777d8c';ctx.font='400 16px Inter,Arial,sans-serif';ctx.fillText('Hive · your music library, your listening year',pad,1018);
+ return c;
+}
+async function canvasDataUrl(){const c=await makeShareCanvas();return c.toDataURL('image/png');}
+async function saveImage(){try{const url=await canvasDataUrl();const result=await window.beehive.saveYearlyWrapImage({dataUrl:url,name:`Hive-Yearly-Wrap-${data.year}-card-${index+1}.png`});if(result?.ok)setStatus('Image saved.');else if(!result?.canceled)setStatus('Could not save image.');}catch(e){setStatus(`Save failed: ${e?.message||e}`)}}
+async function copyImage(){try{const url=await canvasDataUrl();await window.beehive.copyYearlyWrapImage(url);setStatus('Image copied — paste it into social media.');}catch(e){setStatus(`Copy failed: ${e?.message||e}`)}}
+async function shareImage(){try{const c=await makeShareCanvas();const blob=await new Promise(resolve=>c.toBlob(resolve,'image/png'));if(!blob)throw new Error('Could not render image.');const file=new File([blob],`Hive-Yearly-Wrap-${data.year}-card-${index+1}.png`,{type:'image/png'});if(navigator.share&&navigator.canShare&&navigator.canShare({files:[file]})){await navigator.share({files:[file],title:`Hive Yearly Wrap · ${data.year}`,text:`My Hive Yearly Wrap for ${data.year}.`});setStatus('Share sheet opened.');return;}await copyImage();}catch(e){if(e?.name==='AbortError')return;try{await saveImage();}catch{setStatus(`Share failed: ${e?.message||e}`)}}}
+async function init(){try{const params=new URLSearchParams(location.search);const requested=Number(params.get('year'))||new Date().getFullYear();brandIconData=await window.beehive.getYearlyWrapBrandIcon();if(brandIconData)document.getElementById('brand-icon').src=brandIconData;const years=await window.beehive.getYearlyWrapYears();const select=document.getElementById('year-select');select.innerHTML=(Array.isArray(years)?years:[]).map(y=>`<option value="${Number(y)}">${Number(y)}</option>`).join('');let year=(Array.isArray(years)&&years.includes(requested))?requested:(Array.isArray(years)&&years[0])||requested;select.value=String(year);const load=async y=>{const result=await window.beehive.getYearlyWrapData(Number(y));if(!result||(!result.totalPlays&&!result.totalSeconds)){document.getElementById('slides').innerHTML='<div class="error">Hive has not recorded enough listening history for this year yet.<br><br>Import MusicBee Wrapped data from Settings or play music to build your Wrap.</div>';return}render(result);};select.addEventListener('change',()=>load(Number(select.value)));await load(year);}catch(e){document.getElementById('slides').innerHTML=`<div class="error">Yearly Wrap could not load.<br><br>${esc(e?.message||e)}</div>`}}
+document.getElementById('prev').onclick=()=>setSlide(index-1);document.getElementById('next').onclick=()=>setSlide(index+1);document.getElementById('share').onclick=shareImage;document.getElementById('copy').onclick=copyImage;document.getElementById('save').onclick=saveImage;document.getElementById('close').onclick=()=>window.close();document.addEventListener('keydown',e=>{if(e.key==='ArrowRight'||e.key===' ')setSlide(index+1);if(e.key==='ArrowLeft')setSlide(index-1);if(e.key==='Escape')window.close()});let sx=0;document.addEventListener('touchstart',e=>sx=e.touches[0].clientX,{passive:true});document.addEventListener('touchend',e=>{const d=sx-e.changedTouches[0].clientX;if(Math.abs(d)>50)setSlide(index+(d>0?1:-1))},{passive:true});init();
+</script>
+</body></html>

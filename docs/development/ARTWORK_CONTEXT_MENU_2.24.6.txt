@@ -1,0 +1,8 @@
+Beehive 2.24.6
+
+Artwork tab UI continuity fixes:
+- Embedded-picture action button now says Upload… instead of Replace….
+- Blank artwork-slot action button now says Upload… instead of Add Picture….
+- Right-clicking an artwork thumbnail uses the same Choose Picture / Search Internet for Cover / Paste Picture / Remove Picture menu as the Tags-tab artwork control, scoped to the clicked picture.
+- Choose/Paste replace only the clicked embedded picture; Search targets only that picture.
+- Remove Picture removes only the clicked embedded picture.

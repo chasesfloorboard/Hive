@@ -1,0 +1,80 @@
+{
+  "name": "beehive-musicbrainz",
+  "productName": "Hive",
+  "desktopName": "hive",
+  "version": "1.0.0-rc.1",
+  "description": "Hive — an offline-first professional music library manager and player for Linux.",
+  "main": "app/main/main.js",
+  "private": true,
+  "scripts": {
+    "start": "bash scripts/hive-launcher.sh",
+    "test": "node --test test/*.test.js",
+    "test:unit": "node --test test/*.test.js",
+    "test:packaged-scanner": "node scripts/packaged-scanner-smoke.js",
+    "test:scan-memory": "node --expose-gc scripts/scan-memory-smoke.js",
+    "check": "node scripts/check.js",
+    "build:linux": "electron-builder --linux AppImage deb"
+  },
+  "author": {
+    "name": "Hive Contributors",
+    "email": "hive@localhost"
+  },
+  "homepage": "http://localhost",
+  "license": "MIT",
+  "dependencies": {
+    "dbus-next": "^0.10.2",
+    "electron-updater": "6.8.9",
+    "music-metadata": "^11.15.0"
+  },
+  "devDependencies": {
+    "electron": "33.2.0",
+    "electron-builder": "^26.15.3"
+  },
+  "build": {
+    "appId": "com.local.beehive",
+    "productName": "Hive",
+    "icon": "resources/hive-logo-glass.png",
+    "asarUnpack": [
+      "app/workers/database-worker.py",
+      "app/workers/scanner-worker.js",
+      "app/main/native-tag-summary.js",
+      "app/workers/metadata-worker.js",
+      "app/main/wav-id3.js",
+      "app/native/gstreamer-player.c",
+      "resources/**",
+      "node_modules/music-metadata/**",
+      "node_modules/@borewit/**",
+      "node_modules/@tokenizer/**",
+      "node_modules/content-type/**",
+      "node_modules/debug/**",
+      "node_modules/file-type/**",
+      "node_modules/ieee754/**",
+      "node_modules/media-typer/**",
+      "node_modules/ms/**",
+      "node_modules/strtok3/**",
+      "node_modules/token-types/**",
+      "node_modules/uint8array-extras/**",
+      "node_modules/win-guid/**",
+      "app/main/musicbee-love.js"
+    ],
+    "linux": {
+      "maintainer": "Hive Contributors <hive@localhost>",
+      "syncDesktopName": true,
+      "target": [
+        "AppImage",
+        "deb"
+      ],
+      "category": "Audio"
+    },
+    "publish": {
+      "provider": "github",
+      "owner": "REPLACE_WITH_GITHUB_OWNER",
+      "repo": "hive"
+    }
+  },
+  "allowScripts": {
+    "electron@33.2.0": true,
+    "electron-winstaller@5.4.0": true,
+    "usocket@0.3.0": true
+  }
+}

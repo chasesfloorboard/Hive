@@ -1,0 +1,30 @@
+name: Test
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+
+      - name: Install system dependencies
+        # ffmpeg and flac (metaflac) are used by the test suite to build real
+        # audio fixtures and exercise the actual write backends end to end.
+        # Python's bundled mutagen backend lives in resources/mutagen and
+        # needs no separate install (see resources/python/tag_helper.py).
+        run: sudo apt-get update && sudo apt-get install -y ffmpeg flac
+
+      - name: Install Node dependencies
+        run: npm ci
+
+      - name: Run test suite
+        run: npm test

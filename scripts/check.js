@@ -1,0 +1,68 @@
+'use strict';
+
+const { execFileSync } = require('node:child_process');
+const fs = require('node:fs');
+const path = require('node:path');
+
+const root = path.resolve(__dirname, '..');
+const files = ['resources/spicetify/hive-spotify-bridge.js', 'app/main/main.js', 'app/main/preload.js', 'app/workers/scanner-worker.js', 'app/main/native-tag-summary.js', 'app/workers/metadata-worker.js', 'app/main/mpris.js', 'app/main/scrobbling.js', 'app/main/wav-id3.js', 'app/main/scan-payload.js', 'app/main/lyrics-provider.js', 'app/renderer/renderer.js'];
+for (const file of files) execFileSync(process.execPath, ['--check', path.join(root, file)], { stdio: 'inherit' });
+const packageJson = JSON.parse(fs.readFileSync(path.join(root, 'package.json'), 'utf8'));
+const lockJson = JSON.parse(fs.readFileSync(path.join(root, 'package-lock.json'), 'utf8'));
+if (packageJson.version !== lockJson.version || packageJson.version !== lockJson.packages?.['']?.version) throw new Error('package.json and package-lock.json versions differ.');
+const main = fs.readFileSync(path.join(root, 'app', 'main', 'main.js'), 'utf8');
+const preload = fs.readFileSync(path.join(root, 'app', 'main', 'preload.js'), 'utf8');
+if (!/contextIsolation:\s*true/.test(main) || !/nodeIntegration:\s*false/.test(main) || !/sandbox:\s*true/.test(main)) throw new Error('Electron security boundary regression.');
+if (!/contextBridge\.exposeInMainWorld/.test(preload)) throw new Error('Preload bridge missing.');
+if (!/appendSwitch\(\s*['"]ozone-platform['"]\s*,\s*['"]x11['"]/.test(main)) throw new Error('Linux desktop integration regression: Hive must use the X11/Ozone backend for the GNOME-compatible window path.');
+const requiredDirs = ['app/main', 'app/renderer', 'app/workers', 'app/native', 'resources/python', 'resources/spicetify', 'logs'];
+for (const dir of requiredDirs) if (!fs.existsSync(path.join(root, dir))) throw new Error(`Required application directory missing: ${dir}`);
+if (packageJson.main !== 'app/main/main.js') throw new Error(`Electron entry point drift: expected app/main/main.js, found ${packageJson.main}.`);
+if (!fs.existsSync(path.join(root, 'logs', 'README.txt'))) throw new Error('Portable runtime log directory documentation missing.');
+for (const stale of ['main.js','preload.js','scanner-worker.js','metadata-worker.js','database-worker.py','gstreamer-player.c','src']) if (fs.existsSync(path.join(root, stale))) throw new Error(`Stale flat source path remains at project root: ${stale}`);
+if (!/sessionFileName|slice\(20\)/.test(fs.readFileSync(path.join(root, 'app', 'main', 'main.js'), 'utf8'))) throw new Error('Session log naming/retention code missing.');
+const installer = fs.readFileSync(path.join(root, 'install.sh'), 'utf8');
+if (!/spicetify -c/.test(installer) || !/permission denied.*filesystem-permission|filesystem-permission.*permission denied/s.test(installer)) throw new Error('Spicetify path/permission diagnostics missing from installer.');
+if (!/SpotX is optional/.test(installer) || /SpotX-Bash is required/.test(installer) || /Install SpotX-Bash now\?/.test(installer)) throw new Error('Installer still makes SpotX a required interactive dependency.');
+if (!/spotify['\"]?\s*\]/.test(installer) || !/installPath/.test(installer) || !/Persist the validated path/.test(installer)) throw new Error('Persistent Hive Spotify path storage missing.');
+const hiveLauncherPath = path.join(root, 'scripts', 'hive-launcher.sh');
+if (!fs.existsSync(hiveLauncherPath)) throw new Error('Stable Hive launcher missing.');
+const hiveLauncher = fs.readFileSync(hiveLauncherPath, 'utf8');
+if (!/cleanup_old_hive_processes/.test(hiveLauncher) || !/stable Electron runtime/i.test(hiveLauncher)) throw new Error('Hive startup process cleanup/stable runtime logic missing.');
+if (!/STABLE_ROOT/.test(hiveLauncher) || !/STABLE_ELECTRON/.test(hiveLauncher)) throw new Error('Stable Discord game-detection executable path missing.');
+if (!/hive-launcher\.sh/.test(fs.readFileSync(path.join(root, 'run.sh'), 'utf8'))) throw new Error('run.sh must use the stable Hive launcher.');
+if (!/run\.sh.*--startup-debug/.test(fs.readFileSync(path.join(root, 'install.sh'), 'utf8'))) throw new Error('Installer must launch Hive through the stable launcher.');
+const launcher = fs.readFileSync(path.join(root, 'run.sh'), 'utf8');
+if (/spotx-bash-repair-needed/.test(launcher) || /install\.sh --spotify-repair/.test(launcher)) throw new Error('Launcher still contains the obsolete interactive SpotX repair flow.');
+
+if (/Spicetify backup\/apply failed\. Open Spotify once/.test(installer)) throw new Error('Installer still uses the misleading missing-backup message for generic Spicetify failures.');
+const spotifyBridge = fs.readFileSync(path.join(root, 'resources', 'spicetify', 'hive-spotify-bridge.js'), 'utf8');
+if (!/spotify:image:/i.test(spotifyBridge) || !/i\.scdn\.co\/image/.test(spotifyBridge) || !/artworkUrl/.test(spotifyBridge)) throw new Error('Spotify bridge artwork normalization missing.');
+const renderer = fs.readFileSync(path.join(root, 'app', 'renderer', 'renderer.js'), 'utf8');
+if (!/syncMusicTabSidebarIdentity/.test(renderer)) throw new Error('Music tab/sidebar identity synchronization missing.');
+if (!/normalizeSpotifyArtworkSource/.test(renderer) || !/spotify:image:/.test(renderer) || !/spotifyArtworkUrl/.test(renderer)) throw new Error('Renderer Spotify artwork normalization missing.');
+
+const electronVersion = packageJson.devDependencies?.electron;
+if (electronVersion !== '33.2.0') throw new Error(`Electron foundation drift: expected pinned Electron 33.2.0, found ${electronVersion}.`);
+if (!/appendSwitch\(\s*['"]disable-features['"]\s*,\s*['"]UseOzonePlatform['"]/.test(main)) throw new Error('Linux desktop integration regression: Electron 33 must retain the known-good UseOzonePlatform override.');
+if (!/frame:\s*themeWindowBarEnabled\s*\?\s*false\s*:\s*true/.test(main) || !/window:minimize/.test(preload) || !/window:maximize/.test(preload) || !/window:close/.test(preload) || !/window:theme-bar:set/.test(main)) throw new Error('Linux desktop integration regression: Hive must expose an explicit optional themed title bar mode with window controls.');
+if (/titleBarStyle:\s*['"]hidden['"]/.test(main) || /titleBarOverlay:\s*\{/.test(main)) throw new Error('Linux desktop integration regression: Hive must not use Electron WCO titlebar overlays for the themed mode.');
+if (!fs.readFileSync(path.join(root, 'app', 'native', 'gstreamer-player.c'), 'utf8').includes('hive-spectrum')) throw new Error('Native spectrum analyzer missing.');
+if (/xdg-open[^\n]*spotify:track|payload\.type === ['"]playUri['"][^\n]*xdg-open/.test(main)) throw new Error('Spotify playback must not bypass the Spicetify Hive bridge through xdg-open.');
+if (!main.includes('spotify-background.sh')) throw new Error('Spotify playback must use the isolated background provider helper.');
+if (main.includes("path.join(APP_ROOT, 'scripts', 'spotify-background.sh')")) throw new Error('Spotify background launcher must not reference undefined APP_ROOT.');
+if (!main.includes("path.join(HIVE_PROJECT_ROOT, 'scripts', 'spotify-background.sh')")) throw new Error('Spotify background launcher must resolve from HIVE_PROJECT_ROOT.');
+if (/scheduleSpotifyWindowHide|hideSpotifyWindowBestEffort/.test(main)) throw new Error('Spotify provider must not use window-manager hide hacks.');
+if (!/function ensureSpotifyBridge\(\)[\s\S]*?spotifyLaunch\?\./.test(renderer)) throw new Error('Spotify playback must use the background provider when the bridge is disconnected.');
+if (!/install_spotify_background_dependency/.test(installer) || !/xorg-server-xvfb/.test(installer) || !/apt-get install -y xvfb/.test(installer) || !/dnf install -y xorg-x11-server-Xvfb/.test(installer)) throw new Error('Installer must provision the Spotify Xvfb background-display dependency.');
+if (!spotifyBridge.includes("type === 'volume'") || !renderer.includes("type:'volume'")) throw new Error('Spotify volume control bridge missing.');
+if (!spotifyBridge.includes('getVolume') || !spotifyBridge.includes('getShuffle') || !spotifyBridge.includes('getRepeat')) throw new Error('Spotify state synchronization must use the Spicetify Player API.');
+if (!spotifyBridge.includes('cover: playlistArtwork') || !main.includes('artworkUrl')) throw new Error('Spotify playlist artwork persistence missing.');
+const styles = fs.readFileSync(path.join(root, 'app', 'renderer', 'styles.css'), 'utf8');
+if (!/#topbar\s*\{[\s\S]*?app-region:\s*drag/.test(styles)) throw new Error('Linux desktop integration regression: Hive topbar must provide a themed frameless drag region.');
+const securityInstaller = installer;
+if (/^\s*curl[^\n]*\|\s*(?:sh|bash)\b/im.test(securityInstaller)) throw new Error('Installer contains remote shell execution (curl|sh/bash).');
+if (!spotifyBridge.includes('__HIVE_SPOTIFY_BRIDGE_TOKEN__') || !spotifyBridge.includes('Authorization')) throw new Error('Spotify bridge token hardening is missing.');
+if (!main.includes('function spotifyBridgeAuthorized') || !main.includes("'Access-Control-Allow-Headers': 'Content-Type, Authorization'")) throw new Error('Spotify bridge authorization hardening is missing.');
+
+console.log(`Validated ${files.length} JavaScript entry points, Electron 33.2.0 security flags, and Linux native title-bar integration.`);

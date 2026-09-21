@@ -1,0 +1,933 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8" />
+<!-- 'unsafe-eval' is required for plugins:run in main.js, which executes
+     plugin.js via `new Function(source)`. This is a deliberate, temporary
+     app-wide relaxation, not scoped to plugin code, because no isolation
+     boundary (sandboxed iframe/webview with its own CSP) exists yet for
+     plugins -- see docs/ai/HIVE-METADATA-BACKEND-CANON.md-style canon note
+     to add before 1.0: build that isolation and remove this app-wide grant. -->
+<meta http-equiv="Content-Security-Policy" content="default-src 'self' mbfile: mbcover: data:; img-src 'self' mbcover: data: https:; media-src 'self' mbfile: https:; connect-src 'self' https:; style-src 'self' 'unsafe-inline' https:; script-src 'self' 'unsafe-eval';">
+<title>Hive</title>
+<link rel="stylesheet" href="styles.css" />
+</head>
+<body>
+
+  <!-- ambient blurred backdrop, tinted from current album art -->
+  <div id="ambient-bg">
+    <div id="ambient-blob-a"></div>
+    <div id="ambient-blob-b"></div>
+    <div id="ambient-noise"></div>
+  </div>
+
+  <div id="app">
+
+    <!-- ============ TOP BAR ============ -->
+    <header id="topbar" class="glass">
+      <div class="window-titlebar-row" aria-label="Hive window title bar">
+        <div class="window-drag-region" aria-hidden="true"></div>
+        <div class="window-controls" role="group" aria-label="Window controls">
+          <button class="window-control" data-window-control="minimize" title="Minimize" aria-label="Minimize">—</button>
+          <button class="window-control" data-window-control="maximize" title="Maximize" aria-label="Maximize">□</button>
+          <button class="window-control window-control-close" data-window-control="close" title="Close" aria-label="Close">×</button>
+        </div>
+      </div>
+      <div class="topbar-app-row">
+      <div class="topbar-left">
+        <button id="brand-btn" class="brand-btn" title="Hive menu">
+          <span class="brand"><img class="brand-logo" id="hive-brand-logo" alt="Hive" aria-hidden="true"><span>Hive</span> <span class="brand-caret">▾</span></span>
+        </button>
+        <div id="brand-dropdown" class="dropdown-menu hidden">
+          <button class="dropdown-item" data-action="settings">⚙ Settings</button>
+          <button class="dropdown-item" data-action="about">ℹ About Hive</button>
+          <div class="dropdown-divider"></div>
+          <button class="dropdown-item" data-action="check-updates">Check for Updates…</button>
+        </div>
+      </div>
+      <div class="topbar-tabs" id="topbar-tabs"><button id="tab-add-btn" class="tab tab-add" title="Add tab">+</button></div>
+      <div class="topbar-right">
+        <!-- Startup status lives in the top-bar controls so it never floats over
+             application content. It is intentionally just left of the divider. -->
+        <div id="startup-status" class="startup-status" aria-live="polite">
+          <span class="startup-spinner" aria-hidden="true"></span>
+          <span id="startup-status-text">Starting Hive…</span>
+        </div>
+        <div id="metadata-embed-status" class="metadata-embed-status hidden" aria-live="polite" aria-label="Artwork embedding in progress">
+          <span id="metadata-embed-spinner" class="metadata-embed-spinner" aria-hidden="true"></span>
+          <span id="metadata-embed-status-text">Embedding…</span>
+        </div>
+        <div id="topbar-search-divider" class="topbar-search-divider" role="separator" aria-orientation="vertical" aria-label="Resize library search" title="Drag to resize search"></div>
+        <div class="search-box" title="Library search">
+          <input id="search-input" type="text" placeholder="Search library…" />
+          <button id="search-clear-btn" class="search-clear" type="button" title="Clear search" aria-label="Clear search">×</button>
+        </div>
+      </div>
+      </div>
+    </header>
+
+    <div id="topbar-resize" class="resize-handle resize-h" data-target="topbar"></div>
+
+    <div id="body-row">
+
+      <!-- ============ SIDEBAR ============ -->
+      <nav id="sidebar" class="glass">
+        <div id="sidebar-upper">
+          <div class="sidebar-section sidebar-nav-list" id="sidebar-nav-list">
+            <!-- built-in navigation is rendered and ordered by the user -->
+          </div>
+
+          <div class="sidebar-heading">Computer</div>
+          <div class="sidebar-section" id="folder-list">
+            <!-- populated with configured folders -->
+          </div>
+        </div>
+
+        <!-- This boundary is deliberately outside the Lyrics panel. Its entire block
+             moves with the Lyrics divider, while the Lyrics panel keeps its own fixed height. -->
+        <div id="sidebar-status-boundary">
+          <div id="selection-status" class="selection-status hidden" aria-live="polite"></div>
+          <div id="scan-progress" class="scan-progress hidden">
+            <div class="scan-progress-title" id="scan-progress-title">Library scan</div>
+            <div class="scan-progress-bar"><div class="scan-progress-fill" id="scan-progress-fill"></div></div>
+            <div class="scan-progress-label" id="scan-progress-label"></div>
+          </div>
+          <button id="scan-failures-btn" class="scan-failures-btn hidden" type="button">View failed files</button>
+          <div id="lyrics-resize" class="lyrics-resize" title="Drag to resize lyrics"> </div>
+        </div>
+
+        <!-- ============ LYRICS (merged into sidebar column) ============ -->
+        <div id="lyrics-section" class="collapsed">
+          <div class="sidebar-heading">Lyrics</div>
+          <div class="sidebar-lyrics" id="lyrics-rail">
+            <div class="lyrics-scroll" id="lyrics-text"></div>
+          </div>
+        </div>
+      </nav>
+
+      <div id="sidebar-resize" class="resize-handle resize-v" data-target="sidebar"></div>
+
+      <!-- ============ MAIN CONTENT ============ -->
+      <main id="main">
+
+        <div id="empty-state" class="empty-state hidden">
+          <h2>No music yet</h2>
+          <p>Add a folder from Settings → Library to scan your music.</p>
+        </div>
+
+        <div id="tab-placeholder" class="empty-state hidden">
+          <h2 id="tab-placeholder-title"></h2>
+          <p id="tab-placeholder-body"></p>
+        </div>
+
+        <div id="albums-toolbar">
+          <h1 id="section-title"><button id="artist-back-btn" class="artist-back-btn hidden" type="button" title="Back" aria-label="Back"><img class="artist-back-icon" src="assets/back-chevron.svg" alt="" aria-hidden="true" draggable="false"></button><span id="section-title-text">Albums</span></h1>
+          <div class="view-toggle">
+            <button class="view-btn years-toggle" data-action="toggle-years" type="button" aria-pressed="true">Years: ON</button>
+            <button class="view-btn active" data-mode="albums">Albums</button>
+            <button class="view-btn" data-mode="songs">Tracks</button>
+            <button class="view-btn" data-mode="artists">Artists</button>
+          </div>
+        </div>
+
+        <div id="albums-grid" class="grid"></div>
+        <div id="songs-table" class="hidden"></div>
+        <div id="artists-grid" class="grid hidden"></div>
+        <div id="content-tools" class="hidden"></div>
+
+      </main>
+
+      <div id="queue-panel-resize" class="resize-handle resize-v" data-target="queue-panel" data-invert="true"></div>
+
+      <!-- ============ RIGHT QUEUE PANEL ============ -->
+      <aside id="queue-panel" class="glass">
+        <div class="queue-header">Playing Tracks</div>
+        <ol id="queue-list"></ol>
+        <div id="queue-art-resize" class="queue-art-resize" title="Drag to resize queue and cover art"></div>
+        <div id="now-playing-card" class="now-playing-card hidden">
+          <div class="np-meta">
+            <div id="np-title" class="np-title"></div>
+            <div id="np-artist" class="np-artist"></div>
+            <div id="np-album" class="np-album-name"></div>
+            <div id="np-year" class="np-year"></div>
+            <div id="np-track" class="np-track"></div>
+            <div id="np-format" class="np-format"></div>
+            <div id="np-bitrate" class="np-format np-flac-specs hidden"></div>
+          </div>
+          <div class="np-cover-stage">
+            <img id="np-cover" src="" alt="" />
+          </div>
+        </div>
+      </aside>
+
+    </div>
+
+    <div id="playbar-resize" class="resize-handle resize-h" data-target="playbar" data-invert="true"></div>
+
+    <!-- ============ BOTTOM PLAYBACK BAR ============ -->
+    <footer id="playbar" class="glass">
+      <div class="playbar-left">
+        <img id="pb-cover" class="pb-cover" src="" alt="" />
+        <div class="pb-meta">
+          <div id="pb-title" class="pb-title">Nothing playing</div>
+          <div id="pb-artist" class="dim small"></div>
+        </div>
+      </div>
+
+      <div class="playbar-center">
+        <div class="transport">
+          <button id="btn-prev" class="icon-btn" title="Previous"></button>
+          <button id="btn-play" class="icon-btn" title="Play/Pause"></button>
+          <button id="btn-next" class="icon-btn" title="Next"></button>
+        </div>
+        <div class="seek-row">
+          <span id="pb-elapsed" class="time">0:00</span>
+          <input id="pb-seek" type="range" min="0" max="0" step="0.01" value="0" aria-label="Seek" aria-valuemin="0" aria-valuemax="0" aria-valuenow="0">
+          <span id="pb-duration" class="time">0:00</span>
+        </div>
+      </div>
+
+      <div class="playbar-right">
+        <button id="btn-love" class="icon-btn" title="Love"></button>
+        <button id="btn-shuffle" class="icon-btn" title="Shuffle"></button>
+        <button id="btn-repeat" class="icon-btn" title="Repeat"></button>
+        <div class="playbar-volume">
+          <input id="pb-volume" type="range" min="0" max="100" value="80" aria-label="Volume" />
+          <button id="pb-vol-icon" class="icon-btn" title="Mute"></button>
+        </div>
+      </div>
+    </footer>
+
+  </div>
+
+  <!-- ============ SETTINGS MODAL ============ -->
+  <div id="settings-modal" class="modal-overlay hidden">
+    <div class="modal glass modal-settings">
+      <div class="modal-header">
+        <h3>Settings</h3>
+        <button class="modal-close" data-close>✕</button>
+      </div>
+      <div class="settings-tabs" role="tablist" aria-label="Hive Settings" aria-orientation="vertical">
+        <button id="settings-tab-general" class="settings-tab-btn active" role="tab" aria-selected="true" aria-controls="settings-panel-general" tabindex="0" data-settings-tab="general">Playback</button>
+        <button id="settings-tab-devices" class="settings-tab-btn" role="tab" aria-selected="false" aria-controls="settings-panel-devices" tabindex="-1" data-settings-tab="devices">Devices</button>
+        <button id="settings-tab-performance" class="settings-tab-btn" role="tab" aria-selected="false" aria-controls="settings-panel-performance" tabindex="-1" data-settings-tab="performance">Performance</button>
+        <button id="settings-tab-appearance" class="settings-tab-btn" role="tab" aria-selected="false" aria-controls="settings-panel-appearance" tabindex="-1" data-settings-tab="appearance">Appearance</button>
+        <button id="settings-tab-navigation" class="settings-tab-btn" role="tab" aria-selected="false" aria-controls="settings-panel-navigation" tabindex="-1" data-settings-tab="navigation">Navigation</button>
+        <button id="settings-tab-library" class="settings-tab-btn" role="tab" aria-selected="false" aria-controls="settings-panel-library" tabindex="-1" data-settings-tab="library">Library</button>
+        <button id="settings-tab-statistics" class="settings-tab-btn" role="tab" aria-selected="false" aria-controls="settings-panel-statistics" tabindex="-1" data-settings-tab="statistics">History</button>
+        <button id="settings-tab-discord" class="settings-tab-btn" role="tab" aria-selected="false" aria-controls="settings-panel-discord" tabindex="-1" data-settings-tab="discord">Discord</button>
+        <button id="settings-tab-plugins" class="settings-tab-btn" role="tab" aria-selected="false" aria-controls="settings-panel-plugins" tabindex="-1" data-settings-tab="plugins">Plugins</button>
+        <button id="settings-tab-community" class="settings-tab-btn" role="tab" aria-selected="false" aria-controls="settings-panel-community" tabindex="-1" data-settings-tab="community">Scrobbling</button>
+        <button id="settings-tab-logs" class="settings-tab-btn" role="tab" aria-selected="false" aria-controls="settings-panel-logs" tabindex="-1" data-settings-tab="logs">Diagnostics</button>
+      </div>
+      <div class="modal-body settings-body">
+
+        <div id="settings-panel-general" class="settings-tab-panel active" role="tabpanel" aria-labelledby="settings-tab-general" tabindex="0" data-settings-panel="general">
+          <div class="settings-section-title">Audio output</div>
+          <div class="settings-hint settings-section-copy">Choose where Hive sends local music. The list comes from the Linux PulseAudio/PipeWire compatibility layer.</div>
+          <div class="settings-form-grid">
+            <label style="grid-column:span 2;">Output device
+              <select id="setting-audio-output" class="settings-select"><option value="">System default</option></select>
+            </label>
+          </div>
+          <div class="settings-actions">
+            <button id="audio-output-refresh-btn" class="sidebar-add" type="button">↻ Refresh outputs</button>
+            <button id="audio-output-apply-btn" class="sidebar-add settings-primary-action" type="button">Apply output</button>
+          </div>
+          <div id="audio-output-status" class="settings-status" aria-live="polite">Loading audio outputs…</div>
+          <div class="settings-divider"></div>
+          <div class="settings-section-title">ReplayGain</div>
+          <label class="settings-row">
+            <span>Loudness normalization<span class="settings-hint">Uses embedded ReplayGain tags. Album gain falls back to track gain when needed.</span></span>
+            <select id="setting-replaygain-mode" class="settings-select"><option value="off">Off</option><option value="track">Track gain</option><option value="album">Album gain</option></select>
+          </label>
+          <label class="settings-row">
+            <span>Prevent ReplayGain clipping<span class="settings-hint">Uses the embedded peak value to prevent clipping.</span></span>
+            <input type="checkbox" id="setting-replaygain-clipping" checked />
+          </label>
+        </div>
+
+        <div id="settings-panel-devices" class="settings-tab-panel" role="tabpanel" aria-labelledby="settings-tab-devices" tabindex="0" data-settings-panel="devices">
+          <div class="settings-section-title">Android devices</div>
+          <div class="settings-hint settings-section-copy">Connect an Android phone by USB, unlock it, and choose <strong>File Transfer</strong> (MTP) on the phone. Hive can then copy music from your PC library into the phone's Music folder.</div>
+          <div class="settings-actions">
+            <button id="device-refresh-btn" class="sidebar-add settings-primary-action" type="button">↻ Refresh devices</button>
+          </div>
+          <div id="device-status" class="settings-hint settings-section-copy" aria-live="polite">Checking for Android devices…</div>
+          <div id="device-list" class="device-list"></div>
+          <div class="settings-divider"></div>
+          <div class="settings-section-title">Music destination</div>
+          <div class="settings-hint settings-section-copy">Choose the phone storage and folder Hive should use. If an SD card is present, Hive defaults to <code>SD card / Music</code>; otherwise it uses the phone's main storage <code>Music</code> folder.</div>
+          <div class="settings-hint settings-section-copy">Files are organized as <code>Artist / Album / Track</code> beneath the destination folder. Existing files with the same size are skipped.</div>
+          <div id="device-transfer-status" class="settings-hint settings-section-copy" aria-live="polite"></div>
+        </div>
+
+        <div id="settings-panel-performance" class="settings-tab-panel" role="tabpanel" aria-labelledby="settings-tab-performance" tabindex="0" data-settings-panel="performance">
+          <div class="settings-section-title">Graphics</div>
+          <label class="settings-row"><span>GPU acceleration<span class="settings-hint">Use hardware-accelerated graphics. Restart required. Hive keeps this enabled by default.</span></span><input type="checkbox" id="setting-gpu-acceleration" checked /></label>
+          <div class="settings-divider"></div>
+          <div class="settings-section-title">Audio responsiveness</div>
+          <div class="settings-hint settings-section-copy">Local playback stays on the native GStreamer transport. Volume changes are applied at the output boundary so the UI does not wait on a playback queue.</div>
+        </div>
+
+        <div id="settings-panel-appearance" class="settings-tab-panel" role="tabpanel" aria-labelledby="settings-tab-appearance" tabindex="0" data-settings-panel="appearance">
+          <div class="settings-section-title">Interface</div>
+          <div class="glass-settings-card">
+            <div class="settings-section-title glass-settings-title">Frosted Glass</div>
+            <div class="settings-hint settings-section-copy">Choose the frosted treatment and which surfaces use it.</div>
+            <label class="settings-row"><span>Theme Electron window bar<span class="settings-hint">Custom title bar with window dragging plus minimize, maximize/restore, and close controls. Turning it off restores the native Electron/desktop title bar.</span></span><input type="checkbox" id="setting-theme-window-bar" checked /></label>
+            <label class="settings-row"><span>Use frosted glass<span class="settings-hint">Turn the frosted surface treatment on or off.</span></span><input type="checkbox" id="setting-player-glass" checked /></label>
+            <div class="settings-subsection-title">Frosted surfaces</div>
+            <label class="settings-row"><span>Top bar / window title bar</span><input type="checkbox" data-glass-area="topbar" checked /></label>
+            <label class="settings-row"><span>Left sidebar</span><input type="checkbox" data-glass-area="sidebar" checked /></label>
+            <label class="settings-row"><span>Lyrics</span><input type="checkbox" data-glass-area="lyrics" checked /></label>
+            <label class="settings-row"><span>Main content</span><input type="checkbox" data-glass-area="main" checked /></label>
+            <label class="settings-row"><span>Queue</span><input type="checkbox" data-glass-area="queue" checked /></label>
+            <label class="settings-row"><span>Now Playing / player</span><input type="checkbox" data-glass-area="playbar" checked /></label>
+            <label class="settings-row"><span>Colored Now Playing background<span class="settings-hint">Add the accent background behind Now Playing.</span></span><input type="checkbox" id="setting-playbar-now-playing-bg" /></label>
+          </div>
+                    <label class="settings-row"><span>Legacy album art scaling<span class="settings-hint">Keep the established fixed album-art size in Artists and Albums.</span></span><input type="checkbox" id="setting-legacy-art-scaling" /></label>
+          <div class="settings-divider"></div>
+          <div class="settings-section-title">Hive themes</div>
+          <div class="settings-hint settings-section-copy">Choose one base theme, then optionally combine the visual treatments below. Theme choices only affect Hive's appearance.</div>
+          <div class="theme-control-card">
+            <label class="settings-field-label" for="builtin-theme-select">Theme</label>
+            <select id="builtin-theme-select" class="settings-select" aria-label="Theme"></select>
+            <div id="builtin-theme-description" class="settings-hint theme-description"></div>
+          </div>
+          <div class="settings-divider"></div>
+          <div class="settings-section-title">Community themes</div>
+          <div class="settings-hint settings-section-copy">Import and export <code>.hive-theme</code> packs. Theme packs only style Hive.</div>
+          <div class="custom-css-actions"><button id="theme-import-btn" class="sidebar-add" type="button">Import theme pack…</button><button id="theme-export-btn" class="sidebar-add" type="button">Export current theme…</button></div>
+          <div class="settings-divider"></div>
+          <div class="settings-section-title">Panel layout</div>
+          <label class="settings-row"><span>Lock panel sizes<span class="settings-hint">Prevent resizing the main panels.</span></span><input type="checkbox" id="setting-lock-resize" /></label>
+          <button id="reset-layout-btn" class="sidebar-add" type="button">Reset panel sizes to default</button>
+        </div>
+
+        <div id="settings-panel-navigation" class="settings-tab-panel" role="tabpanel" aria-labelledby="settings-tab-navigation" tabindex="0" data-settings-panel="navigation">
+          <div class="settings-section-title">Navigation</div>
+          <div class="settings-hint settings-section-copy">Build the sidebar and top bar you actually use. Reordering uses buttons so it works reliably with a mouse, keyboard, or touchpad.</div>
+          <div class="navigation-settings-layout">
+            <section class="navigation-settings-section">
+              <div class="navigation-settings-head"><div><strong>Sidebar</strong><span>Controls what appears in the left navigation.</span></div><button id="navigation-reset-btn" class="navigation-editor-action" type="button">Reset</button></div>
+              <div id="navigation-sidebar-editor" class="navigation-editor"></div>
+            </section>
+          </div>
+        </div>
+
+        <div id="settings-panel-library" class="settings-tab-panel" role="tabpanel" aria-labelledby="settings-tab-library" tabindex="0" data-settings-panel="library">
+          <div class="settings-section-title">Music folders</div>
+          <div class="settings-hint settings-section-copy">Folders Hive scans for music. Changes apply on the next scan.</div>
+          <button id="add-folder-btn" class="sidebar-add" type="button">+ Add music folder…</button>
+          <button id="rescan-btn" class="sidebar-add" type="button">⟳ Rescan library</button>
+          <div class="settings-divider"></div>
+          <div class="settings-section-title">Audio integrity</div>
+          <div class="settings-hint settings-section-copy">Check audio files and Love metadata for integrity. No music files are changed unless you approve a repair.</div>
+          <div class="audio-integrity-actions">
+            <button id="audio-integrity-scan-btn" class="sidebar-add" type="button">⌕ Scan entire library</button>
+            <button id="audio-integrity-scan-cancel-btn" class="sidebar-add" type="button" disabled>Cancel scan</button>
+            <button id="audio-integrity-report-btn" class="sidebar-add" type="button" disabled>Generate Full TXT Report</button>
+            <button id="audio-integrity-open-reports-btn" class="sidebar-add" type="button">Open Reports Folder</button>
+          </div>
+          <div id="audio-integrity-scan-progress" class="audio-integrity-progress" hidden>
+            <div class="audio-integrity-progress-head"><strong id="audio-integrity-scan-progress-label">Ready</strong><span id="audio-integrity-scan-progress-count">0 / 0</span></div>
+            <progress id="audio-integrity-scan-progress-bar" value="0" max="1"></progress>
+            <div id="audio-integrity-scan-current" class="settings-hint"></div>
+          </div>
+          <div id="audio-integrity-scan-results" class="audio-integrity-results" hidden></div>
+          <div class="settings-divider"></div>
+          <div class="settings-section-title">Lyrics</div>
+          <label class="settings-row"><span>Embed songs with lyrics automatically<span class="settings-hint">When Hive finds lyrics online for a track that has no embedded lyrics, save the result into the audio file automatically. Synchronized lyrics are embedded when Highlighted lyrics is enabled; otherwise Genius plain lyrics are embedded.</span></span><input type="checkbox" id="setting-embed-lyrics-automatically" /></label>
+          <label class="settings-row"><span>Use highlighted lyrics<span class="settings-hint">Prefer synchronized lyrics from LRCLIB, even for a track whose embedded lyrics are plain text. Turn off to use plain lyrics from Genius. This never changes what's embedded in the file -- only what the lyrics panel displays.</span></span><input type="checkbox" id="setting-highlighted-lyrics" checked /></label>
+          <div class="settings-divider"></div>
+          <div class="settings-section-title">Favorites</div>
+          <button id="refresh-favorites-btn" class="sidebar-add" type="button">⟳ Refresh Favorites from files</button>
+          <div class="settings-hint settings-section-copy">Read Favorites directly from embedded file tags.</div>
+        </div>
+
+        <div id="settings-panel-statistics" class="settings-tab-panel" role="tabpanel" aria-labelledby="settings-tab-statistics" tabindex="0" data-settings-panel="statistics">
+          <div class="settings-section-title">History &amp; Play Counts</div>
+          <label class="settings-row"><span>Embed play counts into files (P_count)</span><input type="checkbox" id="setting-embed-play-counts" checked /></label>
+          <div class="glass-settings-card">
+            <div class="settings-subsection-title">Wrapped data</div>
+            <button id="import-musicbee-wrapped-btn" class="sidebar-add" type="button">Import Wrapped data…</button>
+            <button id="export-hive-wrapped-btn" class="sidebar-add" type="button">Export Wrapped data…</button>
+            <div id="musicbee-wrapped-import-status" class="settings-status" aria-live="polite">No Wrapped history yet.</div>
+          </div>
+          <button id="clear-play-counts-btn" class="sidebar-add settings-danger-button" type="button">Clear play counts…</button>
+        </div>
+
+        <div id="settings-panel-community" class="settings-tab-panel" role="tabpanel" aria-labelledby="settings-tab-community" tabindex="0" data-settings-panel="community">
+          <div class="settings-section-title">Scrobbling</div>
+          <div class="settings-hint settings-section-copy">Send listening history to ListenBrainz and/or Last.fm after the configured threshold.</div>
+          <label class="settings-row"><span>Enable scrobbling</span><input type="checkbox" id="setting-scrobble-enabled" /></label>
+          <div class="settings-form-grid">
+            <label>Scrobble after (%)<input id="setting-scrobble-percent" type="number" min="1" max="100" step="1" value="50" /></label>
+            <label>Scrobble after (seconds)<input id="setting-scrobble-seconds" type="number" min="30" max="3600" step="30" value="240" /></label>
+          </div>
+          <label class="settings-row"><span>Include podcast episodes<span class="settings-hint">Include podcast episodes in scrobbles.</span></span><input type="checkbox" id="setting-scrobble-podcasts" /></label>
+          <div class="settings-divider"></div>
+          <div class="settings-section-title">ListenBrainz</div>
+          <div class="settings-form-grid">
+            <label style="grid-column:span 2;">User token<input id="setting-listenbrainz-token" type="password" autocomplete="off" placeholder="ListenBrainz user token" /></label>
+          </div>
+          <label class="settings-row"><span>Enable ListenBrainz</span><input type="checkbox" id="setting-listenbrainz-enabled" /></label>
+          <div class="settings-hint settings-section-copy">ListenBrainz uses Hive’s MusicBrainz metadata.</div>
+          <div class="settings-divider"></div>
+          <div class="settings-section-title">Last.fm</div>
+          <div class="settings-form-grid">
+            <label>API key<input id="setting-lastfm-key" type="text" autocomplete="off" /></label>
+            <label>Shared secret<input id="setting-lastfm-secret" type="password" autocomplete="off" /></label>
+            <label style="grid-column:span 2;">Session key<input id="setting-lastfm-session" type="password" autocomplete="off" placeholder="Authorize below or paste a session key" /></label>
+          </div>
+          <label class="settings-row"><span>Enable Last.fm</span><input type="checkbox" id="setting-lastfm-enabled" /></label>
+          <div class="settings-actions"><button id="lastfm-authorize-btn" class="sidebar-add" type="button">Authorize Last.fm…</button><button id="lastfm-finish-btn" class="sidebar-add" type="button">Finish authorization</button></div>
+          <div id="scrobble-status" class="settings-status" aria-live="polite">Scrobbling not configured.</div>
+        </div>
+
+        <div id="settings-panel-plugins" class="settings-tab-panel" role="tabpanel" aria-labelledby="settings-tab-plugins" tabindex="0" data-settings-panel="plugins">
+          <div class="settings-section-title">Plugins</div>
+          <div class="settings-hint settings-section-copy">Install extensions that add player features and their own settings. Plugins are trusted code in this build.</div>
+          <div class="plugin-import-bar">
+            <div class="plugin-import-copy"><strong>Import plugins</strong><span>Import a plugin folder containing <code>manifest.json</code>.</span></div>
+            <div class="custom-css-actions"><button id="plugin-import-btn" class="sidebar-add settings-primary-action" type="button">Import plugin…</button><button id="plugin-open-btn" class="sidebar-add" type="button">Open plugins folder</button><button id="plugin-reload-btn" class="sidebar-add" type="button">Reload plugins</button></div>
+          </div>
+          <div class="settings-section-title settings-subsection-title">Installed plugins</div>
+          <div id="plugin-list" class="plugin-list"><div class="settings-hint settings-section-copy">No extensions loaded.</div></div>
+        </div>
+
+        <div id="settings-panel-logs" class="settings-tab-panel" role="tabpanel" aria-labelledby="settings-tab-logs" tabindex="0" data-settings-panel="logs">
+          <div class="settings-section-title">Application log</div>
+          <div class="settings-hint settings-section-copy">Each launch gets a local TXT session log. The newest 20 sessions are retained.</div>
+          <div class="diagnostics-card">
+            <div class="settings-section-title settings-subsection-title">Diagnostic session</div>
+            <div class="settings-hint settings-section-copy">Start this before reproducing a problem. Reports stay local and redact music-library paths.</div>
+            <details id="settings-diagnostics-crash-course" class="diagnostics-crash-course">
+              <summary>Backend crash-course</summary>
+              <div class="diagnostics-course-copy">Run these in order while the session is active. Do not deliberately crash Hive; reproduce normal failures and audible glitches exactly as they happen.</div>
+              <ol>
+                <li><strong>Baseline:</strong> let startup and the library scan finish; inspect the library normally.</li>
+                <li><strong>Transport:</strong> play, pause, resume, seek, previous, next, and let one track reach its natural end.</li>
+                <li><strong>Volume:</strong> slowly sweep down/up, rapidly sweep down/up, make small changes, mute/unmute, and change volume while paused and playing.</li>
+                <li><strong>Scrubber:</strong> click-seek, short drag, long drag, repeated drags, and release normally.</li>
+                <li><strong>Queue:</strong> reorder/select tracks and exercise several consecutive transitions.</li>
+                <li><strong>Persistence:</strong> verify volume/shuffle/repeat/queue/position, then restart Hive and confirm playback restores paused.</li>
+                <li><strong>Stress:</strong> scroll large library views, switch tabs/views, inspect artwork and queue while audio is playing.</li>
+                <li><strong>Finish:</strong> save the report and upload it here. The report correlates renderer actions with native GStreamer trace/state events.</li>
+              </ol>
+            </details>
+            <div class="diagnostics-actions">
+              <button id="settings-diagnostics-start" class="sidebar-add settings-primary-action" type="button">Start diagnostic session</button>
+              <button id="settings-diagnostics-finish" class="sidebar-add" type="button" disabled>Finish &amp; save report</button>
+              <button id="settings-diagnostics-open" class="sidebar-add" type="button">Open report folder</button>
+            </div>
+            <div id="settings-diagnostics-status" class="settings-status" aria-live="polite">No diagnostic session running.</div>
+          </div>
+          <div class="diagnostics-card">
+            <div class="settings-section-title settings-subsection-title">Native crash reports</div>
+            <div class="settings-hint settings-section-copy">A hard crash (not an ordinary error) can happen too fast for the app's own log to capture -- Electron writes a separate minidump for those instead. These stay on your machine only; Hive never uploads them automatically. Attach one to a bug report if Hive closes unexpectedly.</div>
+            <div class="diagnostics-actions">
+              <button id="settings-crash-reports-open" class="sidebar-add" type="button">Open crash reports folder</button>
+            </div>
+            <div id="settings-crash-reports-status" class="settings-status" aria-live="polite">Checking for crash reports…</div>
+          </div>
+          <div class="log-toolbar">
+            <label class="log-source-label">Log source<select id="settings-log-source"><option value="current">Current session</option><option value="scan">Scan log</option></select></label>
+            <div class="log-actions"><button id="settings-log-refresh" class="sidebar-add compact-action" type="button">Load log</button><button id="settings-log-copy" class="sidebar-add compact-action" type="button">Copy to clipboard</button></div>
+          </div>
+          <div id="settings-log-status" class="settings-status" aria-live="polite">No log loaded.</div>
+          <textarea id="settings-log-output" class="settings-log-output" readonly spellcheck="false" placeholder="Load a log to inspect it here."></textarea>
+        </div>
+
+        <div id="settings-panel-discord" class="settings-tab-panel" role="tabpanel" aria-labelledby="settings-tab-discord" tabindex="0" data-settings-panel="discord">
+          <div class="settings-section-title">Discord / Music Presence</div>
+          <div class="settings-hint settings-section-copy">Music Presence owns Discord Rich Presence. Hive does not connect to Discord or publish/clear Discord activities. Choose how the music presence is labeled in Discord; Playing is the game-style presentation, while Listening is the music-style presentation. Discord's Registered Games detection remains controlled by Discord.</div>
+          <div class="settings-divider"></div>
+          <div class="settings-form-grid settings-form-grid-discord">
+            <label>Activity type
+              <select id="setting-music-presence-activity-type">
+                <option value="listening">Listening</option>
+                <option value="playing">Playing</option>
+                <option value="watching">Watching</option>
+              </select>
+            </label>
+            <label style="grid-column: span 2;">Application ID
+              <input id="setting-music-presence-application-id" type="text" inputmode="numeric" autocomplete="off" spellcheck="false" placeholder="Discord application ID" />
+            </label>
+          </div>
+          <div class="settings-hint settings-section-copy">These values are written to Music Presence’s settings without changing its other options.</div>
+          <div class="settings-actions settings-actions-discord">
+            <button id="music-presence-apply-btn" class="sidebar-add settings-save-primary" type="button">Apply Music Presence settings</button>
+            <button id="music-presence-restart-btn" class="sidebar-add" type="button">Restart Music Presence</button>
+          </div>
+          <div class="settings-save-status-row">
+            <span id="music-presence-save-prompt" class="settings-save-prompt hidden"></span>
+            <span id="music-presence-status" class="settings-status" aria-live="polite">Loading Music Presence settings…</span>
+          </div>
+        </div>
+
+      </div>
+      <div class="settings-footer">
+        <span class="settings-save-status" aria-live="polite">Changes save automatically.</span>
+        <button class="sidebar-add settings-save-primary" data-close type="button">Done</button>
+      </div>
+    </div>
+  </div>
+
+  <!-- ============ CLEAR PLAY COUNTS CONFIRMATION ============ -->
+  <div id="clear-play-counts-modal" class="modal-overlay hidden">
+    <div class="modal glass disk-delete-modal">
+      <div class="modal-header"><h3>Clear Hive play counts</h3><button class="modal-close" id="clear-play-counts-close" data-close type="button">✕</button></div>
+      <div class="modal-body">
+        <div class="disk-delete-warning">Warning! This will permanently clear the play counts you have amassed on your entire library.</div>
+        <div class="disk-delete-detail">This clears Hive's stored play counts and Hive's own native listening history (used for Yearly Wrap and Wrapped-data exports/imports). Any MusicBee Wrapped archive you've already imported is kept. Your music files, tags, ratings, skip counts, last-played information, and playlists will not be deleted or modified.</div>
+        <div class="disk-delete-actions">
+          <button id="clear-play-counts-cancel" class="modal-action secondary" type="button">Cancel</button>
+          <button id="clear-play-counts-confirm" class="modal-action danger" type="button">Clear Play Counts</button>
+        </div>
+      </div>
+    </div>
+  </div>
+
+  <!-- ============ TAG FAILURES MODAL ============ -->
+  <div id="tag-failures-modal" class="modal-overlay hidden">
+    <div class="modal glass tag-failures-modal">
+      <div class="modal-header"><h3>Metadata write failures</h3><button class="modal-close" data-close>✕</button></div>
+      <div class="modal-body">
+        <div id="tag-failures-summary" class="dim"></div>
+        <div class="tag-failures-actions">
+          <button id="copy-all-tag-errors-btn" class="tag-failure-copy-all" type="button">Copy all error codes</button>
+          <span id="tag-failures-copy-status" class="tag-failures-copy-status" aria-live="polite"></span>
+        </div>
+        <div id="tag-failures-list" class="tag-failures-list"></div>
+      </div>
+    </div>
+  </div>
+
+  <!-- ============ ABOUT MODAL ============ -->
+  <div id="about-modal" class="modal-overlay hidden">
+    <div class="modal glass modal-about">
+      <div class="modal-header">
+        <h3>About Hive</h3>
+        <button class="modal-close" data-close>✕</button>
+      </div>
+      <div class="modal-body about-body">
+        <div class="about-brand"><img class="about-brand-logo" id="about-hive-logo" alt="Hive" aria-hidden="true"><span>Hive</span></div>
+        <div id="about-version" class="dim small"></div>
+        <p class="dim">A MusicBee-styled music player for Linux, with a smoky glass rice aesthetic and dynamic accent colors pulled from album art.</p>
+        <div class="about-update-check">
+          <button id="about-check-updates-btn" class="sidebar-add" type="button">Check for updates</button>
+          <div id="about-update-status" class="settings-status" aria-live="polite"></div>
+        </div>
+      </div>
+    </div>
+  </div>
+
+  <!-- ============ COVER ART LIGHTBOX ============ -->
+  <div id="cover-lightbox" class="modal-overlay hidden">
+    <div class="lightbox">
+      <button class="modal-close lightbox-close" data-close title="Close">✕</button>
+      <div class="lightbox-stage">
+        <img id="lightbox-img" src="" alt="" />
+      </div>
+      <div id="lightbox-caption" class="lightbox-caption"></div>
+      <div id="lightbox-dots" class="lightbox-dots"></div>
+      <button id="lightbox-prev" class="lightbox-nav lightbox-prev hidden" title="Previous image"></button>
+      <button id="lightbox-next" class="lightbox-nav lightbox-next hidden" title="Next image"></button>
+    </div>
+  </div>
+
+
+  <!-- ============ IMPORT PLAYLIST ============ -->
+  <div id="playlist-import-modal" class="modal-overlay hidden">
+    <div class="modal glass playlist-modal">
+      <div class="modal-header"><h3>Import Playlist</h3><button class="modal-close" data-close>✕</button></div>
+      <div class="modal-body playlist-form playlist-import-form">
+        <p class="dim">Import a local M3U/M3U8 playlist or add a Spotify playlist as a streaming source. Spotify tracks stay online and play through the Spotify desktop client controlled by Hive.</p>
+        <button id="playlist-import-file" class="playlist-import-choice"><strong>Import Playlist File</strong><span>M3U / M3U8 from your computer</span></button>
+        <button id="playlist-import-spotify" class="playlist-import-choice spotify-deferred" type="button" disabled aria-disabled="true" data-deferred="true" title="Spotify import is deferred until after Hive 1.0"><strong>Import Spotify Playlist URL</strong><span>Deferred until after Hive 1.0</span></button>
+        <div class="tag-actions"><button id="playlist-import-cancel" class="sidebar-add">Cancel</button></div>
+      </div>
+    </div>
+  </div>
+
+  <!-- ============ NEW PLAYLIST ============ -->
+  <div id="playlist-modal" class="modal-overlay hidden">
+    <div class="modal glass playlist-modal">
+      <div class="modal-header"><h3 id="playlist-modal-title">New playlist</h3><button class="modal-close" data-close>✕</button></div>
+      <div class="modal-body playlist-form">
+        <label>Playlist name<input id="playlist-name" autocomplete="off" placeholder="My Playlist"></label>
+        <div class="playlist-label-style-field">
+          <div class="playlist-label-style-heading"><span>HTML label style</span><small>Optional animated styling. The same safe HTML system used by navigation labels.</small></div>
+          <div id="playlist-label-styles" class="playlist-label-styles" role="radiogroup" aria-label="HTML label style"></div>
+          <input id="playlist-label-html" class="playlist-label-html" autocomplete="off" placeholder="Custom HTML, e.g. &lt;span class='hive-glow'&gt;Mixtape&lt;/span&gt;">
+          <div class="playlist-label-preview-wrap"><span>Preview</span><strong id="playlist-label-preview" class="playlist-label-preview"></strong></div>
+        </div>
+        <label>Open playlist using<select id="playlist-display-view"><option value="albums">Albums</option><option value="songs">Tracks</option><option value="artists">Artists</option></select></label>
+        <div class="tag-actions"><button id="playlist-cancel" class="sidebar-add">Cancel</button><button id="playlist-save" class="sidebar-add">Create playlist</button></div>
+      </div>
+    </div>
+  </div>
+
+  <!-- ============ APP NOTICE ============ -->
+  <div id="notice-modal" class="modal-overlay hidden">
+    <div class="modal glass notice-modal">
+      <div class="modal-header"><h3 id="notice-title">Hive</h3><button class="modal-close" data-close>✕</button></div>
+      <div class="modal-body">
+        <div id="notice-body" class="notice-body"></div>
+        <div id="notice-copy-row" class="notice-copy-row hidden">
+          <button id="notice-copy" class="sidebar-add" type="button">Copy diagnostics</button>
+          <span id="notice-copy-status" class="notice-copy-status" aria-live="polite"></span>
+        </div>
+      </div>
+    </div>
+  </div>
+
+  <!-- ============ DISK DELETE CONFIRMATION ============ -->
+  <div id="disk-delete-modal" class="modal-overlay hidden">
+    <div class="modal glass disk-delete-modal">
+      <div class="modal-header"><h3 id="disk-delete-title">Delete file from disk</h3><button class="modal-close" id="disk-delete-close" data-close type="button">✕</button></div>
+      <div class="modal-body">
+        <div id="disk-delete-message" class="disk-delete-message"></div>
+        <div id="disk-delete-detail" class="disk-delete-detail"></div>
+        <div class="disk-delete-actions">
+          <button id="disk-delete-cancel" class="modal-action secondary" type="button">Cancel</button>
+          <button id="disk-delete-proceed" class="modal-action danger" type="button">Delete</button>
+        </div>
+      </div>
+    </div>
+  </div>
+
+  <div id="disk-delete-final-modal" class="modal-overlay hidden">
+    <div class="modal glass disk-delete-modal disk-delete-final-modal">
+      <div class="modal-header"><h3>This is permanent</h3><button class="modal-close" id="disk-delete-final-close" data-close type="button">✕</button></div>
+      <div class="modal-body">
+        <div class="disk-delete-warning">This is permanent. Are you sure?</div>
+        <div id="disk-delete-final-detail" class="disk-delete-detail"></div>
+        <div class="disk-delete-actions">
+          <button id="disk-delete-final-no" class="modal-action secondary" type="button">No</button>
+          <button id="disk-delete-final-yes" class="modal-action danger" type="button">Yes</button>
+        </div>
+      </div>
+    </div>
+  </div>
+
+  <!-- ============ PLAYLIST INFO ============ -->
+  <div id="playlist-info-modal" class="modal-overlay hidden">
+    <div class="modal glass playlist-info-modal" role="dialog" aria-modal="true" aria-labelledby="playlist-info-title">
+      <div class="modal-header"><div><div class="modal-kicker">PLAYLIST DETAILS</div><h3 id="playlist-info-title">Playlist</h3></div><div class="playlist-info-header-actions"><button id="playlist-info-save" class="playlist-info-save-pill" type="button">Save changes</button><button class="modal-close" data-close aria-label="Close">✕</button></div></div>
+      <div class="modal-body playlist-info-body">
+        <section class="playlist-info-header">
+          <div class="playlist-info-icon-picker"><button id="playlist-info-hero-icon" class="playlist-info-hero-icon" type="button" aria-haspopup="menu" aria-expanded="false" aria-label="Choose playlist icon"><span class="playlist-info-hero-icon-glyph">♫</span><span class="playlist-info-hero-icon-chevron" aria-hidden="true">⌄</span></button><div id="playlist-info-icon-menu" class="playlist-info-icon-menu hidden" role="menu" aria-label="Playlist icons"></div></div>
+          <div class="playlist-info-hero-copy">
+            <div class="playlist-info-eyebrow">LIBRARY COLLECTION</div>
+            <div id="playlist-info-hero-label" class="playlist-info-hero-label">Playlist</div>
+            <div id="playlist-info-hero-subtitle" class="playlist-info-hero-subtitle">Customize how this playlist appears in Hive.</div>
+          </div>
+        </section>
+        <div id="playlist-info-body"></div>
+        <section class="playlist-info-appearance">
+          <div class="playlist-info-section-heading"><div><strong>Playlist settings</strong><small>Control how the playlist opens and appears throughout Hive.</small></div></div>
+          <div class="playlist-info-form-grid">
+            <label>Playlist name<input id="playlist-info-name" autocomplete="off" placeholder="My Playlist"></label>
+            <label>Open playlist using<select id="playlist-info-display-view"><option value="albums">Albums</option><option value="songs">Tracks</option><option value="artists">Artists</option></select></label>
+          </div>
+          <label class="playlist-info-switch-row"><span><strong>Shuffle automatically when opened</strong><small>Randomize this collection when opened; player Shuffle stays independent.</small></span><input id="playlist-info-shuffle" type="checkbox"></label>
+        </section>
+        <section class="playlist-info-appearance playlist-info-appearance-clean">
+          <div class="playlist-info-section-heading"><div><strong>Sidebar appearance</strong><small>Choose how this collection is represented in Hive.</small></div></div>
+          <div class="playlist-info-label-field">
+            <div class="playlist-info-control-label"><strong>Name style</strong><span>Keep the label quiet or give it a little motion.</span></div>
+            <div id="playlist-info-label-styles" class="playlist-label-styles" role="radiogroup" aria-label="Playlist name style"></div>
+            <details class="playlist-info-advanced">
+              <summary>Advanced label markup</summary>
+              <label class="playlist-info-markup-label">Custom display markup<input id="playlist-info-label-html" class="playlist-label-html" autocomplete="off" placeholder="&lt;span class='hive-glow'&gt;My Playlist&lt;/span&gt;"></label>
+            </details>
+          </div>
+        </section>
+        <section class="playlist-info-live-preview">
+          <div class="playlist-info-section-heading"><div><strong>Live preview</strong><small>This is the same rich label renderer used by the playlist UI.</small></div><span>LIVE</span></div>
+          <div class="playlist-info-preview-card">
+            <div id="playlist-info-preview-icon" class="playlist-info-preview-icon">♫</div>
+            <div class="playlist-info-preview-copy"><div id="playlist-info-label-preview" class="playlist-label-preview">Playlist</div><small>Sidebar appearance</small></div>
+          </div>
+        </section>
+        <div id="playlist-info-save-status" class="playlist-info-save-status" aria-live="polite"></div>
+      </div>
+    </div>
+  </div>
+
+  <!-- ============ SMART PLAYLIST ============ -->
+  <div id="smart-playlist-modal" class="modal-overlay hidden">
+    <div class="modal glass smart-playlist-modal" role="dialog" aria-modal="true" aria-labelledby="smart-playlist-title">
+      <div class="modal-header"><div><h3 id="smart-playlist-title">Create smart playlist</h3><div class="modal-subtitle">Build a playlist that updates itself from your library.</div></div><button class="modal-close" data-close type="button" aria-label="Close">✕</button></div>
+      <div class="modal-body playlist-form smart-playlist-body">
+        <section class="smart-section smart-section-primary">
+          <div class="smart-section-heading"><span class="smart-step">1</span><div><strong>What should this playlist use?</strong><span>Choose where Hive should find tracks.</span></div></div>
+          <label class="smart-field-wide">Playlist name<input id="smart-playlist-name" autocomplete="off" placeholder="My Smart Playlist"></label>
+          <div class="smart-source-grid">
+            <label class="smart-source-card selected"><input type="radio" name="smart-source" id="smart-source-library" value="library" checked><span class="smart-source-check">✓</span><span class="smart-source-card-copy"><strong>Music library</strong><small>All music in Hive</small></span></label>
+            <label class="smart-source-card"><input type="radio" name="smart-source" id="smart-source-playlist-option" value="playlist"><span class="smart-source-check">✓</span><span class="smart-source-card-copy"><strong>Another playlist</strong><small>Use an existing playlist</small></span><select id="smart-source-playlist" disabled><option value="">Choose playlist…</option></select></label>
+            <label class="smart-source-card"><input type="radio" name="smart-source" id="smart-source-folder-option" value="folder"><span class="smart-source-check">✓</span><span class="smart-source-card-copy"><strong>Music folder</strong><small>Limit it to one folder</small></span><select id="smart-source-folder" disabled><option value="">Choose folder…</option></select></label>
+          </div>
+        </section>
+
+        <section class="smart-section">
+          <div class="smart-section-heading"><span class="smart-step">2</span><div><strong>Which tracks should match?</strong><span>Keep it simple: add one or more rules.</span></div></div>
+          <div class="smart-rule-bar">Match <select id="smart-playlist-match" aria-label="Rule matching"><option value="all">all</option><option value="any">any</option></select> of these rules</div>
+          <div id="smart-playlist-rules"></div>
+          <button id="smart-playlist-add-rule" class="sidebar-add smart-add-rule" type="button">+ Add rule</button>
+        </section>
+
+        <section class="smart-section">
+          <div class="smart-section-heading"><span class="smart-step">3</span><div><strong>How should the results be chosen?</strong><span>Set the size, ordering, and optional refresh behavior.</span></div></div>
+          <div class="smart-results-grid">
+            <label>Include up to<input id="smart-playlist-limit" type="number" min="1" placeholder="No limit"></label>
+            <label>Choose by<select id="smart-playlist-select-by"><option value="track">Track</option><option value="album">Album</option><option value="artist">Artist</option></select></label>
+            <label>Order by<select id="smart-playlist-sort"><option value="addedDesc">Date added (newest)</option><option value="lastPlayedDesc">Last played (newest)</option><option value="playsDesc">Play count (highest)</option><option value="ratingDesc">Rating (highest)</option><option value="title">Title</option><option value="artist">Artist</option><option value="album">Album</option><option value="random">Random</option></select></label>
+            <label>Shuffle<select id="smart-playlist-shuffle"><option value="none">Off</option><option value="random">Random</option><option value="smart">Within selection</option></select></label>
+          </div>
+          <label class="smart-switch-row"><span><strong>Keep this playlist updated</strong><small>Refresh the matching tracks automatically as your library changes.</small></span><input type="checkbox" id="smart-auto-refresh" checked></label>
+          <button type="button" id="smart-refresh-now" class="sidebar-add smart-refresh-button" disabled>Refresh now</button>
+        </section>
+
+        <details class="smart-advanced">
+          <summary>Advanced options</summary>
+          <div class="smart-advanced-body">
+            <div class="smart-advanced-grid">
+              <label>Description<textarea id="smart-playlist-description" rows="2" placeholder="Optional description"></textarea></label>
+              <label>Open playlist as<select id="smart-playlist-display"><option value="songs">Songs</option><option value="albums">Albums</option><option value="artists">Artists</option></select></label>
+            </div>
+            <label class="smart-switch-row"><span><strong>Remove duplicate tracks</strong><small>Ignore the same track when it appears on multiple albums.</small></span><input type="checkbox" id="smart-filter-duplicates"></label>
+            <label class="smart-switch-row"><span><strong>Export a static copy</strong><small>Also create a normal playlist copy when the smart playlist refreshes.</small></span><input type="checkbox" id="smart-export-static"></label>
+          </div>
+        </details>
+
+        <div class="tag-actions smart-playlist-actions"><button id="smart-playlist-cancel" class="sidebar-add" type="button">Cancel</button><button id="smart-playlist-save" class="sidebar-add settings-save-primary" type="button">Create smart playlist</button></div>
+      </div>
+    </div>
+  </div>
+
+  <!-- ============ THEMED DIALOG ============ -->
+  <div id="app-dialog-modal" class="modal-overlay hidden">
+    <div class="modal glass app-dialog-modal" role="dialog" aria-modal="true" aria-labelledby="app-dialog-title">
+      <div class="modal-header"><h3 id="app-dialog-title">Hive</h3><button id="app-dialog-close" class="modal-close" data-close type="button" aria-label="Close">✕</button></div>
+      <div class="modal-body app-dialog-body">
+        <div id="app-dialog-message" class="app-dialog-message"></div>
+        <input id="app-dialog-input" class="app-dialog-input hidden" type="text" autocomplete="off" />
+        <div id="app-dialog-actions" class="app-dialog-actions"></div>
+      </div>
+    </div>
+  </div>
+
+  <!-- ============ TAG EDITOR ============ -->
+  <div id="tag-modal" class="modal-overlay hidden">
+    <div class="modal glass modal-tags">
+      <div class="modal-header"><div><h3 id="tag-editor-title">Edit track</h3><div id="tag-editor-scope" class="settings-hint"></div></div><button class="modal-close" data-close>✕</button></div>
+      <div class="tag-editor-tabs" id="tag-editor-tabs">
+        <button class="tag-editor-tab active" data-tag-tab="properties">Properties</button>
+        <button class="tag-editor-tab" data-tag-tab="tags">Tags</button>
+        <button class="tag-editor-tab" data-tag-tab="tags2">Tags (2)</button>
+        <button class="tag-editor-tab" data-tag-tab="sorting">Sorting</button>
+        <button class="tag-editor-tab" data-tag-tab="artwork">Artwork</button>
+        <button class="tag-editor-tab" data-tag-tab="lyrics">Lyrics</button>
+        <button class="tag-editor-tab" data-tag-tab="settings">Settings</button>
+      </div>
+      <div class="modal-body tag-editor-body">
+        <section class="tag-editor-panel active" data-tag-panel="properties">
+          <div class="tag-editor-section-head"><div><span class="tag-editor-kicker">FILE & LIBRARY</span><h4 id="tag-properties-heading">Track properties</h4></div><span id="tag-properties-summary" class="tag-editor-muted"></span></div>
+          <div class="tag-properties-grid">
+            <div class="tag-property"><span>type</span><strong id="tag-prop-type">—</strong></div>
+            <div class="tag-property"><span>format / tags</span><strong id="tag-prop-version">—</strong></div>
+            <div class="tag-property"><span>encoded with</span><strong id="tag-prop-encoder">—</strong></div>
+            <div class="tag-property"><span>channels</span><strong id="tag-prop-channels">—</strong></div>
+            <div class="tag-property"><span>size</span><strong id="tag-prop-size">—</strong></div>
+            <div class="tag-property"><span>bitrate</span><strong id="tag-prop-bitrate">—</strong></div>
+            <div class="tag-property"><span>duration</span><strong id="tag-prop-duration">—</strong></div>
+            <div class="tag-property"><span>sample rate</span><strong id="tag-prop-samplerate">—</strong></div>
+            <div class="tag-property"><span>date added</span><strong id="tag-prop-added">—</strong></div>
+            <div class="tag-property"><span>last played</span><strong id="tag-prop-lastplayed">Unknown</strong></div>
+            <div class="tag-property"><span>play count</span><strong id="tag-prop-plays">0</strong></div>
+            <div class="tag-property"><span>rating</span><strong id="tag-prop-rating">☆☆☆☆☆</strong></div>
+            <div class="tag-property"><span>loved</span><strong id="tag-prop-loved">Not loved</strong></div>
+          </div>
+          <div class="tag-property-band">
+            <div><span>tracks</span><strong id="tag-prop-track-count">1</strong></div>
+            <div><span>album length</span><strong id="tag-prop-album-duration">—</strong></div>
+            <div><span>album size</span><strong id="tag-prop-album-size">—</strong></div>
+            <div><span>formats</span><strong id="tag-prop-formats">—</strong></div>
+          </div>
+          <label class="tag-wide-field">location<input id="tag-prop-location" readonly></label>
+        </section>
+
+        <section class="tag-editor-panel" data-tag-panel="tags">
+          <div class="musicbee-tags-main">
+            <div class="musicbee-cover-column">
+              <div class="tag-cover-preview musicbee-cover-box" id="tag-cover-editor" title="Right-click for cover options"><img id="tag-art-preview" src="" alt="Album cover"></div>
+              <div class="musicbee-rating-block">
+                <div class="musicbee-rating-label">rating</div><div id="tag-track-rating-display" class="musicbee-rating-stars">☆☆☆☆☆</div>
+              </div>
+            </div>
+            <div class="musicbee-main-fields">
+              <div class="musicbee-field-row"><label>track title<input id="tag-title"></label><label>artist<input id="tag-artist"></label></div>
+              <div class="musicbee-field-row"><label>album artist<input id="tag-albumArtist"></label><label>album<input id="tag-album"></label></div>
+              <div class="musicbee-field-row"><label>year<input id="tag-year" type="number"></label><div class="musicbee-number-pair"><label>track #<input id="tag-track"></label><span>of</span><input id="tag-track-total" aria-label="track total"></div></div>
+              <div class="musicbee-field-row"><label>publisher<input id="tag-publisher"></label><div class="musicbee-number-pair"><label>disc #<input id="tag-disk"></label><span>of</span><input id="tag-disc-total" aria-label="disc total"></div></div>
+              <div class="musicbee-field-row"><label>composer<input id="tag-composer"></label><label>conductor<input id="tag-conductor"></label></div>
+              <div class="musicbee-field-row"><label>genre<input id="tag-genre"></label><label>grouping<input id="tag-grouping"></label></div>
+              <label class="musicbee-comments-field">comments<textarea id="tag-comment" rows="4"></textarea></label>
+            </div>
+          </div>
+        </section>
+
+        <section class="tag-editor-panel" data-tag-panel="tags2">
+          <div class="tag-editor-section-head"><div><span class="tag-editor-kicker">STANDARD METADATA</span><h4>Additional tags</h4></div></div>
+          <div class="tag-editor-note">A standard set of tags every track can carry, shown in a plain readable form. Fields that could corrupt the file if edited incorrectly (raw native frame IDs and values) are intentionally not exposed here.</div>
+          <div class="musicbee-main-fields">
+            <div class="musicbee-field-row">
+              <label>play count<input id="tag-pcount" type="number" min="0" inputmode="numeric"></label>
+              <label class="tag-check"><input id="tag-compilation" type="checkbox"> part of a compilation</label>
+            </div>
+            <div class="musicbee-field-row"><label>BPM<input id="tag-bpm" type="number" min="0" inputmode="numeric"></label><label>tempo<input id="tag-tempo" placeholder="e.g. Fast"></label></div>
+            <div class="musicbee-field-row"><label>mood<input id="tag-mood"></label><label>occasion<input id="tag-occasion"></label></div>
+            <div class="musicbee-field-row"><label>quality<input id="tag-quality"></label><label>language<input id="tag-language"></label></div>
+            <div class="musicbee-field-row"><label>original artist<input id="tag-originalArtist"></label><label>original album<input id="tag-originalAlbum"></label></div>
+            <div class="musicbee-field-row"><label>original year<input id="tag-originalYear" type="number" inputmode="numeric"></label><label>copyright<input id="tag-copyright"></label></div>
+            <label class="musicbee-comments-field">keywords<textarea id="tag-keywords" rows="2"></textarea></label>
+          </div>
+        </section>
+
+        <section class="tag-editor-panel" data-tag-panel="sorting">
+          <label class="tag-check"><input id="tag-custom-sorting" type="checkbox"> enable custom sorting - use "sort as" values when sorting</label>
+          <div class="sorting-grid musicbee-sorting-grid">
+            <label>Track title<input id="tag-sort-title"></label><label>Sort as<input id="tag-sort-title-as"></label>
+            <label>Album<input id="tag-sort-album"></label><label>Sort as<input id="tag-sort-album-as"></label>
+            <label>Album artist<input id="tag-sort-albumArtist"></label><label>Sort as<input id="tag-sort-albumArtist-as"></label>
+            <label>Artist<input id="tag-sort-artist"></label><label>Sort as<input id="tag-sort-artist-as"></label>
+            <label>Composer<input id="tag-sort-composer"></label><label>Sort as<input id="tag-sort-composer-as"></label>
+          </div>
+          <div class="settings-hint">Custom sort values are stored with the track so display names can remain unchanged.</div>
+        </section>
+
+        <section class="tag-editor-panel" data-tag-panel="artwork">
+          <div class="artwork-library-editor">
+            <div class="artwork-library-toolbar">
+              <div><strong>Embedded artwork</strong><span id="tag-artwork-count">0 pictures</span></div>
+              <div class="artwork-button-row"><button id="tag-artwork-add" class="sidebar-add">Add Picture…</button><button id="tag-artwork-itunes" class="sidebar-add">Search MusicBrainz</button><button id="tag-artwork-paste" class="sidebar-add">Paste</button></div>
+            </div>
+            <div id="tag-artwork-list" class="artwork-library-list"></div>
+            <div class="settings-hint">Filled cards are embedded in the audio file. The final empty card is always ready for another picture; adding artwork never disturbs the other pictures. The Album Cover and Album Cover (back) types are the primary artwork types Hive exposes.</div>
+          </div>
+        </section>
+
+        <section class="tag-editor-panel" data-tag-panel="lyrics">
+          <div class="lyrics-edit-heading">
+            <div><span class="tag-editor-kicker">LYRICS WORKSPACE</span><h4>Lyrics for this track</h4></div>
+            <div class="lyrics-edit-status" id="tag-lyrics-source">Checking embedded lyrics…</div>
+          </div>
+          <div class="lyrics-result-card">
+            <div class="lyrics-result-top">
+              <div><strong id="tag-lyrics-result-title">Lyrics</strong><span id="tag-lyrics-result-meta">Embedded lyrics are preferred.</span></div>
+              <div class="lyrics-result-actions"><button id="tag-lyrics-edit" class="sidebar-add compact-action" type="button">Edit Lyrics</button><button id="tag-lyrics-search" class="sidebar-add compact-action" type="button">Search online</button></div>
+            </div>
+            <div id="tag-lyrics-preview" class="tag-lyrics-preview"></div>
+            <textarea id="tag-lyrics" class="lyrics-editor-text" rows="12" placeholder="Lyrics will appear here when embedded or automatically found online." hidden></textarea>
+          </div>
+          <div class="lyrics-edit-fields">
+            <label>Lyricist<input id="tag-lyricist" placeholder="Optional"></label>
+          </div>
+          <div class="lyrics-edit-options">
+            <label class="tag-check"><input id="tag-no-lyrics" type="checkbox"> Mark this track as having no lyrics</label>
+            <span class="settings-hint">This tab always shows the plain embedded lyrics -- the ones saved to the audio file. Automatic search follows Settings → Highlighted Lyrics: when enabled, LRCLIB is preferred and the plain text is embedded here; when disabled, Hive uses Genius for plain lyrics. The player's synced/highlighted display during playback is separate and never affects what's embedded.</span>
+          </div>
+          <div class="settings-hint lyrics-save-note">Saving writes the lyrics to the audio file. Automatic search alone does not overwrite embedded lyrics.</div>
+        </section>
+
+        <section class="tag-editor-panel" data-tag-panel="settings">
+          <div class="tag-editor-section-head"><div><span class="tag-editor-kicker">PLAYBACK</span><h4>Per-track behavior</h4></div><span class="tag-editor-muted">Only affects this track</span></div>
+          <div class="settings-tag-checks">
+            <label class="tag-check"><input id="tag-exclude-playback" type="checkbox"> exclude this track from normal playback <span class="tag-setting-help">Skips this track when Hive builds normal playback queues.</span></label>
+            <label class="tag-check"><input id="tag-do-not-crossfade" type="checkbox"> do not crossfade this track <span class="tag-setting-help">Ends this track without a crossfade into the next track.</span></label>
+            <label class="tag-check"><input id="tag-remember-position" type="checkbox"> remember this track's playback position <span class="tag-setting-help">Restores this track's saved position when you play it again.</span></label>
+          </div>
+          <div class="tag-editor-section-head compact"><div><span class="tag-editor-kicker">TRIM & LYRIC TIMING</span><h4>Playback range</h4></div></div>
+          <div class="tag-time-grid">
+            <label>start time<input id="tag-start-time" placeholder="00:00.00" inputmode="decimal"><span class="settings-hint">Start at this position. Example: 00:12.50</span></label>
+            <label>end time<input id="tag-end-time" placeholder="00:00.00" inputmode="decimal"><span class="settings-hint">Optional. Leave blank to play to the end.</span></label>
+          </div>
+          <label class="tag-time-offset lyrics-offset-field">lyrics offset<input id="tag-lyrics-offset" placeholder="+0.00" inputmode="decimal"><span class="settings-hint">Seconds to move synchronized lyrics. Positive delays them; add <strong>−</strong> to move them earlier. Example: <strong>-0.50</strong>.</span></label>
+          <div class="tag-editor-section-head compact"><div><span class="tag-editor-kicker">LOUDNESS METADATA</span><h4>ReplayGain</h4></div><span class="tag-editor-muted">Read from / written to the audio file</span></div>
+          <div class="replaygain-grid">
+            <label>Track gain<input id="tag-replaygain-track-gain" placeholder="-7.21 dB"></label>
+            <label>Track peak<input id="tag-replaygain-track-peak" placeholder="0.9876"></label>
+            <label>Album gain<input id="tag-replaygain-album-gain" placeholder="-6.54 dB"></label>
+            <label>Album peak<input id="tag-replaygain-album-peak" placeholder="0.9912"></label>
+            <label>R128 track gain<input id="tag-r128-track-gain" placeholder="Integer value"></label>
+          </div>
+          <div class="settings-hint">ReplayGain values are loudness metadata. You normally do not type these manually: leave them blank when the file has none. If a ReplayGain scanner has written them, Hive reads and preserves them here. The global ReplayGain mode in Settings determines whether they are used during playback.</div>
+        </section>
+
+        <details class="tag-editor-advanced-wrap">
+          <summary>Advanced compatibility fields <span class="settings-hint">Legacy custom fields and uncommon metadata are preserved here for power users.</span></summary>
+          <label>Raw custom tag map<textarea id="tag-advanced" rows="4" spellcheck="false"></textarea></label>
+        </details>
+        <div class="tag-actions"><button id="tag-cancel" class="sidebar-add">Cancel</button><button id="tag-save" class="sidebar-add">Save</button></div>
+        <div id="tag-status" class="settings-hint"></div>
+      </div>
+    </div>
+  </div>
+
+
+<div id="cover-picker-modal" class="modal-overlay hidden">
+    <div class="modal glass cover-picker-modal">
+      <div class="modal-header cover-picker-header">
+        <div class="cover-picker-heading">
+          <div class="cover-picker-kicker">ALBUM ARTWORK</div>
+          <h3 id="cover-picker-title">Choose artwork</h3>
+          <div id="cover-picker-query" class="cover-picker-subtitle"></div>
+        </div>
+        <button class="modal-close" id="cover-picker-close" data-close type="button" aria-label="Close">✕</button>
+      </div>
+      <div class="cover-picker-toolbar">
+        <div class="cover-picker-scope" id="cover-picker-scope">This song</div>
+        <div class="cover-picker-source"><span class="cover-source-dot"></span><span id="cover-picker-source-label">MusicBrainz + iTunes</span></div>
+        <div class="cover-picker-toolbar-actions">
+          <button id="cover-picker-search" class="cover-picker-tool" type="button">↻ Search again</button>
+          <button id="cover-picker-local" class="cover-picker-tool" type="button">＋ Choose file</button>
+          <button id="cover-picker-paste" class="cover-picker-tool" type="button">Paste</button>
+        </div>
+      </div>
+      <div class="cover-picker-body">
+        <div class="cover-picker-status-row">
+          <div id="cover-picker-status" class="cover-picker-status">Searching for high-quality album covers…</div>
+          <div class="cover-picker-hint">Select an option to preview the full-resolution artwork</div>
+        </div>
+        <div class="cover-picker-content">
+          <div id="cover-picker-results" class="cover-picker-results"></div>
+          <aside class="cover-picker-preview" id="cover-picker-preview-panel">
+            <div class="cover-picker-preview-label">PREVIEW</div>
+            <div class="cover-picker-preview-image-wrap"><img id="cover-picker-preview-image" alt="" /></div>
+            <div class="cover-picker-preview-info">
+              <strong id="cover-picker-preview-title">Select artwork</strong>
+              <span id="cover-picker-preview-artist"></span>
+              <small id="cover-picker-preview-meta">No artwork selected</small>
+            </div>
+            <button id="cover-picker-apply" class="cover-picker-apply" type="button" disabled>Apply selected cover</button>
+          </aside>
+        </div>
+        <div class="cover-picker-footer">
+          <div class="cover-picker-selection" id="cover-picker-selection">No artwork selected</div>
+          <button id="cover-picker-cancel" class="sidebar-add" type="button">Cancel</button>
+        </div>
+      </div>
+    </div>
+  </div>
+
+  <audio id="audio" preload="metadata"></audio>
+
+  <script src="icons.js"></script>
+  <script src="colorExtract.js"></script>
+  <script src="renderer.js"></script>
+</body>
+</html>

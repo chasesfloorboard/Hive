@@ -1,0 +1,16 @@
+{
+  "hooks": {
+    "Stop": [
+      {
+        "hooks": [
+          {
+            "type": "command",
+            "command": "cd \"$CLAUDE_PROJECT_DIR\" && bash scripts/backup-check.sh",
+            "timeout": 60,
+            "statusMessage": "Checking for build backup..."
+          }
+        ]
+      }
+    ]
+  }
+}

@@ -1,0 +1,15 @@
+BeehiveMusicBrainz 2.24.10 — Deep Clean / Artwork Batch Stability
+
+Fixes:
+- Artwork batch writes now hold a single filesystem-watcher suppression window for the entire batch, rather than expiring after 10 seconds per file. This prevents Beehive's own atomic tag rewrites from triggering repeated library scans and full 29k-track renderer rebuilds.
+- Artwork reconciliation now updates library indexes without immediately repainting the entire active view, then performs one deferred/coalesced paint.
+- MPRIS metadata is deduplicated. Repeated 5-second playback updates no longer rebuild/emit the full metadata dictionary unless track metadata, artwork, or playback status actually changed.
+- Removed noisy repeated MPRIS artwork logging.
+- Current-track artwork synchronization explicitly prefers Cover (Front) instead of relying on Mutagen's picture array order.
+- Crash, scan, and startup diagnostic logs are now stored outside the application/config directory in ~/Logs/BeehiveMusicBrainz/.
+- Existing seamless-playback artwork protection, multi-picture APIC handling, and unrelated-tag verification remain intact.
+
+Safety:
+- No audio files are deleted by these changes.
+- GStreamer playback code was not changed.
+- Metadata writes remain serialized through the existing background queue.

@@ -1,0 +1,8 @@
+BeehiveMusicBrainz 2.24.5
+
+Artwork editor continuity fix:
+- Right-click an embedded artwork thumbnail for full-size view, copy, save, or remove.
+- Remove Picture acts on the selected embedded picture only.
+- Removing one picture no longer clears other pictures from the live queue.
+- Explicit artwork deletion does not trigger automatic missing-cover replacement.
+- Artwork deletion reconciles against disk without reintroducing deleted artwork.

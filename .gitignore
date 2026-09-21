@@ -1,0 +1,26 @@
+# Dependencies and downloaded runtimes
+node_modules/
+package-lock.json.tmp*
+
+# Build output
+dist/
+*.AppImage
+*.deb
+
+# Personal/runtime data -- never belongs in source control
+logs/
+backups/
+Hive Wrapped Data/
+User Data Backup/
+MusicBeeWrapped/
+.beehive-installed
+BUILD
+
+# Editor/OS noise
+.DS_Store
+*.swp
+
+# Local env/secrets
+.env
+*.pem
+*.key

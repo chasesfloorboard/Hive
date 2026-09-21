@@ -1,0 +1,20 @@
+const fs = require('fs');
+const path = require('path');
+const root = path.resolve(__dirname, '..');
+const css = fs.readFileSync(path.join(root, 'app/renderer/styles.css'), 'utf8');
+const js = fs.readFileSync(path.join(root, 'app/renderer/renderer.js'), 'utf8');
+const icons = fs.readFileSync(path.join(root, 'app/renderer/icons.js'), 'utf8');
+const index = fs.readFileSync(path.join(root, 'app/renderer/index.html'), 'utf8');
+function ok(name, condition) { if (!condition) throw new Error(name); console.log(`PASS: ${name}`); }
+ok('themed search stays in normal flow with the navigation row', /html\.theme-window-bar-enabled \.topbar-right\s*\{[\s\S]*?position:\s*relative;[\s\S]*?align-self:\s*center;/.test(css));
+ok('topbar reserves space for the visible search field', /html\.theme-window-bar-enabled \.topbar-app-row\s*\{[\s\S]*?padding-right: 250px;/.test(css));
+ok('no-glass main keeps a real accent-tinted outline', /#main\.player-glass-transparent[\s\S]*?border:1px solid color-mix\(in srgb,var\(--accent\) 24%,var\(--border\)\) !important/.test(css));
+ok('no-glass playbar keeps a real accent-tinted outline', /#main\.player-glass-transparent[\s\S]*?#topbar\.player-glass-transparent[\s\S]*?border:1px solid color-mix\(in srgb,var\(--accent\) 24%,var\(--border\)\) !important/.test(css));
+ok('track Rating has a star icon', /\{label:'Rating',icon:'star',submenu:\[/.test(js));
+ok('track delete action has a trash icon', /Delete files from disk.*?icon:'trash'/.test(js));
+ok('album delete action has a trash icon', /Delete files from disk.*?icon:'trash'.*?deleteTracksFromDisk\(albumTracks\)/.test(js));
+ok('lyrics menu uses the same icon system', /Show highlighted lyric', icon:'lyrics'/.test(js) && /Alignment', icon:'align'/.test(js));
+ok('star, trash, lyrics, and alignment SVG icons exist', /star:\s*`<svg/.test(icons) && /trash:\s*`<svg/.test(icons) && /lyrics:\s*`<svg/.test(icons) && /align:\s*`<svg/.test(icons));
+ok('light theme forces dark duration text across track surfaces', /html\[data-hive-theme="light"\] \.song-row \.s-dur,[\s\S]*?color:#252a31 !important/.test(css));
+ok('library search input remains present in the topbar', /<input id="search-input" type="text" placeholder="Search library…"/.test(index));
+console.log('Build 247 context/glass/topbar regression checks passed.');

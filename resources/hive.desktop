@@ -1,0 +1,8 @@
+[Desktop Entry]
+Name=Hive
+Icon=hive
+Type=Application
+Categories=Audio;AudioVideo;
+Exec=__HIVE_EXEC__
+Terminal=false
+StartupNotify=true

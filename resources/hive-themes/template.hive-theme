@@ -1,0 +1,6 @@
+{
+  "format": "hive-theme",
+  "version": 1,
+  "name": "My Hive Theme",
+  "css": ":root {\n  --accent: #7dd3fc;\n  --bg: #0a0a0d;\n  --panel: rgba(22, 22, 28, 0.55);\n  --text: #ece9f2;\n  --text-dim: #9a97a8;\n}\n"
+}

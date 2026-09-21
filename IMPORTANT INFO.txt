@@ -1,0 +1,1328 @@
+BEEHIVE — IMPORTANT PROJECT CONTEXT / DO NOT REGRESS
+=========================================================
+
+CURRENT RELEASE STATUS (2026-09-12)
+-----------------------------------
+The current package/release-candidate version is `1.0.0-rc.1`, built from the
+preserved `0.9.0-beta.9` baseline. Historical references below to beta.2 and
+the legacy 2.x build labels are retained for context only; they are not current
+version declarations. Stable `1.0.0` still requires the documented runtime,
+packaging, metadata, and playback verification gates.
+
+Purpose
+-------
+BeehiveMusicBrainz / Beehive is an offline-first, serious music-library manager and
+player. It should feel like a modern streaming app while retaining the information
+density and control of a professional music manager.
+
+Current foundation
+------------------
+The 2.x line is the established foundation. Changes should be incremental and
+surgical. Do not rewrite working subsystems just because a new feature is being added.
+
+ABSOLUTE PLAYBACK INVARIANTS
+----------------------------
+GStreamer is the authoritative native playback engine.
+
+1. NEVER casually replace, bypass, or rewrite the GStreamer playback path.
+2. Scrubbing MUST remain reliable:
+   - dragging updates the visual position;
+   - the seek is committed on release;
+   - releasing the scrubber MUST leave GStreamer in the correct PLAYING/PAUSED state;
+   - pointer-up, pointer-cancel, lost-pointer-capture, blur, etc. must not strand the
+     pipeline in a broken/transient state.
+3. GStreamer pause/resume must remain reliable.
+4. Preserve the 10 ms anti-pop transport ramp. It exists to prevent audible
+   click/pop when starting/stopping. Do not remove it as a shortcut.
+5. Do not restart/reload the GStreamer pipeline for UI-only operations.
+   In particular, shuffle/unshuffle MUST NOT stop and reload the current track.
+6. The current track must never play through multiple simultaneous GStreamer pipelines.
+   There must be one authoritative playback pipeline.
+7. Closing Beehive must cleanly terminate its GStreamer helper/process so reopening
+   cannot leave an old native pipeline playing underneath a new one.
+8. Session playback position must be persisted from GStreamer/native position when
+   GStreamer is active. Never overwrite a good native position with an unrelated
+   renderer/Web Audio position.
+9. On reopening, restore the saved track and position accurately. Do not jump to the
+   end of the song.
+10. Playback position/state synchronization must be authoritative: renderer UI follows
+    native GStreamer events instead of inventing state that contradicts them.
+11. Shuffle changes should only change queue/next-track behavior. They must not disturb
+    the current audio transport.
+12. Any future playback change requires explicit regression checks for:
+    play -> pause -> play
+    play -> scrub -> release
+    pause -> scrub -> release
+    shuffle -> unshuffle while playing
+    next/previous while playing
+    close -> reopen -> position restore
+    close -> reopen -> ensure no old audio continues
+    rapid play/pause
+    rapid seek
+    queue replacement while playing
+
+STARTUP / PERFORMANCE INVARIANTS
+---------------------------------
+The first seconds after opening matter.
+
+1. The window/UI should become interactive as early as possible.
+2. Do not make the initial UI wait on a full 30k-file scan, Love refresh,
+   artwork work, database reconciliation, Discord setup, or other heavy work.
+3. Give Chromium/Electron multiple paint/event-loop opportunities before applying
+   huge library data structures.
+4. Restore tiny critical session state first; defer heavy work.
+5. Heavy metadata/artwork/network operations must remain asynchronous/background.
+6. Discord artwork resolution must NEVER block or disrupt audio playback.
+7. GPU acceleration is a user setting and must remain independent from GStreamer.
+   The user may run with GPU acceleration disabled.
+8. Do not introduce startup work that makes the UI visibly lag or prevents immediate
+   resize/maximize/fullscreen interaction.
+9. Startup debug mode is available with `./run.sh --startup-debug` (or `BEEHIVE_STARTUP_DEBUG=1`). Its milestones, event-loop stalls, Electron process metrics, and tracked child-process lifetimes are written into the current `logs/session-*.txt` file alongside normal main/renderer diagnostics. This mode is diagnostic only and must not alter playback behavior.
+10. The startup status indicator is non-blocking (`pointer-events:none`): it communicates background startup work without preventing the UI from accepting input.
+11. Direct Beehive Discord Rich Presence must not resend unchanged activity metadata on playback-position ticks. Discord activity timestamps handle normal elapsed-time progression; only track changes, pause/resume transitions, settings changes, or explicit forced syncs should resend the full activity. Do not repeatedly upload/re-resolve artwork when nothing relevant changed.
+12. Normal unchanged incremental startup reconciliation must not send the entire cached library back to the renderer. Return a bounded delta (changed/new tracks plus removed paths) because the renderer already owns the cached snapshot. A full authoritative rescan may still return the complete renderer payload.
+13. If an incremental scan finds no changed/removed files, skip rewriting the large library JSON/gzip cache. This avoids redundant serialization/compression and a temporary heap spike. Love reconciliation remains cache-dirty when it actually updates cached Love state.
+
+LIBRARY / DATABASE
+------------------
+TRUE COLD START / CACHE RESET
+-----------------------------
+1. Hive 0.9.0-beta.6 performs one deliberate cold-start cache reset migration. It runs before the renderer can load the old library snapshot.
+2. The reset removes only Hive-derived library cache state: `library.json`, `library.json.gz`, cached embedded artwork, and SQLite cached track records.
+3. It MUST NOT remove music files, configured folders, playlists, playback state, or user settings.
+4. The migration is one-time and guarded by `libraryColdStartResetVersion`; a successful reset marks the migration complete.
+5. Settings exposes a one-shot “Start next launch with a fresh library scan” option using `clearLibraryCacheOnNextLaunch`. It automatically turns off after the reset succeeds.
+6. After a cold reset, the first startup reconciliation must scan the configured music files as a genuinely fresh library and stream Love/Favorites discoveries as they arrive.
+
+1. Persistent SQLite cache/database is the durable library foundation.
+2. Incremental scans are preferred. Do not unnecessarily re-read every file on every
+   startup.
+3. Startup reconciliation repairs missing/stale state without requiring manual Refresh.
+4. Never create temp artwork/metadata files inside the music library where the scanner
+   can discover them as tracks. Temporary files belong in application temp space.
+5. Metadata jobs are durable:
+   - journal the job in SQLite BEFORE beginning a metadata write;
+   - retry interrupted/failed jobs;
+   - recover them on next startup;
+   - successful jobs are removed from the recovery journal.
+6. Generic tag jobs are journaled/retried. Love writes have additional read-back
+   verification.
+7. Future metadata transaction/undo work must preserve crash safety.
+8. External file/tag changes should eventually invalidate cached metadata precisely.
+
+9. The library record keeps a native-tag inventory (`nativeTags`) in addition to the
+   normalized/common fields and backward-compatible `customTags`. Native fields are
+   keyed by their actual native identifier (TXXX fields include their description) and
+   multi-valued fields are preserved. A metadata-scan version migration forces stale
+   records through the normal scanner once so previously cached tracks learn the full
+   native-tag inventory.
+10. `music-metadata` v11 is ESM-first and does not expose a CommonJS `require` target through package exports. The unpacked scanner worker MUST load its `lib/index.js` entry relative to `__dirname` rather than using `createRequire().resolve('music-metadata')`; the latter fails under Electron with `No "exports" main defined`. The metadata scan version is bumped when this loading behavior changes so cached fallback/Unknown records are automatically reprocessed once.
+11. Successful scan results are streamed to the renderer as individual `library:scanTrack`
+    events. Favorites may therefore grow during a long scan as embedded Love values are
+    recognized, instead of waiting for the entire 30k+ library scan to finish.
+11. Progressive `library:scanTrack` events and scan responses must stay bounded: do not IPC-serialize the lossless native-tag inventory into the renderer's full library object graph. Full scanner records are persisted to SQLite in bounded batches; the JSON startup cache and renderer receive normalized fields plus the compatibility custom tags and bounded lyrics needed for views, and reread native tags when the tag editor opens. The renderer must update progressive tracks through its path index rather than a linear search, preserving responsiveness for 30k+ libraries.
+
+BUILD 149 LOVE / PLAYBACK SAFETY
+--------------------------------
+Love/Unlove metadata writes must never replace the file currently owned by GStreamer.
+The playback-protection boundary is explicit: when a path is active, metadata work waits
+for the renderer/main transport to release that path. There is no timeout that permits a
+write to proceed while the path is still protected. Star Favorites remains a real Smart/
+Auto Playlist; its dynamic membership must not issue GStreamer transport commands or
+rebuild the active queue.
+
+FAVORITES / LOVE AUTHORITY
+--------------------------
+Embedded file metadata is the source of truth for Love/Favorites.
+
+Recognized Love values include:
+L, Y, YES, TRUE, 1, LOVE, LOVED, FAVORITE, FAVOURITE.
+
+Canonical Beehive write:
+LOVE RATING=L
+
+Format behavior established:
+- MP3: MusicBee-style ID3 TXXX LOVE RATING / LOVE.
+- FLAC: LOVE RATING.
+- M4A/MP4: iTunes freeform LOVE RATING.
+- Compatibility reads also accept MusicBee/iTunes spellings such as LOVERATING and MUSICBEE/LOVE RATING; these are read as Love but Beehive continues to write the canonical LOVE RATING=L representation.
+- Other supported formats: ffmpeg metadata LOVE RATING.
+
+Favorites is dynamically derived from cached track.loved values.
+
+Correct architecture:
+1. A successful full/manual Favorites refresh establishes authoritative Love state.
+2. Record what was successfully checked, including file mtime/size.
+3. New files and files whose metadata-relevant mtime/size changes should be checked
+   incrementally.
+4. A user clicking Love on one track writes and verifies that file; it does NOT require
+   a full-library Love refresh.
+5. Keep a manual "Refresh Favorites from files" button in Settings.
+6. Failed reads must NOT be marked successfully checked; preserve cached state and retry.
+7. Do not make a full Favorites refresh mandatory on every restart once files have been
+   successfully checked.
+8. Do not confuse an M3U Favorites export with embedded Love authority.
+
+PLAYLISTS / SELECTION SAFETY
+----------------------------
+1. Delete/Del must NEVER delete music files from disk when the user is simply managing
+   the queue or playlist.
+2. If the queue is selected, Delete clears/removes queue entries only.
+3. If tracks are selected from a queue, Delete removes them from the queue only.
+4. Normal playlists support "Remove tracks from playlist" as a separate yellow action,
+   immediately above the red disk-delete action.
+5. Removing tracks from a playlist uses one confirmation explaining it cannot be undone,
+   then writes the updated playlist file.
+6. Favorites is a derived collection. Do NOT offer "Remove tracks from playlist" there
+   as a disguised way of unfavoriting.
+7. Normal playlist display preference is saved independently:
+   Albums / Tracks / Artists.
+8. Sidebar collections have independent display state. Changing Favorites to Tracks
+   must not change Music to Tracks.
+9. Sidebar double-click behavior should play the collection using the same playback
+   semantics as Favorites, including shuffle behavior.
+10. Sidebar collections can be exported as M3U/M3U8.
+11. Ctrl+A and multi-selection behavior must remain intact.
+12. Album selection supports Ctrl/Cmd toggle, Shift range, and drag-to-queue.
+13. Right-click Search artist must not unexpectedly expand an album.
+
+TAG EDITOR INVARIANTS
+---------------------
+MusicBee-style multi-track editing:
+1. If selected tracks have different values, show the ghost/placeholder:
+   "Multiple Values"
+2. Untouched fields preserve each file's existing value.
+3. Typing a new value replaces that field across all selected tracks.
+4. Multi-file writes go through durable metadata jobs rather than ad-hoc renderer writes.
+5. Artwork operations must preserve the existing established artwork behavior.
+
+ARTWORK
+-------
+1. Embedded artwork should be preferred when present.
+2. Automatic artwork lookup for albums without embedded covers is memory-only and must
+   not fight user-selected embedded artwork.
+3. Discord embedded/local artwork cannot simply be put into a normal local HTTP server.
+4. The intended Discord architecture is a temporary externally reachable authenticated
+   cover proxy modeled on Music Presence/loon:
+   - outbound connection;
+   - no inbound port on the user's machine;
+   - random/unforgeable temporary URL;
+   - HMAC/authentication;
+   - short-lived/temporary resource;
+   - request/rate limits;
+   - small image-size limit;
+   - resource destroyed when no longer needed.
+5. Discord artwork resolution order:
+   embedded/local artwork -> temporary cover proxy -> MusicBrainz/Cover Art Archive
+   external artwork -> optional configured Discord fallback.
+6. Artwork failure MUST be observable in console diagnostics.
+   Never silently swallow the useful error.
+7. Failed artwork resolution must not permanently poison the cache.
+8. Artwork extraction/resolution must be cached per track and must not run repeatedly
+   on every 5-second Discord progress update.
+9. Discord artwork/network activity must never block GStreamer.
+
+DISCORD RICH PRESENCE
+---------------------
+1. Discord Rich Presence is Beta Lab functionality until proven stable.
+2. Activity should update from the current track and playback state.
+3. Progress timestamps may be used when enabled.
+4. External HTTPS image URLs are supported by Discord Rich Presence.
+5. If embedded artwork proxying fails, the code MUST visibly attempt the fallback chain.
+6. Log each stage:
+   artwork resolution started
+   embedded artwork found/not found
+   proxy connection/handshake result
+   proxy registration result
+   fallback attempt/result
+   final large_image value
+   Discord activity update result/error
+7. Never let Discord networking interfere with playback.
+
+UI / SIDEBAR STATE
+------------------
+Modern streaming-app presentation + serious music-library information density.
+Calm, friendly, technical, restrained. No gimmicks, quips, fake personality, or
+gamification.
+
+Beehive Wrapped:
+- calm "your music journal" presentation;
+- total listening time, tracks, artists, albums;
+- #1 artist/song/album;
+- loved/favorite tracks;
+- genres;
+- monthly listening;
+- time of day;
+- rediscoveries;
+- comfort albums;
+- biggest listening month;
+- continuously collect the necessary stats.
+
+BETA LAB
+--------
+Beta Lab is a sandbox for features requiring specific UI/testing before production.
+It should remain clearly separated from stable production behavior.
+
+Existing Beta Lab areas/features include:
+- Library Health
+- Duplicate detector
+- Metadata transaction/undo
+- External metadata changes
+- MusicBrainz matching
+- AcoustID
+- Professional tag diff
+- Love/rating authority
+- Crash-resumable retagging
+- Statistics
+- Format matrix
+- Smart playlist laboratory
+- Cleanup assistant
+- ReplayGain/R128
+- Gapless playback matrix
+- Playback regression guard
+- Metadata job journal
+- DB migration tests
+- Regression suite
+- Failure injection
+- Community docs
+- Distribution/CI
+- Beehive Wrapped
+- Windows readiness (optional/later)
+
+COMMUNITY-GRADE ROADMAP
+-----------------------
+P0 Reliability:
+1. Validate playback/session restore.
+2. Exercise interrupted album retag recovery.
+3. Automated metadata regression tests.
+4. Automated playback regression tests.
+5. Database migration tests.
+6. External file/tag change tests.
+
+P1 Professional music management:
+7. MusicBrainz album/track matching.
+8. AcoustID fingerprint identification.
+9. Library Health checker.
+10. ReplayGain/R128.
+11. Better smart-playlist rules.
+12. Duplicate detection.
+
+P2 Polish:
+13. Statistics.
+14. Better search/filtering.
+15. More keyboard shortcuts.
+16. Accessibility.
+17. Documentation.
+18. Packaging/distribution.
+
+P3 Expansion:
+19. Windows only if easy to maintain.
+20. More integrations.
+21. Android roadmap dropped.
+
+KNOWN HISTORICAL REGRESSIONS — DO NOT REINTRODUCE
+--------------------------------------------------
+- 1.75: temp artwork files inside Music were scanned as tracks, causing ~29,900-track
+  ghost scan. Keep application temp outside the music library.
+- 1.81: duplicate track:writeTags IPC registration crashed/blocked later IPC handlers.
+  Ensure unique IPC registrations.
+- 1.82: Promise.all startup dependency caused one failure to suppress scan scheduling;
+  Promise.allSettled was used.
+- 1.85: inline album expansion could leave two albums expanded.
+- 1.86: pause/resume race caused by waiting for a 10 ms fade before changing native
+  GStreamer state. The fix kept the 10 ms anti-pop ramp but made native state transition
+  authoritative and immediate.
+- 1.87: Recently Added cutoff could predate first authoritative scan. Initial baseline
+  must represent the existing library, while later newly discovered files qualify.
+- 1.88: Playlist Explorer controls were bound after an empty-state early return.
+- 1.92: playlist display preference was ignored because row opening forced Albums.
+- 1.93/1.94: saved feedback was moved inline so it did not hide/shift the popup.
+- 1.95/1.96: Favorites removal was mistakenly treated as playlist removal; Favorites
+  must remain derived from Love.
+- 1.99/2.00: sidebar view state leaked into Music. Each sidebar collection needs its
+  own independent state.
+- 2.01/2.02: cached Love state could be stale even when embedded LOVE RATING was correct.
+  The authoritative file read/refresh architecture was introduced.
+- 2.07/2.08: Discord embedded artwork required a temporary external proxy; repeated
+  extraction was also too expensive. Cache artwork resolution per track.
+- 2.09: shuffle/unshuffle used to STOP/LOAD the GStreamer pipeline and caused playback
+  stutter. Never bring that behavior back.
+- Recent startup/session work: do not allow startup work to monopolize the renderer or
+  overwrite GStreamer-native session position.
+- Recent playback regression: multiple simultaneous songs are unacceptable; closing the
+  app must terminate its native playback helper/pipeline cleanly.
+
+DEVELOPMENT RULES
+-----------------
+1. Before modifying anything, identify which subsystem the change touches.
+2. If it is not necessary to touch GStreamer, DO NOT TOUCH GStreamer.
+3. If a change could affect playback, test/inspect all playback invariants above before
+   calling it finished.
+4. Do not claim desktop runtime testing unless it actually happened.
+5. Static checks (node --check, ZIP integrity, etc.) are useful but do not substitute for
+   runtime playback testing.
+6. Prefer small isolated changes over broad refactors.
+7. Preserve established behavior unless the user explicitly requests a behavior change.
+8. When adding network functionality, fail safely and log useful diagnostics.
+9. When adding metadata functionality, preserve crash recovery and disk/file safety.
+10. If an old note conflicts with a newer explicit user decision, the newer decision wins.
+11. Keep this document updated when a new hard requirement or regression is discovered.
+
+LATEST 2.19 DISCORD PROXY HARDENING (2026-09-11)
+-------------------------------------------------
+Research against the current loon specification and Music Presence source confirms
+the production proxy uses the service base https://proxy.musicpresence.io/v0 and
+therefore its WebSocket endpoint is /v0/ws. The loon protocol requires a standard
+RFC 6455 upgrade followed by a server-first Hello protobuf message.
+
+2.19 hardens the Beehive client without changing the proxy architecture:
+- Node HTTPS upgrade handling replaces the hand-parsed HTTP response boundary.
+- The client sends Origin, Cache-Control, Pragma, User-Agent, and standard WebSocket
+  upgrade headers.
+- HTTP 101, Upgrade: websocket, and Sec-WebSocket-Accept are validated.
+- Rejection diagnostics include HTTP status and a short response body when available.
+- DNS addresses are resolved explicitly and IPv4 is tried before IPv6, with remaining
+  addresses attempted if a connection fails. This directly addresses the previously
+  observed IPv4 timeout and IPv6 ENETUNREACH failures.
+- Loon protobuf behavior, HMAC URL generation, temporary resources, request limits,
+  RequestClosed acknowledgement, fallback behavior, and GStreamer isolation remain.
+
+The public Music Presence ecosystem uses a battle-tested WebSocket client implementation
+and current logs show successful proxy connections at https://proxy.musicpresence.io/v0.
+Beehive remains dependency-light and uses Node's HTTPS upgrade support rather than
+introducing a new native WebSocket library solely for this beta integration.
+
+No inbound router port is required. Discord artwork networking remains asynchronous
+and must never interfere with GStreamer.
+
+2.19 TESTING LIMITATION
+-----------------------
+The public proxy cannot be live-tested from this build environment because outbound
+DNS/network access is unavailable. A local TLS/WebSocket mock validates the RFC 6455
+upgrade handling and loon Hello/request response path.
+
+CURRENT TEST PRIORITY
+---------------------
+Before adding more flashy features, stabilize:
+- single-pipeline GStreamer playback;
+- scrub -> release -> playback;
+- close/reopen -> exact position restoration;
+- no audio from a previous Beehive instance;
+- smooth startup/UI responsiveness;
+- Discord artwork fallback/diagnostics;
+- Favorites incremental refresh behavior.
+
+The goal is a community-grade music manager, not a feature pile. Stability of the player,
+safe metadata operations, and predictable library state take priority over new features.
+
+LATEST 2.15 GRAPHICS/VSync FINDING (2026-09-11)
+-----------------------------------------------
+The Linux/Electron startup console repeatedly reported:
+  gl_surface_presentation_helper.cc(260) GetVSyncParametersIfAvailable() failed
+
+The target machine uses a 240 Hz display and the failures correlate with startup
+lag. Beehive 2.15 disables Chromium GPU VSync with the official
+--disable-gpu-vsync command-line switch. This is a presentation/compositor
+change only; it does not modify GStreamer or native audio transport.
+
+Do NOT use VSync changes as a reason to alter GStreamer playback. If startup
+lag improves, retain the VSync workaround and continue treating Chromium
+graphics/compositor and GStreamer as separate subsystems.
+
+LATEST 2.14 DISCORD PROXY FINDING (2026-09-11)
+-----------------------------------------------
+The 2.13/2.12 Discord cover proxy implementation was hand-implementing the loon
+protocol incorrectly in two important ways:
+
+1. The websocket endpoint was being requested as /v0/ws. The loon protocol specifies
+   the websocket endpoint as /ws. The HTTP base URL is supplied by the server's Hello
+   message and must be used for generated image URLs.
+2. The ServerMessage field for RequestClosed is field 4, while the actual Close message
+   is field 5. These must not be conflated.
+
+The user's diagnostic output proved embedded extraction is working:
+  [Discord] Embedded artwork found: 33106 bytes
+
+The failures were after extraction:
+  ETIMEDOUT / ENETUNREACH while connecting to the proxy
+  cover proxy websocket upgrade rejected
+
+2.14 fixes the endpoint and message parsing and adds explicit RequestClosed handling.
+It also guarantees that a proxy registration failure falls through to the external
+MusicBrainz/Cover Art Archive fallback instead of escaping the artwork resolver and
+silently returning no artwork.
+
+Do NOT interpret the above proxy failure as an embedded-artwork problem. Embedded
+art extraction is already confirmed working.
+
+ROUTER / PORT-FORWARDING RULE
+-----------------------------
+Beehive's intended loon-style Discord artwork architecture does NOT require the user
+to open a port or configure router port forwarding. Beehive makes an outbound secure
+WebSocket connection to the public proxy. The proxy is what Discord reaches over HTTPS
+and forwards an authenticated request back through the already-established outbound
+connection. Do not tell the user to expose Beehive's machine directly to the Internet.
+
+If the public proxy is unavailable from the user's network, the application should
+fall back to MusicBrainz/Cover Art Archive or the configured Discord fallback rather
+than asking the user to open an inbound router port.
+
+PRE-FINAL-BUILD CHECKLIST
+-------------------------
+Before producing any future Beehive build:
+1. Read BEEHIVE_IMPORTANT_INFO_CONSOLIDATED.txt in full.
+2. Check the requested change against the ABSOLUTE PLAYBACK INVARIANTS.
+3. Check for historical regressions relevant to the subsystem.
+4. Run static syntax/integrity checks on every modified JS/Python source and the ZIP.
+5. If the change touches GStreamer, inspect the complete play/pause/seek lifecycle.
+6. If the change touches Discord/artwork, verify the fallback chain and diagnostics.
+7. Update this document with any newly discovered invariant or regression before finalizing.
+8. Do not claim runtime/desktop testing unless it actually occurred.
+
+LATEST 2.18 DISCORD PROXY ENDPOINT FINDING (2026-09-11)
+--------------------------------------------------------
+2.17 still used the loon protocol correctly at the protobuf/message level, but the
+WebSocket HTTP handshake path was wrong for the production Music Presence proxy.
+
+The production proxy identifies its HTTP base URL as:
+  https://proxy.musicpresence.io/v0
+
+The loon protocol specifies the WebSocket endpoint as /ws relative to the server's
+configured base/service path. Therefore this production deployment requires:
+  GET /v0/ws
+
+Beehive 2.17 incorrectly sent:
+  GET /ws
+
+That explains the observed "cover proxy websocket upgrade rejected" failure even
+though embedded artwork extraction itself was successful.
+
+2.18 fixes this by:
+- connecting to /v0/ws;
+- keeping the generated image URL under the server-supplied https://proxy.musicpresence.io/v0 base;
+- validating that the Hello base URL remains HTTPS and on proxy.musicpresence.io;
+- adding a normal User-Agent to the WebSocket upgrade request;
+- answering server WebSocket ping frames with pong and sending a lightweight client
+  ping every 25 seconds while connected;
+- preserving the existing HMAC URL generation, protobuf protocol, size/type limits,
+  RequestClosed acknowledgement, short-lived resource model, and MusicBrainz/CAA fallback.
+
+The public Discord documentation confirms that Rich Presence accepts publicly
+reachable external image URLs. The loon specification confirms the /ws protocol
+endpoint, binary protobuf framing, Hello-first handshake, HMAC URL construction,
+and RequestClosed -> CloseResponse behavior.
+
+This is a Discord/proxy-only change. GStreamer is untouched.
+No inbound router port forwarding is required.
+
+2.18 VERIFICATION LIMITATION
+----------------------------
+Static JS syntax and archive integrity can be checked locally. Live connection to
+proxy.musicpresence.io cannot be claimed as tested from this build environment.
+The user's desktop should be used to verify that the new /v0/ws handshake succeeds
+and that Discord displays the embedded cover rather than the external fallback.
+
+======================================================================
+LATEST 2.20 DISCORD PROXY TLS CRASH FIX
+======================================================================
+
+User runtime testing of 2.19 exposed a real bug in the proxy transport before
+we could reach the server: Node threw an uncaught
+"Cannot read properties of null (reading 'setServername')" from its HTTPS Agent /
+TLS handoff while Beehive was attempting the custom resolved-IP request.
+The same log also showed the expected IPv6 ENETUNREACH failure for the proxy host.
+
+2.20 removes that risky https.request()+custom lookup path entirely. The proxy
+now resolves the host, prefers IPv4, and uses direct tls.connect() to each
+resolved address with servername=proxy.musicpresence.io for SNI and certificate
+validation. The WebSocket HTTP upgrade is written and parsed directly over that
+TLS socket, with strict 101 / Upgrade / Sec-WebSocket-Accept validation.
+Synchronous TLS setup failures are caught so proxy problems cannot crash the
+main process. IPv6 is still attempted after IPv4 when available, but an
+unreachable IPv6 route simply advances to the next address.
+
+The production deployment path remains /v0/ws based on the observed
+https://proxy.musicpresence.io/v0 base URL and loon's /ws-relative service
+endpoint model. This is still not live-verified from the build environment.
+
+GStreamer was not changed. The 2.20 GStreamer source hash is exactly the same
+as the established stable build:
+744e8ef099e871c617e236c1b85326d9a000503a81d3c83a6b4244765490034c
+
+Before finalizing this build, all JS files were syntax-checked and the ZIP was
+integrity-tested. The public proxy itself still requires runtime testing on the
+user's machine because this environment cannot resolve/connect to it.
+
+======================================================================
+BUILD 193 RAPID VOLUME SMOOTHING
+======================================================================
+
+User report: rapidly dragging the local volume slider back and forth still
+produced an audible pop even after Build 188 coalesced renderer slider events.
+The cause was the native helper restarting its 10 ms transport-style ramp for
+each VOLUME command; the helper command loop receives those commands about
+every 20 ms, so the sink was repeatedly fading toward a succession of nearby
+targets.
+
+Build 193 rule:
+- volume_target remains the user's requested volume.
+- User volume movement uses one persistent native smoothing loop with a 5 ms
+  update interval and approximately 38 ms exponential response.
+- Changing the slider target never restarts a transport ramp.
+- The protected 10 ms ramp remains exclusively for PLAY/PAUSE/track-transition
+  transport safety.
+- User-volume smoothing is cancelled during transport transitions and native
+  shutdown/error paths so the two mechanisms cannot fight over the sink.
+- GStreamer remains the sole local playback owner.
+
+======================================================================
+LATEST 2.21 PLAYBACK RAMP FIX + LOON/LIBDATACHANNEL TRANSPORT
+======================================================================
+
+Playback regression discovered by user:
+- Fresh double-click playback could expose the first samples at full volume,
+  causing an audible pop.
+- Pause -> Play could remain silent because the PAUSE fade reused the same
+  volume_target variable as the user's desired volume and overwrote it with 0.
+
+2.21 playback rule:
+- volume_target is ONLY the user's requested playback volume.
+- Transport ramps never overwrite volume_target.
+- PAUSE reads the actual GStreamer sink volume, ramps it to zero over 10 ms,
+  then enters PAUSED.
+- PLAY enters PLAYING immediately and ramps from the actual sink volume to
+  volume_target over the same 10 ms.
+- Fresh LOAD sends RAMPSTART, which sets the sink to zero without changing
+  volume_target, then PLAY ramps to the user's selected volume. This means
+  double-clicking a song also receives the 10 ms ramp-up.
+- Rapid pause/play cancels the in-flight ramp safely.
+- GStreamer remains the sole playback owner and its source must not be replaced
+  by renderer/Web Audio logic.
+
+Discord/cover proxy transport direction:
+- The loon protocol itself remains the application protocol: server-first Hello,
+  protobuf messages, authenticated HMAC URLs, request/response streaming,
+  RequestClosed acknowledgement, and temporary registered resources.
+- 2.21 adds node-datachannel/libdatachannel as the native WebSocket transport
+  direction rather than continuing to expand the hand-written TLS/WebSocket
+  transport. node-datachannel provides an Electron-compatible WebSocket binding
+  backed by libdatachannel.
+- The native transport is intended to handle WebSocket/TLS framing and keepalive;
+  Beehive's code remains responsible for loon protobuf/HMAC/resource semantics.
+- Do not describe IPv6 handling as perfect: libdatachannel itself has an open
+  2026 issue concerning IPv6 timeout/address selection. The Beehive fallback to
+  external artwork remains mandatory.
+
+BUILD DOCUMENTATION RULE:
+- This consolidated file is now the ONE definitive Beehive development guide.
+- Historical V2*.txt / IMPORTANT INFO.txt notes are intentionally not shipped in
+  the build directory anymore because conflicting historical instructions were
+  causing regressions. Preserve project history in source control/archive, but
+  future build folders should contain only this definitive guide unless the user
+  explicitly requests another document.
+
+2.21 VERIFICATION LIMITATION
+----------------------------
+- JS syntax checks and archive integrity can be verified locally.
+- GStreamer C syntax/compile depends on the build environment having the
+  gstreamer-1.0 development headers; do not claim a native compile unless it
+  succeeds here.
+- The public proxy cannot be live-tested from this environment.
+
+======================================================================
+LATEST 2.22 ARTWORK EDITOR EMPTY-SLOT UX
+======================================================================
+
+The Artwork tab now treats artwork entries as a collection of embedded picture
+slots rather than exposing a large separate "Add another embedded picture" panel.
+
+2.22 artwork UI rules:
+- Render every actual embedded picture as its normal MusicBee-style artwork card.
+- Always render at least one empty artwork card immediately after the final real
+  embedded picture. If a file has no embedded artwork, the empty card is the first
+  card.
+- The default type of every empty card is "Album Cover (back)" / canonical
+  "Cover (Back)".
+- Empty cards use the same compact card structure as real artwork: thumbnail area,
+  picture type, comments, and per-picture actions. The thumbnail is visibly empty
+  rather than pretending an image exists.
+- Searching Internet for Cover or Upload on an empty card fills that slot and adds
+  the selected image to the audio file without disturbing existing artwork.
+- When an empty slot is filled, it becomes a real embedded picture and a new empty
+  slot is automatically appended to the end, preserving the always-ready-slot rule.
+- The top "Add Picture…" button adds another blank artwork slot; it does not open
+  a file picker directly. Extra unused blank slots can be removed without touching
+  the audio file.
+- The top "Search MusicBrainz" action targets the current final empty slot so it
+  does not depend on the removed add-slot form.
+- The embedded artwork count reports only real embedded pictures, not empty slots.
+- Existing artwork replacement, deletion, per-picture metadata editing,
+  multi-track mismatch protection, and background metadata writes remain intact.
+- Empty-slot state is UI/session state only. It is never written to the audio file
+  until the user actually chooses artwork for that slot.
+
+This change is renderer/UI and native tag-helper compatible. GStreamer playback,
+scrubbing, pause/resume, transport ramps, and the loon/libdatachannel Discord
+transport are not changed. The GStreamer source hash remains the 2.21 stable hash:
+ddb4fbbc575063f57681daa2ab217ffcbf327fc865135298aca96256a50b4980.
+
+======================================================================
+LATEST 2.23 ARTWORK SLOT PREVIEW BEHAVIOR
+======================================================================
+
+2.23 refines the 2.22 always-ready artwork-slot UX:
+- Empty artwork slots use the exact same artwork-card chrome/layout as real
+  embedded pictures. Do not make empty slots a separate dashed/additional-panel
+  visual treatment.
+- The only difference for a truly empty slot is its thumbnail: it starts as the
+  normal Beehive no-artwork placeholder with no embedded image.
+- When an online cover is selected for an empty slot, the slot immediately shows
+  that exact downloaded cover in its normal thumbnail area so the user can see
+  what is being embedded. The slot remains logically unembedded until the
+  background metadata write succeeds.
+- A selected/uploaded preview must survive fast UI refresh/read-back while the
+  metadata write is pending; it must not flash to a blank placeholder because
+  the disk still contains the old artwork.
+- Once the write is verified, the preview becomes a normal real embedded picture
+  and a fresh empty slot is appended at the end.
+- Empty-slot type defaults to Cover (Back), and the top Add Picture button adds
+  another empty slot rather than opening a file picker.
+- This preview state is renderer-only and must never be written as fake artwork.
+
+GStreamer playback, scrubbing, pause/resume, transport ramps, and the loon/
+libdatachannel Discord transport are unchanged by this artwork-only refinement.
+
+2.24.9 LOG LOCATION
+-------------------
+Hive runtime diagnostics are kept with the portable application when the
+installation directory is writable:
+  ./logs/
+Each Hive launch creates one complete session TXT file:
+  ./logs/session-YYYYMMDD-HHMMSS-PID.txt
+The newest 20 session files are retained automatically; older session files
+are removed. A session contains the full main-process and renderer diagnostic
+stream for one boot/shutdown/crash lifetime, making a single file easy to send
+for debugging. Read-only packaged installations fall back to the Hive user-data
+logs directory. The Settings > Logs panel can load any retained session.
+
+======================================================================
+LATEST 2.24.11 BETA LAB 1.0 READINESS FOUNDATION
+======================================================================
+
+2.24.11 begins turning Beta Lab from a roadmap display into a real engineering
+workbench. The new read-only readiness control center can run:
+- Electron security-boundary audit (context isolation, sandbox, CSP, IPC uniqueness,
+  dynamic-code hazards, navigation/window-open containment).
+- Local media boundary audit for the mbfile protocol.
+- HTTPS-only temporary artwork transport check.
+- Whole-library filesystem health scan with bounded asynchronous concurrency.
+- SQLite PRAGMA integrity_check plus durable metadata-job counts/schema inspection.
+- Runtime/source audit including the GStreamer source fingerprint, required source files,
+  diagnostic log location, and metadata temp-space boundary.
+- Combined 1.0 readiness pass from the Beta Lab UI.
+
+Security hardening added in 2.24.11:
+- Electron renderer sandbox enabled alongside contextIsolation and nodeIntegration=false.
+- Unexpected renderer-created windows are denied; HTTP(S) links are handed to the system browser.
+- Unexpected renderer navigation is denied.
+- mbfile is restricted to configured Beehive library folders instead of arbitrary local paths.
+- Temporary artwork loading requires HTTPS.
+- Renderer CSP no longer permits cleartext HTTP images/media.
+
+The Beta Lab diagnostics are read-only with respect to user music and metadata. They are
+intended to become the first layer of the eventual release gate, followed by real runtime
+playback tests, metadata transaction tests, migration tests, failure injection, packaging,
+and CI. Static/read-only diagnostics must never be described as proof that GStreamer or
+the packaged desktop application has been runtime-tested.
+
+
+FAVORITES LOVE COMPATIBILITY REGRESSION NOTE
+---------------------------------------------
+- Full-library rescans must use the same effective Love compatibility as the authoritative file reader. In particular, M4A/MP4 `----:com.apple.iTunes:LOVERATING` must be read directly from the container during scanner-worker passes; relying only on music-metadata native tag object descriptions can produce false `loved:false` results.
+- WAV ID3 TXXX Love fields must also use the centralized Love field-name compatibility set, not a narrower hard-coded pair.
+
+- Favorites must recognize the Love field spellings used by MusicBee across containers,
+  including LOVE RATING, LOVE, LOVERATING, and MUSICBEE/LOVE RATING variants, while
+  accepting the established Love values listed above.
+- A prior cold-boot regression can occur when an embedded LOVERATING tag is present but
+  the scanner only checks LOVE RATING / LOVE; the file then remains cached as not Loved
+  and Favorites omits it after restart.
+- Do not mark a file's Love state as successfully hydrated unless the authoritative
+  metadata read actually completed.
+
+DISCORD PAUSED-PRESENCE RULE
+-----------------------------
+- Direct Hive Discord Rich Presence must remain visible when a track is paused.
+- On pause, resend the current activity without playback timestamps and append a clear
+  "Paused" state, rather than clearing the Discord activity.
+- Resume restores normal playback timestamps.
+- Renderer presence deduplication must only record a pause/resume state as synchronized
+  after the Discord IPC call succeeds; failed transitions must remain retryable.
+- A quiet 5-second presence tick may retry a failed paused/resumed update, but must not
+  repeatedly resend unchanged successful activity metadata.
+
+PRODUCT NAME / VERSIONING POLICY
+--------------------------------
+The public-facing player is now named **Hive**. `BeehiveMusicBrainz` remains the project/repository and legacy internal identity where changing it would risk breaking existing installations, IPC names, storage paths, logs, or database keys.
+
+Release versions now follow Semantic Versioning. The pre-1.0 line uses `0.x.y`; prerelease stages use `-alpha.N`, `-beta.N`, and `-rc.N`. The 2.24.x development/build numbering is legacy history. The first professional prerelease designation was `0.9.0-beta.1`; the current prerelease is `0.9.0-beta.2`, representing the next near-1.0 beta-hardening phase. The target stable release is `1.0.0`.
+
+Do not equate a version number with readiness: `0.9.0-beta.2` means the product is in beta and approaching 1.0, while `1.0.0` requires the documented security, stability, recovery, performance, regression-testing, packaging, and community-maintainability gates to be demonstrated.
+
+======================================================================
+LATEST 0.9.0-BETA.2 LIBRARY-SCAN LOVE RECONCILIATION RULE
+======================================================================
+- Favorites/Love is part of the regular library reconciliation pipeline. It is
+  not a separate scanner that normal library scans can silently skip.
+- A normal scan still uses incremental metadata parsing for performance: new
+  files and files whose filesystem fingerprint changes are fully reparsed.
+- The library fingerprint now includes mtime, ctime, and size. ctime is important
+  because external tag rewrites can change filesystem metadata even when a tool
+  happens to preserve size or mtime assumptions.
+- Embedded Love compatibility has an explicit LOVE_SCAN_VERSION. When the Love
+  reader/scanner gains a compatibility fix, unchanged cached tracks from an older
+  Love scan version are reconciled during the next normal library scan using the
+  authoritative on-disk Love reader. This is a migration path, not a permanent
+  full-library Love reread on every startup.
+- New/changed files get Love from the same scanner-worker metadata pass that
+  populates their library record. Unchanged records needing a Love compatibility
+  migration get a bounded Love-only reconciliation pass inside the same library
+  scan, then the resulting track.loved value is persisted with the library cache.
+- Failed Love reads must never be marked hydrated or advanced to the current Love
+  scan version. The old cached value remains until a later successful scan.
+- The manual "Refresh Favorites from files" action remains as an explicit
+  authoritative repair/verification operation, but normal library scanning must
+  keep Favorites synchronized without requiring the user to run that separate
+  action.
+
+
+======================================================================
+LATEST 0.9.0-BETA.8 SCAN ACTIVITY / FIRST-FILE HANG REGRESSION GUARD
+======================================================================
+- A scan can legitimately spend time on one large or unusual audio file while the
+  `done / total` count remains unchanged. The renderer therefore shows an animated
+  activity sheen on the scan bar whenever a background scan is active; the moving
+  indicator is not a second progress percentage.
+- Discovery/stat progress is labeled separately from metadata parsing so `0 / N`
+  during preparation is not presented as an idle state.
+- The first-file scan result path must contain per-track enrichment errors. A single
+  enrichment exception must be logged, preserve a safe fallback record, increment
+  progress, and allow the worker pool to continue rather than stranding the scan.
+- In particular, `enrichTrack()` must read `metadataScanVersion` from its `t` argument.
+
+
+======================================================================
+LATEST 0.9.0-BETA.9 SCANNER HARDENING
+======================================================================
+- MP3/WAV MusicBee Love scanning now handles ID3 text encodings including UTF-16/UTF-16BE and continues across multiple Love aliases/frames instead of treating the first non-Love value as authoritative false.
+- WAV scanner Love/rating state accumulates across multiple RIFF ID3 chunks; malformed individual ID3 chunks do not terminate the entire WAV chunk walk.
+- Failed metadata scans preserve the previous cached record without falsely advancing metadata/Love hydration markers, so the file remains eligible for a later retry.
+- MusicBee transactional replacement copies now use `.tmp` instead of an audio extension, and legacy `.beehive-musicbee-*` files are excluded from library discovery/watch events.
+- The per-file scanner timeout remains a last-resort containment mechanism so a pathological audio file cannot freeze the entire library scan.
+
+======================================================================
+1.0.0-RC.1 PRODUCTIONIZATION — ELECTRON 33 LINUX TITLE BAR / NATIVE DECORATION
+==============================================================================
+- Electron 44 introduced a Linux windowing regression for Hive's target GNOME
+  desktop behavior. Multiple Electron 44 experiments were rejected or failed
+  runtime: WCO removed the desired native decoration, and the legacy
+  `disable-features=UseOzonePlatform` path produced a no-window/console-only
+  launch under Electron 44.
+- Hive 1.0.0-rc.1 is therefore pinned back to Electron 33.2.0, the known-good
+  Linux desktop foundation used before the regression. This is a controlled
+  compatibility rollback, not a rollback of Hive's 1.0 scanner/player/UI work.
+- The Linux window path intentionally restores the 0.9-era switches:
+  `ozone-platform=x11` and `disable-features=UseOzonePlatform`.
+- Keep `frame: true` and `titleBarStyle: 'default'`. Do not add Window Controls
+  Overlay, custom renderer title bars, `app-region: drag`, or
+  `titlebar-area-*` CSS to solve this issue.
+- `nativeTheme.themeSource = 'system'` remains explicit so Electron-native UI
+  follows the desktop theme rather than an app-forced dark/light mode.
+- Hive's renderer `#topbar` remains a separate 46px application navigation bar;
+  it is not the native window decoration.
+- The downgrade must preserve the current 1.0 scanner architecture, GStreamer
+  lifecycle, metadata/artwork safety, MPRIS, Discord, and other protected
+  systems. Only Electron/platform compatibility is being rolled back.
+- Because the installer intentionally uses `npm install --ignore-scripts`, npm does not create `node_modules/.bin/electron`; `install.sh` must explicitly recreate that executable shim after downloading Electron. Do not remove this repair unless the dependency-install strategy changes.
+- Runtime verification of the Electron 33 build is still required on the
+  user's GNOME Wayland desktop. Static checks cannot prove final GTK/WM
+  appearance.
+- The GPU crash observed during the Electron 44 experiments was an Electron
+  GPU process SIGSEGV inside Mesa `libgallium`, not a GStreamer helper crash.
+  Do not alter GStreamer because of that incident.
+
+
+
+ELECTRON / LINUX FOUNDATION
+---------------------------
+For the current 1.0.0-rc.1 Linux foundation, Electron is intentionally pinned to 33.2.0.
+Electron 44 changed the Wayland/Ozone windowing behavior and caused the native Linux title-bar
+regression under the target GNOME environment. Do not upgrade Electron as part of unrelated
+feature work without a dedicated Linux windowing/runtime comparison.
+
+The Linux installer intentionally runs npm with lifecycle scripts disabled. When that is done,
+Electron's @electron/get dependency may remain nested under node_modules/electron instead of
+being hoisted to the project root. install.sh must resolve the nested dependency as a fallback
+when downloading the Electron binary. Do not solve this with audit fix --force or arbitrary
+dependency upgrades.
+
+LOVE READER CONSISTENCY REGRESSION — 2026-09-12
+- The scanner metadata-load fix restored embedded artwork/metadata but exposed a second consistency bug: the startup Favorites hydration path used a separate main-process MP3 Love parser from the scanner worker.
+- That duplicate parser could disagree with the scanner for MusicBee ID3 TXXX Love fields, particularly when a file contains an older `U` value plus a later `L` value or uses UTF-16/UTF-16BE text encodings.
+- MP3 Love authority is now centralized in `app/main/musicbee-love.js` and used by both the scanner worker and main-process Favorites hydration path. Love is true when ANY recognized Love field/value is Loved; `U` does not cancel a later `L`.
+- `LOVE_SCAN_VERSION` is now 4 so existing cached Love state is reconciled once with the unified reader.
+
+LYRICS / ARTWORK INTERACTION REGRESSION — 2026-09-12
+- Synchronised lyrics must visibly identify the current timed line, not merely
+  update an internal index. The active line uses the Hive accent treatment.
+- “Show highlighted lyric” must recompute the current line before attempting to
+  scroll, so it works immediately after track load and while paused.
+- The Artwork tab must expose the same picture-specific right-click actions as the
+  Tags artwork preview. Right-clicking an embedded artwork thumbnail selects that
+  picture and opens its Choose/Search/Paste/Remove menu.
+- Scan activity sheen is clipped to the actual determinate fill; the animation
+  must never visually extend into the unfilled portion of the scan bar.
+
+
+ARTWORK FRONT/BACK ROLE SWAP REGRESSION — 2026-09-12
+---------------------------------------------------
+- The Artwork tab allows users to change an embedded picture's semantic type, including swapping Cover (Front) and Cover (Back).
+- Type/comment edits are serialized through the background metadata queue and protect an actively playing file from an unsafe in-place replacement.
+- Artwork editor slots carry the embedded picture content hash as a stable identity, so rapid front/back swaps cannot retarget the wrong picture after the first queued edit changes its type.
+- Renderer cover selection must prioritize the explicit Cover (Front) picture. A stale legacy `track.cover` hint must never override an explicit front-cover type after a role swap.
+
+
+NOW PLAYING ASYNC UI RACE REGRESSION — 2026-09-12
+------------------------------------------------
+Now Playing UI updates may perform asynchronous Love/artwork/lyrics work. A previous
+track update must never repaint the player after a newer track becomes current.
+The renderer uses a monotonic Now Playing UI generation and current-track identity
+check around awaited work. Track title/artist/album/year/format, artwork, and backdrop
+are painted synchronously when the track changes; asynchronous verification may only
+apply if that update is still current. This is required for immediate track changes
+and must be preserved during future Now Playing/artwork/lyrics changes.
+
+NOW PLAYING COVER DECODE RACE REGRESSION — 2026-09-12
+-----------------------------------------------------
+- Changing tracks must never leave the previous Now Playing/playbar artwork
+  visibly painted while Chromium decodes the new cover. The queue thumbnails
+  are smaller and can finish decoding first, which previously made the large
+  Now Playing cover appear to change a split second late.
+- On a track change, the renderer immediately hides the previous artwork
+  bitmap and assigns the new cover. The new bitmap is revealed only after its
+  image load/decode completes, with the existing monotonic Now Playing
+  generation guard preventing stale decodes from revealing an older track.
+- This is a visual synchronization fix only. Do not alter GStreamer playback
+  or introduce a playback-pipeline restart to solve artwork timing.
+
+
+NOW PLAYING QUEUE THUMBNAIL INSTANT-SYNC REGRESSION — 2026-09-12
+---------------------------------------------------------------
+- The current queue row uses the same small artwork source as the queue list and must update immediately when the current track changes.
+- The small queue thumbnail must NOT wait for the large Now Playing/playbar artwork decode or participate in their large-image rotator.
+- Large artwork may decode asynchronously, but queue identity/artwork must never visibly lag behind the current queue selection.
+
+TAG EDITOR FOUNDATION — 2026-09-12
+-----------------------------------
+- The MusicBee-style editor is now treated as a real metadata tool rather than a visual-only modal.
+- Properties is informational: single-track properties remain file-specific while album editing aggregates track count, total duration, total size, formats, Love state, rating, and location.
+- Tags remains the default entry tab and keeps the multi-file `Multiple Values` behavior: blank means differing values and untouched fields are preserved.
+- Tags (2) is the native metadata inventory. It reads format-native fields directly from disk, preserves untouched frames, and allows safe editing/addition/removal of native text/freeform fields. Standard fields remain owned by the primary Tags tab.
+- MP3 native text frame IDs that Mutagen recognizes are written back as their real ID3 frame classes; TXXX fields preserve their descriptions. Unknown binary/non-text native frames are preserved and shown read-only rather than fabricated from strings.
+- ReplayGain fields use recognizable metadata names: REPLAYGAIN_TRACK_GAIN, REPLAYGAIN_TRACK_PEAK, REPLAYGAIN_ALBUM_GAIN, REPLAYGAIN_ALBUM_PEAK, and R128_TRACK_GAIN.
+- Per-track playback settings remain embedded Hive metadata. Exclude-from-playback is honored when advancing normally; remember-position stores a per-track resume offset locally and clears it after the track completes.
+- Start/end trim is now supported by the native GStreamer path as well as the Web Audio fallback. GStreamer receives the trim boundaries, reports position relative to the trimmed region, and emits a dedicated trim-end transition. Trimmed tracks deliberately do not participate in native about-to-finish gapless handoff, avoiding a competing timing model.
+- Preserve the existing 10 ms transport ramp and single-pipeline GStreamer architecture while extending trim behavior.
+
+
+SONG LIST COLUMN FITTING — 2026-09-12
+--------------------------------------
+- The Tracks header context menu includes `Fit columns to screen` next to `Reset column widths`.
+- Fit mode proportionally scales the currently visible song columns to the available table width and responds to table/window resizing.
+- Existing saved layouts are migrated so the stable `#` position column is restored at the left edge if an older layout omitted it; this prevents automatic fitting from giving the final visible column (such as Plays) an unnecessarily large share of the viewport.
+- When the screen is too narrow to satisfy all column minimums, Hive preserves minimum widths and allows horizontal scrolling rather than making columns unusably small.
+- Manual column dragging exits fit mode; explicit user sizing takes precedence until automatic fitting is enabled again.
+- Column dragging is throttled through requestAnimationFrame so pointer movement does not synchronously relayout every event; the Tracks table itself remains row-virtualized, so only visible song rows participate in column layout while resizing.
+- The header context menu keeps Reset column widths immediately above Automatically fit columns to screen. Fit mode continuously manages the visible columns against the table viewport and falls back to minimum widths plus horizontal scrolling when the viewport is too narrow.
+
+METADATA ARTWORK IPC MEMORY REGRESSION — 2026-09-12
+---------------------------------------------------
+- A crash-debug run showed the Electron main process growing past 1 GB RSS and
+  roughly 600 MB V8 heap while a bulk artwork operation processed an album.
+- The native tag helper's mutating artwork operations previously returned every
+  embedded picture as base64 JSON after each write. JavaScript then discarded
+  the binary payload and kept only picture metadata. That created unnecessary
+  large IPC strings/heap pressure, especially during multi-file artwork edits.
+- Artwork verification now uses a hash-only helper operation, artwork targeting
+  uses metadata-only picture records, and mutating helper operations return only
+  picture metadata. Full artwork bytes remain available only to the explicit
+  single-track artwork/tag-editor read path that actually needs them.
+- Do not reintroduce full base64 artwork into background/bulk metadata progress
+  or verification responses. This is a stability requirement, not merely an
+  optimization.
+- Crash diagnostics also guard against recursive EPIPE handling when stderr is
+  already closed, so a broken diagnostic output pipe cannot generate an
+  uncaughtException loop that obscures the original failure.
+
+QUEUE THUMBNAIL ARTWORK ROTATION — 2026-09-12
+----------------------------------------------
+- The currently playing track's 30x30 Playing Tracks thumbnail now follows the same
+  four-second embedded-artwork rotation as the large Now Playing/playbar artwork.
+- The queue thumbnail uses a separate lightweight rotator. It must NOT become a target
+  of the large-cover rotator or wait for the large cover decode.
+- The current queue thumbnail remains eager-loaded at 30x30 with async decoding so
+  current-track artwork appears quickly; non-current queue rows remain lazy-loaded.
+- Queue virtualization must retarget the small rotator when the visible row DOM is
+  rebuilt without restarting the rotation for the same current track.
+
+ALBUM ART SCALING — 2026-09-13
+-----------------------------
+- The established fixed-size 178px album/artist artwork layout is Hive's natural/default behavior.
+- The Settings option remains named `Legacy album art scaling`. When enabled, it selects that fixed legacy layout.
+- When disabled, Hive uses the existing responsive/grid scaling implementation.
+- This is a semantic/default switch: checked = the established fixed-size layout including its original 26px vertical / 18px horizontal card gaps; unchecked = responsive/grid sizing with the same visual breathing room.
+- Build 54 used the opposite preference semantics; Build 55 performs a one-time localStorage migration so an existing user's visible layout remains stable while the setting meaning is corrected.
+- Year-divider sections continue to use the established album-year-section / album-year-grid structure.
+- Settings → Appearance → Custom theme CSS includes a text box for pasting CSS directly. `@import url("https://...");` HTTP(S) stylesheets are supported and persisted; Apply CSS saves and applies the raw stylesheet.
+
+MAIN UI SCROLLBAR / BOTTOM PLAYBAR EDGE — 2026-09-12
+-----------------------------------------------------
+- Native WebKit scrollbars are intentionally 12px wide/tall so the main UI's
+  scroll position is easier to see against the dark/frosted surfaces.
+- The bottom playbar keeps its controls at the bottom but no longer renders a
+  frosted glass panel, border, or rounded surface. This removes the visible
+  bottom lip that competed with the main viewer's scrollbar and cover art.
+
+SHUFFLE BUTTON FIRST-CLICK VISUAL REGRESSION — 2026-09-12
+---------------------------------------------------------------
+- The Shuffle button must paint its new on/off state immediately when clicked.
+- Queue rebuilding and playback-session persistence can take enough synchronous
+  work on a large queue that rendering the button only after those operations
+  makes the first click appear to have been ignored.
+- Keep shuffle as a queue-order operation only: do not stop/reload the current
+  GStreamer pipeline when toggling shuffle.
+
+RAPID PLAY COMMAND / MULTI-PLAYBACK RACE REGRESSION — 2026-09-12
+------------------------------------------------------------------
+- Rapidly clicking album/track play targets can overlap asynchronous GStreamer
+  availability/load work. Only the newest playback request may reach PLAY or the
+  fallback Web Audio transport.
+- Playback load requests use a monotonic renderer generation token. Stale requests
+  are cancelled after async waits and before fallback playback, preventing an older
+  request from starting a second transport after a newer request has already won.
+- GStreamer load requests also carry the same token, so an older request cannot
+  issue its delayed PLAY after a newer album/track selection.
+- Preserve the single authoritative GStreamer pipeline and the existing 10 ms
+  transport ramp. This is a request-ordering fix, not a second playback mechanism.
+
+LYRICS CONTEXT MENU / ALBUM EXPANSION REFLOW — 2026-09-12
+----------------------------------------------------------
+- The Lyrics box context menu provides `Search lyrics again` for online fallback
+  lyrics and `Delete embedded lyrics` when the current track has embedded lyrics.
+  Deleting embedded lyrics is a real metadata write; searched-only lyrics can be
+  cleared from the renderer cache without touching the file.
+- Album inline expansions participate in the album grid's normal layout flow.
+  They occupy a full row after the clicked card's current row, so cards above the
+  expansion use every available column. When the main viewport width changes
+  (including resizing the right Now Playing panel), the expansion is re-anchored
+  below the expanded album's current row rather than remaining stranded at the
+  old row position.
+
+
+LIBRARY COVER CACHE / SCROLL STRESS REGRESSION — 2026-09-13
+--------------------------------------------------------------
+- Album/library artwork is a long-lived renderer-session resource. Once a local
+  `mbcover://` image has been fetched/decoded, the renderer keeps a strong Image
+  reference so rapid scrollbar movement does not repeatedly fetch/decode the same
+  cover after Chromium's normal lazy-image cache evicts it.
+- The full unique local-cover set is warmed in tiny requestIdleCallback/setTimeout
+  batches after the album model is rendered. Warmup must never monopolize the UI
+  thread or block startup.
+- Do not reintroduce a small 150-image artwork LRU for the library browser. The
+  deliberate behavior is cache-once-per-session for local library covers.
+- `./run.sh --scroll-debug` enables scroll-performance diagnostics. During a manual
+  scrollbar stress test, renderer logs include frame timing, direction changes, DOM
+  image count, and session cover-cache state. This mode is diagnostic only and must
+  not alter playback behavior.
+
+MAIN VIEWER FRAME / SCROLLBAR BREATHING ROOM — 2026-09-13
+------------------------------------------------------------
+- The album/music viewer must not be clipped into a rounded rectangle at its
+  bottom edge. The main viewer keeps rounded upper corners but its bottom edge
+  stays square/open above the playback bar so no hidden glass-like lip or
+  negative-space corner masks the album artwork.
+- The main Music viewport scrollbar must have visible breathing room from the
+  surrounding frame rather than touching the frame's edge. Keep the larger
+  scrollbar introduced for visibility, with an inset thumb/transparent track.
+- The native scrollbar thumb has a 72px minimum vertical grab target so a very
+  large library does not collapse the thumb into an almost circular dot. This
+  changes only the minimum visual/drag target; it does not remove tracks or alter
+  the underlying scroll range.
+- The Now Playing/playback bar may use its frosted-glass surface as an explicit
+  Settings feature. It is enabled by default; the separate Colored Now Playing
+  background option remains independent.
+
+DISCORD RICH PRESENCE ACTIVITY TYPE — 2026-09-13
+-------------------------------------------------
+- Hive's Discord Rich Presence defaults to Discord Activity type 0 (`Playing`),
+  so Hive appears in Discord's game/Playing activity area.
+- Settings > Discord includes a persistent `Rich Presence activity type` choice:
+  `Playing — show Hive as a game` (default) or `Listening — show Hive as music`.
+- The choice is stored in Hive's Discord settings and must not silently change
+  when playback starts, the app restarts, or other Discord settings are saved.
+- Do not revert the default to type 2. Only an explicit user selection of
+  Listening may send Discord activity type 2.
+
+DISCORD SETTINGS SAVE / RESTART PROMPT — 2026-09-13
+---------------------------------------------------
+- Saving Discord settings shows a persistent `Saved` status bubble with the restart instruction immediately to its left: `Restart Hive to apply Discord changes.`
+- The Discord Save button is intentionally more visually prominent than the secondary test/clear actions.
+- Do not immediately overwrite the Saved confirmation with connection-status text; allow the user to see the restart instruction first.
+
+DISCORD APPLICATION-ID SWITCH / STALE ACTIVITY REGRESSION — 2026-09-13
+---------------------------------------------------------------------
+- Discord Rich Presence is associated with the application ID used for the IPC handshake.
+- Changing Hive's Discord application ID cannot remove the previous application's activity by
+  merely sending SET_ACTIVITY for the new application. That can leave two Hive-related
+  activities visible in Discord.
+- When Discord settings change the application ID, Hive must explicitly connect using the
+  previous application ID, clear that old activity, then persist/use the new application ID.
+- Do not remove this cleanup when changing Discord application IDs; it prevents stale old
+  activities from surviving alongside the current Hive profile activity.
+
+LIBRARY COVER CACHE / LARGE-LIBRARY SCROLL REGRESSION — 2026-09-13
+------------------------------------------------------------------
+- The first cache-once implementation eagerly created detached Image objects
+  for every unique library cover. On a 3,447-cover library this produced
+  thousands of concurrent image loads/decodes and severe renderer stalls during
+  scrollbar stress, despite small warmup batches.
+- The session cache is now demand-driven: native HTML lazy-loading remains the
+  authoritative fetch/decode trigger, and loaded DOM image elements are retained
+  in the renderer cache for later grid rebuilds.
+- Do not call a detached `new Image()` for every library cover merely to prewarm
+  the cache. That defeats lazy loading and can create multi-hundred-millisecond
+  or multi-second scroll stalls on large libraries.
+- `--scroll-debug` measurements from a 3,447-cover library showed 180–1,297 ms
+  scroll frame gaps and repeated 50–353 ms renderer long tasks while the old
+  eager warmup/cache was active. Treat those as a regression signal, not an
+  acceptable baseline.
+
+
+DISCORD / MUSIC PRESENCE OWNERSHIP — 2026-09-13
+------------------------------------------------
+- Music Presence is the sole owner of Discord Rich Presence on the user's Linux desktop.
+- Hive MUST NOT connect to Discord IPC, send SET_ACTIVITY, clear Discord activities, or
+  configure a Discord application/client ID. Doing so can compete with Music Presence and
+  change/replace the activity that Music Presence publishes.
+- Hive's Discord application ID/activity-type settings and direct Discord RPC publisher
+  have been removed. The Discord settings surface now documents that Music Presence
+  owns the integration.
+- Hive continues publishing authoritative track metadata/artwork through MPRIS.
+  Music Presence consumes that desktop media-player state and handles Discord itself.
+- The existing loon/Music Presence installation remains external to Hive; do not reintroduce
+  a second Discord publisher into Hive as an artwork workaround.
+
+DISCORD / MUSIC PRESENCE SETTINGS CONTROL — 2026-09-13
+-------------------------------------------------------
+- Music Presence remains the sole Discord Rich Presence publisher. Hive must not connect to Discord IPC, send SET_ACTIVITY, clear activities, or become a second Discord publisher.
+- Hive's Discord settings surface may edit Music Presence's Linux `~/.local/share/Music Presence/settings.json` directly.
+- The current Hive controls are limited to Music Presence `presence.activity_type` (`listening`, `playing`, `watching`) and `presence.custom_discord_application_id` (`valid` + `value`). All other Music Presence settings are preserved when Hive writes the file.
+- Applying these settings intentionally does NOT automatically restart Music Presence. This allows a real-time reload test without interrupting the external publisher first.
+- If the running Music Presence process does not pick up the file change live, Hive provides an explicit `Restart Music Presence` action that restarts the existing user service `music-presence.service` through systemd. Hive must not replace or launch a second Music Presence process.
+- The settings path and service are Linux-specific in the current implementation.
+
+MPRIS / AUTOMATIC NEXT-TRACK TRANSITION — 2026-09-13
+-------------------------------------------------------
+- Manual track selection already synchronizes the selected track to MPRIS.
+- Gapless automatic transitions can promote the next queue entry internally,
+  without passing through the manual selection path.
+- Both the Web Audio gapless promotion boundary and the GStreamer STREAM_START
+  transition must call `syncMpris(next, false)` immediately after promoting the
+  new current track. Otherwise Music Presence can continue displaying the
+  previous track until the user manually skips/selects a track.
+- This is metadata synchronization only. Do not create a second playback pipeline
+  or disturb the authoritative GStreamer transport.
+
+
+PERFORMANCE AUDIT / CACHE-WRITE REGRESSION — 2026-09-13
+---------------------------------------------------------
+- Track starts must not rewrite the entire library cache. `STATS_PATH()` is the
+  durable play-stat store; `library.json` / `library.json.gz` are startup/view
+  caches and are updated by scan/import operations, not once per song.
+- `recordTrackPlayed()` must not call `renderCurrentView()` merely because play
+  statistics finished persisting. A track transition must not tear down and
+  rebuild the entire Albums DOM.
+- Library-cache gzip must remain asynchronous. Never reintroduce `gzipSync()` on
+  the playback-sensitive main-process path.
+- These changes are intended to remove the two largest known playback/scroll
+  stalls identified by the 2026-09-13 performance audit without changing the
+  GStreamer transport, MPRIS synchronization, queue behavior, or album inline
+  expansion layout.
+
+PERFORMANCE AUDIT BUILD 3 — 2026-09-13
+------------------------------------------------------------
+Scroll-state persistence is coalesced onto animation frames so raw native scroll
+events do not repeatedly rebuild tab state. The session artwork cache remains
+demand-driven and cache-once-per-session; do not prune detached cover images as
+part of this optimization.
+
+
+SPOTIFY STREAMING SOURCE — 2026-09-13
+--------------------------------------
+- Spotify tracks are virtual Hive playlist items (`source: "spotify"`); they are NOT local-file matches.
+- Spotify remains the audio engine. Hive does not download Spotify audio.
+- The Linux installer installs/prepares Spotify, Spicetify, SpotX-Bash, and the Hive Spicetify bridge.
+- Hive's loopback Spotify bridge listens only on 127.0.0.1:43872.
+- The Spicetify bridge controls Spotify through Spicetify.Player and reports song/progress/play-pause state back to Hive.
+- Do not route Spotify tracks through GStreamer. Local tracks must continue using the existing GStreamer path.
+- Spotify login is handled by the Spotify desktop client; Hive can also open an Opera login window when available.
+
+BUILD 7 UI / TECH POLISH (2026-09-13)
+--------------------------------------
+- Left sidebar navigation no longer uses decorative emoji icons. Favorites keeps the `★` marker.
+- `Playlist Explorer` is now `☰ Playlists`.
+- The fixed Playlists top tab uses `☰` and changes its text to the currently selected playlist name when applicable.
+- Top-level tabs are drag-reorderable and the built-in tab order is persisted in localStorage.
+- Beta Lab is no longer a literal top-level tab. Its engineering/diagnostic surface lives under Settings → Beta Lab.
+- ReplayGain normalization is implemented for local playback from embedded ReplayGain metadata. Settings → General controls Off / Track gain / Album gain and peak-based clipping protection. GStreamer remains authoritative; the transport ramp is unchanged.
+
+BUILD 8 UI / DIAGNOSTICS POLISH (2026-09-13)
+---------------------------------------------
+- Tag editor checkboxes/radios use one consistent themed toggle/card treatment, including the per-track Settings page.
+- Lyrics editor controls are grouped into a themed toolbar and writing surface.
+- Browser-native title tooltips are replaced by Beehive-themed hover tooltips, including dynamically created controls.
+- Renderer alert/confirm/prompt calls are replaced by themed in-app dialogs. Native OS file/folder chooser windows remain OS-owned and cannot be themed by Hive CSS.
+- Settings includes Logs, with bounded loading of crash/runtime, scan, startup-debug, or combined diagnostic logs and a Copy to clipboard action.
+
+BUILD 9 UI / FEATURE VERIFICATION (2026-09-13)
+-----------------------------------------------
+- Re-audited Build 8 against the recent navigation, Beta Lab, ReplayGain, UI-theme, tooltip, dialog, and log requirements.
+- Fixed the moved Beta Lab renderer integration so its actual cards render inside Settings → Beta Lab; it is no longer dependent on a removed top-level tab.
+- The Lyrics synchronization radio controls now use the same themed control treatment as the editor's other toggles.
+- ReplayGain setting changes re-read the current track's embedded gain/peak metadata immediately.
+- GStreamer user-volume changes continue to include the active track's ReplayGain multiplier.
+
+
+CUSTOM THEME CSS — BUILD 11 (2026-09-13)
+-----------------------------------------------
+- Settings → General supports loading a user-selected `.css` stylesheet, capped at 1 MB.
+- Hive stores the selected stylesheet in its user-data directory and reapplies it on launch.
+- Custom styling is CSS-only; do not execute JavaScript from custom theme files.
+- Removing the stylesheet immediately restores the built-in theme.
+- Custom CSS must remain a presentation layer and must not change playback architecture or GStreamer invariants.
+
+PODCASTS — FIRST IMPLEMENTATION (2026-09-13)
+-----------------------------------------------
+- Podcasts are a native Hive source using public podcast search plus RSS feeds.
+- Episodes are virtual `source: "podcast"` queue items with a remote `streamUrl`; Hive does not download episodes into the local music library.
+- Podcast episodes use the same Hive queue/player controls and can be mixed with local and Spotify entries. Local files remain on GStreamer and Spotify remains on Spotify.
+- Discovery uses the public iTunes podcast directory for search and publisher RSS for episode metadata/audio URLs. Feed cards are collapsible and episodes can be played or queued.
+- Remote podcast playback uses the existing hidden HTML media element only for podcast streams; it must not alter the local GStreamer transport.
+
+
+PODCAST VERIFICATION — BUILD 12 (2026-09-13)
+-----------------------------------------------
+- Fixed the first podcast implementation's real expansion bug: `.podcast-episodes` is the episode host itself, so feed rendering must populate that node directly.
+- Podcasts preserve their DOM after first initialization so top-level tab switching does not erase search results or expanded episode lists.
+- RSS artwork parsing supports the common channel `<image><url>...</url></image>` form as well as `itunes:image`.
+
+COMMUNITY INTEGRATION PASS — BUILD 13 (2026-09-13)
+--------------------------------------------------
+- MPRIS was already present before this pass. Keep the existing org.mpris.MediaPlayer2 implementation; do not add a duplicate media-control service.
+- ListenBrainz and Last.fm scrobbling are now optional Settings → Community services. Scrobbling is independent of playback transport and uses the normal listening threshold. Podcast scrobbling is opt-in.
+- Hive theme packs use the shareable .hive-theme JSON format with CSS plus documented stable CSS variables. Custom CSS remains presentation-only.
+- Hive extensions use a trusted-local renderer API with manifest.json, optional plugin.js, and optional style.css. Extensions can read renderer-safe library data, inspect/control the existing player queue, and add styling. They must not replace GStreamer, Spotify, or podcast transport.
+- Provider modules remain the extension point for artwork/lyrics sources. Network providers must stay outside the playback path and respect source rate limits.
+
+COMMUNITY BUILD 13 BOOT REGRESSION / BUILD 14 FIX (2026-09-13)
+---------------------------------------------------------------
+- Build 13 failed to boot because `startSpotifyBridge()` called `http.createServer()`
+  without importing Node's `http` module. This produced a MAIN unhandledRejection
+  inside the `app.whenReady()` handler.
+- Build 14 imports `http` explicitly and guards optional Spotify bridge startup so
+  bridge initialization cannot prevent the core Hive application from booting.
+- Optional Spotify/Spicetify/SpotX, ListenBrainz, Last.fm, theme, and extension
+  integrations must remain non-fatal to the local-library/GStreamer application.
+## UI runtime hardening — Build 15
+
+Build 14 was the first real runtime exercise since the earlier performance builds. Its startup log exposed a serious artwork-memory regression: the renderer retained decoded DOM Image objects in `coverMemoryCache`, reaching roughly 600+ MB after about 80-120 cover loads and producing long renderer tasks. The cache must never retain DOM Image objects; Chromium's own image/network cache remains authoritative.
+
+Navigation is now user-owned: sidebar destinations can be reordered and hidden, built-in top tabs can be reordered and hidden from Settings → Navigation, and hidden built-ins can be restored there. Music remains the required primary top tab.
+
+Settings is a fixed-height flex surface with an independently scrollable body so every settings section remains reachable on small windows. Song-list columns default to fit-to-screen and keep the right edge inside the Music viewer; horizontal overflow is only unavoidable when the selected columns' minimum widths physically exceed the available viewport.
+
+Drag-and-drop uses explicit insertion indicators and consistent motion states across sidebar, top tabs, queue, and settings navigation editors. Keep these interactions smooth and avoid teleporting/rebuilding visible UI when an animated state can be preserved.
+
+
+RUNTIME HARDENING — BUILD 16 (2026-09-13)
+-----------------------------------------
+- Hive-rendered popups/modals now use a shared stacking manager. A popup spawned
+  from another popup always appears above the currently open parent.
+- Crash logging is fail-safe: a closed stderr pipe must not cause recursive EPIPE
+  exceptions while recording the original failure.
+- Unexpected GStreamer helper exits are logged, sent to the renderer, and retried
+  with a bounded automatic restart rather than leaving the transport permanently
+  dead. Normal shutdown does not restart the helper.
+- Renderer process crashes are logged with process metrics and can trigger a
+  bounded window reload recovery. This preserves the existing session/playback
+  recovery path instead of replacing GStreamer.
+
+STABILITY / POPUP / TRACK-COLUMN INVARIANTS — BUILD 17
+------------------------------------------------------
+1. Debug launches must retain low-frequency runtime health diagnostics after the first
+   20 seconds. Delayed crashes are a known investigation target and startup-only logs
+   are insufficient evidence.
+2. Hive-rendered alert/confirm/prompt dialogs are separate instances. A dialog spawned
+   from another popup MUST create a new overlay above the parent; never replace the
+   parent's dialog contents or resolve its promise implicitly.
+3. Music track columns always fit the visible Music viewer. Manual resizing may change
+   proportions, but release of the resize normalizes the complete grid to the exact
+   available width. Do not reintroduce a horizontal overflow mode for this surface.
+
+
+BUILD 19 UI FIX — 2026-09-13
+- Fixed Hive brand menu: clicking the nested Hive text/caret no longer immediately closes the menu, so Settings is reachable again.
+- Modal close buttons are delegated and Escape closes the topmost visible Hive modal.
+- Create Smart Playlist was redesigned as Source → Rules → Results, with Advanced options collapsed.
+- Removed duplicate smart-playlist rule container and separated source radio IDs from playlist/folder select IDs.
+- Use simple left-to-right modern switches for on/off controls; source selection uses cards instead of switch-like radio knobs.
+
+
+BUILD 23 INSTALLER / SPICETIFY PERMISSION RULE
+- If Spicetify reports `permission denied`, `Failed to copy raw assets`, or `unlinkat` against Spotify's `Apps/*.spa`, treat it as a Spotify filesystem-permission failure, not a missing backup.
+- Hive must not run Spicetify with sudo/root. Current Spicetify warns that administrator execution can make Spotify files inaccessible to the normal user.
+- The installer detects non-writable Spotify paths (including `/opt/spotify`) and prints the exact one-time permission commands needed before rerunning.
+- Renderer INFO/DEBUG messages remain in the session TXT log but are intentionally omitted from the live terminal; renderer warnings/errors remain visible.
+
+
+## Build 24 — Custom sidebar navigation
+
+- Left sidebar destinations can be renamed from Settings > Navigation.
+- Settings > Navigation can add user-defined visual dividers, optionally with a label. Dividers are draggable and removable.
+- Navigation IDs remain stable internally; custom labels are presentation-only so existing destination behavior is preserved.
+
+Build 25 sidebar sizing: Settings > Navigation now provides vertical resize handles for sidebar destinations. Dragging a handle changes that destination's height and the left sidebar mirrors it immediately; sizes persist with sidebar navigation preferences.
+
+
+BUILD 27 — TRACKS/FAVORITES + COLUMN FIT
+- Main Music Tracks and Favorites must use the same virtualized song-row rendering path. Favorites must not regress to one DOM row per track.
+- Fit columns to Music viewer must account for grid gaps and row/header horizontal padding so the rightmost column stays inside the viewer boundary.
+- Independent Music tabs each own their own song table; the column ResizeObserver must follow the active table.
+
+
+BUILD 30 — SPOTIFY ARTWORK
+Spotify/Spicetify player metadata may expose artwork as spotify:image:<id>. Hive must normalize this to https://i.scdn.co/image/<id> before rendering. Keep Spotify artwork external; never embed or write it into local audio files.
+
+Build 145 audio safety requirement: any native GStreamer audio-path ERROR must fail silent. The native backend mutes and stops before reporting FATAL_ERROR; renderer latches the fault and must not automatically retry or fall back to another local decoder. Recovery is via a fresh Hive startup so an unsafe stream cannot be replayed through another path.
+
+
+BUILD 194 FAVORITES PRESENTATION PERSISTENCE
+
+Build 194 fixes the canonical Favorites rich-label persistence edge case. If an older build left a Rainbow/Glow/Pulse Favorites label in the sidebar projection while the playlist record still had the plain Favorites label, startup now promotes the recognized rich label into the canonical playlist and persists it through the normal playlist store. Music/Playlists sidebar label persistence remains unchanged.
+
+BUILD 197 PORTABLE DATA ROOT (2026-09-16)
+- Fixed the portable-data root derivation while preserving the stable Electron executable used for Discord identity.
+- The Linux launcher now exports HIVE_PORTABLE_ROOT as the current Hive build folder. Electron userData is therefore stored in <build>/data, including config, localStorage/session state, playlists, library state, covers, playback state, plugins, and other app-owned persistent data.
+- New builds no longer derive portable storage from ~/.local/share/hive/runtime. That location was an accidental consequence of the stable Electron identity workaround.
+- Build 198 portable behavior: a freshly extracted Hive folder must simulate a clean first install. Never migrate/import machine-global Hive settings, Favorites, playlists, localStorage, or other user data. All newly-created Electron app/session data belongs under the current build folder's data/ directory.
+- Stable builds remain immutable.

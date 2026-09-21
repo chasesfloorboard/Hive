@@ -1,0 +1,12 @@
+const fs = require('fs');
+const assert = require('assert');
+const native = fs.readFileSync('app/native/gstreamer-player.c', 'utf8');
+const renderer = fs.readFileSync('app/renderer/renderer.js', 'utf8');
+assert(native.includes('FATAL_ERROR'), 'native backend must emit FATAL_ERROR on audio-path error');
+assert(/GST_MESSAGE_ERROR[\s\S]*g_object_set\(player, "mute", TRUE/.test(native), 'native error path must mute immediately');
+assert(/GST_MESSAGE_ERROR[\s\S]*gst_element_set_state\(player, GST_STATE_READY\)/.test(native), 'native error path must stop the pipeline');
+assert(renderer.includes("name === 'FATAL_ERROR'"), 'renderer must handle fatal audio errors');
+const errorBlock = renderer.slice(renderer.indexOf("if (name === 'ERROR' && gstActive)"), renderer.indexOf("\n    }", renderer.indexOf("if (name === 'ERROR' && gstActive)")) + 6);
+assert(!errorBlock.includes('requestLoadAndPlayCurrent()'), 'renderer must not automatically retry an audio-path error');
+assert(renderer.includes('gstFatalError'), 'renderer must latch fatal audio errors');
+console.log('audio safety tests passed');
