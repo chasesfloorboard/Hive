@@ -20,7 +20,7 @@ for (const dir of requiredDirs) if (!fs.existsSync(path.join(root, dir))) throw 
 if (packageJson.main !== 'app/main/main.js') throw new Error(`Electron entry point drift: expected app/main/main.js, found ${packageJson.main}.`);
 if (!fs.existsSync(path.join(root, 'logs', 'README.txt'))) throw new Error('Portable runtime log directory documentation missing.');
 for (const stale of ['main.js','preload.js','scanner-worker.js','metadata-worker.js','database-worker.py','gstreamer-player.c','src']) if (fs.existsSync(path.join(root, stale))) throw new Error(`Stale flat source path remains at project root: ${stale}`);
-if (!/sessionFileName|slice\(20\)/.test(fs.readFileSync(path.join(root, 'app', 'main', 'main.js'), 'utf8'))) throw new Error('Session log naming/retention code missing.');
+if (!/session-\\d\{8\}-\\d\{6\}-\\d\+\\\.txt|sessionFiles\.slice\(/.test(fs.readFileSync(path.join(root, 'app', 'main', 'main.js'), 'utf8'))) throw new Error('Session log naming/retention code missing.');
 const installer = fs.readFileSync(path.join(root, 'install.sh'), 'utf8');
 if (!/spicetify -c/.test(installer) || !/permission denied.*filesystem-permission|filesystem-permission.*permission denied/s.test(installer)) throw new Error('Spicetify path/permission diagnostics missing from installer.');
 if (!/SpotX is optional/.test(installer) || /SpotX-Bash is required/.test(installer) || /Install SpotX-Bash now\?/.test(installer)) throw new Error('Installer still makes SpotX a required interactive dependency.');

@@ -8,7 +8,8 @@ dist/
 *.deb
 
 # Personal/runtime data -- never belongs in source control
-logs/
+logs/*
+!logs/README.txt
 backups/
 Hive Wrapped Data/
 User Data Backup/
