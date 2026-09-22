@@ -49,6 +49,8 @@ Hive treats Favorites as part of the library itself, with the same browsing and 
 
 Browse listening history and library activity through dedicated views such as Top 25 Most Played.
 
+![Hive Top 25 Most Played view showing play counts and ratings.](resources/screenshots/hive-top-25.png)
+
 
 ### Tag editing
 
@@ -134,4 +136,3 @@ For the deeper architecture and security model, see [`docs/ARCHITECTURE.md`](doc
 
 Hive is released under the MIT License. See [`LICENSE`](LICENSE).
 
-![Hive Top 25 Most Played view showing play counts and ratings.](resources/screenshots/hive-top-25.png)
