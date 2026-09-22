@@ -2,7 +2,7 @@
   "name": "beehive-musicbrainz",
   "productName": "Hive",
   "desktopName": "hive",
-  "version": "1.0.1",
+  "version": "1.0.2",
   "description": "Hive — an offline-first professional music library manager and player for Linux.",
   "main": "app/main/main.js",
   "private": true,

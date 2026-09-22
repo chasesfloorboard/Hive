@@ -194,8 +194,16 @@
         // near-black panel) reads as a dull, muddy gray once blended at a low
         // percentage into a bright white panel -- same hue, just pushed
         // noticeably brighter so the blend stays a clean, vibrant tint.
-        const targetS = light ? Math.min(0.82, Math.max(ss, ss * 1.05)) : Math.min(0.96, Math.max(ss, ss * 1.28));
-        const accentL = light ? Math.min(0.8, Math.max(0.58, ll + 0.22)) : Math.min(0.64, Math.max(0.36, ll));
+        // Light theme used to only nudge saturation up by 5% (targetS) while
+        // pushing lightness way up toward white (accentL up to 0.8) -- the
+        // lightness push alone reads as "vibrant" in isolation, but combined
+        // with barely-boosted saturation the result desaturates toward pastel
+        // gray once mixed into a bright white panel ("not saturated enough").
+        // Boost saturation closer to dark theme's own multiplier and pull the
+        // lightness ceiling back down so the hue itself stays visibly rich;
+        // LIGHT_THEME_MAX_LUMINANCE below still guards solid-fill consumers.
+        const targetS = light ? Math.min(0.9, Math.max(ss, ss * 1.32)) : Math.min(0.96, Math.max(ss, ss * 1.28));
+        const accentL = light ? Math.min(0.72, Math.max(0.52, ll + 0.14)) : Math.min(0.64, Math.max(0.36, ll));
         let accentRgb = (() => {
           const c = (1 - Math.abs(2 * accentL - 1)) * targetS;
           const x = c * (1 - Math.abs(((hh / 60) % 2) - 1));

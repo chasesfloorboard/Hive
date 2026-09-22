@@ -42,7 +42,7 @@ test('Tracks view keeps Length right-aligned while Plays is left-aligned', () =>
   const match = css.match(/\.song-row \.s-plays[^\{]*\{([^}]*)\}/);
   assert.ok(match);
   assert.match(match[1], /text-align:\s*left/);
-  const lengthMatch = css.match(/\.song-row \.s-dur[^\{]*\{([^}]*)\}/);
+  const lengthMatch = css.match(/\.song-row \.s-length[^\{]*\{([^}]*)\}/);
   assert.ok(lengthMatch);
   assert.match(lengthMatch[1], /text-align:\s*right/);
 });

@@ -1,3 +1,10 @@
+# 1.0.2 — Light theme cover-art saturation and track-time contrast
+
+- Fixed Light theme's cover-art-derived accent colors (glass panels, ambient blobs, "Colored Now Playing background") reading as dull/pastel instead of vibrant. `extractPaletteFromImage()` in `app/renderer/colorExtract.js` only boosted saturation by ~5% for Light theme while pushing lightness up toward 0.8 — visually "brighter" in isolation, but that combination desaturates toward gray once blended into a bright panel. Saturation boost now roughly matches Dark theme's own tuning and the lightness ceiling is pulled back down, so hues stay rich; the existing hard luminance cap that protects full-opacity consumers is unchanged.
+- Fixed the Tracks table's per-row duration text never getting its Light-theme dark-text override. The CSS targeted a class name (`.s-dur`) that a previous build silently renamed to `.s-length` in `songRowHtml()`; the override became dead code with no test catching it because three separate `buildNNN-*.test.js` files were themselves pinned to the same stale selector via regex. Fixed the selector (and the base column layout rule) in `app/renderer/styles.css`, and updated `test/build242-context-menu-readability.test.js`, `test/build243-context-glass-topbar.test.js`, and `test/track-list-sorting-and-alignment.test.js` in place to match current markup instead of re-adding the dead name.
+
+Full `npm test`: **701/702 passing** (`test/build140-packaging.test.js`'s executable-bit check is a pre-existing, unrelated filesystem-permission artifact of this checkout, not a regression).
+
 # 1.0.1 — README, per-theme backdrop, Playlists tab cutoff, stale album art, and Discord/MPRIS lag
 
 - Fixed the GitHub README losing its logo and centered header layout during a screenshot refresh; restored while keeping the new screenshots.

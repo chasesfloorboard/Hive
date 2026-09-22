@@ -23,6 +23,6 @@ test('Build 242 keeps context menus compact and left-aligned', () => {
 test('Build 242 keeps Light-mode queue and track durations readable', () => {
   assert.match(css, /html\[data-hive-theme="light"\] #queue-list li\.selected \.q-dur,[\s\S]*?color: #252a31;/);
   assert.match(css, /html\[data-hive-theme="light"\] #queue-list li\.playing \.q-dur/);
-  assert.match(css, /html\[data-hive-theme="light"\] \.song-row\.selected \.s-dur/);
+  assert.match(css, /html\[data-hive-theme="light"\] \.song-row\.selected \.s-length/);
   assert.match(css, /html\[data-hive-theme="light"\] \.inline-track-row\.selected \.inline-track-dur/);
 });

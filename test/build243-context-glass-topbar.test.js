@@ -21,6 +21,6 @@ ok('track delete action has a trash icon', /Delete files from disk.*?icon:'trash
 ok('album delete action has a trash icon', /Delete files from disk.*?icon:'trash'.*?deleteTracksFromDisk\(albumTracks\)/.test(js));
 ok('lyrics menu uses the same icon system', /Show highlighted lyric', icon:'lyrics'/.test(js) && /Alignment', icon:'align'/.test(js));
 ok('star, trash, lyrics, and alignment SVG icons exist', /star:\s*`<svg/.test(icons) && /trash:\s*`<svg/.test(icons) && /lyrics:\s*`<svg/.test(icons) && /align:\s*`<svg/.test(icons));
-ok('light theme forces dark duration text across track surfaces', /html\[data-hive-theme="light"\] \.song-row \.s-dur,[\s\S]*?color:#252a31 !important/.test(css));
+ok('light theme forces dark duration text across track surfaces', /html\[data-hive-theme="light"\] \.song-row \.s-length,[\s\S]*?color:#252a31 !important/.test(css));
 ok('library search input remains present in the topbar', /<input id="search-input" type="text" placeholder="Search library…"/.test(index));
 console.log('Build 247 context/glass/topbar regression checks passed.');

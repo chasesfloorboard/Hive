@@ -1049,7 +1049,7 @@ html[data-hive-theme="light"] .artist-back-icon { filter: invert(1); }
 }
 .song-row:hover { background: var(--control-bg-hover); }
 .song-row .s-plays { text-align: left; font-variant-numeric: tabular-nums; }
-.song-row .s-dur { text-align: right; font-variant-numeric: tabular-nums; }
+.song-row .s-length { text-align: right; font-variant-numeric: tabular-nums; }
 .song-row .s-position { text-align: center; font-variant-numeric: tabular-nums; }
 .song-title-cell { display:flex; align-items:center; gap:9px; min-width:0; }
 .song-thumb { width:30px; height:30px; flex:none; border-radius:5px; object-fit:cover; background:#15151a; box-shadow:0 5px 12px -7px var(--accent-glow); }
@@ -1335,7 +1335,7 @@ html[data-hive-theme="light"] #pb-artist { color:#252a31; }
 #queue-list li.playing .q-dur { color: #fff; }
 html[data-hive-theme="light"] #queue-list li.selected .q-dur,
 html[data-hive-theme="light"] #queue-list li.playing .q-dur,
-html[data-hive-theme="light"] .song-row.selected .s-dur,
+html[data-hive-theme="light"] .song-row.selected .s-length,
 html[data-hive-theme="light"] .inline-track-row.selected .inline-track-dur { color: #252a31; }
 
 .now-playing-card {
@@ -4785,10 +4785,17 @@ body.sandbox-mode .tab-content-host { width:100%; padding:0; overflow:hidden; }
 .tag-editor-body input::placeholder, .tag-editor-body textarea::placeholder { color:var(--text-dimmer); opacity:1; }
 .tag-editor-body .replaygain-grid input::placeholder { color:var(--text-dim); opacity:.9; }
 
-/* ---------------- Build 243 light playback-time contrast ---------------- */
-html[data-hive-theme="light"] .song-row .s-dur,
-html[data-hive-theme="light"] .song-row.selected .s-dur,
-html[data-hive-theme="light"] .song-row.playing .s-dur,
+/* ---------------- Build 243 light playback-time contrast ----------------
+   Track-time text must read clearly against light theme's bright panels
+   without ever being blown out to pure white or crushed to pure black --
+   #252a31 is a dark neutral, not #000, so it stays legible against the
+   theme's near-black default text too. (Note: the library Tracks table's
+   duration cell is .s-length, not .s-dur -- .s-dur doesn't exist in the
+   current markup, so keep this list in sync with songRowHtml()'s actual
+   column classes rather than re-adding the stale name.) */
+html[data-hive-theme="light"] .song-row .s-length,
+html[data-hive-theme="light"] .song-row.selected .s-length,
+html[data-hive-theme="light"] .song-row.playing .s-length,
 html[data-hive-theme="light"] #queue-list .q-dur,
 html[data-hive-theme="light"] #queue-list li.selected .q-dur,
 html[data-hive-theme="light"] #queue-list li.playing .q-dur,
