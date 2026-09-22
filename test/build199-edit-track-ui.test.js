@@ -112,3 +112,66 @@ test('Build 199 makes the edit dialog tabs and Save action consistently sized co
   assert.match(css, /\.tag-actions \.sidebar-add \{[^}]*min-height:34px/);
   assert.match(css, /\.tag-time-grid input, \.tag-time-offset input \{[^}]*min-height:38px/s);
 });
+
+// Real bug: the tag editor (and Settings) were plain centered modals with a
+// full-screen dimmed backdrop -- clicking anywhere behind the window closed
+// it, so the user could never click a different track to re-populate the
+// editor without closing and reopening it, and the window itself couldn't
+// be moved out of the way. Fixed by making both a "floating panel": a
+// non-blocking, draggable window instead of a blocking centered modal.
+test('the tag editor and Settings are floating panels: non-blocking backdrop, draggable header', () => {
+  assert.match(html, /<div id="tag-modal" class="modal-overlay floating-panel hidden">/);
+  assert.match(html, /<div id="settings-modal" class="modal-overlay floating-panel hidden">/);
+  assert.match(css, /\.modal-overlay\.floating-panel \{[^}]*pointer-events:\s*none;/s);
+  assert.match(css, /\.modal-overlay\.floating-panel > \.modal \{[^}]*pointer-events:\s*auto;/s);
+  assert.match(css, /\.modal-overlay\.floating-panel \.modal-header \{[^}]*cursor:\s*grab;/s);
+});
+
+test('backdrop click-to-close explicitly skips floating panels (the real mechanism is pointer-events: none)', () => {
+  const start = renderer.indexOf("const overlay = e.target.closest?.('.modal-overlay');");
+  const end = renderer.indexOf('}, true);', start);
+  const block = renderer.slice(start, end > start ? end : start + 400);
+  assert.match(block, /!overlay\.classList\.contains\('floating-panel'\)/);
+});
+
+test('openModal makes floating panels draggable from their header and only re-centers on a fresh open', () => {
+  const start = renderer.indexOf('function makeFloatingPanelDraggable(modal) {');
+  const end = renderer.indexOf('\n  function openModal(modal) {', start);
+  assert.ok(start >= 0 && end > start, 'expected makeFloatingPanelDraggable() right before openModal()');
+  const dragFn = renderer.slice(start, end);
+  assert.match(dragFn, /handle\.addEventListener\('pointerdown', e => \{/);
+  assert.match(dragFn, /panel\.style\.position = 'fixed';/);
+  assert.match(dragFn, /handle\.setPointerCapture\(e\.pointerId\);/);
+  assert.match(dragFn, /handle\.addEventListener\('pointermove', e => \{/);
+
+  const openStart = renderer.indexOf('function openModal(modal) {');
+  const openEnd = renderer.indexOf('\n  function closeModal', openStart);
+  const openBlock = renderer.slice(openStart, openEnd);
+  assert.match(openBlock, /const wasHidden = modal\.classList\.contains\('hidden'\);/);
+  assert.match(openBlock, /if \(modal\.classList\.contains\('floating-panel'\)\) \{/);
+  assert.match(openBlock, /makeFloatingPanelDraggable\(modal\);/);
+  assert.match(openBlock, /if \(wasHidden\) \{ panel\.style\.position = ''/);
+});
+
+// Real bug/UX gap: with the tag editor no longer blocking clicks, clicking a
+// different track or album behind it did nothing to the editor's content --
+// the user still had to close and reopen it to edit something else.
+test('clicking a track or album while the tag editor is open re-populates it in place', () => {
+  assert.match(renderer, /function tagEditorIsOpen\(\) \{ return !!\(el\.tagModal && !el\.tagModal\.classList\.contains\('hidden'\)\); \}/);
+  assert.match(renderer, /function followTagEditorWithTrack\(track\) \{ if \(track && tagEditorIsOpen\(\)\) void openTagEditor\(track\); \}/);
+  assert.match(renderer, /albumTracks\.length\) void openTagEditor\(albumTracks\[0\], albumTracks\);/);
+
+  // Song-row plain click (the non-multi-select branch) follows the editor.
+  const songClickStart = renderer.indexOf("table.addEventListener('click', e => {");
+  const songClickEnd = renderer.indexOf("table.addEventListener('dblclick'", songClickStart);
+  const songClickBlock = renderer.slice(songClickStart, songClickEnd);
+  assert.match(songClickBlock, /followTagEditorWithTrack\(track\);/);
+
+  // Album-card plain click (both the Albums-grid branch and the inline
+  // artist-browser branch) follows the editor.
+  const coverStart = renderer.indexOf('function attachCoverInteractions(card, model) {');
+  const coverEnd = renderer.indexOf("card.addEventListener('dblclick'", coverStart);
+  const coverBlock = renderer.slice(coverStart, coverEnd);
+  const followCount = (coverBlock.match(/followTagEditorWithAlbum\(album\);/g) || []).length;
+  assert.equal(followCount, 2, 'expected both the inline and grid album click branches to follow the tag editor');
+});

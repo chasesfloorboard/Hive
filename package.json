@@ -33,7 +33,7 @@
   "build": {
     "appId": "com.local.beehive",
     "productName": "Hive",
-    "icon": "resources/hive-logo-glass.png",
+    "icon": "resources/hive-minimal-black.png",
     "asarUnpack": [
       "app/workers/database-worker.py",
       "app/workers/scanner-worker.js",

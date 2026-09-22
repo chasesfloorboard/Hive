@@ -61,18 +61,32 @@ test('Build 171 adds spacing between Rating and its submenu arrow', () => {
 // A bulk selection where every track is already Loved must still leave every
 // track Loved when the user clicks "Love" in the Rating submenu -- it is a
 // "make sure these are Loved" action, not a toggle that can unlove everything
-// just because the selection happened to already be all-Loved. Bulk therefore
-// gets two explicit actions (Love / Remove Love) instead of one toggle; a
-// single-track selection keeps the toggle since there is no ambiguity there.
-test('bulk Love context-menu action always loves, with a separate explicit Remove Love action', () => {
+// just because the selection happened to already be all-Loved. Bulk gets
+// exactly one heart action, labeled with the track count, never a toggle and
+// never a separate Remove-Love button; a single-track selection keeps its own
+// toggle since there is no ambiguity there.
+test('bulk Love context-menu action is a single "Love N tracks" button that always loves, never a toggle', () => {
   const start = renderer.indexOf("label:'Rating',icon:'star',submenu:[");
   const end = renderer.indexOf("{label:'5 stars'", start);
   assert.ok(start >= 0 && end > start, 'Rating submenu must be present');
   const block = renderer.slice(start, end);
-  assert.match(block, /bulk \? \[/, 'bulk selections must branch to distinct menu entries');
+  assert.match(block, /bulk \? \[/, 'bulk selections must branch to a distinct menu entry');
+  assert.match(block, /label:`\$\{allLoved \? 'Loved' : 'Love'\} \$\{selected\.length\} tracks`/, 'bulk Love must be labeled with the track count');
   assert.match(block, /action:\(\)=>applyLove\(true\)/, 'bulk Love must always apply true, never toggle');
-  assert.match(block, /label:'Remove Love'.*action:\(\)=>applyLove\(false\)/, 'bulk must expose an explicit, separate unlove action');
+  assert.doesNotMatch(block, /label:'Remove Love'/, 'bulk must not expose a separate unlove button');
   assert.doesNotMatch(block, /applyLove\(bulk \? !allLoved/, 'bulk Love must not toggle off when the selection is already all-Loved');
+});
+
+// The album context menu (right-click an album or multi-selected albums)
+// follows the same single-button convention as the track context menu.
+test('album context menu Love button is also a single "Love N tracks" button, no Remove Love', () => {
+  const start = renderer.indexOf("async function showAlbumContextMenu(e, album)");
+  const end = renderer.indexOf("\n\n  // click = preview panel", start);
+  assert.ok(start >= 0 && end > start, 'showAlbumContextMenu must exist');
+  const block = renderer.slice(start, end);
+  assert.match(block, /label:`\$\{allLoved \? 'Loved' : 'Love'\} \$\{albumTracks\.length\} tracks`/);
+  assert.match(block, /icon:allLoved \? '♥' : '♡', loved:true, active:allLoved/);
+  assert.doesNotMatch(block, /label:'Remove Love'/);
 });
 
 // setTrackRating used to await window.beehive.setRating() before touching any

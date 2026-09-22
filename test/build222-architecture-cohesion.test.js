@@ -63,6 +63,29 @@ test('getSimilarArtists fails clearly when no Last.fm API key is configured', as
   await assert.rejects(() => service.getSimilarArtists('JPEGMAFIA'), /Last\.fm API key/);
 });
 
+// Real bug, confirmed by reading ListenBrainz's own documented API: it
+// requires the literal "Token " prefix on the Authorization header, not just
+// the bare user token. Every now-playing update and scrobble submission was
+// silently rejected with 401 without it -- ListenBrainz scrobbling had never
+// actually worked, regardless of whether a valid token was entered.
+test('ListenBrainz requests use the required "Token " Authorization prefix, for both now-playing and scrobble submission', async (t) => {
+  const cfg = { scrobbling: { listenbrainz: { enabled: true, token: 'lb-test-token' }, lastfm: {}, enabled: true, thresholdPercent: 50, thresholdSeconds: 240, includePodcasts: false } };
+  const service = new ScrobblingService(async () => cfg, async (next) => { Object.assign(cfg, next); return cfg; }, { userData: () => require('node:os').tmpdir() });
+  const originalFetch = global.fetch;
+  const seenAuthHeaders = [];
+  global.fetch = async (url, options) => {
+    seenAuthHeaders.push(options?.headers?.Authorization);
+    return { ok: true, text: async () => '{}' };
+  };
+  t.after(() => { global.fetch = originalFetch; });
+
+  await service.sendNowPlaying({ path: '/x.mp3', title: 'Title', artist: 'Artist' });
+  await service.submitItem({ service: 'listenbrainz', timestamp: 123, metadata: { artist: 'Artist', title: 'Title' } }, await service.config());
+
+  assert.ok(seenAuthHeaders.length >= 2, 'expected both a now-playing and a submit-listens request');
+  for (const header of seenAuthHeaders) assert.equal(header, 'Token lb-test-token');
+});
+
 test('MPRIS navigation capabilities are derived from player state', () => {
   assert.match(mpris, /get CanGoNext\(\) \{ return !!this\.owner\.state\.canGoNext; \}/);
   assert.match(mpris, /get CanGoPrevious\(\) \{ return !!this\.owner\.state\.canGoPrevious; \}/);

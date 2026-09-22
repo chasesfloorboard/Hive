@@ -53,3 +53,41 @@ test('auto-tag opens with an automatic best-release search while retaining human
   assert.match(source, /Number\(best\.score \|\| 0\) >= 180/);
   assert.match(source, /mapped\.length === albumTracks\.length/);
 });
+
+// Real bug, confirmed live: editing an album's cover showed a genuinely
+// blank image (not even the no-cover placeholder) until Hive was restarted.
+// Root cause: setPendingArtwork's local-file-pick path stores an ALREADY
+// coverSrc()-wrapped mbcover:// URL into track.cover as the optimistic
+// preview. buildAlbums() carries that into album.cover, and the album grid
+// calls coverSrc(album.cover) again on every render -- coverSrc was not
+// idempotent, so the second call re-wrapped the already-wrapped URL into a
+// nested mbcover://mbcover%3A%2F%2F... string that can never resolve to a
+// real file. A full library rescan (restart) is what overwrites track.cover
+// with a plain, unwrapped path again, which is why it "fixed itself" then.
+test('coverSrc is idempotent -- calling it twice on its own output does not re-wrap an already-resolved URL', () => {
+  const source = fs.readFileSync(path.join(__dirname, '..', 'app', 'renderer', 'renderer.js'), 'utf8');
+  const normStart = source.indexOf('function normalizeSpotifyArtworkSource(value) {');
+  const normEnd = source.indexOf('\n  }', normStart);
+  const coverStart = source.indexOf('function coverSrc(coverFile) {');
+  const coverEnd = source.indexOf('\n  }', coverStart);
+  assert.ok(normStart >= 0 && coverStart >= 0);
+  const sandbox = new Function(`
+    const window = { beehive: { coverUrl: (f) => f ? 'mbcover://' + encodeURIComponent(f) : null } };
+    function placeholderCover() { return 'data:image/svg+xml;utf8,placeholder'; }
+    ${source.slice(normStart, normEnd + 4)}
+    ${source.slice(coverStart, coverEnd + 4)}
+    return { coverSrc };
+  `)();
+
+  const wrappedOnce = sandbox.coverSrc('/home/user/Music/cover.jpg');
+  assert.match(wrappedOnce, /^mbcover:\/\//, 'a bare filesystem path must be wrapped into an mbcover:// URL');
+  const wrappedTwice = sandbox.coverSrc(wrappedOnce);
+  assert.equal(wrappedTwice, wrappedOnce, 'calling coverSrc on its own already-wrapped output must be a no-op, not a second wrap');
+  assert.doesNotMatch(wrappedTwice, /mbcover%3A%2F%2F/i, 'must never nest-encode a previous mbcover:// URL inside another one');
+
+  // The other already-resolved schemes this function has always passed
+  // through unchanged must still work.
+  for (const passthrough of ['https://example.com/cover.jpg', 'data:image/png;base64,abc', 'blob:http://localhost/xyz']) {
+    assert.equal(sandbox.coverSrc(passthrough), passthrough);
+  }
+});

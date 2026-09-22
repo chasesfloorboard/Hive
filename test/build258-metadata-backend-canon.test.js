@@ -68,8 +68,11 @@ test('ordinary metadata verification stays inside the bundled Mutagen backend', 
   assert.doesNotMatch(writer, /ensureMM\(\)|parseFile\(/);
 });
 
-test('metadata writes retain staged recovery commit', () => {
-  assert.match(main, /backupFileBeforeMetadataCommit/);
+// The full-file backup (backupFileBeforeMetadataCommit) this used to check
+// for was removed -- see build256-metadata-safety.test.js's replacement
+// test for why. Staged atomic commit via commitMetadataTemp remains.
+test('metadata writes retain staged atomic commit', () => {
+  assert.doesNotMatch(main, /backupFileBeforeMetadataCommit/);
   assert.match(main, /commitMetadataTemp\(temp, trackPath/);
 });
 

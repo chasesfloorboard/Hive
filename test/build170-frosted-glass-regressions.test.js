@@ -19,8 +19,20 @@ test('Build 170 makes the Left sidebar glass toggle remove the sidebar glass pse
   assert.match(css, /#sidebar\.player-glass-transparent::before\s*\{[\s\S]*?background:\s*transparent\s*!important;[\s\S]*?backdrop-filter:\s*none\s*!important;/);
 });
 
-test('Build 170 makes the Lyrics glass toggle remove the lyrics inner surface too', () => {
-  assert.match(css, /#lyrics-section\.player-glass-transparent\s+\.sidebar-lyrics\s*\{[\s\S]*?background:\s*transparent\s*!important;[\s\S]*?border-color:\s*transparent\s*!important;/);
+// Build 170 made the lyrics inner surface fully transparent when Frosted
+// Glass was off, leaving #lyrics-section itself borderless too -- no
+// visible bubble at all. A later fix moved the border/background onto
+// #lyrics-section itself instead, which created a NEW, different bug: since
+// #lyrics-section has no padding and .sidebar-lyrics is inset from it by
+// its own 10px/6px margin, the visible bubble grew to fill the larger
+// outer box, a real, user-reported size change between Frosted Glass on
+// and off. Fixed by keeping the border/background on .sidebar-lyrics in
+// BOTH states (mirroring the glass-on structure) so the bubble's footprint
+// never changes -- only its blur/tint does. See the comment directly above
+// this rule in styles.css.
+test('turning off Frosted Glass keeps the lyrics bubble on .sidebar-lyrics, not on the larger outer #lyrics-section box', () => {
+  assert.match(css, /#lyrics-section\.player-glass-transparent\s*\{[\s\S]*?background:\s*transparent\s*!important;[\s\S]*?border-color:\s*transparent\s*!important;/);
+  assert.match(css, /#lyrics-section\.player-glass-transparent\s+\.sidebar-lyrics\s*\{[\s\S]*?background:\s*var\(--panel-strong\)\s*!important;[\s\S]*?border:\s*1px solid color-mix\(in srgb, var\(--accent\) 24%, var\(--border\)\)\s*!important;/);
 });
 
 

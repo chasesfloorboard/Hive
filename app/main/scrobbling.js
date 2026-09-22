@@ -164,7 +164,10 @@ class ScrobblingService {
     const meta = this.metadata(track);
     const tasks = [];
     if (cfg.listenbrainz.enabled && cfg.listenbrainz.token) tasks.push(fetch('https://api.listenbrainz.org/1/submit-listens', {
-      method: 'POST', headers: { Authorization: cfg.listenbrainz.token, 'Content-Type': 'application/json', 'User-Agent': 'Hive/1.0.0 (ListenBrainz)' },
+      // ListenBrainz's API requires the literal "Token " prefix, not just the
+      // bare user token -- every request was silently rejected with 401
+      // without it.
+      method: 'POST', headers: { Authorization: `Token ${cfg.listenbrainz.token}`, 'Content-Type': 'application/json', 'User-Agent': 'Hive/1.0.0 (ListenBrainz)' },
       body: JSON.stringify({ listen_type: 'playing_now', payload: [{ track_metadata: { artist_name: meta.artist, track_name: meta.title, release_name: meta.album || undefined, additional_info: meta.additional } }] })
     }).then(r => { if (!r.ok) throw new Error(`ListenBrainz ${r.status}`); return true; }).catch(() => false));
     if (cfg.lastfm.enabled && cfg.lastfm.apiKey && cfg.lastfm.sharedSecret && cfg.lastfm.sessionKey) {
@@ -200,7 +203,7 @@ class ScrobblingService {
     const meta = item.metadata || {};
     if (item.service === 'listenbrainz' && cfg.listenbrainz.enabled && cfg.listenbrainz.token) {
       const response = await fetch('https://api.listenbrainz.org/1/submit-listens', {
-        method: 'POST', headers: { Authorization: cfg.listenbrainz.token, 'Content-Type': 'application/json', 'User-Agent': 'Hive/1.0.0 (ListenBrainz)' },
+        method: 'POST', headers: { Authorization: `Token ${cfg.listenbrainz.token}`, 'Content-Type': 'application/json', 'User-Agent': 'Hive/1.0.0 (ListenBrainz)' },
         body: JSON.stringify({ listen_type: 'single', payload: [{ listened_at: item.timestamp, track_metadata: { artist_name: meta.artist, track_name: meta.title, release_name: meta.album || undefined, additional_info: meta.additional } }] })
       });
       if (!response.ok) throw new Error(`ListenBrainz ${response.status}`);

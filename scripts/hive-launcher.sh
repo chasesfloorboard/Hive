@@ -5,7 +5,7 @@ PROJECT_DIR="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")/.." && pwd -P)"
 ELECTRON_DIST="$PROJECT_DIR/node_modules/electron/dist"
 ELECTRON_LOCAL="$ELECTRON_DIST/electron"
 STABLE_ROOT="${XDG_DATA_HOME:-$HOME/.local/share}/hive/runtime"
-STABLE_ELECTRON="$STABLE_ROOT/electron"
+STABLE_ELECTRON="$STABLE_ROOT/Hive"
 
 log() { printf '[Hive launcher] %s\n' "$*"; }
 
@@ -14,22 +14,34 @@ log() { printf '[Hive launcher] %s\n' "$*"; }
 # game. Keep one stable Linux executable path and point its resources at the
 # current build instead. The executable itself is hard-linked when possible so
 # /proc/<pid>/exe remains the same path across builds.
+#
+# The stable binary is named "Hive", not "electron": Discord's own local game
+# detection scans running executables, but a plain "electron" binary is
+# indistinguishable from the dozens of unrelated non-game Electron apps
+# (VS Code, Slack, Signal, Discord itself) that all ship one -- it was never
+# offered as a detectable game because of that, even though the path itself
+# was already stable. Electron resolves its own resources (locales/, *.pak,
+# etc.) from the executable's directory, not its filename, so renaming just
+# the binary is safe.
 prepare_stable_runtime() {
   [[ -x "$ELECTRON_LOCAL" ]] || { log "Electron is not installed: $ELECTRON_LOCAL" >&2; return 1; }
   mkdir -p "$STABLE_ROOT"
+  rm -f -- "$STABLE_ROOT/electron"
 
   local item name target
   for item in "$ELECTRON_DIST"/*; do
     [[ -e "$item" || -L "$item" ]] || continue
     name="$(basename "$item")"
-    target="$STABLE_ROOT/$name"
-    rm -rf -- "$target"
     if [[ "$name" == "electron" ]]; then
+      target="$STABLE_ELECTRON"
+      rm -rf -- "$target"
       if ! ln "$item" "$target" 2>/dev/null; then
         cp -f -- "$item" "$target"
       fi
       chmod +x "$target" 2>/dev/null || true
     else
+      target="$STABLE_ROOT/$name"
+      rm -rf -- "$target"
       ln -s -- "$item" "$target"
     fi
   done

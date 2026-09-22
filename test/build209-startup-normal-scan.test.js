@@ -28,7 +28,7 @@ test('Build 209 keeps the thorough integrity scanner available as an explicit op
 // just above it, not block the window from becoming interactive.
 test('library watchers start in the background and never block app startup', () => {
   const start = main.indexOf("startupDebug('LIBRARY WATCHERS START');");
-  const end = main.indexOf("if (app.isPackaged)", start);
+  const end = main.indexOf("app.isPackaged", start);
   assert.ok(start >= 0 && end > start, 'expected to find the library watchers startup block');
   const block = main.slice(start, end);
   assert.doesNotMatch(block, /await startLibraryWatchers\(\)/);

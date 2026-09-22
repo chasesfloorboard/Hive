@@ -9,7 +9,13 @@ function ok(name, condition) { if (!condition) throw new Error(name); console.lo
 ok('themed search stays in normal flow with the navigation row', /html\.theme-window-bar-enabled \.topbar-right\s*\{[\s\S]*?position:\s*relative;[\s\S]*?align-self:\s*center;/.test(css));
 ok('topbar reserves space for the visible search field', /html\.theme-window-bar-enabled \.topbar-app-row\s*\{[\s\S]*?padding-right: 250px;/.test(css));
 ok('no-glass main keeps a real accent-tinted outline', /#main\.player-glass-transparent[\s\S]*?border:1px solid color-mix\(in srgb,var\(--accent\) 24%,var\(--border\)\) !important/.test(css));
-ok('no-glass playbar keeps a real accent-tinted outline', /#main\.player-glass-transparent[\s\S]*?#topbar\.player-glass-transparent[\s\S]*?border:1px solid color-mix\(in srgb,var\(--accent\) 24%,var\(--border\)\) !important/.test(css));
+// Real bug, confirmed by the user: #topbar used to share the same
+// all-sides-border rule as #main/#sidebar/#queue-panel/#playbar when
+// Frosted Glass was off, adding an outline to its left/right/top edges --
+// edges that never had one with Frosted Glass on (#topbar.player-glass-surface
+// is border-bottom-only). #topbar now has its own no-glass rule: a real
+// accent-tinted line on the bottom only, `border:none` otherwise.
+ok('no-glass topbar keeps only a bottom accent-tinted line, not a full outline', /#topbar\.player-glass-transparent\s*\{[\s\S]*?border:none !important;[\s\S]*?border-bottom:1px solid color-mix\(in srgb,var\(--accent\) 24%,var\(--border\)\) !important/.test(css));
 ok('track Rating has a star icon', /\{label:'Rating',icon:'star',submenu:\[/.test(js));
 ok('track delete action has a trash icon', /Delete files from disk.*?icon:'trash'/.test(js));
 ok('album delete action has a trash icon', /Delete files from disk.*?icon:'trash'.*?deleteTracksFromDisk\(albumTracks\)/.test(js));

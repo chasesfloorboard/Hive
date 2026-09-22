@@ -8,7 +8,7 @@ const http = require('http');
 const { pathToFileURL } = require('url');
 const { Readable } = require('stream');
 const util = require('util');
-const { fork, spawn, execFileSync, execFile } = require('child_process');
+const { fork, spawn, execFileSync } = require('child_process');
 const { readWavMusicBeeLove: readSharedWavMusicBeeLove, readWavMusicBeePopmRaw: readSharedWavMusicBeePopmRaw } = require('./wav-id3');
 const { readMp3MusicBeeLove: readSharedMp3MusicBeeLove } = require('./musicbee-love');
 const { analyzeLoveValues, isLoveFieldName, normalizeLoveValue, CANONICAL_LOVE_TAG } = require('./love-integrity');
@@ -69,14 +69,28 @@ function getPortableApplicationRoot() {
   return HIVE_PROJECT_ROOT;
 }
 const PORTABLE_ROOT = () => path.resolve(getPortableApplicationRoot());
-function stableHiveDataRoot() {
-  // Build folders are disposable; user state is not. Keep Hive's database,
-  // settings, artwork cache, playlists, provider state and UI preferences in
-  // one stable per-user profile so downloading a new development build does
-  // not look like installing a new application.
+// Pre-portable-mode location (still used as a migration source and as the
+// fallback when Hive isn't running from a folder literally named "hive" --
+// see stableHiveDataRoot below).
+function legacyStableConfigRoot() {
   if (process.platform === 'win32') return path.join(process.env.APPDATA || path.join(process.env.USERPROFILE || process.cwd(), 'AppData', 'Roaming'), 'Hive');
   if (process.platform === 'darwin') return path.join(process.env.HOME || process.cwd(), 'Library', 'Application Support', 'Hive');
   return path.join(process.env.XDG_CONFIG_HOME || path.join(process.env.HOME || process.cwd(), '.config'), 'Hive');
+}
+function stableHiveDataRoot() {
+  // Fully portable: the database, settings, artwork cache, playlists,
+  // provider state, plugins and themes (all subfolders of this root, via
+  // USER_DATA()) live INSIDE the Hive folder itself, not in a per-machine
+  // home-directory location -- so moving/copying the whole folder to another
+  // drive or machine (a removable SSD, say) brings everything with it.
+  // configureStableDataPaths() below handles a one-time migration from the
+  // older ~/.config-based location for anyone upgrading from before this.
+  const hiveRoot = findHiveContainerRoot(PORTABLE_ROOT());
+  if (hiveRoot) return path.join(hiveRoot, 'Hive Data');
+  // Only reachable if Hive is running from a folder not literally named
+  // "hive" (e.g. a renamed checkout) -- keep the old per-OS location as a
+  // reasonable fallback rather than writing data next to arbitrary code.
+  return legacyStableConfigRoot();
 }
 const STABLE_DATA_ROOT = () => stableHiveDataRoot();
 const LEGACY_BUILD_DATA_ROOT = () => path.join(PORTABLE_ROOT(), 'data');
@@ -185,6 +199,25 @@ function configureStableDataPaths() {
     const legacy = findLegacyBuildDataRoot();
     if (legacy && path.resolve(legacy) !== path.resolve(dataRoot)) {
       try { copyDirectoryContentsSync(legacy, dataRoot); } catch (err) { console.warn('[Hive] Stable profile migration skipped:', err?.message || String(err)); }
+    }
+    // Portable-mode migration: anyone with an existing install has their real
+    // database/settings/playlists/plugins sitting in the older ~/.config-style
+    // location (legacyStableConfigRoot), not inside the Hive folder. Copy it
+    // in once -- never delete the original, so nothing is lost even if this
+    // runs twice or something goes wrong partway through.
+    // "Tag Backups" is deliberately excluded: it's pre-write safety copies of
+    // whole audio files, not app state, and on a real library can reach many
+    // tens of GB with no relationship to the size of Hive's actual settings/
+    // database -- copying it here would make first launch after this change
+    // hang for a very long time and could easily not fit on a smaller
+    // destination drive. It stays in the original ~/.config location.
+    const legacyConfig = legacyStableConfigRoot();
+    if (path.resolve(legacyConfig) !== path.resolve(dataRoot)) {
+      try {
+        if (copyDirectoryContentsSync(legacyConfig, dataRoot, { skipDirs: new Set([...BACKUP_EXCLUDED_DIRS, 'Tag Backups']) })) {
+          console.log(`[Hive] Migrated user data into the portable Hive folder from ${legacyConfig} (Tag Backups intentionally left behind, see comment). The original is untouched; it can be removed manually once you've confirmed everything moved over.`);
+        }
+      } catch (err) { console.warn('[Hive] Portable-mode data migration skipped:', err?.message || String(err)); }
     }
     try { fs.writeFileSync(marker, JSON.stringify({ migratedAt:new Date().toISOString() }) + '\n', { mode:0o600 }); } catch {}
   }
@@ -382,10 +415,6 @@ function windowBoundsSnapshot(window) {
 const CUSTOM_CSS_PATH = () => path.join(USER_DATA(), 'custom-theme.css');
 const THEME_META_PATH = () => path.join(USER_DATA(), 'custom-theme.json');
 const PLUGINS_DIR = () => path.join(USER_DATA(), 'plugins');
-const MUSIC_PRESENCE_SETTINGS_PATH = () => {
-  const home = process.env.HOME || process.env.USERPROFILE || '';
-  return home ? path.join(home, '.local', 'share', 'Music Presence', 'settings.json') : '';
-};
 const artworkProxy = new ArtworkProxy(() => COVERS_DIR());
 const mpris = new BeehiveMPRIS({
   userData: USER_DATA,
@@ -454,11 +483,15 @@ function readDiscordPresenceConfigSync() {
   return { loonUrl, loonCa };
 }
 const discordPresenceConfig = readDiscordPresenceConfigSync();
+// Hive's own activity-type preference -- no longer Music Presence's
+// settings.json (Hive publishes Rich Presence directly and does not use or
+// share state with Music Presence anymore).
+const DISCORD_ACTIVITY_TYPE_PATH = () => path.join(USER_DATA(), 'discord-activity-type.json');
 const discordPresence = new DiscordPresence({
   clientId: DISCORD_PRESENCE_CLIENT_ID,
   loonUrl: discordPresenceConfig.loonUrl,
   loonCa: discordPresenceConfig.loonCa,
-  activityTypeSettingsPath: MUSIC_PRESENCE_SETTINGS_PATH()
+  activityTypeSettingsPath: DISCORD_ACTIVITY_TYPE_PATH()
 });
 discordPresence.on('error', (err) => startupDebug('DISCORD PRESENCE ERROR', { message: err?.message || String(err) }));
 let gpuCrashFallbackRecorded = false;
@@ -921,6 +954,13 @@ ipcMain.handle('yearly-wrap:copyImage', async (_evt, dataUrl = '') => {
   return { ok:true };
 });
 
+// Despite the "yearly-wrap" name (this channel predates its current use),
+// this is now the shared source for Hive's own logo image data too -- the
+// main renderer's top-left brand button and About dialog fetch it via the
+// same window.beehive.getYearlyWrapBrandIcon() call (see renderer.js, "The
+// Hive logo is a shared brand asset" comment). The Yearly Wrap window
+// itself no longer shows a logo/watermark toggle, but this handler must
+// stay for that other, still-live caller.
 ipcMain.handle('yearly-wrap:getBrandIcon', async () => {
   try {
     const icon = nativeImage.createFromPath(hiveLogoPath());
@@ -1237,7 +1277,6 @@ ipcMain.handle('audio:integrity-scan-checkpoint', async () => getAudioIntegrityS
 ipcMain.handle('audio:integrity-scan-resume', async (evt) => resumeAudioIntegrityScan(evt.sender));
 ipcMain.handle('audio:integrity-scan-start-over', async () => { await clearAudioIntegrityScanCheckpoint(); return { status:'cleared' }; });
 ipcMain.handle('audio:integrity-repair-love', async (evt, items = []) => repairLoveMetadataFiles(items, evt.sender));
-ipcMain.handle('audio:integrity-open-backups', async () => { await fsp.mkdir(TAG_BACKUPS_DIR(), { recursive:true, mode:0o700 }); await shell.openPath(TAG_BACKUPS_DIR()); return { dir: TAG_BACKUPS_DIR() }; });
 ipcMain.handle('audio:integrity-repair-corrupt', async (evt, item = {}) => repairCorruptAudioFile(item, evt.sender));
 ipcMain.handle('audio:integrity-report', async (_evt, result = null) => generateAudioIntegrityReport(result));
 ipcMain.handle('audio:integrity-open-reports', async () => { await fsp.mkdir(AUDIO_INTEGRITY_REPORTS_DIR(), { recursive:true, mode:0o700 }); await shell.openPath(AUDIO_INTEGRITY_REPORTS_DIR()); return { dir:AUDIO_INTEGRITY_REPORTS_DIR() }; });
@@ -1362,11 +1401,13 @@ updateChecker.onStatus(status => {
     .catch(err => startupDebug('LIBRARY WATCHERS FAILED', { message:err?.message || String(err) }));
   // A silent, passive check -- this only ever updates the status IPC
   // consumers can read (see Settings > About), never shows a popup or
-  // downloads anything on its own. app.isPackaged guards it because
-  // electron-updater expects a real packaged build's app-update.yml; running
-  // this against an unpacked dev checkout would just log noisy, meaningless
-  // errors every launch.
-  if (app.isPackaged) {
+  // downloads anything on its own. Gated on the same reliable "actually
+  // packaged" signal runtimeResourcePath() uses (see session-log.js) rather
+  // than bare app.isPackaged, which a renamed portable-runtime binary (see
+  // hive-launcher.sh) makes unreliable; electron-updater expects a real
+  // packaged build's app-update.yml, and running this against an unpacked
+  // dev checkout would just log noisy, meaningless errors every launch.
+  if (!process.env.HIVE_PORTABLE_ROOT && app.isPackaged) {
     setTimeout(() => { void updateChecker.check(); }, 5000);
   }
   if (Array.isArray(recoveredMetadataJobs) && recoveredMetadataJobs.length) {
@@ -1650,47 +1691,33 @@ ipcMain.handle('config:saveUiState', async (_evt, uiState = {}) => {
   return config.uiState;
 });
 
-ipcMain.handle('music-presence:getSettings', async () => {
-  if (process.platform !== 'linux') return { supported: false, reason: 'Music Presence configuration control is currently supported on Linux only.' };
-  const settingsPath = MUSIC_PRESENCE_SETTINGS_PATH();
-  if (!settingsPath || !fs.existsSync(settingsPath)) {
-    return { supported: true, available: false, path: settingsPath || null, reason: 'Music Presence settings.json was not found.' };
-  }
-  const settings = await readJsonSafe(settingsPath, null);
-  if (!settings || typeof settings !== 'object') {
-    return { supported: true, available: false, path: settingsPath, reason: 'Music Presence settings.json could not be read.' };
-  }
-  return { supported: true, available: true, path: settingsPath, settings };
+// Hive's own Discord Rich Presence status/control -- replaces the old
+// music-presence:* handlers now that Hive publishes directly instead of
+// delegating to the external Music Presence app.
+ipcMain.handle('discord-presence:getSettings', async () => {
+  const status = discordPresence.status();
+  return {
+    configured: status.configured,
+    discordConnected: status.discordConnected,
+    loonConnected: status.loonConnected,
+    activityType: status.activityType
+  };
 });
 
-ipcMain.handle('music-presence:saveSettings', async (_evt, patch = {}) => {
-  if (process.platform !== 'linux') throw new Error('Music Presence configuration control is currently supported on Linux only.');
-  const settingsPath = MUSIC_PRESENCE_SETTINGS_PATH();
-  if (!settingsPath || !fs.existsSync(settingsPath)) throw new Error('Music Presence settings.json was not found.');
-  const current = await readJsonSafe(settingsPath, null);
-  if (!current || typeof current !== 'object') throw new Error('Music Presence settings.json could not be read.');
-  const next = { ...current, presence: { ...(current.presence || {}) } };
-  const activity = String(patch?.activityType || '').toLowerCase();
-  if (!['listening', 'playing', 'watching'].includes(activity)) throw new Error('Invalid Music Presence activity type.');
-  const applicationId = String(patch?.applicationId || '').trim();
-  if (applicationId && !/^\d{15,25}$/.test(applicationId)) throw new Error('Discord application ID must be a numeric Discord application ID.');
-  next.presence.activity_type = activity;
-  next.presence.custom_discord_application_id = { valid: !!applicationId, value: applicationId };
-  await writeJsonSafe(settingsPath, next);
-  return { supported: true, available: true, path: settingsPath, settings: next };
+ipcMain.handle('discord-presence:setActivityType', async (_evt, patch = {}) => {
+  const activityType = discordPresence.setActivityType(patch?.activityType);
+  return { activityType };
 });
 
-ipcMain.handle('music-presence:restart', async () => {
-  if (process.platform !== 'linux') return { ok: false, reason: 'Music Presence restart control is currently supported on Linux only.' };
-  return await new Promise((resolve) => {
-    execFile('systemctl', ['--user', 'restart', 'music-presence.service'], { timeout: 10000 }, (error, stdout, stderr) => {
-      if (error) {
-        resolve({ ok: false, reason: String(stderr || error.message || 'Could not restart Music Presence.').trim() });
-        return;
-      }
-      resolve({ ok: true });
-    });
-  });
+ipcMain.handle('discord-presence:restart', async () => {
+  if (!discordPresenceConfig.loonUrl) return { ok: false, reason: 'Discord Rich Presence is not configured (no loon connection set up). See setup-music-presence.sh.' };
+  try {
+    discordPresence.stop();
+    discordPresence.start();
+    return { ok: true };
+  } catch (err) {
+    return { ok: false, reason: err?.message || 'Could not restart the Discord Rich Presence connection.' };
+  }
 });
 
 ipcMain.handle('library:clearCacheNow', async () => clearLibraryCacheData({ clearCovers: true }));
@@ -1838,6 +1865,64 @@ ipcMain.handle('theme:export', async (_evt, payload={}) => {
   const name=String(payload?.name||'Hive Theme').trim()||'Hive Theme';
   await fsp.writeFile(res.filePath, JSON.stringify({format:'hive-theme',version:1,name,css},null,2),'utf8');
   return { canceled:false, path:res.filePath };
+});
+
+// A themes folder the user can just drop .hive-theme packs into, rather than
+// requiring the file-picker Import flow every time. Same on-disk format
+// theme:export already writes, so a pack exported from Hive (or shared by
+// someone else) drops straight in and shows up.
+const THEMES_DIR = () => path.join(USER_DATA(), 'themes');
+ipcMain.handle('themes:list', async () => {
+  const dir = THEMES_DIR();
+  await fsp.mkdir(dir, { recursive: true, mode: 0o700 });
+  let entries = [];
+  try { entries = await fsp.readdir(dir); } catch { return { dir, themes: [] }; }
+  const themes = [];
+  for (const file of entries) {
+    if (!file.toLowerCase().endsWith('.hive-theme')) continue;
+    try {
+      const text = await fsp.readFile(path.join(dir, file), 'utf8');
+      const pack = JSON.parse(text);
+      const css = String(pack?.css || '');
+      if (!css.trim()) continue;
+      themes.push({ file, name: String(pack?.name || path.basename(file, '.hive-theme')), css, stock: !!pack?.stock });
+    } catch { /* skip an unreadable/invalid pack rather than fail the whole list */ }
+  }
+  themes.sort((a, b) => a.name.localeCompare(b.name));
+  return { dir, themes };
+});
+ipcMain.handle('themes:openFolder', async () => {
+  const dir = THEMES_DIR();
+  await fsp.mkdir(dir, { recursive: true, mode: 0o700 });
+  await shell.openPath(dir);
+  return { dir };
+});
+// Writes Hive's built-in themes into the themes folder as ordinary
+// .hive-theme packs, so a user who opens the folder can see/copy/edit them
+// like any other theme instead of finding it empty. Never overwrites a file
+// that already exists there -- a stock theme the user has started editing
+// (or simply not touched) keeps whatever is on disk.
+ipcMain.handle('themes:seedStock', async (_evt, themes = []) => {
+  const dir = THEMES_DIR();
+  await fsp.mkdir(dir, { recursive: true, mode: 0o700 });
+  let seeded = 0;
+  for (const theme of Array.isArray(themes) ? themes : []) {
+    const file = String(theme?.file || '').trim();
+    const name = String(theme?.name || '').trim();
+    const css = String(theme?.css || '');
+    if (!file || !/^[a-z0-9-]+\.hive-theme$/i.test(file) || !name || !css.trim()) continue;
+    const target = path.join(dir, file);
+    try { await fsp.access(target); continue; } catch {}
+    try {
+      // stock:true marks this as a seeded copy of a built-in theme rather
+      // than a user-authored one, so the dropdown (which already lists the
+      // built-in by name) can skip it unless its css no longer matches the
+      // canonical built-in -- i.e. the user has actually edited it.
+      await fsp.writeFile(target, JSON.stringify({ format: 'hive-theme', version: 1, name, css, stock: true }, null, 2), 'utf8');
+      seeded++;
+    } catch {}
+  }
+  return { dir, seeded };
 });
 
 ipcMain.handle('theme:meta', async () => readJsonSafe(THEME_META_PATH(), {name:'Custom CSS'}));
@@ -2353,8 +2438,6 @@ async function validateAudioForLibraryScan(trackPath, scanState = null) {
 }
 
 
-const TAG_BACKUPS_DIR = () => path.join(USER_DATA(), 'Tag Backups');
-
 function loveValuesFromNativeTag(tag) {
   const value = tag?.value;
   const field = String(value?.description ?? value?.name ?? tag?.description ?? tag?.name ?? tag?.id ?? '').trim();
@@ -2407,35 +2490,9 @@ async function inspectLoveMetadata(trackPath) {
   }
 }
 
-async function backupFileBeforeLoveRepair(trackPath, audit) {
-  const absolutePath = path.resolve(String(trackPath));
-  await fsp.mkdir(TAG_BACKUPS_DIR(), { recursive: true, mode: 0o700 });
-  const stamp = new Date().toISOString().replace(/[:.]/g, '-');
-  const hash = crypto.createHash('sha256').update(absolutePath).digest('hex').slice(0, 12);
-  const safeBase = path.basename(absolutePath).replace(/[^A-Za-z0-9._-]+/g, '_');
-  const backupName = `${stamp}-${hash}-${safeBase}`;
-  const backupPath = path.join(TAG_BACKUPS_DIR(), backupName);
-  await fsp.copyFile(absolutePath, backupPath);
-  const originalHash = crypto.createHash('sha256').update(await fsp.readFile(absolutePath)).digest('hex');
-  const manifestPath = path.join(TAG_BACKUPS_DIR(), `${stamp}-${hash}-manifest.json`);
-  const manifest = {
-    hive: 'Hive',
-    purpose: 'Love metadata repair backup',
-    createdAt: new Date().toISOString(),
-    originalPath: absolutePath,
-    backupPath,
-    originalSha256: originalHash,
-    detectedLoveTags: audit?.tags || [],
-    canonicalLoveValue: audit?.canonicalValue || '0'
-  };
-  await fsp.writeFile(manifestPath, JSON.stringify(manifest, null, 2), { mode: 0o600 });
-  return { backupPath, manifestPath, originalSha256: originalHash };
-}
-
 async function repairLoveMetadataFiles(items, sender) {
   const candidates = Array.isArray(items) ? items : [];
-  const results = { status: 'complete', total: candidates.length, repaired: [], failed: [], backupDir: TAG_BACKUPS_DIR() };
-  await fsp.mkdir(TAG_BACKUPS_DIR(), { recursive: true, mode: 0o700 });
+  const results = { status: 'complete', total: candidates.length, repaired: [], failed: [] };
   for (const item of candidates) {
     const trackPath = path.resolve(String(item?.path || ''));
     if (!trackPath) continue;
@@ -2443,7 +2500,6 @@ async function repairLoveMetadataFiles(items, sender) {
       await waitForPlaybackProtectionRelease(trackPath);
       const audit = await inspectLoveMetadata(trackPath);
       if (!audit.flagged) continue;
-      const backup = await backupFileBeforeLoveRepair(trackPath, audit);
       // The existing format-specific Love writer deliberately removes every
       // historical Beehive/MusicBee Love alias and writes exactly one canonical
       // LOVE RATING value. L always wins because inspectLoveMetadata already
@@ -2451,14 +2507,14 @@ async function repairLoveMetadataFiles(items, sender) {
       await embedLoveInFile(trackPath, audit.loved);
       audioIntegrityLoveCache.clear();
       await updateCachedLoved([trackPath], audit.loved).catch(() => {});
-      results.repaired.push({ path: trackPath, loved: audit.loved, tags: audit.tags, backupPath: backup.backupPath, manifestPath: backup.manifestPath });
+      results.repaired.push({ path: trackPath, loved: audit.loved, tags: audit.tags });
       try { sender?.send('audio:integrity-repair-progress', { total: candidates.length, completed: results.repaired.length + results.failed.length, currentPath: trackPath, status: 'repaired' }); } catch {}
     } catch (err) {
       results.failed.push({ path: trackPath, error: err?.message || String(err) });
       try { sender?.send('audio:integrity-repair-progress', { total: candidates.length, completed: results.repaired.length + results.failed.length, currentPath: trackPath, status: 'failed' }); } catch {}
     }
   }
-  writeSession(results.failed.length ? 'WARN' : 'INFO', 'LOVE INTEGRITY REPAIR', 'Love metadata repair complete', { total: results.total, repaired: results.repaired.length, failed: results.failed.length, backupDir: results.backupDir });
+  writeSession(results.failed.length ? 'WARN' : 'INFO', 'LOVE INTEGRITY REPAIR', 'Love metadata repair complete', { total: results.total, repaired: results.repaired.length, failed: results.failed.length });
   return results;
 }
 
@@ -2725,7 +2781,7 @@ async function scanAudioIntegrityLibrary(paths, sender, checkpoint = null) {
   await Promise.all(Array.from({length:Math.min(AUDIO_LIBRARY_SCAN_CONCURRENCY, Math.max(1, workPaths.length || 1))}, () => worker()));
   const cancelled = state.cancelled;
   state.running = false;
-  const result = { status:cancelled ? 'cancelled' : 'complete', total:state.total, completed:state.completed, corrupt:state.corrupt, unavailable:state.unavailable, metadataIssues:state.metadataIssues, loveConflicts:state.loveConflicts, backupDir:TAG_BACKUPS_DIR(), durationMs:Date.now()-state.startedAt, startedAt:state.startedAt, resumed:!!checkpoint };
+  const result = { status:cancelled ? 'cancelled' : 'complete', total:state.total, completed:state.completed, corrupt:state.corrupt, unavailable:state.unavailable, metadataIssues:state.metadataIssues, loveConflicts:state.loveConflicts, durationMs:Date.now()-state.startedAt, startedAt:state.startedAt, resumed:!!checkpoint };
   if (!cancelled && state.completed >= state.total) {
     await clearAudioIntegrityScanCheckpoint().catch(err => scanLog('AUDIO INTEGRITY CHECKPOINT CLEAR FAILED', { message:err?.message || String(err) }));
   } else {
@@ -2849,8 +2905,8 @@ async function writeAndSyncReplacement(temp, target, data) {
   await fsp.rename(temp, target);
 }
 
-// withMusicBeeWriteLock, createMetadataTempPath, backupFileBeforeMetadataCommit,
-// commitMetadataTemp, embedRatingInFile, performWriteArtwork,
+// withMusicBeeWriteLock, createMetadataTempPath, commitMetadataTemp,
+// embedRatingInFile, performWriteArtwork,
 // performModifyArtwork, performRemoveFrontArtwork, performRemoveArtwork,
 // performWriteMetadata, and performWriteTags all now come from
 // ./metadata-writer (constructed further down, once all of this file's
@@ -4877,8 +4933,51 @@ function decodeGeniusHtmlEntities(value) {
     .replace(/&#x([0-9a-f]+);/gi, (_, n) => { try { return String.fromCodePoint(parseInt(n, 16)); } catch { return ''; } });
 }
 
+// A plain non-greedy regex ([\s\S]*?...<\/div>) cannot correctly match a
+// <div> against ITS OWN closing tag once there are other <div>s nested
+// inside it -- it stops at the first </div> it finds, which is usually one
+// of the nested ones, silently truncating or fragmenting the real content.
+// Genius's lyrics containers are full of nested <div>s (line groups,
+// annotation spans, etc.), so this walks the tag depth by hand from just
+// after the opening tag's '>' to find the TRUE matching close tag.
+function extractBalancedDiv(html, contentStart) {
+  const tagRe = /<div\b[^>]*>|<\/div>/gi;
+  tagRe.lastIndex = contentStart;
+  let depth = 1;
+  let match;
+  while ((match = tagRe.exec(html))) {
+    if (match[0].startsWith('</')) depth--;
+    else depth++;
+    if (depth === 0) return { content: html.slice(contentStart, match.index), end: tagRe.lastIndex };
+  }
+  return { content: html.slice(contentStart), end: html.length };
+}
+
+// Real bug, confirmed live: the old non-greedy data-lyrics-container regex
+// fragmented every real Genius lyrics page into broken pieces (see
+// extractBalancedDiv above), and one of those broken pieces was the page's
+// own "3 Contributors / <Song> Lyrics" header bar, which then got
+// concatenated straight into the embedded/displayed lyrics text. Genius
+// marks that header (and similar non-lyrics UI, e.g. embed/share prompts)
+// with data-exclude-from-selection="true" site-wide -- a stable semantic
+// signal, unlike its auto-generated/versioned CSS class names -- so strip
+// any such block, correctly balanced, before converting to plain text.
+function stripGeniusExcludedBlocks(html) {
+  let out = '';
+  let cursor = 0;
+  const openRe = /<div\b[^>]*\bdata-exclude-from-selection=["']true["'][^>]*>/gi;
+  let match;
+  while ((match = openRe.exec(html))) {
+    out += html.slice(cursor, match.index);
+    const { end } = extractBalancedDiv(html, match.index + match[0].length);
+    cursor = end;
+    openRe.lastIndex = end;
+  }
+  return out + html.slice(cursor);
+}
+
 function stripGeniusLyricsHtml(html) {
-  return decodeGeniusHtmlEntities(String(html || '')
+  return decodeGeniusHtmlEntities(stripGeniusExcludedBlocks(String(html || ''))
     .replace(/<br\s*\/?>(?=.)/gi, '\n')
     .replace(/<\/(?:div|p|li|h[1-6])>/gi, '\n')
     .replace(/<script[\s\S]*?<\/script>/gi, '')
@@ -4906,36 +5005,51 @@ async function searchGeniusLyrics(artist, title) {
   const wantedTitle = normalizeLyricMatch(title);
   const candidates = [];
 
-  // Genius' public search page is intentionally used first. This does not require
-  // a Genius API token and keeps lyric discovery inside Genius itself.
+  // Real bug, confirmed live: genius.com/search now renders its actual
+  // results client-side (React/Next.js) -- the server-sent HTML is just an
+  // app shell whose only *-lyrics links are a fixed "trending songs" widget,
+  // completely unrelated to the query. This was previously tried FIRST and
+  // gated the JSON API fallback behind `!candidates.length`, but the widget
+  // is always present and non-empty, so the (working) API path below was
+  // never actually reached except by the rare coincidence of a query
+  // matching one of those trending songs (e.g. "Radiohead Creep").
+  // genius.com/api/search/multi returns real, correctly-attributed
+  // structured results (title/artist/url) and needs no token -- use it first.
   try {
-    const searchResponse = await fetch(`https://genius.com/search?q=${encodeURIComponent(query)}`, { headers });
-    if (searchResponse.ok) {
-      const html = await searchResponse.text();
-      const hrefRe = /(?:href|data-href)=[\"'](?:https?:\/\/genius\.com)?(\/[^\"']+?-lyrics)(?:[\"'])/gi;
-      let match;
-      while ((match = hrefRe.exec(html))) {
-        const href = `https://genius.com${match[1]}`;
-        if (!candidates.some(c => c.url === href)) candidates.push({ url: href });
+    const apiResponse = await fetch(`https://genius.com/api/search/multi?per_page=5&q=${encodeURIComponent(query)}`, { headers });
+    if (apiResponse.ok) {
+      const data = await apiResponse.json();
+      for (const section of (data?.response?.sections || [])) {
+        for (const hit of (section?.hits || [])) {
+          const result = hit?.result;
+          const url = String(result?.url || '');
+          if (/^https?:\/\/genius\.com\/[^\s]+-lyrics$/i.test(url) && !candidates.some(c => c.url === url)) {
+            candidates.push({ url, title: result?.title, artist: result?.primary_artist?.name });
+          }
+        }
       }
+    } else {
+      console.error(`[lyrics] Genius search API returned HTTP ${apiResponse.status} for "${query}"`);
     }
-  } catch (_) {}
+  } catch (err) {
+    console.error(`[lyrics] Genius search API request failed for "${query}":`, err?.message || err);
+  }
 
-  // Some Genius responses expose their search results as JSON. Try that as a
-  // second Genius-only discovery path before falling back to another lyrics source.
+  // Last-resort fallback only: the search-page scrape below cannot return
+  // real per-query results (see above), but is harmless to try if the API
+  // itself was unreachable -- scoring below still requires both artist and
+  // title to match, so it can only ever help, never replace a good result
+  // with an unrelated trending song.
   if (!candidates.length) {
     try {
-      const apiResponse = await fetch(`https://genius.com/api/search/multi?per_page=10&q=${encodeURIComponent(query)}`, { headers });
-      if (apiResponse.ok) {
-        const data = await apiResponse.json();
-        for (const section of (data?.response?.sections || [])) {
-          for (const hit of (section?.hits || [])) {
-            const result = hit?.result;
-            const url = String(result?.url || '');
-            if (/^https?:\/\/genius\.com\/[^\s]+-lyrics$/i.test(url) && !candidates.some(c => c.url === url)) {
-              candidates.push({ url, title: result?.title, artist: result?.primary_artist?.name });
-            }
-          }
+      const searchResponse = await fetch(`https://genius.com/search?q=${encodeURIComponent(query)}`, { headers });
+      if (searchResponse.ok) {
+        const html = await searchResponse.text();
+        const hrefRe = /(?:href|data-href)=[\"'](?:https?:\/\/genius\.com)?(\/[^\"']+?-lyrics)(?:[\"'])/gi;
+        let match;
+        while ((match = hrefRe.exec(html))) {
+          const href = `https://genius.com${match[1]}`;
+          if (!candidates.some(c => c.url === href)) candidates.push({ url: href });
         }
       }
     } catch (_) {}
@@ -4952,24 +5066,39 @@ async function searchGeniusLyrics(artist, title) {
   };
   candidates.sort((a, b) => scoreGeniusCandidate(b) - scoreGeniusCandidate(a));
 
+  if (!candidates.length) {
+    console.error(`[lyrics] Genius returned zero candidate URLs for "${query}" (both the search page and API discovery paths found nothing)`);
+    return null;
+  }
+
   // Require both artist and title to be represented in the Genius result before
   // displaying it. A broad search must never silently replace the requested song
   // with a similarly titled track.
-  for (const candidate of candidates.filter(item => scoreGeniusCandidate(item) >= 8).slice(0, 8)) {
+  const passing = candidates.filter(item => scoreGeniusCandidate(item) >= 8).slice(0, 8);
+  if (!passing.length) {
+    console.error(`[lyrics] ${candidates.length} Genius candidate(s) found for "${query}" but none matched both artist and title closely enough (best score ${scoreGeniusCandidate(candidates[0])}/8, top result: ${candidates[0]?.url})`);
+    return null;
+  }
+  for (const candidate of passing) {
     try {
       const response = await fetch(candidate.url, { headers });
-      if (!response.ok) continue;
+      if (!response.ok) { console.error(`[lyrics] Genius lyrics page returned HTTP ${response.status} for ${candidate.url}`); continue; }
       const html = await response.text();
       const blocks = [];
-      const blockRe = /<div[^>]*data-lyrics-container=[\"']true[\"'][^>]*>([\s\S]*?)<\/div>/gi;
-      let block;
-      while ((block = blockRe.exec(html))) {
-        const text = stripGeniusLyricsHtml(block[1]);
+      const containerOpenRe = /<div\b[^>]*\bdata-lyrics-container=["']true["'][^>]*>/gi;
+      let openMatch;
+      while ((openMatch = containerOpenRe.exec(html))) {
+        const { content, end } = extractBalancedDiv(html, openMatch.index + openMatch[0].length);
+        const text = stripGeniusLyricsHtml(content);
         if (text) blocks.push(text);
+        containerOpenRe.lastIndex = end;
       }
       const lyrics = blocks.join('\n\n').trim();
       if (lyrics) return { plainLyrics: lyrics, syncedLyrics: '', source: 'genius' };
-    } catch (_) {}
+      console.error(`[lyrics] Genius lyrics page for ${candidate.url} had no data-lyrics-container blocks (page layout may have changed)`);
+    } catch (err) {
+      console.error(`[lyrics] fetching Genius lyrics page ${candidate.url} failed:`, err?.message || err);
+    }
   }
   return null;
 }
@@ -5137,13 +5266,11 @@ const metadataWriter = createMetadataWriter({
   waitForPlaybackProtectionRelease,
   normalizePictureType,
   readEmbeddedRating,
-  tagBackupsDir: TAG_BACKUPS_DIR,
   osTempDir: () => app.getPath('temp'),
 });
 const {
   withMusicBeeWriteLock,
   createMetadataTempPath,
-  backupFileBeforeMetadataCommit,
   commitMetadataTemp,
   embedRatingInFile,
   performWriteArtwork,

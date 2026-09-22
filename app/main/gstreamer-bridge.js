@@ -54,9 +54,17 @@ function createGstreamerBridge(deps) {
       try { recordedHash = fs.readFileSync(stamp, 'utf8').trim(); } catch {}
       const rebuild = !fs.existsSync(out) || recordedHash !== sourceHash;
       if (rebuild) {
-        // The native helper uses the core GStreamer API plus GstStreamVolume;
-        // there is no controller/timer dependency on the ordinary volume path.
-        const pkgs = ['gstreamer-1.0'];
+        // The native helper uses the core GStreamer API. The ordinary
+        // user-volume slider path runs a 50ms retargeting ramp driven by a
+        // GstPadProbe on the volume element's sink pad (see
+        // begin_user_volume_ramp/volume_ramp_probe_cb in gstreamer-player.c)
+        // -- not a GstController, and not a persistent timer: it
+        // self-terminates once the ramp reaches its target. During an active
+        // ramp, gain is applied by directly scaling each buffer's raw PCM
+        // samples (gstreamer-audio-1.0's GstAudioInfo) rather than stepping
+        // the element's own "volume" property once per buffer, so the ramp
+        // is smooth regardless of how large the incoming buffers are.
+        const pkgs = ['gstreamer-1.0', 'gstreamer-audio-1.0'];
         const cflags = execFileSync('pkg-config', ['--cflags', ...pkgs], { encoding: 'utf8' }).trim().split(/\s+/).filter(Boolean);
         const libs = execFileSync('pkg-config', ['--libs', ...pkgs], { encoding: 'utf8' }).trim().split(/\s+/).filter(Boolean);
         execFileSync('cc', [source, '-O2', '-o', out, ...cflags, ...libs, '-pthread', '-lm'], { stdio: 'ignore' });

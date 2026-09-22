@@ -99,3 +99,67 @@ test('album and track context menus never await Android device discovery', () =>
   assert.doesNotMatch(trackBlock, /await refreshAndroidDevices\(\)/);
   assert.match(trackBlock, /void refreshAndroidDevices\(\)/);
 });
+
+// Real gap, reported by the user: "Turn on Auto-DJ" gave no indication of
+// what it actually does. Non-rating submenu items now support a `tooltip`
+// property that reuses the existing global hover-tooltip system (any element
+// with data-tooltip gets the delegated pointerover tooltip -- see
+// tooltipTextFor()/the pointerover listener) instead of a second mechanism.
+test('Turn on/off Auto-DJ has a hover tooltip explaining what it does, in both the track and album menus', () => {
+  const submenuStart = renderer.indexOf("function showContextMenu(x,y,items){");
+  const submenuEnd = renderer.indexOf('} else {', submenuStart);
+  const submenuBlock = renderer.slice(submenuStart, submenuEnd);
+  assert.match(submenuBlock, /if \(!isRatingItem && si\.tooltip\) sb\.setAttribute\('data-tooltip', si\.tooltip\);/);
+
+  const occurrences = renderer.split("tooltip:'When your queue runs out, Auto-DJ keeps playing instead of stopping").length - 1;
+  assert.equal(occurrences, 2, 'expected the Auto-DJ tooltip in both showTrackContextMenu and showAlbumContextMenu');
+});
+
+// Real gap: the top-level context menu already measures itself and flips
+// left/top when it would overflow the viewport (see the horizontal/vertical
+// logic right after `m.classList.add('visible')`), but every submenu
+// (Rating, Play More, Add to, Send to, Search, ...) only inherited a single
+// static left/right decision from the CSS class on the outer menu
+// (.context-menu-left .context-submenu). A submenu is offset further out
+// than the outer menu and can have a very different height (Add to's
+// playlist list, for one), so it could still land off-screen -- unclickable
+// -- even when the outer menu itself fit fine. Each submenu now measures
+// itself on hover and flips independently.
+test('each submenu independently measures itself and flips to the opposite side when it would overflow the viewport', () => {
+  const start = renderer.indexOf("wrap.appendChild(b); wrap.appendChild(sub); m.appendChild(wrap);");
+  const end = renderer.indexOf('});', renderer.indexOf("wrap.addEventListener('mouseenter'", start)) + 3;
+  assert.ok(start >= 0 && end > start, 'expected to find the submenu positioning block');
+  const block = renderer.slice(start, end);
+  assert.match(block, /const triggerRect = wrap\.getBoundingClientRect\(\);/);
+  assert.match(block, /const subRect = sub\.getBoundingClientRect\(\);/);
+  assert.match(block, /if \(triggerRect\.right \+ subRect\.width > window\.innerWidth - margin\) \{/);
+  assert.match(block, /sub\.style\.right = '100%';/);
+  assert.match(block, /if \(triggerRect\.top \+ subRect\.height > window\.innerHeight - margin\) \{/);
+  assert.match(block, /sub\.style\.bottom = '0';/);
+});
+
+// The rating submenu no longer shows a separate checkmark on the active
+// item -- the highlighted/active background is already visually sufficient,
+// and the checkmark was redundant.
+test('the rating submenu has no separate active checkmark element', () => {
+  const start = renderer.indexOf("it.submenu.forEach(si=>{");
+  const end = renderer.indexOf('sb.onclick=async()=>{hideContextMenu();await si.action();};', start);
+  assert.ok(start >= 0 && end > start);
+  const block = renderer.slice(start, end);
+  assert.doesNotMatch(block, /context-rating-check/);
+  assert.doesNotMatch(css, /context-rating-check/);
+});
+
+// "Clear" (the × ratings-reset item) is not a rating level like the
+// stars/heart -- it must stay the theme's plain readable color (black on
+// light theme, white on dark theme) always, never accent-tinted even when
+// active/highlighted like the star/heart icons are.
+test('the Clear (×) icon in the rating submenu always stays the plain theme text color, never accent-tinted', () => {
+  const start = renderer.indexOf("if (si.icon) {");
+  const end = renderer.indexOf('sb.append(icon);', start);
+  assert.ok(start >= 0 && end > start);
+  const block = renderer.slice(start, end);
+  assert.match(block, /if \(isRatingItem && si\.icon === '×'\) icon\.classList\.add\('context-rating-clear-icon'\);/);
+
+  assert.match(css, /\.context-rating-clear-icon,\s*\n\.context-rating-item\.active \.context-rating-clear-icon \{\s*\n\s*color:var\(--text\) !important;/);
+});

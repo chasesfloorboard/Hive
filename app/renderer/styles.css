@@ -194,6 +194,25 @@ button {
   background: rgba(5, 5, 8, 0.55);
 }
 .modal-overlay.hidden { display: none; }
+/* Settings and the tag editor are non-blocking floating windows: no dimmed
+   backdrop, and clicks on the rest of the app pass straight through instead
+   of being swallowed/closing the window -- only the panel itself (and its
+   own children) intercept pointer events. This lets the user keep clicking
+   tracks/albums behind the window while it stays open. */
+.modal-overlay.floating-panel {
+  background: transparent;
+  pointer-events: none;
+}
+.modal-overlay.floating-panel > .modal {
+  pointer-events: auto;
+}
+.modal-overlay.floating-panel .modal-header {
+  cursor: grab;
+  user-select: none;
+}
+.modal-overlay.floating-panel .modal-header.dragging {
+  cursor: grabbing;
+}
 .modal {
   width: 360px;
   max-width: calc(100vw - 40px);
@@ -2511,9 +2530,28 @@ body.legacy-art-scaling .album-year-grid > .inline-album-dropdown {
   letter-spacing:0;
   white-space:nowrap;
 }
+.context-rating-item-labeled {
+  justify-content:flex-start !important;
+  gap:6px;
+}
+.context-rating-text-label {
+  font-size:12px;
+  /* Stays the theme's plain readable text color (black on light theme,
+     white on dark theme) in both the Love and Loved states -- not tinted
+     by the accent color like the active-state heart icon is. */
+  color:var(--text);
+  white-space:nowrap;
+}
 .context-rating-item.active .context-rating-icon {
   color:var(--accent);
   text-shadow:0 0 10px color-mix(in srgb,var(--accent) 55%,transparent);
+}
+/* "Clear" stays the theme's plain readable color always -- never
+   accent-tinted, even when active/highlighted. */
+.context-rating-clear-icon,
+.context-rating-item.active .context-rating-clear-icon {
+  color:var(--text) !important;
+  text-shadow:none !important;
 }
 .context-rating-item.loved .context-rating-icon {
   color:#ff7b9a;
@@ -2523,16 +2561,6 @@ body.legacy-art-scaling .album-year-grid > .inline-album-dropdown {
   color:#ff4f78;
   text-shadow:0 0 12px rgba(255,79,120,.55);
 }
-.context-rating-check {
-  position:absolute;
-  right:7px;
-  width:14px;
-  text-align:center;
-  color:var(--accent);
-  font-size:11px;
-  font-weight:800;
-}
-.context-rating-item.loved.active .context-rating-check { color:#ff4f78; }
 .context-rating-help {
   /* Was previously pinned to the full width of the narrow rating submenu
      (an edge-to-edge span) combined with nowrap and no overflow handling,
@@ -3812,6 +3840,15 @@ html[data-hive-theme="light"] .glass {
   background: color-mix(in srgb, var(--accent) 16%, var(--panel));
   border-color: color-mix(in srgb, var(--accent) 22%, var(--border));
 }
+/* Same root cause as .glass above: --control-bg/--control-bg-hover mix a
+   small accent percentage into --panel-strong, which light theme sets to a
+   near-fully-opaque white (rgba(255,255,255,.985)). The result was a
+   selected song/queue row that looked almost pure white -- only the solid
+   2px accent-colored edge (box-shadow) was visibly distinguishable. */
+html[data-hive-theme="light"] {
+  --control-bg: color-mix(in srgb, var(--accent) 18%, var(--panel-strong));
+  --control-bg-hover: color-mix(in srgb, var(--accent) 26%, var(--panel-strong));
+}
 html[data-hive-theme="light"] .glass,
 html[data-hive-theme="light"] .modal-settings { box-shadow:0 22px 55px rgba(28,38,55,.14); }
 html[data-hive-theme="light"] .sidebar-item:hover,
@@ -4049,10 +4086,6 @@ body:not(.legacy-art-scaling) .artist-inline-browser .artist-inline-album-grid >
 .playbar-glass-menu-options label:hover { background:var(--control-track); }
 #queue-panel { overflow:hidden; clip-path:inset(0 round var(--radius)); }
 #queue-list { min-height:0; overflow-y:auto; }
-#queue-panel.player-glass-transparent { background:var(--panel-strong) !important; border-color:var(--border) !important; }
-#topbar.player-glass-transparent, #sidebar.player-glass-transparent, #playbar.player-glass-transparent {
-  background:var(--panel-strong) !important; border-color:var(--border) !important; backdrop-filter:none !important; -webkit-backdrop-filter:none !important;
-}
 
 
 /* ---------------- Build 162 optional themed Electron window chrome ---------------- */
@@ -4217,11 +4250,9 @@ html.theme-window-bar-enabled .window-titlebar-row .window-control { height: 24p
   -webkit-backdrop-filter: blur(var(--blur)) saturate(125%);
 }
 #main.player-glass-transparent,
-#lyrics-section.player-glass-transparent,
 #sidebar.player-glass-transparent,
 #queue-panel.player-glass-transparent,
-#playbar.player-glass-transparent,
-#topbar.player-glass-transparent {
+#playbar.player-glass-transparent {
   /* Turning Frosted Glass off removes only the glass treatment. Keep the thin
      themed outline so the surface still has the same visual boundary. */
   background:var(--panel-strong) !important;
@@ -4229,15 +4260,43 @@ html.theme-window-bar-enabled .window-titlebar-row .window-control { height: 24p
   backdrop-filter:none !important;
   -webkit-backdrop-filter:none !important;
 }
-#lyrics-section.player-glass-transparent {
-  box-shadow:none !important;
-  border:1px solid color-mix(in srgb,var(--accent) 24%,var(--border)) !important;
-}
-#lyrics-section.player-glass-transparent .sidebar-lyrics {
-  background:transparent !important;
-  border-color:transparent !important;
+/* Real bug, confirmed by the user: the top bar only ever has a colored line
+   on its BOTTOM edge (see #topbar.player-glass-surface above, which is
+   border-bottom-only) -- but this surface used to be grouped into the
+   generic all-sides-border rule above when Frosted Glass was turned off, so
+   an outline appeared on the left/right/top edges too, edges that never had
+   one with Frosted Glass on. Give #topbar its own rule instead of sharing
+   the generic one. */
+#topbar.player-glass-transparent {
+  background:var(--panel-strong) !important;
+  border:none !important;
+  border-bottom:1px solid color-mix(in srgb,var(--accent) 24%,var(--border)) !important;
   backdrop-filter:none !important;
   -webkit-backdrop-filter:none !important;
+}
+/* Real bug, confirmed by the user: the lyrics bubble's actual visible box is
+   always .sidebar-lyrics, inset from #lyrics-section by .sidebar-lyrics's
+   own 10px/6px margin (#lyrics-section itself has no padding) -- see
+   #lyrics-section.player-glass-surface above, where the border/background
+   live on .sidebar-lyrics and #lyrics-section stays transparent. Turning
+   Frosted Glass off used to move the border/background onto #lyrics-section
+   ITSELF (via the generic rule above) while clearing .sidebar-lyrics to
+   fully transparent -- so the visible bubble grew to fill the outer,
+   larger box, a real, user-visible size change between the two states.
+   Keep #lyrics-section transparent in both states; only toggle the child's
+   blur/tint, exactly mirroring the glass-on structure. */
+#lyrics-section.player-glass-transparent {
+  background: transparent !important;
+  border-color: transparent !important;
+  box-shadow: none !important;
+  backdrop-filter: none !important;
+  -webkit-backdrop-filter: none !important;
+}
+#lyrics-section.player-glass-transparent .sidebar-lyrics {
+  background: var(--panel-strong) !important;
+  border: 1px solid color-mix(in srgb, var(--accent) 24%, var(--border)) !important;
+  backdrop-filter: none !important;
+  -webkit-backdrop-filter: none !important;
 }
 .glass-settings-card {
   margin:10px 0 16px;
@@ -4553,7 +4612,11 @@ html.theme-window-bar-enabled .window-control-close {
 /* Build 199 tag-editor polish: one consistent control language. */
 .tag-editor-tabs { gap:6px; padding-left:14px; padding-right:14px; }
 .tag-editor-tab { min-width:max-content; white-space:nowrap; padding:7px 12px; }
-.tag-actions { position:sticky; bottom:0; z-index:4; margin:12px -18px -18px; padding:8px 18px; border-top:1px solid var(--border); background:color-mix(in srgb, var(--panel) 72%, transparent); backdrop-filter:blur(14px); -webkit-backdrop-filter:blur(14px); }
+/* Sits directly on the modal's own glass background -- no separate tinted
+   bar. A distinct background/blur layer here read as a visible "white box"
+   behind Cancel/Save in Light theme, where the modal's accent-tinted glass
+   and this layer's plain panel color contrast sharply. */
+.tag-actions { position:sticky; bottom:0; z-index:4; margin:12px -18px -18px; padding:8px 18px; background:transparent; }
 .tag-actions .sidebar-add { min-height:34px; padding:7px 14px; border-radius:8px; }
 .tag-actions #tag-save { background:var(--control-bg); border-color:var(--control-border); color:var(--text); }
 .tag-actions #tag-save:hover { background:var(--control-bg-hover); border-color:var(--accent-soft); }
@@ -4690,7 +4753,6 @@ body.sandbox-mode .tab-content-host { width:100%; padding:0; overflow:hidden; }
     .context-add-to .context-submenu .context-submenu-label { flex:1 1 auto; justify-content:flex-start; text-align:left; }
     .context-rating-item { justify-content:flex-start; }
 .context-rating-item .context-rating-icon { display:inline-flex; align-items:center; justify-content:center; line-height:1; }
-.context-rating-item .context-rating-check { display:inline-flex; align-items:center; justify-content:center; height:14px; }
 @media(max-width:700px) { .modal-settings { width:calc(100vw - 20px); height:calc(100vh - 20px); } .settings-tab-panel { padding:12px 12px 16px; } }
 
 /* Build 235: empty tag fields remain legible ghosts instead of appearing broken. */

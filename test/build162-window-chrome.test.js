@@ -32,3 +32,14 @@ test('themed double-click maximize is handled by the topbar without hijacking co
   assert.match(renderer, /themedTopbar\?\.addEventListener\(['"]dblclick['"]/);
   assert.match(renderer, /event\.target\.closest\(['"]button,input,select,a,.window-controls,.search-box['"]\)/);
 });
+
+// Moved here from build241-window-volume-direct.test.js during the #12
+// buildNNN consolidation pass -- a window-chrome CSS fix misfiled under a
+// volume build name; this file is its real home.
+test('the themed window titlebar row has its own dedicated hit-testable drag/no-drag breathing room', () => {
+  assert.match(css, /html\.theme-window-bar-enabled #topbar\s*\{[\s\S]*?height:\s*82px[\s\S]*?min-height:\s*82px/);
+  assert.match(css, /html\.theme-window-bar-enabled \.window-titlebar-row\s*\{[\s\S]*?height:\s*32px[\s\S]*?pointer-events:\s*auto[\s\S]*?-webkit-app-region:\s*drag/);
+  assert.match(css, /html\.theme-window-bar-enabled \.window-titlebar-row > \.window-controls\s*\{[\s\S]*?pointer-events:\s*auto[\s\S]*?-webkit-app-region:\s*no-drag/);
+  assert.match(css, /html\.theme-window-bar-enabled \.topbar-app-row\s*\{[\s\S]*?height:\s*auto/);
+  assert.match(css, /html\.theme-window-bar-enabled \.topbar-app-row\s*\{[\s\S]*?min-height:\s*0/);
+});

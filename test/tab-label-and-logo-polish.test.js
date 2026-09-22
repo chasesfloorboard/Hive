@@ -37,3 +37,26 @@ test('Hive brand logo is rendered monochrome rather than accent-tinted', () => {
   assert.match(source, /root\.setProperty\('--hive-logo-grayscale', '1'\)/);
   assert.doesNotMatch(source, /applyHiveLogoAccent\(accent\)/);
 });
+
+// Requested directly: middle-click (mouse button 1) anywhere on a tab
+// closes it, not just its small "x" -- a much bigger, easier target,
+// matching how browser tabs behave. mousedown must also be preventDefault'd
+// for a middle click, otherwise Chromium enters its middle-click
+// autoscroll/pan mode before auxclick ever fires.
+test('middle-clicking anywhere on a tab closes it', () => {
+  const source = fs.readFileSync(path.join(root, 'app', 'renderer', 'renderer.js'), 'utf8');
+  const mousedownStart = source.indexOf("el.topbarTabs.addEventListener('mousedown', e => {");
+  assert.ok(mousedownStart >= 0);
+  const mousedownEnd = source.indexOf('\n  });', mousedownStart);
+  const mousedownBlock = source.slice(mousedownStart, mousedownEnd);
+  assert.match(mousedownBlock, /if \(e\.button !== 1\) return;/);
+  assert.match(mousedownBlock, /e\.preventDefault\(\);/);
+
+  const auxStart = source.indexOf("el.topbarTabs.addEventListener('auxclick', e => {");
+  assert.ok(auxStart >= 0);
+  const auxEnd = source.indexOf('\n  });', auxStart);
+  const auxBlock = source.slice(auxStart, auxEnd);
+  assert.match(auxBlock, /if \(e\.button !== 1\) return;/);
+  assert.match(auxBlock, /btn\.id === 'tab-add-btn'/, 'must not try to close the + add-tab button');
+  assert.match(auxBlock, /closeTab\(id\);/);
+});

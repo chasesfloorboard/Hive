@@ -109,10 +109,20 @@ test('Love integrity repair remains available while its old Settings bubble is r
   assert.match(main, /audio:integrity-repair-love/);
 });
 
-test('Love repair creates a backup before modifying a file', () => {
-  assert.match(main, /Tag Backups/);
-  assert.match(main, /backup.*before|before.*backup/i);
-  assert.match(main, /copyFile|cp.*backup/i);
+// Superseded: the in-app Love repair flow used to make a full-file backup
+// before every repair (into the same unbounded "Tag Backups" folder as
+// ordinary metadata writes -- see build256-metadata-safety.test.js's
+// replacement test for the full removal rationale). Removed here too, for
+// the same reason. The separate standalone scripts/hive-love-validator.js
+// manual CLI tool is untouched and keeps its own backup step -- that's a
+// deliberate, rarely-run bulk operation a user chooses to run, not
+// something firing on every ordinary Love/rating click.
+test('the in-app Love repair flow no longer makes a full-file backup', () => {
+  assert.doesNotMatch(main, /backupFileBeforeLoveRepair/);
+  const start = main.indexOf('async function repairLoveMetadataFiles(items, sender) {');
+  const end = main.indexOf('\n}', start);
+  assert.ok(start >= 0 && end > start, 'expected to find repairLoveMetadataFiles()');
+  assert.doesNotMatch(main.slice(start, end), /Tag Backups/);
   assert.match(main, /audio:integrity-repair-love/);
 });
 
@@ -172,4 +182,34 @@ test('the now-playing Love read-back waits for an in-flight write before trustin
   assert.match(block, /await pendingLoveWrite/);
   // The wait must happen before the disk read, not after.
   assert.ok(block.indexOf('pendingLoveWrite') < block.indexOf('window.beehive.readLove(t.path)'));
+});
+
+// Real bug, confirmed: right-clicking a track in the queue passes whatever
+// object happens to be sitting in currentQueue[i] straight to the context
+// menu. A queue entry restored from a saved session can be the minimal
+// serializeQueueTrack() shape -- which never carried loved/rating at all, so
+// every restored queue track showed as "not Loved" in the Rating popout
+// regardless of its actual embedded tag, even sitting right inside Favorites.
+// The playbar's own Love heart button read currentQueue[currentIndex] the
+// same unresolved way and had the identical bug.
+test('the track context menu and playbar Love button always resolve to the authoritative library record, not a possibly-stale queue object', () => {
+  const menuStart = renderer.indexOf('async function showTrackContextMenu(x,y,t){');
+  const menuEnd = renderer.indexOf('// Do not block menu display on Android discovery', menuStart);
+  assert.ok(menuStart >= 0 && menuEnd > menuStart);
+  const menuBlock = renderer.slice(menuStart, menuEnd);
+  assert.match(menuBlock, /if \(t\?\.path\) t = libraryTrackByPath\.get\(String\(t\.path\)\) \|\| t;/);
+
+  const btnStart = renderer.indexOf("el.btnLove.addEventListener('click', () => {");
+  const btnEnd = renderer.indexOf("});", btnStart);
+  const btnBlock = renderer.slice(btnStart, btnEnd);
+  assert.match(btnBlock, /t = libraryTrackByPath\.get\(String\(t\.path\)\) \|\| t;/);
+});
+
+// Backstop for the same bug: even before the above resolution runs, a freshly
+// restored queue entry should never blankly read as unloved with a 0 rating.
+test('serializeQueueTrack carries loved/rating so a restored queue entry is never blankly unloved', () => {
+  const start = renderer.indexOf('function serializeQueueTrack(t) {');
+  const end = renderer.indexOf('\n  }', start);
+  const block = renderer.slice(start, end);
+  assert.match(block, /loved:!!t\.loved, rating:Number\(t\.rating\)\|\|0, ratingRaw:Number\(t\.ratingRaw\)\|\|0/);
 });

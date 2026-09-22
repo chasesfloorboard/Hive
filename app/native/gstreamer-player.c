@@ -6,6 +6,7 @@
  * events; PCM is never copied through Electron IPC.
  */
 #include <gst/gst.h>
+#include <gst/audio/audio.h>
 #include <glib.h>
 #include <stdio.h>
 #include <stdlib.h>
@@ -41,26 +42,367 @@ static GstElement *spectrum = NULL;
 static GstElement *track_gain_element = NULL;
 static GstElement *user_volume_element = NULL;
 static GstElement *audio_filter_bin = NULL;
+/* Real dead end, confirmed live: this used to also route volume through the
+ * real sink's own native "volume"/"mute" properties (pulsesink exposes
+ * these directly) when available, on the theory that PulseAudio/PipeWire's
+ * own audio-server mixing stage would smooth the change the same way it
+ * does for the OS's own volume control -- what real GStreamer media
+ * players like Rhythmbox do. Confirmed NOT true for at least this PipeWire
+ * setup: routing there means begin_user_volume_ramp() skipped ramping
+ * entirely (assuming the server would smooth it), which made a single big
+ * jump (e.g. 100% down to 14%) an actual instant, completely unramped
+ * change -- a real, confirmed regression, not an improvement. Reverted.
+ * hive-user-volume's own sample-level ramp (below) is the sole mechanism
+ * again: it doesn't depend on any assumption about how the sink or audio
+ * server internally handles a property write, since it controls the real
+ * audio samples directly. */
+
+/* Ordinary user-volume slider changes are ramped to the new target over
+ * VOLUME_RAMP_DURATION_US instead of jumping instantly, to avoid the audible
+ * step discontinuity a large instant gain change produces. This is
+ * deliberately scoped to the ordinary slider path only -- unmute, startup,
+ * and every other caller of set_user_volume() still snaps immediately (see
+ * their call sites below), matching the long-established rule that only
+ * explicit user volume movement should ever be smoothed.
+ *
+ * An earlier version of this ramp used an external g_timeout_add() wall-clock
+ * timer ticking every 8ms. That measured out to ~62 property writes over a
+ * 500ms ramp, but the user still heard only ~5 discrete pops -- because
+ * GStreamer's "volume" element only picks up a new property value when it
+ * next processes an audio buffer, and that happens on the pipeline's own
+ * buffer/period cadence (commonly ~100ms), completely decoupled from an
+ * external wall-clock timer. Roughly 57 of those 62 writes were silently
+ * overwritten before ever reaching an actual buffer, leaving only a handful
+ * of larger, still-abrupt jumps -- the pops the timer approach was supposed
+ * to eliminate. Interpolating from *inside* a buffer probe on the element's
+ * own sink pad instead means every single buffer that is actually processed
+ * gets exactly the right value for its timestamp, with zero wasted writes and
+ * no race against buffer boundaries.
+ *
+ * A prior linear/cubic GstController-based ramp was tried and reverted across
+ * builds 259-260 after remaining "subtly audible" on real hardware, but those
+ * sessions ran in a sandboxed container that never had real audio hardware to
+ * actually hear it on (see CLAUDE.md).
+ *
+ * Real bug, confirmed live on real hardware this time: even with the
+ * buffer-probe fix above, pops were still audible. Root cause: setting the
+ * element's "volume" property once per buffer makes every sample WITHIN that
+ * buffer share one flat gain value -- the "ramp" is really a staircase with
+ * as many steps as there are buffers in the 50ms window. Decoders commonly
+ * hand off one whole decoded frame per buffer (a single FLAC block can be
+ * ~90ms of audio), which can make that staircase have only one step --
+ * indistinguishable from an instant jump. Fixed by ramping at the sample
+ * level instead: while a ramp is active, the element's own property is
+ * forced to a 1.0 pass-through and volume_ramp_probe_cb applies a smoothly
+ * interpolated gain directly to each buffer's raw PCM samples (see
+ * apply_sample_ramp), so the curve is continuous regardless of how large or
+ * small the incoming buffers are. The element's property becomes
+ * authoritative again the moment the ramp completes or is cancelled (every
+ * set_user_volume() caller already restores it explicitly). */
+#define VOLUME_RAMP_DURATION_US (50 * 1000)
+static gdouble volume_ramp_start = 0.8;
+static gdouble volume_ramp_target = 0.8;
+static gint64 volume_ramp_started_at = 0;
+static gboolean volume_ramp_active = FALSE;
+/* Set when a ramp finishes, so the element's "volume" property gets
+ * restored on the START of the NEXT buffer probe call instead of
+ * immediately -- see the comment in volume_ramp_probe_cb where this is set
+ * for why restoring it on the SAME buffer double-applies gain. */
+static gboolean volume_ramp_pending_restore = FALSE;
+/* Set when a ramp STARTS, so the element's "volume" property gets forced to
+ * 1.0 (pass-through) from INSIDE the pad probe -- i.e. on the streaming
+ * thread, immediately before the same buffer's chain() call -- instead of
+ * from begin_user_volume_ramp() on the main thread. begin_user_volume_ramp()
+ * runs via g_main_context_invoke() on the default GMainContext (the main
+ * thread running g_main_loop_run()), which is a DIFFERENT thread than the
+ * one calling this pad probe. Forcing the property directly from there had
+ * no ordering guarantee relative to the streaming thread: a buffer could
+ * have its probe read volume_ramp_active as still-stale FALSE (so it passed
+ * through untouched) while chain() for that same buffer, running
+ * concurrently, ended up reading the property AFTER it was already forced
+ * to 1.0 -- a brief, real jump to unscaled full volume for one buffer,
+ * heard as a small pop right as a ramp begins. Deferring the force into the
+ * probe (checked only once volume_ramp_active has already been observed
+ * TRUE for that buffer, see below) guarantees the property write and that
+ * buffer's decision to apply direct sample scaling always land on the same
+ * buffer, on the same thread. */
+static gboolean volume_ramp_pending_start = FALSE;
+static GstAudioInfo ramp_audio_info;
+static gboolean ramp_audio_info_valid = FALSE;
+static GstCaps *ramp_cached_caps = NULL;
 
 static void event_line(const char *name, const char *arg);
+static void trace_line(const char *kind, const char *detail);
 
-/* Ordinary user volume is applied directly to the dedicated in-pipeline
- * GStreamer volume element. The slider is already sending each input event
- * immediately, so there is no renderer debounce and no native timer/ramp to
- * reset on every mouse movement.
- *
- * The element stays in the audio-sink bin, immediately upstream of the real
+/* Applies a volume value immediately, with no ramp -- used by every caller
+ * except the ordinary slider path (see begin_user_volume_ramp below). The
+ * element stays in the audio-sink bin, immediately upstream of the real
  * sink. This placement is important: putting the user-volume element back in
  * playbin's audio-filter chain reintroduces the ~1 second queue latency that
- * the user reported. ReplayGain remains a separate upstream element.
- *
- * Startup/unmute use the same direct setter. Track transitions do not call
- * this function, so they do not acquire a user-volume ramp or delay. */
+ * the user reported. ReplayGain remains a separate upstream element. */
 static void set_user_volume(gdouble value) {
   value = CLAMP(value, 0.0, 1.0);
   user_volume = value;
   if (!user_volume_element) return;
   g_object_set(G_OBJECT(user_volume_element), "volume", value, NULL);
+}
+
+static void cancel_user_volume_ramp(void) {
+  volume_ramp_active = FALSE;
+  volume_ramp_pending_restore = FALSE;
+  volume_ramp_pending_start = FALSE;
+}
+
+/* Refreshes the cached GstAudioInfo for the pad's currently negotiated caps.
+ * Cheap to call on every buffer while a ramp is active: caps rarely change
+ * mid-stream, and gst_caps_is_equal() short-circuits the real work when they
+ * haven't. Only interleaved layouts are accepted -- that is what "volume"
+ * (and this whole pipeline) has always negotiated in practice, and treating
+ * an unexpected planar layout as "unknown" (falling back to the safe
+ * per-buffer property step below) is far better than silently scaling the
+ * wrong bytes. */
+static gboolean ensure_ramp_audio_info(GstPad *pad) {
+  GstCaps *caps = gst_pad_get_current_caps(pad);
+  if (!caps) return ramp_audio_info_valid;
+  if (ramp_cached_caps && gst_caps_is_equal(ramp_cached_caps, caps)) {
+    gst_caps_unref(caps);
+    return ramp_audio_info_valid;
+  }
+  GstAudioInfo info;
+  gboolean ok = gst_audio_info_from_caps(&info, caps) &&
+                GST_AUDIO_INFO_LAYOUT(&info) == GST_AUDIO_LAYOUT_INTERLEAVED;
+  if (ok) ramp_audio_info = info;
+  if (ramp_cached_caps) gst_caps_unref(ramp_cached_caps);
+  ramp_cached_caps = caps; /* takes ownership */
+  ramp_audio_info_valid = ok;
+  return ok;
+}
+
+/* Multiplies every sample in `buffer` in place by a gain that linearly
+ * interpolates from start_gain (its first frame) to end_gain (its last
+ * frame) -- a real sample-accurate ramp within the buffer, not one flat
+ * value for the whole thing. Limited to the sample formats GStreamer's own
+ * "volume" element supports (S16/S32/F32/F64 interleaved), since that is
+ * guaranteed to be what negotiates here; returns FALSE (leaving the buffer
+ * untouched) for anything else so the caller can fall back safely instead of
+ * risking scaling the wrong bytes. */
+static gboolean apply_sample_ramp(GstBuffer *buffer, const GstAudioInfo *info, gdouble start_gain, gdouble end_gain) {
+  const gint channels = GST_AUDIO_INFO_CHANNELS(info);
+  const gint bpf = GST_AUDIO_INFO_BPF(info);
+  const GstAudioFormat fmt = GST_AUDIO_INFO_FORMAT(info);
+  if (channels <= 0 || bpf <= 0) return FALSE;
+  switch (fmt) {
+    case GST_AUDIO_FORMAT_S16:
+    case GST_AUDIO_FORMAT_S32:
+    case GST_AUDIO_FORMAT_F32:
+    case GST_AUDIO_FORMAT_F64:
+      break;
+    default:
+      return FALSE;
+  }
+  GstMapInfo map;
+  if (!gst_buffer_map(buffer, &map, GST_MAP_READWRITE)) return FALSE;
+  const guint total_frames = (guint)(map.size / (gsize)bpf);
+  if (total_frames == 0) { gst_buffer_unmap(buffer, &map); return TRUE; }
+  guint8 *base = map.data;
+  for (guint frame = 0; frame < total_frames; frame++) {
+    const gdouble t = total_frames > 1 ? (gdouble)frame / (gdouble)(total_frames - 1) : 1.0;
+    const gdouble gain = start_gain + (end_gain - start_gain) * t;
+    guint8 *frame_ptr = base + (gsize)frame * (gsize)bpf;
+    for (gint ch = 0; ch < channels; ch++) {
+      switch (fmt) {
+        case GST_AUDIO_FORMAT_S16: {
+          gint16 *s = (gint16 *)(frame_ptr + (gsize)ch * sizeof(gint16));
+          gdouble v = (*s) * gain;
+          v = CLAMP(v, -32768.0, 32767.0);
+          *s = (gint16)v;
+          break;
+        }
+        case GST_AUDIO_FORMAT_S32: {
+          gint32 *s = (gint32 *)(frame_ptr + (gsize)ch * sizeof(gint32));
+          gdouble v = (*s) * gain;
+          v = CLAMP(v, -2147483648.0, 2147483647.0);
+          *s = (gint32)v;
+          break;
+        }
+        case GST_AUDIO_FORMAT_F32: {
+          gfloat *s = (gfloat *)(frame_ptr + (gsize)ch * sizeof(gfloat));
+          *s = (gfloat)((*s) * gain);
+          break;
+        }
+        case GST_AUDIO_FORMAT_F64: {
+          gdouble *s = (gdouble *)(frame_ptr + (gsize)ch * sizeof(gdouble));
+          *s = (*s) * gain;
+          break;
+        }
+        default:
+          break;
+      }
+    }
+  }
+  gst_buffer_unmap(buffer, &map);
+  return TRUE;
+}
+
+/* Runs on the streaming thread, once per buffer that actually reaches the
+ * user-volume element's sink pad. While a ramp is active, the element's own
+ * "volume" property stays forced at 1.0 (see begin_user_volume_ramp) and
+ * this function does ALL the gain application itself, directly on the raw
+ * samples -- see apply_sample_ramp and the architecture comment above
+ * VOLUME_RAMP_DURATION_US for why. */
+static GstPadProbeReturn volume_ramp_probe_cb(GstPad *pad, GstPadProbeInfo *info, gpointer unused) {
+  (void)unused;
+  /* Runs unconditionally, before the "is a ramp active" check below: this is
+   * what makes the restore land on a genuinely different, not-yet-processed
+   * buffer than the one whose samples the finishing ramp just scaled. */
+  if (volume_ramp_pending_restore) {
+    volume_ramp_pending_restore = FALSE;
+    set_user_volume(volume_ramp_target);
+  }
+  if (!volume_ramp_active) return GST_PAD_PROBE_OK;
+  GstBuffer *buffer = GST_PAD_PROBE_INFO_BUFFER(info);
+  if (!buffer) return GST_PAD_PROBE_OK;
+
+  const gint64 now = g_get_monotonic_time();
+  const gint64 buf_start_us = now - volume_ramp_started_at;
+
+  if (!ensure_ramp_audio_info(pad)) {
+    /* Format not yet known/supported -- fall back to the old buffer-level
+     * property step rather than leaving audio unramped or silent. This path
+     * never enters direct sample-scaling/pass-through mode, so there is
+     * nothing for volume_ramp_pending_start to force here -- clear it so a
+     * later format change can't have it fire out of context. */
+    volume_ramp_pending_start = FALSE;
+    if (buf_start_us >= VOLUME_RAMP_DURATION_US) { set_user_volume(volume_ramp_target); volume_ramp_active = FALSE; }
+    else { const gdouble fraction = (gdouble)buf_start_us / (gdouble)VOLUME_RAMP_DURATION_US; set_user_volume(volume_ramp_start + (volume_ramp_target - volume_ramp_start) * fraction); }
+    return GST_PAD_PROBE_OK;
+  }
+
+  /* Force pass-through HERE, on the streaming thread, for the exact same
+   * buffer apply_sample_ramp is about to scale below -- not eagerly from
+   * begin_user_volume_ramp() on the main thread (see volume_ramp_pending_start's
+   * declaration comment for the cross-thread race this closes). */
+  if (volume_ramp_pending_start) {
+    volume_ramp_pending_start = FALSE;
+    if (user_volume_element) g_object_set(G_OBJECT(user_volume_element), "volume", 1.0, NULL);
+  }
+
+  /* Compute the gain at both the first and last frame of THIS buffer, so the
+   * interpolation inside apply_sample_ramp is accurate to the buffer's own
+   * span rather than treating the whole buffer as one instant in time. */
+  const gint bpf = GST_AUDIO_INFO_BPF(&ramp_audio_info);
+  const gint rate = GST_AUDIO_INFO_RATE(&ramp_audio_info);
+  const gsize buf_size = gst_buffer_get_size(buffer);
+  const guint total_frames = (bpf > 0) ? (guint)(buf_size / (gsize)bpf) : 0;
+  const gint64 buf_duration_us = (rate > 0 && total_frames > 0)
+    ? (gint64)(((gdouble)total_frames / (gdouble)rate) * 1000000.0) : 0;
+  const gint64 buf_end_us = buf_start_us + buf_duration_us;
+
+  gboolean finishing = FALSE;
+  gdouble start_gain, end_gain;
+  if (buf_start_us >= VOLUME_RAMP_DURATION_US) {
+    start_gain = end_gain = volume_ramp_target;
+    finishing = TRUE;
+  } else {
+    const gdouble start_fraction = CLAMP((gdouble)buf_start_us / (gdouble)VOLUME_RAMP_DURATION_US, 0.0, 1.0);
+    start_gain = volume_ramp_start + (volume_ramp_target - volume_ramp_start) * start_fraction;
+    if (buf_end_us >= VOLUME_RAMP_DURATION_US) {
+      end_gain = volume_ramp_target;
+      finishing = TRUE;
+    } else {
+      const gdouble end_fraction = CLAMP((gdouble)buf_end_us / (gdouble)VOLUME_RAMP_DURATION_US, 0.0, 1.0);
+      end_gain = volume_ramp_start + (volume_ramp_target - volume_ramp_start) * end_fraction;
+    }
+  }
+
+  buffer = gst_buffer_make_writable(buffer);
+  GST_PAD_PROBE_INFO_DATA(info) = buffer; /* make_writable may return a new buffer instance */
+  if (apply_sample_ramp(buffer, &ramp_audio_info, start_gain, end_gain)) {
+    user_volume = end_gain; /* keep the C-side value in sync for continuity/introspection */
+  } else {
+    /* Mapping failed (e.g. a non-writable/foreign-memory buffer) -- fall
+     * back to the property step for just this buffer rather than leaving
+     * the element at its forced 1.0 pass-through with nothing correcting it. */
+    set_user_volume(end_gain);
+  }
+
+  if (finishing) {
+    volume_ramp_active = FALSE;
+    /* Real bug, confirmed live: restoring the element's property HERE used
+     * to double-apply gain. This pad probe runs BEFORE the element's own
+     * chain function processes THIS SAME buffer -- so setting the property
+     * back to volume_ramp_target now meant the element then ALSO multiplied
+     * the samples apply_sample_ramp had just manually scaled to that exact
+     * target, on this same buffer. For a low target (e.g. dragging from
+     * 100% down to 14%), that squares the gain (0.14 x 0.14 =~ 0.02) for
+     * one buffer -- a real, audible near-silence blip at the exact moment
+     * every ramp finishes, worse the further the target is from 1.0.
+     * Deferring the restore to the START of the NEXT probe call (a
+     * different, not-yet-processed buffer) fixes this: the element stays
+     * at 1.0 for the buffer we just finished scaling, and only applies
+     * volume_ramp_target starting with the buffer after it. */
+    volume_ramp_pending_restore = TRUE;
+  }
+  return GST_PAD_PROBE_OK;
+}
+
+/* Starts (or smoothly retargets) a 50 ms ramp from the current actual volume
+ * to the new target -- short enough to still track a continuous slider drag
+ * in near-real-time (a 120ms ramp made the audible volume visibly lag behind
+ * the mouse while held: every new position restarted the ramp's countdown,
+ * so it never had time to catch up until the drag stopped), while still long
+ * enough to avoid the hard click of an instant jump. Retargeting mid-ramp
+ * instead of restarting from scratch is what keeps a fast slider drag smooth
+ * rather than stair-stepping: each new command just moves the endpoint, the
+ * ramp that is already in flight keeps running from wherever it currently
+ * is.
+ *
+ * A rate-limited variant of this (skipping the start_time/anchor reset for
+ * retargets closer together than ~12ms, to reduce slope changes during a
+ * fast drag) was tried and reverted: confirmed live, it made popping
+ * *worse*, not better. During a SUSTAINED fast drag (commands arriving
+ * faster than the rate limit, continuously), the anchor never gets
+ * refreshed at all -- it just ages while the target keeps moving, so once
+ * more than 50ms has passed since that now-stale anchor, every buffer
+ * starts seeing "elapsed >= VOLUME_RAMP_DURATION_US" and snaps instantly to
+ * whatever the target happens to be at that moment -- a real, audible
+ * instant jump, repeated for as long as the fast drag continues. Always
+ * refreshing the anchor on every retarget (this version) means the ramp
+ * never goes stale relative to a moving target, even under continuous rapid
+ * retargeting.
+ *
+ * The element's own "volume" property is forced to 1.0 for the duration of
+ * the ramp -- volume_ramp_probe_cb applies the real gain directly to
+ * samples instead, so the element must not ALSO apply gain on top of that
+ * (which would double-apply it). The property becomes authoritative again
+ * the moment the ramp ends (see volume_ramp_probe_cb).
+ *
+ * A variant of this that skipped the ramp entirely and delegated to the
+ * real sink's own native "volume" property (pulsesink) was tried and
+ * reverted: confirmed live, it meant a single big jump (e.g. 100% down to
+ * 14%) became a real, completely unramped instant change, because the
+ * assumption that PulseAudio/PipeWire's own mixing stage would smooth it
+ * the way it does for the OS's own volume control did not hold for at
+ * least this PipeWire setup. This in-pipeline sample-level ramp is the sole
+ * mechanism again -- it doesn't depend on any assumption about how the
+ * sink/audio server handles a property write. */
+static void begin_user_volume_ramp(gdouble target) {
+  target = CLAMP(target, 0.0, 1.0);
+  volume_ramp_start = user_volume;
+  volume_ramp_target = target;
+  volume_ramp_started_at = g_get_monotonic_time();
+  volume_ramp_active = TRUE;
+  /* A retarget arriving between a ramp finishing and its deferred property
+   * restore landing (see volume_ramp_pending_restore) must not let that
+   * stale restore fire later and clobber THIS new ramp's forced 1.0. */
+  volume_ramp_pending_restore = FALSE;
+  /* Force pass-through is applied from INSIDE volume_ramp_probe_cb, on the
+   * streaming thread, not here -- this function runs on the main thread (via
+   * command_tick's g_main_context_invoke), a different thread than the one
+   * calling the pad probe/chain() for the pipeline. See
+   * volume_ramp_pending_start's declaration comment for the race that
+   * setting the property directly from here used to cause. */
+  volume_ramp_pending_start = TRUE;
 }
 
 static void apply_track_gain(gdouble value) {
@@ -372,9 +714,22 @@ static gboolean command_tick(gpointer unused) {
 
   if (pending_volume) {
     const gdouble requested_volume = CLAMP(latest_volume, 0.0, 1.0);
-    if (!user_muted) set_user_volume(requested_volume);
-    else user_volume = requested_volume;
-    if (trace_enabled) { char detail[160]; snprintf(detail, sizeof(detail), "value=%.6f muted=%d stream_volume=hive-user-volume", user_volume, user_muted); trace_line("VOLUME_STATE", detail); }
+    if (!user_muted) {
+      /* The ramp is interpolated from inside a GstPadProbe on the volume
+       * element's own sink pad (see volume_ramp_probe_cb) -- it only ever
+       * runs when a buffer actually flows through that pad. While paused,
+       * no buffers flow, so a ramp started here would sit inert and the
+       * requested volume would never actually apply until playback resumed
+       * (real bug, confirmed live: changing the slider while paused had no
+       * audible effect until pressing Play again). There is also no output
+       * to pop while paused, so there's nothing the ramp needs to protect
+       * against here -- apply directly instead of ramping.
+       */
+      if (playing_state) begin_user_volume_ramp(requested_volume);
+      else { cancel_user_volume_ramp(); set_user_volume(requested_volume); }
+    }
+    else { cancel_user_volume_ramp(); user_volume = requested_volume; }
+    if (trace_enabled) { char detail[160]; snprintf(detail, sizeof(detail), "value=%.6f muted=%d stream_volume=hive-user-volume ramp=50ms", user_volume, user_muted); trace_line("VOLUME_STATE", detail); }
   }
   return G_SOURCE_CONTINUE;
 }
@@ -412,21 +767,46 @@ int main(int argc, char **argv) {
 
   const gchar *requested_output = g_getenv("HIVE_AUDIO_OUTPUT_DEVICE");
   GstElement *sink = NULL;
+  gboolean sink_is_pulse = FALSE;
   if (requested_output && *requested_output) {
     GstElement *pulse_sink = gst_element_factory_make("pulsesink", "audio-output");
     if (pulse_sink) {
       g_object_set(pulse_sink, "device", requested_output, NULL);
       sink = pulse_sink;
+      sink_is_pulse = TRUE;
       event_line("OUTPUT_DEVICE", requested_output);
     } else {
       event_line("OUTPUT_DEVICE_FALLBACK", "selected output unavailable; using system default");
     }
   }
   if (!sink) {
-    sink = gst_element_factory_make("autoaudiosink", "audio-output");
-    if (!sink) { event_line("ERROR", "GStreamer autoaudiosink unavailable"); return 3; }
-    event_line("OUTPUT_DEVICE", "system-default");
+    /* Prefer pulsesink explicitly over autoaudiosink's own auto-pick here,
+     * NOT to route the user-volume ramp through it (that was tried and
+     * reverted -- see begin_user_volume_ramp's comment) but for a narrower,
+     * one-time reason: without an explicit "volume" property write,
+     * PipeWire's pulse-compat layer assigns a brand-new stream whatever its
+     * own session-manager default is (observed on the target desktop:
+     * starts at 50%, not 100%), so the OS mixer/sound-settings entry for
+     * this app shows a misleading level even while Hive's own in-app
+     * hive-user-volume element -- the sole real volume control -- is at
+     * unity. Force this stream's own volume/mute to unity/unmuted once at
+     * startup so the system mixer always reads 100% and every bit of actual
+     * gain control stays in hive-user-volume, matching the architecture
+     * elsewhere in this file. Fall back to autoaudiosink, which exposes no
+     * "volume"/"mute" properties to pin the same way, only if pulsesink is
+     * genuinely unavailable. */
+    GstElement *pulse_sink = gst_element_factory_make("pulsesink", "audio-output");
+    if (pulse_sink) {
+      sink = pulse_sink;
+      sink_is_pulse = TRUE;
+      event_line("OUTPUT_DEVICE", "system-default");
+    } else {
+      sink = gst_element_factory_make("autoaudiosink", "audio-output");
+      if (!sink) { event_line("ERROR", "GStreamer autoaudiosink unavailable"); return 3; }
+      event_line("OUTPUT_DEVICE", "system-default");
+    }
   }
+  if (sink_is_pulse) g_object_set(sink, "volume", 1.0, "mute", FALSE, NULL);
 
   /* playbin inserts its own internal queue (default ~1 second) between the
    * audio-filter chain and the audio-sink slot. A gain change applied
@@ -447,6 +827,9 @@ int main(int argc, char **argv) {
     if (gst_element_link(user_volume_element, sink)) {
       g_object_set(G_OBJECT(user_volume_element), "volume", user_volume, NULL);
       GstPad *sink_pad = gst_element_get_static_pad(user_volume_element, "sink");
+      /* Drives the ramp: see volume_ramp_probe_cb's comment above for why a
+       * per-buffer probe on this exact pad replaces an external timer. */
+      gst_pad_add_probe(sink_pad, GST_PAD_PROBE_TYPE_BUFFER, volume_ramp_probe_cb, NULL, NULL);
       GstPad *ghost_sink = gst_ghost_pad_new("sink", sink_pad);
       gst_object_unref(sink_pad);
       if (ghost_sink) gst_element_add_pad(sink_bin, ghost_sink);

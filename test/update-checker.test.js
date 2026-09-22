@@ -122,13 +122,20 @@ test('main.js wires the update checker to IPC and never auto-checks in an unpack
   assert.match(main, /ipcMain\.handle\('updates:download', async \(\) => updateChecker\.download\(\)\);/);
   assert.match(main, /ipcMain\.handle\('updates:install', async \(\) => \{ updateChecker\.quitAndInstall\(\); return true; \}\);/);
   assert.match(main, /ipcMain\.handle\('updates:status', async \(\) => updateChecker\.getStatus\(\)\);/);
-  // The passive startup check must be gated on app.isPackaged, immediately
-  // adjacent to the actual check() call -- an unpacked dev checkout has no
-  // app-update.yml and would otherwise log a meaningless error every launch.
+  // The passive startup check must be gated on actually being packaged,
+  // immediately adjacent to the actual check() call -- an unpacked dev
+  // checkout has no app-update.yml and would otherwise log a meaningless
+  // error every launch. Real bug, confirmed live: bare app.isPackaged alone
+  // is not reliable here -- Hive's stable portable-runtime binary is
+  // intentionally renamed (see hive-launcher.sh, for Discord's local game
+  // detection), and Electron treats a renamed executable as a signal that
+  // it must be a packaged/branded app. HIVE_PORTABLE_ROOT (set by the
+  // launcher whenever this is actually a portable/dev checkout) must be
+  // checked first, same as getPortableApplicationRoot() already does.
   const checkCallIndex = main.indexOf('setTimeout(() => { void updateChecker.check(); }, 5000);');
   assert.ok(checkCallIndex >= 0, 'the deferred startup check must exist');
-  const guardWindow = main.slice(Math.max(0, checkCallIndex - 200), checkCallIndex);
-  assert.match(guardWindow, /if \(app\.isPackaged\) \{/);
+  const guardWindow = main.slice(Math.max(0, checkCallIndex - 400), checkCallIndex);
+  assert.match(guardWindow, /if \(!process\.env\.HIVE_PORTABLE_ROOT && app\.isPackaged\) \{/);
 });
 
 test('preload exposes the update IPC channels to the renderer', () => {

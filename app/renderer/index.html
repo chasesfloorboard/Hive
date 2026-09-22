@@ -168,7 +168,7 @@
     <footer id="playbar" class="glass">
       <div class="playbar-left">
         <img id="pb-cover" class="pb-cover" src="" alt="" />
-        <div class="pb-meta">
+        <div class="pb-meta" aria-live="polite">
           <div id="pb-title" class="pb-title">Nothing playing</div>
           <div id="pb-artist" class="dim small"></div>
         </div>
@@ -201,11 +201,11 @@
   </div>
 
   <!-- ============ SETTINGS MODAL ============ -->
-  <div id="settings-modal" class="modal-overlay hidden">
+  <div id="settings-modal" class="modal-overlay floating-panel hidden">
     <div class="modal glass modal-settings">
       <div class="modal-header">
         <h3>Settings</h3>
-        <button class="modal-close" data-close>✕</button>
+        <button class="modal-close" aria-label="Close" data-close>✕</button>
       </div>
       <div class="settings-tabs" role="tablist" aria-label="Hive Settings" aria-orientation="vertical">
         <button id="settings-tab-general" class="settings-tab-btn active" role="tab" aria-selected="true" aria-controls="settings-panel-general" tabindex="0" data-settings-tab="general">Playback</button>
@@ -271,6 +271,16 @@
         </div>
 
         <div id="settings-panel-appearance" class="settings-tab-panel" role="tabpanel" aria-labelledby="settings-tab-appearance" tabindex="0" data-settings-panel="appearance">
+          <div class="settings-section-title">Hive themes</div>
+          <div class="settings-hint settings-section-copy">Choose one base theme, then optionally combine the visual treatments below. Theme choices only affect Hive's appearance.</div>
+          <div class="theme-control-card">
+            <label class="settings-field-label" for="builtin-theme-select">Theme</label>
+            <select id="builtin-theme-select" class="settings-select" aria-label="Theme"></select>
+            <div id="builtin-theme-description" class="settings-hint theme-description"></div>
+          </div>
+          <div class="settings-hint settings-section-copy">Drop a <code>.hive-theme</code> file into your themes folder and it appears above automatically -- no import step needed. Files placed there are picked up the next time this tab opens.</div>
+          <div class="custom-css-actions"><button id="theme-open-folder-btn" class="sidebar-add" type="button">Open themes folder</button><button id="theme-import-btn" class="sidebar-add" type="button">Import theme pack…</button><button id="theme-export-btn" class="sidebar-add" type="button">Export current theme…</button></div>
+          <div class="settings-divider"></div>
           <div class="settings-section-title">Interface</div>
           <div class="glass-settings-card">
             <div class="settings-section-title glass-settings-title">Frosted Glass</div>
@@ -287,18 +297,6 @@
             <label class="settings-row"><span>Colored Now Playing background<span class="settings-hint">Add the accent background behind Now Playing.</span></span><input type="checkbox" id="setting-playbar-now-playing-bg" /></label>
           </div>
                     <label class="settings-row"><span>Legacy album art scaling<span class="settings-hint">Keep the established fixed album-art size in Artists and Albums.</span></span><input type="checkbox" id="setting-legacy-art-scaling" /></label>
-          <div class="settings-divider"></div>
-          <div class="settings-section-title">Hive themes</div>
-          <div class="settings-hint settings-section-copy">Choose one base theme, then optionally combine the visual treatments below. Theme choices only affect Hive's appearance.</div>
-          <div class="theme-control-card">
-            <label class="settings-field-label" for="builtin-theme-select">Theme</label>
-            <select id="builtin-theme-select" class="settings-select" aria-label="Theme"></select>
-            <div id="builtin-theme-description" class="settings-hint theme-description"></div>
-          </div>
-          <div class="settings-divider"></div>
-          <div class="settings-section-title">Community themes</div>
-          <div class="settings-hint settings-section-copy">Import and export <code>.hive-theme</code> packs. Theme packs only style Hive.</div>
-          <div class="custom-css-actions"><button id="theme-import-btn" class="sidebar-add" type="button">Import theme pack…</button><button id="theme-export-btn" class="sidebar-add" type="button">Export current theme…</button></div>
           <div class="settings-divider"></div>
           <div class="settings-section-title">Panel layout</div>
           <label class="settings-row"><span>Lock panel sizes<span class="settings-hint">Prevent resizing the main panels.</span></span><input type="checkbox" id="setting-lock-resize" /></label>
@@ -322,28 +320,13 @@
           <button id="add-folder-btn" class="sidebar-add" type="button">+ Add music folder…</button>
           <button id="rescan-btn" class="sidebar-add" type="button">⟳ Rescan library</button>
           <div class="settings-divider"></div>
-          <div class="settings-section-title">Audio integrity</div>
-          <div class="settings-hint settings-section-copy">Check audio files and Love metadata for integrity. No music files are changed unless you approve a repair.</div>
-          <div class="audio-integrity-actions">
-            <button id="audio-integrity-scan-btn" class="sidebar-add" type="button">⌕ Scan entire library</button>
-            <button id="audio-integrity-scan-cancel-btn" class="sidebar-add" type="button" disabled>Cancel scan</button>
-            <button id="audio-integrity-report-btn" class="sidebar-add" type="button" disabled>Generate Full TXT Report</button>
-            <button id="audio-integrity-open-reports-btn" class="sidebar-add" type="button">Open Reports Folder</button>
-          </div>
-          <div id="audio-integrity-scan-progress" class="audio-integrity-progress" hidden>
-            <div class="audio-integrity-progress-head"><strong id="audio-integrity-scan-progress-label">Ready</strong><span id="audio-integrity-scan-progress-count">0 / 0</span></div>
-            <progress id="audio-integrity-scan-progress-bar" value="0" max="1"></progress>
-            <div id="audio-integrity-scan-current" class="settings-hint"></div>
-          </div>
-          <div id="audio-integrity-scan-results" class="audio-integrity-results" hidden></div>
+          <div class="settings-section-title">Favorites</div>
+          <button id="refresh-favorites-btn" class="sidebar-add" type="button">⟳ Refresh Favorites from files</button>
+          <div class="settings-hint settings-section-copy">Read Favorites directly from embedded file tags.</div>
           <div class="settings-divider"></div>
           <div class="settings-section-title">Lyrics</div>
           <label class="settings-row"><span>Embed songs with lyrics automatically<span class="settings-hint">When Hive finds lyrics online for a track that has no embedded lyrics, save the result into the audio file automatically. Synchronized lyrics are embedded when Highlighted lyrics is enabled; otherwise Genius plain lyrics are embedded.</span></span><input type="checkbox" id="setting-embed-lyrics-automatically" /></label>
           <label class="settings-row"><span>Use highlighted lyrics<span class="settings-hint">Prefer synchronized lyrics from LRCLIB, even for a track whose embedded lyrics are plain text. Turn off to use plain lyrics from Genius. This never changes what's embedded in the file -- only what the lyrics panel displays.</span></span><input type="checkbox" id="setting-highlighted-lyrics" checked /></label>
-          <div class="settings-divider"></div>
-          <div class="settings-section-title">Favorites</div>
-          <button id="refresh-favorites-btn" class="sidebar-add" type="button">⟳ Refresh Favorites from files</button>
-          <div class="settings-hint settings-section-copy">Read Favorites directly from embedded file tags.</div>
         </div>
 
         <div id="settings-panel-statistics" class="settings-tab-panel" role="tabpanel" aria-labelledby="settings-tab-statistics" tabindex="0" data-settings-panel="statistics">
@@ -398,6 +381,21 @@
         </div>
 
         <div id="settings-panel-logs" class="settings-tab-panel" role="tabpanel" aria-labelledby="settings-tab-logs" tabindex="0" data-settings-panel="logs">
+          <div class="settings-section-title">Audio integrity</div>
+          <div class="settings-hint settings-section-copy">Check audio files and Love metadata for integrity. No music files are changed unless you approve a repair.</div>
+          <div class="audio-integrity-actions">
+            <button id="audio-integrity-scan-btn" class="sidebar-add" type="button">⌕ Scan entire library</button>
+            <button id="audio-integrity-scan-cancel-btn" class="sidebar-add" type="button" disabled>Cancel scan</button>
+            <button id="audio-integrity-report-btn" class="sidebar-add" type="button" disabled>Generate Full TXT Report</button>
+            <button id="audio-integrity-open-reports-btn" class="sidebar-add" type="button">Open Reports Folder</button>
+          </div>
+          <div id="audio-integrity-scan-progress" class="audio-integrity-progress" hidden>
+            <div class="audio-integrity-progress-head"><strong id="audio-integrity-scan-progress-label">Ready</strong><span id="audio-integrity-scan-progress-count">0 / 0</span></div>
+            <progress id="audio-integrity-scan-progress-bar" value="0" max="1"></progress>
+            <div id="audio-integrity-scan-current" class="settings-hint"></div>
+          </div>
+          <div id="audio-integrity-scan-results" class="audio-integrity-results" hidden></div>
+          <div class="settings-divider"></div>
           <div class="settings-section-title">Application log</div>
           <div class="settings-hint settings-section-copy">Each launch gets a local TXT session log. The newest 20 sessions are retained.</div>
           <div class="diagnostics-card">
@@ -441,29 +439,23 @@
         </div>
 
         <div id="settings-panel-discord" class="settings-tab-panel" role="tabpanel" aria-labelledby="settings-tab-discord" tabindex="0" data-settings-panel="discord">
-          <div class="settings-section-title">Discord / Music Presence</div>
-          <div class="settings-hint settings-section-copy">Music Presence owns Discord Rich Presence. Hive does not connect to Discord or publish/clear Discord activities. Choose how the music presence is labeled in Discord; Playing is the game-style presentation, while Listening is the music-style presentation. Discord's Registered Games detection remains controlled by Discord.</div>
+          <div class="settings-section-title">Discord Rich Presence</div>
+          <div class="settings-hint settings-section-copy">Hive publishes Rich Presence directly to Discord using its own dedicated Discord application -- Music Presence is not used or required. Choose how it's labeled in Discord; Listening is the music-style presentation, Playing is the game-style presentation. Discord's Registered Games detection remains controlled by Discord.</div>
           <div class="settings-divider"></div>
           <div class="settings-form-grid settings-form-grid-discord">
             <label>Activity type
-              <select id="setting-music-presence-activity-type">
+              <select id="setting-discord-presence-activity-type">
+                <option value="playing" selected>Playing</option>
                 <option value="listening">Listening</option>
-                <option value="playing">Playing</option>
                 <option value="watching">Watching</option>
               </select>
             </label>
-            <label style="grid-column: span 2;">Application ID
-              <input id="setting-music-presence-application-id" type="text" inputmode="numeric" autocomplete="off" spellcheck="false" placeholder="Discord application ID" />
-            </label>
           </div>
-          <div class="settings-hint settings-section-copy">These values are written to Music Presence’s settings without changing its other options.</div>
           <div class="settings-actions settings-actions-discord">
-            <button id="music-presence-apply-btn" class="sidebar-add settings-save-primary" type="button">Apply Music Presence settings</button>
-            <button id="music-presence-restart-btn" class="sidebar-add" type="button">Restart Music Presence</button>
+            <button id="discord-presence-restart-btn" class="sidebar-add" type="button">Restart connection</button>
           </div>
           <div class="settings-save-status-row">
-            <span id="music-presence-save-prompt" class="settings-save-prompt hidden"></span>
-            <span id="music-presence-status" class="settings-status" aria-live="polite">Loading Music Presence settings…</span>
+            <span id="discord-presence-status" class="settings-status" aria-live="polite">Loading Discord Rich Presence status…</span>
           </div>
         </div>
 
@@ -478,7 +470,7 @@
   <!-- ============ CLEAR PLAY COUNTS CONFIRMATION ============ -->
   <div id="clear-play-counts-modal" class="modal-overlay hidden">
     <div class="modal glass disk-delete-modal">
-      <div class="modal-header"><h3>Clear Hive play counts</h3><button class="modal-close" id="clear-play-counts-close" data-close type="button">✕</button></div>
+      <div class="modal-header"><h3>Clear Hive play counts</h3><button class="modal-close" aria-label="Close" id="clear-play-counts-close" data-close type="button">✕</button></div>
       <div class="modal-body">
         <div class="disk-delete-warning">Warning! This will permanently clear the play counts you have amassed on your entire library.</div>
         <div class="disk-delete-detail">This clears Hive's stored play counts and Hive's own native listening history (used for Yearly Wrap and Wrapped-data exports/imports). Any MusicBee Wrapped archive you've already imported is kept. Your music files, tags, ratings, skip counts, last-played information, and playlists will not be deleted or modified.</div>
@@ -493,7 +485,7 @@
   <!-- ============ TAG FAILURES MODAL ============ -->
   <div id="tag-failures-modal" class="modal-overlay hidden">
     <div class="modal glass tag-failures-modal">
-      <div class="modal-header"><h3>Metadata write failures</h3><button class="modal-close" data-close>✕</button></div>
+      <div class="modal-header"><h3>Metadata write failures</h3><button class="modal-close" aria-label="Close" data-close>✕</button></div>
       <div class="modal-body">
         <div id="tag-failures-summary" class="dim"></div>
         <div class="tag-failures-actions">
@@ -510,7 +502,7 @@
     <div class="modal glass modal-about">
       <div class="modal-header">
         <h3>About Hive</h3>
-        <button class="modal-close" data-close>✕</button>
+        <button class="modal-close" aria-label="Close" data-close>✕</button>
       </div>
       <div class="modal-body about-body">
         <div class="about-brand"><img class="about-brand-logo" id="about-hive-logo" alt="Hive" aria-hidden="true"><span>Hive</span></div>
@@ -527,7 +519,7 @@
   <!-- ============ COVER ART LIGHTBOX ============ -->
   <div id="cover-lightbox" class="modal-overlay hidden">
     <div class="lightbox">
-      <button class="modal-close lightbox-close" data-close title="Close">✕</button>
+      <button class="modal-close lightbox-close" aria-label="Close" data-close title="Close">✕</button>
       <div class="lightbox-stage">
         <img id="lightbox-img" src="" alt="" />
       </div>
@@ -542,7 +534,7 @@
   <!-- ============ IMPORT PLAYLIST ============ -->
   <div id="playlist-import-modal" class="modal-overlay hidden">
     <div class="modal glass playlist-modal">
-      <div class="modal-header"><h3>Import Playlist</h3><button class="modal-close" data-close>✕</button></div>
+      <div class="modal-header"><h3>Import Playlist</h3><button class="modal-close" aria-label="Close" data-close>✕</button></div>
       <div class="modal-body playlist-form playlist-import-form">
         <p class="dim">Import a local M3U/M3U8 playlist or add a Spotify playlist as a streaming source. Spotify tracks stay online and play through the Spotify desktop client controlled by Hive.</p>
         <button id="playlist-import-file" class="playlist-import-choice"><strong>Import Playlist File</strong><span>M3U / M3U8 from your computer</span></button>
@@ -555,7 +547,7 @@
   <!-- ============ NEW PLAYLIST ============ -->
   <div id="playlist-modal" class="modal-overlay hidden">
     <div class="modal glass playlist-modal">
-      <div class="modal-header"><h3 id="playlist-modal-title">New playlist</h3><button class="modal-close" data-close>✕</button></div>
+      <div class="modal-header"><h3 id="playlist-modal-title">New playlist</h3><button class="modal-close" aria-label="Close" data-close>✕</button></div>
       <div class="modal-body playlist-form">
         <label>Playlist name<input id="playlist-name" autocomplete="off" placeholder="My Playlist"></label>
         <div class="playlist-label-style-field">
@@ -573,9 +565,9 @@
   <!-- ============ APP NOTICE ============ -->
   <div id="notice-modal" class="modal-overlay hidden">
     <div class="modal glass notice-modal">
-      <div class="modal-header"><h3 id="notice-title">Hive</h3><button class="modal-close" data-close>✕</button></div>
+      <div class="modal-header"><h3 id="notice-title">Hive</h3><button class="modal-close" aria-label="Close" data-close>✕</button></div>
       <div class="modal-body">
-        <div id="notice-body" class="notice-body"></div>
+        <div id="notice-body" class="notice-body" aria-live="assertive"></div>
         <div id="notice-copy-row" class="notice-copy-row hidden">
           <button id="notice-copy" class="sidebar-add" type="button">Copy diagnostics</button>
           <span id="notice-copy-status" class="notice-copy-status" aria-live="polite"></span>
@@ -587,7 +579,7 @@
   <!-- ============ DISK DELETE CONFIRMATION ============ -->
   <div id="disk-delete-modal" class="modal-overlay hidden">
     <div class="modal glass disk-delete-modal">
-      <div class="modal-header"><h3 id="disk-delete-title">Delete file from disk</h3><button class="modal-close" id="disk-delete-close" data-close type="button">✕</button></div>
+      <div class="modal-header"><h3 id="disk-delete-title">Delete file from disk</h3><button class="modal-close" aria-label="Close" id="disk-delete-close" data-close type="button">✕</button></div>
       <div class="modal-body">
         <div id="disk-delete-message" class="disk-delete-message"></div>
         <div id="disk-delete-detail" class="disk-delete-detail"></div>
@@ -601,7 +593,7 @@
 
   <div id="disk-delete-final-modal" class="modal-overlay hidden">
     <div class="modal glass disk-delete-modal disk-delete-final-modal">
-      <div class="modal-header"><h3>This is permanent</h3><button class="modal-close" id="disk-delete-final-close" data-close type="button">✕</button></div>
+      <div class="modal-header"><h3>This is permanent</h3><button class="modal-close" aria-label="Close" id="disk-delete-final-close" data-close type="button">✕</button></div>
       <div class="modal-body">
         <div class="disk-delete-warning">This is permanent. Are you sure?</div>
         <div id="disk-delete-final-detail" class="disk-delete-detail"></div>
@@ -722,9 +714,9 @@
   </div>
 
   <!-- ============ TAG EDITOR ============ -->
-  <div id="tag-modal" class="modal-overlay hidden">
+  <div id="tag-modal" class="modal-overlay floating-panel hidden">
     <div class="modal glass modal-tags">
-      <div class="modal-header"><div><h3 id="tag-editor-title">Edit track</h3><div id="tag-editor-scope" class="settings-hint"></div></div><button class="modal-close" data-close>✕</button></div>
+      <div class="modal-header"><div><h3 id="tag-editor-title">Edit track</h3><div id="tag-editor-scope" class="settings-hint"></div></div><button class="modal-close" aria-label="Close" data-close>✕</button></div>
       <div class="tag-editor-tabs" id="tag-editor-tabs">
         <button class="tag-editor-tab active" data-tag-tab="properties">Properties</button>
         <button class="tag-editor-tab" data-tag-tab="tags">Tags</button>

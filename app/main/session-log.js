@@ -207,8 +207,20 @@ function createSessionLog({ hiveProjectRoot, startupDebugEnabled, startupDebugSt
     }
     return child;
   }
+  // Real bug, confirmed live: app.isPackaged is not just "was this built with
+  // electron-builder" -- Electron also treats a renamed executable (anything
+  // other than literally "electron"/"electron.exe") as a signal that it must
+  // be a packaged, branded app. Hive's stable runtime binary is intentionally
+  // named "Hive" (see hive-launcher.sh, for Discord's local game detection),
+  // which made app.isPackaged report true even for this ordinary portable/dev
+  // checkout, sending every resource lookup at a nonexistent app.asar and
+  // producing a black screen. HIVE_PORTABLE_ROOT is the actual reliable
+  // signal for "this is a portable/dev launch" (see getPortableApplicationRoot
+  // in main.js, which already uses this same priority) -- trust that over
+  // app.isPackaged, which only applies when it's genuinely absent.
+  function runningFromPortableCheckout() { return !!String(process.env.HIVE_PORTABLE_ROOT || '').trim() || !app.isPackaged; }
   function runtimeResourcePath(relativePath) {
-    if (app.isPackaged) {
+    if (!runningFromPortableCheckout()) {
       const unpackedPath = path.join(process.resourcesPath, 'app.asar.unpacked', relativePath);
       if (fs.existsSync(unpackedPath)) return unpackedPath;
       return path.join(process.resourcesPath, 'app.asar', relativePath);
@@ -218,13 +230,13 @@ function createSessionLog({ hiveProjectRoot, startupDebugEnabled, startupDebugSt
   function workerForkOptions(options = {}) {
     const unpackedRoot = path.join(process.resourcesPath, 'app.asar.unpacked');
     const env = { ...process.env };
-    if (app.isPackaged) {
+    if (!runningFromPortableCheckout()) {
       // Worker entry points and local helpers are unpacked, while production
       // node_modules remain in app.asar. Electron's ASAR-aware loader can
       // resolve those dependencies through NODE_PATH.
       env.NODE_PATH = [path.join(process.resourcesPath, 'app.asar', 'node_modules'), env.NODE_PATH].filter(Boolean).join(path.delimiter);
     }
-    return { ...options, cwd: app.isPackaged ? unpackedRoot : (options.cwd || __dirname), env };
+    return { ...options, cwd: runningFromPortableCheckout() ? (options.cwd || __dirname) : unpackedRoot, env };
   }
   startStartupProfiler();
 

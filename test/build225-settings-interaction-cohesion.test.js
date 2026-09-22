@@ -20,6 +20,24 @@ test('Build 225 keeps settings compact and moves lyric mode into Library', () =>
   assert.doesNotMatch(html, /id="settings-save-btn"/);
 });
 
+test('Audio integrity moved from Library to Diagnostics', () => {
+  const library = html.match(/id="settings-panel-library"[\s\S]*?(?=<div id="settings-panel-statistics")/)[0];
+  assert.doesNotMatch(library, /id="audio-integrity-scan-btn"/);
+  const diagnostics = html.match(/id="settings-panel-logs"[\s\S]*?(?=<div id="settings-panel-discord")/)[0];
+  assert.match(diagnostics, /id="audio-integrity-scan-btn"/);
+  assert.match(diagnostics, /id="audio-integrity-scan-results"/);
+});
+
+test('Hive Theme selection and import/export sit at the top of Appearance, before Interface', () => {
+  const appearance = html.match(/id="settings-panel-appearance"[\s\S]*?(?=<div id="settings-panel-navigation")/)[0];
+  const themeIdx = appearance.indexOf('id="builtin-theme-select"');
+  const importIdx = appearance.indexOf('id="theme-import-btn"');
+  const interfaceIdx = appearance.indexOf('>Interface<');
+  assert.ok(themeIdx >= 0 && importIdx >= 0 && interfaceIdx >= 0);
+  assert.ok(themeIdx < interfaceIdx, 'theme selector must come before the Interface section');
+  assert.ok(importIdx < interfaceIdx, 'theme import/export must come before the Interface section');
+});
+
 test('Build 225 batches scan-track IPC and keeps album Add to Queue', () => {
   assert.match(main, /rendererTrackBatch = \[\]/);
   assert.match(main, /rendererTrackBatch\.length >= 100/);

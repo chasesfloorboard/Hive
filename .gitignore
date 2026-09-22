@@ -15,6 +15,11 @@ User Data Backup/
 MusicBeeWrapped/
 .beehive-installed
 BUILD
+# The portable-mode data root (library DB, covers cache, cookies, crash
+# dumps, compiled native helper binary, Discord presence config, etc.) --
+# added after the build258 portable-data-root migration, which predates
+# this .gitignore entry.
+Hive Data/
 
 # Editor/OS noise
 .DS_Store

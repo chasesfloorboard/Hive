@@ -370,7 +370,7 @@ test('the track context menu hides file-only actions (rating, delete from disk, 
   assert.match(block, /\.\.\.\(isLocal \? \[\{label:editLabel,icon:'edit'/);
   // Play/Queue/Add to/search must remain available for every track type,
   // podcast included -- this is not supposed to gate everything.
-  assert.match(block, /\{label:'Play',icon:'play'/);
+  assert.match(block, /\{label:'Play Now',icon:'play'/);
   assert.match(block, /\{label:'Add to',icon:'plus',submenu:buildAddToPlaylistSubmenu\(queueTracks\)\}/);
 });
 

@@ -1668,19 +1668,93 @@
   // appearing behind it. Native OS chooser windows remain OS-owned; this
   // manager covers every Hive-rendered modal/overlay.
   let modalZIndex = 100;
+  const modalFocusReturn = new WeakMap();
+  function focusableModalElements(modal) {
+    return Array.from(modal.querySelectorAll('button, [href], input, select, textarea, [tabindex]:not([tabindex="-1"])'))
+      .filter(el => !el.disabled && el.offsetParent !== null);
+  }
+  function modalTabTrap(e) {
+    if (e.key !== 'Tab') return;
+    const modal = e.currentTarget;
+    const focusable = focusableModalElements(modal);
+    if (!focusable.length) { e.preventDefault(); return; }
+    const first = focusable[0], last = focusable[focusable.length - 1];
+    if (e.shiftKey && document.activeElement === first) { e.preventDefault(); last.focus(); }
+    else if (!e.shiftKey && document.activeElement === last) { e.preventDefault(); first.focus(); }
+  }
+  // Settings and the tag editor are "floating panels" (see the .floating-panel
+  // CSS): a non-blocking, draggable window instead of a centered modal that
+  // dims/blocks the rest of the app. Dragging is done from the .modal-header;
+  // position is left alone on repeat openModal() calls while already visible
+  // (e.g. the tag editor re-populating as the user clicks other tracks) so
+  // the user's dragged position doesn't jump back to center under them.
+  function makeFloatingPanelDraggable(modal) {
+    const panel = modal?.querySelector(':scope > .modal');
+    const handle = panel?.querySelector(':scope > .modal-header');
+    if (!panel || !handle || handle._beehiveDragBound) return;
+    handle._beehiveDragBound = true;
+    let drag = null;
+    handle.addEventListener('pointerdown', e => {
+      if (e.button !== 0 || e.target.closest('button, a, input, select, textarea')) return;
+      const rect = panel.getBoundingClientRect();
+      panel.style.position = 'fixed';
+      panel.style.margin = '0';
+      panel.style.left = `${rect.left}px`;
+      panel.style.top = `${rect.top}px`;
+      drag = { startX: e.clientX, startY: e.clientY, startLeft: rect.left, startTop: rect.top, w: rect.width, h: rect.height };
+      handle.setPointerCapture(e.pointerId);
+      handle.classList.add('dragging');
+    });
+    handle.addEventListener('pointermove', e => {
+      if (!drag) return;
+      const left = Math.max(4, Math.min(window.innerWidth - drag.w - 4, drag.startLeft + (e.clientX - drag.startX)));
+      const top = Math.max(4, Math.min(window.innerHeight - drag.h - 4, drag.startTop + (e.clientY - drag.startY)));
+      panel.style.left = `${left}px`;
+      panel.style.top = `${top}px`;
+    });
+    const endDrag = e => {
+      if (!drag) return;
+      try { handle.releasePointerCapture(e.pointerId); } catch {}
+      drag = null;
+      handle.classList.remove('dragging');
+    };
+    handle.addEventListener('pointerup', endDrag);
+    handle.addEventListener('pointercancel', endDrag);
+  }
   function openModal(modal) {
     if (!modal) return;
+    const wasHidden = modal.classList.contains('hidden');
     modal.classList.remove('hidden');
     modalZIndex = Math.min(2147483000, modalZIndex + 1);
     modal.style.zIndex = String(modalZIndex);
     modal.dataset.modalStackIndex = String(modalZIndex);
     // Bring the newly opened surface to the front even if it was already open.
     modal.dispatchEvent(new CustomEvent('beehive-modal-front'));
+    // Accessibility: mark the inner panel as a real dialog, trap Tab inside
+    // it while open, and move focus in/restore it on close so keyboard and
+    // screen-reader users aren't dropped into (or left in) the background.
+    const panel = modal.querySelector(':scope > .modal') || modal;
+    if (!panel.getAttribute('role')) panel.setAttribute('role', 'dialog');
+    panel.setAttribute('aria-modal', 'true');
+    if (!panel.hasAttribute('tabindex')) panel.setAttribute('tabindex', '-1');
+    if (!modal._modalTabTrapAttached) { panel.addEventListener('keydown', modalTabTrap); modal._modalTabTrapAttached = true; }
+    modalFocusReturn.set(modal, document.activeElement);
+    const focusable = focusableModalElements(panel);
+    (focusable[0] || panel).focus?.({ preventScroll: true });
+    if (modal.classList.contains('floating-panel')) {
+      makeFloatingPanelDraggable(modal);
+      // Only re-center on a fresh open, never on a re-populate call while
+      // the panel is already visible and possibly dragged elsewhere.
+      if (wasHidden) { panel.style.position = ''; panel.style.left = ''; panel.style.top = ''; panel.style.margin = ''; }
+    }
   }
   function closeModal(modal) {
     if (!modal) return;
     modal.classList.add('hidden');
     if (typeof modal._onClose === 'function') { modal._onClose(); modal._onClose = null; }
+    const returnFocus = modalFocusReturn.get(modal);
+    modalFocusReturn.delete(modal);
+    if (returnFocus && document.body.contains(returnFocus) && typeof returnFocus.focus === 'function') returnFocus.focus({ preventScroll: true });
   }
 
   // Modal close handling uses capture-phase pointer/click delegation. Capture is
@@ -1707,7 +1781,11 @@
       return;
     }
     const overlay = e.target.closest?.('.modal-overlay');
-    if (overlay && e.target === overlay) closeModal(overlay);
+    // Floating panels (Settings, tag editor) have a non-blocking backdrop
+    // (pointer-events: none) specifically so clicks reach the app behind
+    // them instead of ever landing on the overlay -- this check is a
+    // defensive no-op for them, not the real mechanism.
+    if (overlay && e.target === overlay && !overlay.classList.contains('floating-panel')) closeModal(overlay);
   }, true);
   document.addEventListener('keydown', (e) => {
     if (e.key !== 'Escape') return;
@@ -2361,7 +2439,17 @@
     // data URL while the background metadata worker embeds it into every file.
     // Keep that preview visible immediately instead of routing the data URL
     // through mbcover:// (which only serves scanner-generated cached covers).
-    if (/^(?:https?:\/\/|data:image\/|blob:)/i.test(normalized)) return normalized;
+    // Real bug, confirmed live: saving an album's artwork optimistically
+    // stores an ALREADY mbcover://-wrapped URL into track.cover (via
+    // setPendingArtwork's coverSrc(chosen.path) call for the local-file-pick
+    // path) -- buildAlbums() then carries that into album.cover, and the
+    // album grid calls coverSrc(album.cover) again on render, double-wrapping
+    // it into a nested mbcover://mbcover%3A%2F%2F... URL that can never
+    // resolve to a real file. The image renders blank (not even the no-cover
+    // placeholder) until the next full library scan overwrites track.cover
+    // with a plain, unwrapped path again. coverSrc must be idempotent, the
+    // same way it already is for https:/data:image:/blob: sources.
+    if (/^(?:https?:\/\/|data:image\/|blob:|mbcover:\/\/|mbfile:\/\/)/i.test(normalized)) return normalized;
     return window.beehive.coverUrl(normalized) || placeholderCover();
   }
 
@@ -3859,7 +3947,12 @@
 
   function serializeQueueTrack(t) {
     if (!t?.path) return null;
-    return { path:String(t.path), source:String(t.source||'local'), spotifyUri:String(t.spotifyUri||''), spotifyId:String(t.spotifyId||''), spotifyContextUri:String(t.spotifyContextUri||t.contextUri||''), contextUri:String(t.contextUri||t.spotifyContextUri||''), streamUrl:String(t.streamUrl||''), title:String(t.title||''), artist:String(t.artist||''), album:String(t.album||''), albumUri:String(t.albumUri||''), albumArtist:String(t.albumArtist||''), duration:Number(t.duration)||0, cover:String(t.cover||''), artworkUrl:String(t.artworkUrl||''), spotifyArtworkCacheFile:String(t.spotifyArtworkCacheFile||''), year:String(t.year||''), podcastId:String(t.podcastId||''), podcastFeedUrl:String(t.podcastFeedUrl||''), podcastDescription:String(t.podcastDescription||''), pubDate:String(t.pubDate||'') };
+    // loved/rating/ratingRaw are a backstop only -- the authoritative source
+    // is always libraryTrackByPath, resolved at the point of use (context
+    // menu, playbar Love button, etc.) since embedded tags can change after a
+    // queue was saved. Carrying them here just means a restored queue entry
+    // is never blankly "not Loved" before that resolution has a chance to run.
+    return { path:String(t.path), source:String(t.source||'local'), spotifyUri:String(t.spotifyUri||''), spotifyId:String(t.spotifyId||''), spotifyContextUri:String(t.spotifyContextUri||t.contextUri||''), contextUri:String(t.contextUri||t.spotifyContextUri||''), streamUrl:String(t.streamUrl||''), title:String(t.title||''), artist:String(t.artist||''), album:String(t.album||''), albumUri:String(t.albumUri||''), albumArtist:String(t.albumArtist||''), duration:Number(t.duration)||0, cover:String(t.cover||''), artworkUrl:String(t.artworkUrl||''), spotifyArtworkCacheFile:String(t.spotifyArtworkCacheFile||''), year:String(t.year||''), podcastId:String(t.podcastId||''), podcastFeedUrl:String(t.podcastFeedUrl||''), podcastDescription:String(t.podcastDescription||''), pubDate:String(t.pubDate||''), loved:!!t.loved, rating:Number(t.rating)||0, ratingRaw:Number(t.ratingRaw)||0 };
   }
   function restoreQueueItems(items, paths, byPath, allowSerializedLocal = false) {
     if (!Array.isArray(items) || !items.length) return (paths||[]).map(p => byPath.get(String(p))).filter(Boolean);
@@ -4266,6 +4359,17 @@
     });
   }
 
+  // While the tag editor is open as a floating (non-blocking) panel, a plain
+  // click on a different track/album behind it re-populates the editor with
+  // the newly clicked item instead of requiring the user to close/reopen it.
+  function tagEditorIsOpen() { return !!(el.tagModal && !el.tagModal.classList.contains('hidden')); }
+  function followTagEditorWithTrack(track) { if (track && tagEditorIsOpen()) void openTagEditor(track); }
+  function followTagEditorWithAlbum(album) {
+    if (!tagEditorIsOpen()) return;
+    const albumTracks = Array.isArray(album?.tracks) ? album.tracks : [];
+    if (albumTracks.length) void openTagEditor(albumTracks[0], albumTracks);
+  }
+
   function applySongSelectionClasses(container = el.songsTable) {
     container.querySelectorAll('.song-row').forEach(row => {
       const path = row.dataset.path || '';
@@ -4322,6 +4426,9 @@
         clearSongSelection();
         if (path) selectSongPath(path);
         songSelectionAnchor = path || null;
+        // A plain single-track click, not a multi-select gesture -- if the
+        // tag editor is open, treat this as "edit this track now" instead.
+        followTagEditorWithTrack(track);
       }
       if (path) songSelectionAnchor = path;
       applySongSelectionClasses(table);
@@ -6047,9 +6154,17 @@
         it.submenu.forEach(si=>{
           const sb=document.createElement('button');
           const isRatingItem = !!si.ratingSymbol;
-          sb.className='context-item' + (isRatingItem ? ' context-rating-item' : '') + (si.active ? ' active' : '') + (si.loved ? ' loved' : '');
+          sb.className='context-item' + (isRatingItem ? ' context-rating-item' : '') + (isRatingItem && si.textLabel ? ' context-rating-item-labeled' : '') + (si.active ? ' active' : '') + (si.loved ? ' loved' : '');
+          if (isRatingItem && si.textLabel) {
+            const textLabel=document.createElement('span'); textLabel.className='context-rating-text-label'; textLabel.textContent=si.label || '';
+            sb.append(textLabel);
+          }
           if (si.icon) {
             const icon=document.createElement('span'); icon.className=isRatingItem ? 'context-rating-icon' : 'context-item-icon';
+            // "Clear" isn't a rating level like the stars/heart -- it stays
+            // the theme's plain readable color (black on light, white on
+            // dark) always, never accent-tinted when active.
+            if (isRatingItem && si.icon === '×') icon.classList.add('context-rating-clear-icon');
             icon.innerHTML=window.BeehiveIcons?.[si.icon] || '';
             if (!window.BeehiveIcons?.[si.icon]) icon.textContent=si.icon;
             sb.append(icon);
@@ -6060,17 +6175,46 @@
             const label=document.createElement('span'); label.className='context-submenu-label'; label.textContent=si.label || '';
             sb.append(label);
           }
+          // Reuses the existing global hover-tooltip system (any element with
+          // data-tooltip gets a delegated pointerover/pointerout tooltip --
+          // see tooltipTextFor()) rather than building a second mechanism.
+          if (!isRatingItem && si.tooltip) sb.setAttribute('data-tooltip', si.tooltip);
           if (isRatingItem) {
             sb.setAttribute('aria-label', si.label || si.help || 'Rating action');
             if (help && si.help) sb.addEventListener('mouseenter', () => { help.textContent = si.help; });
-          }
-          if (si.active) {
-            const check=document.createElement('span'); check.className='context-rating-check'; check.textContent='✓'; sb.append(check);
           }
           sb.onclick=async()=>{hideContextMenu();await si.action();};
           sub.appendChild(sb);
         });
         wrap.appendChild(b); wrap.appendChild(sub); m.appendChild(wrap);
+        // The CSS default opens every submenu to the right, flipped to the
+        // left only when the whole top-level menu itself was flipped (see
+        // .context-menu-left .context-submenu). That is a single decision
+        // inherited from the outer menu's own position -- it does not check
+        // whether THIS particular submenu (offset further out, and often a
+        // different height) would itself overflow the viewport. Measure the
+        // real submenu on hover and flip/clamp it directly whenever it would
+        // land off-screen, the same way the top-level menu already does.
+        wrap.addEventListener('mouseenter', () => {
+          sub.style.left = ''; sub.style.right = ''; sub.style.top = ''; sub.style.bottom = '';
+          const triggerRect = wrap.getBoundingClientRect();
+          const subRect = sub.getBoundingClientRect();
+          const margin = 6;
+          if (triggerRect.right + subRect.width > window.innerWidth - margin) {
+            sub.style.left = 'auto';
+            sub.style.right = '100%';
+          } else {
+            sub.style.left = '100%';
+            sub.style.right = 'auto';
+          }
+          if (triggerRect.top + subRect.height > window.innerHeight - margin) {
+            sub.style.top = 'auto';
+            sub.style.bottom = '0';
+          } else {
+            sub.style.top = '-6px';
+            sub.style.bottom = 'auto';
+          }
+        });
       } else {
         const b=document.createElement('button'); b.className='context-item'+(it.danger?' danger':'')+(it.playlistRemove?' playlist-remove':'');
         const icon=document.createElement('span'); icon.className='context-item-icon';
@@ -6389,6 +6533,18 @@
 
   async function showTrackContextMenu(x,y,t){
     if(!t)return;
+    // Real bug, confirmed: queue rows are right-clicked with whatever object
+    // happens to be sitting in currentQueue[i] (see the queue's contextmenu
+    // listener), which after a session restore can be the minimal object
+    // serializeQueueTrack() saves -- that shape never included loved/rating
+    // at all, only display fields. Resolve to the authoritative library
+    // record whenever this track has a local path and the library knows it,
+    // the same "authoritative" pattern populateQueueVirtualRow() already
+    // uses for rendering, so Rating/Love here always reflects the actual
+    // embedded tags rather than a stale/incomplete queue snapshot. Spotify
+    // and podcast tracks (no local path in the library) keep the object they
+    // were given.
+    if (t?.path) t = libraryTrackByPath.get(String(t.path)) || t;
     // Do not block menu display on Android discovery: refreshAndroidDevices()
     // round-trips to the main process, which shells out to `gio mount -li`
     // (up to a 5s timeout). Awaiting it here made every right-click feel
@@ -6463,24 +6619,26 @@
     // silently failed against a synthetic "podcast:<id>" path or, worse,
     // surfaced a confusing raw IPC error.
     const isLocal = isLocalPlaybackTrack(t);
+    const queueNextLabel = bulk ? `Queue Next (${selected.length})` : 'Queue Next';
+    const queueLastLabel = bulk ? `Queue Last (${selected.length})` : 'Queue Last';
     showContextMenu(x,y,[
-      {label:'Play',icon:'play',action:()=>playQueue([t],0)},
-      {label:queueLabel,icon:'queue',action:()=>addTracksToQueue(queueTracks)},
+      {label:'Play Now',icon:'play',action:()=>playQueue([t],0)},
+      {label:queueNextLabel,icon:'queue',action:()=>addTracksToQueue(queueTracks, currentIndex + 1)},
+      {label:queueLastLabel,icon:'queue',action:()=>addTracksToQueue(queueTracks)},
       ...(isLocal && !bulk && t.artist ? [{label:'Play More',icon:'play',submenu:[
         {label:`Play artist: ${t.artist}`,icon:'play',action:()=>playArtistShuffled(t.artist)},
-        {label:`Play similar to: ${t.artist}`,icon:'play',action:()=>playSimilarArtist(t.artist)}
+        {label:`Play similar to: ${t.artist}`,icon:'play',action:()=>playSimilarArtist(t.artist)},
+        {label:autoDjEnabled() ? 'Turn off Auto-DJ' : 'Turn on Auto-DJ',icon:'play',active:autoDjEnabled(),tooltip:'When your queue runs out, Auto-DJ keeps playing instead of stopping -- it adds more tracks by artists similar to what you were just listening to (via Last.fm), or a random shuffle from your library if nothing similar is found.',action:()=>setAutoDjEnabled(!autoDjEnabled())}
       ]}] : []),
+      ...(isLocal ? [{label:editLabel,icon:'edit',action:()=>openTagEditor(t, selected)}] : []),
       ...(isLocal ? [{label:'Rating',icon:'star',submenu:[
-        // Bulk selections use two distinct actions rather than one toggle: a
-        // selection where every track is already Loved must still leave
-        // everything Loved when the user clicks "Love" -- it is a "make sure
-        // these are Loved" action, not an "invert the current state" toggle.
-        // "Remove Love" is the explicit, separate way to bulk-unlove.
+        // Bulk selection gets one single action, not a toggle: it always
+        // makes sure every selected track ends up Loved, leaving any track
+        // that was already Loved untouched, never a Remove-Love pair.
         ...(bulk ? [
-          {label:'Love', icon:'♥♥♥', loved:true, active:allLoved, ratingSymbol:true, help:`Set all ${selected.length} selected tracks to Loved`, action:()=>applyLove(true)},
-          {label:'Remove Love', icon:'♡', loved:true, active:false, ratingSymbol:true, help:`Remove Love from ${selected.length} selected tracks`, action:()=>applyLove(false)}
+          {label:`${allLoved ? 'Loved' : 'Love'} ${selected.length} tracks`, icon:allLoved ? '♥' : '♡', loved:true, active:allLoved, ratingSymbol:true, textLabel:true, help:`Set all ${selected.length} selected tracks to Loved`, action:()=>applyLove(true)}
         ] : [
-          {label:'Love', icon:t.loved ? '♥' : '♡', loved:true, active:!!t.loved, ratingSymbol:true, help:t.loved ? 'Remove Love' : 'Add Love', action:()=>applyLove(!t.loved)}
+          {label:t.loved ? 'Loved' : 'Love', icon:t.loved ? '♥' : '♡', loved:true, active:!!t.loved, ratingSymbol:true, textLabel:true, help:t.loved ? 'Remove Love' : 'Add Love', action:()=>applyLove(!t.loved)}
         ]),
         {label:'5 stars', icon:'★★★★★', active:ratingIs(5), ratingSymbol:true, help:bulk ? `Set ${selected.length} selected tracks to 5 stars` : 'Set rating to 5 stars', action:()=>applyRating(5)},
         {label:'4 stars', icon:'★★★★☆', active:ratingIs(4), ratingSymbol:true, help:bulk ? `Set ${selected.length} selected tracks to 4 stars` : 'Set rating to 4 stars', action:()=>applyRating(4)},
@@ -6489,14 +6647,15 @@
         {label:'1 star', icon:'★☆☆☆☆', active:ratingIs(1), ratingSymbol:true, help:bulk ? `Set ${selected.length} selected tracks to 1 star` : 'Set rating to 1 star', action:()=>applyRating(1)},
         {label:'Clear', icon:'×', active:ratingIs(0), ratingSymbol:true, help:bulk ? `Clear ratings from ${selected.length} selected tracks` : 'Clear the star rating', action:()=>applyRating(0)}
       ]}] : []),
-      ...(isLocal && androidDevices.length ? [{label:'Send to',icon:'plus',submenu:androidDevices.map(device => ({label:`${device.name || 'Android device'}${device.mounted ? '' : ' (not mounted)'}`,active:false,action:()=>sendTracksToAndroidDevice(device, queueTracks)}))}] : []),
       {label:'Add to',icon:'plus',submenu:buildAddToPlaylistSubmenu(queueTracks)},
-      {label:`Search artist: ${t.artist || 'Unknown Artist'}`,icon:'search',action:()=>searchForArtist(t.artist, t)},
-      {label:`Search album: ${contextAlbumLabel(t.album)}`,icon:'search',action:()=>showAlbumFromTrack(t)},
-      ...(isLocal ? [{label:'Show file in browser',icon:'search',action:()=>showTrackFileInBrowser(t)}] : []),
-      ...(specialView === 'playlist' && activePlaylistId ? [{label:bulk ? `Remove tracks from playlist (${selected.length} selected)` : 'Remove tracks from playlist', playlistRemove:true, action:()=>removeTracksFromActivePlaylist(selected)}] : []),
+      ...(isLocal && androidDevices.length ? [{label:'Send to',icon:'plus',submenu:androidDevices.map(device => ({label:`${device.name || 'Android device'}${device.mounted ? '' : ' (not mounted)'}`,active:false,action:()=>sendTracksToAndroidDevice(device, queueTracks)}))}] : []),
+      {label:'Search',icon:'search',submenu:[
+        {label:`Search artist: ${t.artist || 'Unknown Artist'}`,icon:'search',action:()=>searchForArtist(t.artist, t)},
+        {label:`Search album: ${contextAlbumLabel(t.album)}`,icon:'search',action:()=>showAlbumFromTrack(t)},
+        ...(isLocal ? [{label:'Show file in browser',icon:'search',action:()=>showTrackFileInBrowser(t)}] : [])
+      ]},
       ...(isLocal ? [{label:bulk ? `Delete files from disk… (${selected.length} selected)` : 'Delete file from disk…',icon:'trash',danger:true,action:()=>deleteTracksFromDisk(selected)}] : []),
-      ...(isLocal ? [{label:editLabel,icon:'edit',action:()=>openTagEditor(t, selected)}] : []),
+      ...(specialView === 'playlist' && activePlaylistId ? [{label:bulk ? `Remove tracks from playlist (${selected.length} selected)` : 'Remove tracks from playlist', playlistRemove:true, action:()=>removeTracksFromActivePlaylist(selected)}] : []),
       ...(isLocal ? [{label:'Auto-tag album…', icon:'tag', action:()=>{
         const key = albumKey(t);
         const albumTracks = library.tracks.filter(track => albumKey(track) === key).sort(albumTrackCompare);
@@ -8338,19 +8497,25 @@
     const applyLove = value => applyBulkTrackAction(albumTracks, t => setTrackLove(t, value, false));
     const applyRating = value => applyBulkRating(albumTracks.map(t => t.path), value);
     const editLabel = bulk && albums.length > 1 ? `Edit tags… (${albums.length} albums)` : 'Edit album tags & cover…';
+    const singleAlbum = !(bulk && albums.length > 1);
+    // Same menu shape/order as showTrackContextMenu, with album-scoped
+    // actions substituted in (see that function for the rationale behind the
+    // ordering itself).
     showContextMenu(e.clientX, e.clientY, [
-      ...(bulk && albums.length > 1 ? [] : [
-        {label:'Auto-tag album…', icon:'tag', action:()=>openAutoTagAlbum(album)},
-      ]),
+      {label:'Play Now', icon:'play', action:()=>{ if (singleAlbum) playAlbum(album); else playQueue(albumTracks, 0, true); }},
+      {label:`Queue Next${countLabel}`, icon:'queue', action:()=>addTracksToQueue(albumTracks, currentIndex + 1)},
+      {label:`Queue Last${countLabel}`, icon:'queue', action:()=>addTracksToQueue(albumTracks)},
+      ...(singleAlbum && album.artist ? [{label:'Play More',icon:'play',submenu:[
+        {label:`Play artist: ${album.artist}`,icon:'play',action:()=>playArtistShuffled(album.artist)},
+        {label:`Play similar to: ${album.artist}`,icon:'play',action:()=>playSimilarArtist(album.artist)},
+        {label:autoDjEnabled() ? 'Turn off Auto-DJ' : 'Turn on Auto-DJ',icon:'play',active:autoDjEnabled(),tooltip:'When your queue runs out, Auto-DJ keeps playing instead of stopping -- it adds more tracks by artists similar to what you were just listening to (via Last.fm), or a random shuffle from your library if nothing similar is found.',action:()=>setAutoDjEnabled(!autoDjEnabled())}
+      ]}] : []),
       {label:editLabel, icon:'edit', action:()=>openTagEditor(albumTracks[0], albumTracks)},
-      ...(bulk && albums.length > 1 ? [] : [
-        {label:`Search album: ${contextAlbumLabel(album.title)}`, icon:'search', action:()=>showAlbumFromTrack(album.tracks[0])},
-        {label:`Search artist: ${album.artist || 'Unknown Artist'}`, icon:'search', action:()=>searchForArtist(album.artist, album.tracks?.[0] || null)},
-        {label:'Play album', icon:'play', action:()=>playAlbum(album)},
-      ]),
       {label:'Rating',icon:'star',submenu:[
-        {label:'Love', icon:allLoved ? '♥' : '♡', loved:true, active:allLoved, ratingSymbol:true, help:`Set all tracks${countLabel} to Loved`, action:()=>applyLove(true)},
-        {label:'Remove Love', icon:'♡', loved:true, active:false, ratingSymbol:true, help:`Remove Love from all tracks${countLabel}`, action:()=>applyLove(false)},
+        // One single action, not a toggle: always makes sure every track in
+        // the selected album(s) ends up Loved, leaving already-Loved tracks
+        // untouched, never a separate Remove-Love button.
+        {label:`${allLoved ? 'Loved' : 'Love'} ${albumTracks.length} tracks`, icon:allLoved ? '♥' : '♡', loved:true, active:allLoved, ratingSymbol:true, textLabel:true, help:`Set all tracks${countLabel} to Loved`, action:()=>applyLove(true)},
         {label:'5 stars', icon:'★★★★★', active:ratingIs(5), ratingSymbol:true, help:`Set all tracks${countLabel} to 5 stars`, action:()=>applyRating(5)},
         {label:'4 stars', icon:'★★★★☆', active:ratingIs(4), ratingSymbol:true, help:`Set all tracks${countLabel} to 4 stars`, action:()=>applyRating(4)},
         {label:'3 stars', icon:'★★★☆☆', active:ratingIs(3), ratingSymbol:true, help:`Set all tracks${countLabel} to 3 stars`, action:()=>applyRating(3)},
@@ -8358,11 +8523,18 @@
         {label:'1 star', icon:'★☆☆☆☆', active:ratingIs(1), ratingSymbol:true, help:`Set all tracks${countLabel} to 1 star`, action:()=>applyRating(1)},
         {label:'Clear', icon:'×', active:ratingIs(0), ratingSymbol:true, help:`Clear ratings from all tracks${countLabel}`, action:()=>applyRating(0)}
       ]},
-      ...(androidDevices.length ? [{label:'Send to', icon:'plus', submenu:androidDevices.map(device => ({label:`${device.name || 'Android device'}${device.mounted ? '' : ' (not mounted)'}`, active:false, action:()=>sendTracksToAndroidDevice(device, albumTracks)}))}] : []),
-      {label:`Add to queue${countLabel}`, icon:'queue', action:()=>addTracksToQueue(albumTracks)},
       {label:'Add to', icon:'plus', submenu:buildAddToPlaylistSubmenu(albumTracks)},
+      ...(androidDevices.length ? [{label:'Send to', icon:'plus', submenu:androidDevices.map(device => ({label:`${device.name || 'Android device'}${device.mounted ? '' : ' (not mounted)'}`, active:false, action:()=>sendTracksToAndroidDevice(device, albumTracks)}))}] : []),
+      {label:'Search',icon:'search',submenu:[
+        ...(singleAlbum ? [
+          {label:`Search album: ${contextAlbumLabel(album.title)}`, icon:'search', action:()=>showAlbumFromTrack(album.tracks[0])},
+          {label:`Search artist: ${album.artist || 'Unknown Artist'}`, icon:'search', action:()=>searchForArtist(album.artist, album.tracks?.[0] || null)},
+          {label:'Show file in browser', icon:'search', action:()=>showTrackFileInBrowser(albumTracks[0])}
+        ] : [])
+      ]},
+      {label:`Delete files from disk… (${albumTracks.length} selected)`, icon:'trash', danger:true, action:()=>deleteTracksFromDisk(albumTracks)},
       ...(playlistContext ? [{label:`Remove tracks from playlist${countLabel}`, playlistRemove:true, action:()=>removeTracksFromActivePlaylist(albumTracks)}] : []),
-      ...(playlistContext ? [{label:`Delete files from disk… (${albumTracks.length} selected)`, icon:'trash', danger:true, action:()=>deleteTracksFromDisk(albumTracks)}] : [])
+      ...(singleAlbum ? [{label:'Auto-tag album…', icon:'tag', action:()=>openAutoTagAlbum(album)}] : [])
     ]);
   }
 
@@ -8403,6 +8575,7 @@
       const key = String(card.dataset.key || '');
       if (viewMode !== 'albums') {
         setAlbumHighlight(card, album);
+        followTagEditorWithAlbum(album);
         clearTimeout(clickTimer);
         clickTimer = setTimeout(() => toggleInlineAlbum(card, album), 180);
         return;
@@ -8430,6 +8603,7 @@
       albumSelectionAnchor = key;
       setAlbumHighlight(card, album);
       applyAlbumSelectionClasses();
+      followTagEditorWithAlbum(album);
       clearTimeout(clickTimer);
       clickTimer = setTimeout(() => toggleInlineAlbum(card, album), 180);
     });
@@ -9046,7 +9220,7 @@
         localStorage.setItem(LEGACY_ART_SCALING_MIGRATION_KEY, 'true');
         return migratedValue;
       }
-      return stored == null ? true : stored === 'true';
+      return stored == null ? false : stored === 'true';
     } catch { return false; }
   }
   function applyLegacyArtScaling(enabled, rerender = true) {
@@ -9120,9 +9294,20 @@
 
     const update = (force = false) => {
       const width = Math.max(178, el.artistsGrid.clientWidth || 700);
-      const columns = Math.max(1, Math.floor((width + artistVirtualState.gap) / (artistVirtualState.cardWidth + artistVirtualState.gap)));
+      const gap = artistVirtualState.gap;
+      const minCardWidth = artistVirtualState.cardWidth;
+      const columns = Math.max(1, Math.floor((width + gap) / (minCardWidth + gap)));
+      // This virtualized picker path only ever runs when Legacy album art
+      // scaling is OFF (see isPicker above -- legacy mode renders through
+      // the plain, non-virtualized DOM branch instead). It must match the
+      // same "grow to fill the row" responsive sizing the CSS grid rules use
+      // for Albums (grid-template-columns: repeat(auto-fill, minmax(178px, 1fr)))
+      // -- previously it always used the fixed 178px legacy card width for
+      // its positioning math regardless of the setting, so the Artists tab
+      // visually looked identical to legacy scaling even with it turned off.
+      const cardWidth = Math.floor((width - (columns - 1) * gap) / columns);
+      const rowHeight = artistVirtualState.rowHeight + (cardWidth - minCardWidth);
       const rows = Math.ceil(artistPickerFiltered.length / columns);
-      const rowHeight = artistVirtualState.rowHeight;
       const scrollTop = Math.max(0, getActiveViewport().scrollTop - el.artistsGrid.offsetTop);
       const viewportHeight = getActiveViewport().clientHeight || 700;
       const overscanRows = 2;
@@ -9130,7 +9315,7 @@
       const endRow = Math.min(rows, Math.ceil((scrollTop + viewportHeight) / rowHeight) + overscanRows);
       const start = startRow * columns;
       const end = Math.min(artistPickerFiltered.length, endRow * columns);
-      const signature = `${columns}:${start}:${end}`;
+      const signature = `${columns}:${cardWidth}:${start}:${end}`;
       if (!force && signature === artistVirtualState.signature) return;
       artistVirtualState.signature = signature;
       spacer.style.height = `${rows * rowHeight}px`;
@@ -9140,7 +9325,8 @@
       for (let i=start;i<end;i++) {
         const card = makeArtistCard(artistPickerFiltered[i]);
         card.style.position = 'absolute';
-        card.style.left = `${(i % columns) * (artistVirtualState.cardWidth + artistVirtualState.gap)}px`;
+        card.style.width = `${cardWidth}px`;
+        card.style.left = `${(i % columns) * (cardWidth + gap)}px`;
         card.style.top = `${(Math.floor(i / columns) - startRow) * rowHeight}px`;
         win.appendChild(card);
       }
@@ -9333,6 +9519,50 @@
       return;
     }
     playQueue(shuffleForPlayback(matches), 0, false);
+  }
+
+  const AUTO_DJ_KEY = 'beehive:auto-dj';
+  function autoDjEnabled() {
+    try { return localStorage.getItem(AUTO_DJ_KEY) === 'true'; } catch { return false; }
+  }
+  function setAutoDjEnabled(value) {
+    try { localStorage.setItem(AUTO_DJ_KEY, value ? 'true' : 'false'); } catch {}
+  }
+  let autoDjExtending = false;
+  // Picks more tracks to keep Auto-DJ going once the queue runs out. Reuses
+  // the same Last.fm similar-artist lookup as "Play Similar", seeded from the
+  // last track that was playing, so Auto-DJ favors music related to what you
+  // were just listening to; falls back to a random library shuffle whenever
+  // Last.fm has nothing (no API key configured, unknown artist, etc.) so it
+  // always has something to add rather than silently doing nothing.
+  async function autoDjMoreTracks(seedTrack) {
+    const alreadyQueued = new Set(currentQueue.map(qt => String(qt?.path || '')));
+    const name = String(seedTrack?.artist || '').trim();
+    if (name) {
+      try {
+        const similar = await window.beehive.getSimilarArtists(name);
+        const wanted = new Set((similar || []).map(a => String(a).trim().toLowerCase()));
+        if (wanted.size) {
+          const matches = library.tracks.filter(lt => wanted.has(String(lt?.artist || '').trim().toLowerCase()) && !alreadyQueued.has(String(lt?.path || '')));
+          if (matches.length) return shuffleForPlayback(matches).slice(0, 15);
+        }
+      } catch {}
+    }
+    const rest = library.tracks.filter(lt => !alreadyQueued.has(String(lt?.path || '')));
+    return shuffleForPlayback(rest).slice(0, 15);
+  }
+  async function autoDjExtendQueueIfNeeded() {
+    if (!autoDjEnabled() || autoDjExtending || !currentQueue.length) return false;
+    autoDjExtending = true;
+    try {
+      const seed = currentQueue[currentIndex] || currentQueue[currentQueue.length - 1];
+      const more = await autoDjMoreTracks(seed);
+      if (!more.length) return false;
+      addTracksToQueue(more);
+      return true;
+    } finally {
+      autoDjExtending = false;
+    }
   }
 
   // A Music-tab click commonly reuses the exact same 30k-track collection as
@@ -11078,6 +11308,13 @@
     clearAutomaticCoverVisual(current);
     const nextIndex = getNextPlaybackIndex();
     if (nextIndex < 0) {
+      if (autoDjEnabled()) {
+        // Auto-DJ's whole point is to keep playback going instead of just
+        // stopping when the queue runs out. Extend it, then retry the same
+        // transition now that there is somewhere to go.
+        void autoDjExtendQueueIfNeeded().then(extended => { if (extended) goNext(); else { audio.pause(); renderQueue(); } });
+        return;
+      }
       audio.pause();
       renderQueue();
       return;
@@ -11490,8 +11727,13 @@
   });
 
   el.btnLove.addEventListener('click', () => {
-    const t = currentQueue[currentIndex];
+    let t = currentQueue[currentIndex];
     if (!t?.path) return;
+    // See showTrackContextMenu: a queue entry restored from a saved session
+    // can be the minimal serializeQueueTrack() shape, which does not carry
+    // loved/rating. Resolve to the authoritative library record so the
+    // playbar heart always reflects the actual embedded tag.
+    t = libraryTrackByPath.get(String(t.path)) || t;
     // Do not block the heart on a disk read or metadata write. The current
     // Beehive Love state is toggled immediately; the embedded file tag is
     // persisted by the background Love writer.
@@ -14090,6 +14332,26 @@
     e.stopPropagation();
     closeTab(id);
   });
+  // Middle-click (mouse button 1) anywhere on a tab closes it, not just its
+  // small "x" -- a much larger, easier target, matching how browser tabs
+  // behave. Prevent the default action on mousedown too, otherwise Chromium
+  // enters its middle-click autoscroll/pan mode before auxclick ever fires.
+  el.topbarTabs.addEventListener('mousedown', e => {
+    if (e.button !== 1) return;
+    const btn = e.target?.closest?.('.tab');
+    if (!btn || btn.id === 'tab-add-btn') return;
+    e.preventDefault();
+  });
+  el.topbarTabs.addEventListener('auxclick', e => {
+    if (e.button !== 1) return;
+    const btn = e.target?.closest?.('.tab');
+    if (!btn || btn.id === 'tab-add-btn') return;
+    const id = btn.dataset.tabId;
+    if (!id) return;
+    e.preventDefault();
+    e.stopPropagation();
+    closeTab(id);
+  });
   el.topbarTabs.addEventListener('click', e => {
     const close = e.target?.closest?.('.tab-close');
     if (close) { e.preventDefault(); e.stopPropagation(); return; }
@@ -14835,7 +15097,6 @@
   const audioIntegrityLoveRepair = document.querySelector('#audio-integrity-love-repair');
   const audioIntegrityLoveRepairSummary = document.querySelector('#audio-integrity-love-repair-summary');
   const audioIntegrityRepairLoveBtn = document.querySelector('#audio-integrity-repair-love-btn');
-  const audioIntegrityOpenBackupsBtn = document.querySelector('#audio-integrity-open-backups-btn');
   const audioIntegrityLoveRepairResults = document.querySelector('#audio-integrity-love-repair-results');
   let audioIntegrityScanUnsubscribe = null;
   let audioIntegrityLoveConflicts = [];
@@ -14854,7 +15115,7 @@
     audioIntegrityScanResults.innerHTML = `<strong>Scan complete: ${corrupt.length} corrupted, ${unavailable.length} could not be scanned</strong>${rows}${unavailableRows}`;
     if (audioIntegrityLoveRepair) audioIntegrityLoveRepair.hidden = !audioIntegrityLoveConflicts.length;
     if (audioIntegrityLoveRepairSummary) audioIntegrityLoveRepairSummary.textContent = audioIntegrityLoveConflicts.length
-      ? `${audioIntegrityLoveConflicts.length.toLocaleString()} file(s) contain duplicate or conflicting Love metadata. Hive will keep Loved (L) when L conflicts with U/0 and will normalize each repaired file to one canonical LOVE RATING tag. A complete file backup is created first.`
+      ? `${audioIntegrityLoveConflicts.length.toLocaleString()} file(s) contain duplicate or conflicting Love metadata. Hive will keep Loved (L) when L conflicts with U/0 and will normalize each repaired file to one canonical LOVE RATING tag.`
       : '';
     if (audioIntegrityLoveRepairResults) { audioIntegrityLoveRepairResults.hidden = true; audioIntegrityLoveRepairResults.innerHTML = ''; }
     audioIntegrityScanResults.querySelectorAll('.audio-integrity-repair-btn').forEach(button => {
@@ -15001,7 +15262,6 @@
     if (!audioIntegrityLoveConflicts.length || audioIntegrityRepairLoveBtn.disabled) return;
     const confirmed = await themedConfirm(
       `Hive found ${audioIntegrityLoveConflicts.length.toLocaleString()} file(s) with duplicate or conflicting Love tags.\n\n` +
-      `Before changing each file, Hive will create a complete backup in the clearly named "Tag Backups" folder.\n\n` +
       `Repair will remove all recognized Love variants and write exactly one canonical LOVE RATING tag. If L and U/0 conflict, L is kept.\n\nProceed with the repair?`,
       'Repair Love metadata'
     );
@@ -15014,9 +15274,9 @@
         audioIntegrityLoveRepairResults.hidden = false;
         const repaired = Array.isArray(result?.repaired) ? result.repaired : [];
         const failed = Array.isArray(result?.failed) ? result.failed : [];
-        const repairedRows = repaired.map(item => `<div class="audio-integrity-result-row repaired"><strong>Repaired — ${item.loved ? 'Loved (L)' : 'Unloved (0)'}</strong><code>${escapeHtml(item.path)}</code><span>Backup: ${escapeHtml(item.backupPath || result?.backupDir || 'Tag Backups')}</span></div>`).join('');
+        const repairedRows = repaired.map(item => `<div class="audio-integrity-result-row repaired"><strong>Repaired — ${item.loved ? 'Loved (L)' : 'Unloved (0)'}</strong><code>${escapeHtml(item.path)}</code></div>`).join('');
         const failedRows = failed.map(item => `<div class="audio-integrity-result-row unavailable"><strong>Repair failed</strong><code>${escapeHtml(item.path)}</code><span>${escapeHtml(item.error || 'Unknown repair error.')}</span></div>`).join('');
-        audioIntegrityLoveRepairResults.innerHTML = `<strong>Repair complete: ${repaired.length} repaired, ${failed.length} failed</strong><span>Backups: ${escapeHtml(result?.backupDir || 'Tag Backups')}</span>${repairedRows}${failedRows}`;
+        audioIntegrityLoveRepairResults.innerHTML = `<strong>Repair complete: ${repaired.length} repaired, ${failed.length} failed</strong>${repairedRows}${failedRows}`;
       }
       if (result?.repaired?.length) {
         for (const done of result.repaired) {
@@ -15034,9 +15294,6 @@
       audioIntegrityRepairLoveBtn.disabled = false;
       audioIntegrityRepairLoveBtn.textContent = 'Repair Love tags';
     }
-  });
-  audioIntegrityOpenBackupsBtn?.addEventListener('click', async () => {
-    try { await window.beehive.openAudioIntegrityBackups?.(); } catch (err) { await themedAlert(`Could not open Tag Backups.\n\n${String(err?.message || err)}`, 'Tag Backups'); }
   });
   document.querySelector('#audio-integrity-report-btn')?.addEventListener('click', async () => {
     const button = document.querySelector('#audio-integrity-report-btn');
@@ -15185,12 +15442,12 @@
 
   // ---------------- built-in theme presets ----------------
   const BUILTIN_THEMES = {
-    midnight:{name:'Midnight',description:'Deep neutral surfaces with a restrained silver accent.',vars:{'--bg':'#090a0d','--panel':'rgba(19,20,25,.72)','--panel-strong':'rgba(15,16,21,.88)','--border':'rgba(255,255,255,.09)','--text':'#f0eff3','--text-dim':'#a3a1ad','--text-dimmer':'#6e6c77','--accent':'#b9bac2','--accent-soft':'rgba(205,207,220,.35)','--accent-glow':'rgba(190,195,215,.24)','--ambient-a':'rgba(110,115,145,.18)','--ambient-b':'rgba(55,65,95,.15)','--radius':'14px','--blur':'24px'}},
+    midnight:{name:'Dark',description:'Deep neutral surfaces with a restrained silver accent.',vars:{'--bg':'#090a0d','--panel':'rgba(19,20,25,.72)','--panel-strong':'rgba(15,16,21,.88)','--border':'rgba(255,255,255,.09)','--text':'#f0eff3','--text-dim':'#a3a1ad','--text-dimmer':'#6e6c77','--accent':'#b9bac2','--accent-soft':'rgba(205,207,220,.35)','--accent-glow':'rgba(190,195,215,.24)','--ambient-a':'rgba(110,115,145,.18)','--ambient-b':'rgba(55,65,95,.15)','--radius':'14px','--blur':'24px'}},
     light:{name:'Light',description:'A bright neutral theme with high readability for daytime listening.',vars:{'--bg':'#f7f8fa','--panel':'rgba(255,255,255,.94)','--panel-strong':'rgba(255,255,255,.985)','--border':'rgba(24,30,40,.16)','--text':'#171b22','--text-dim':'#3f4651','--text-dimmer':'#5f6875','--accent':'#5366d8','--accent-soft':'rgba(83,102,216,.24)','--accent-glow':'rgba(83,102,216,.12)','--ambient-a':'rgba(83,102,216,.035)','--ambient-b':'rgba(110,120,150,.025)','--radius':'12px','--blur':'18px'}},
     ember:{name:'Ember',description:'Warm copper and charcoal, designed for low-light listening.',vars:{'--bg':'#100b0a','--panel':'rgba(28,20,18,.76)','--panel-strong':'rgba(23,16,14,.9)','--border':'rgba(255,210,185,.10)','--text':'#f4ebe6','--text-dim':'#b8a39a','--text-dimmer':'#806d65','--accent':'#e28b63','--accent-soft':'rgba(240,145,105,.34)','--accent-glow':'rgba(226,139,99,.22)','--ambient-a':'rgba(180,75,35,.19)','--ambient-b':'rgba(95,42,25,.14)','--radius':'14px','--blur':'22px'}},
     forest:{name:'Forest',description:'Dark evergreen surfaces with a quiet mineral green.',vars:{'--bg':'#08100d','--panel':'rgba(14,25,21,.75)','--panel-strong':'rgba(10,20,16,.9)','--border':'rgba(190,230,210,.09)','--text':'#e8f0eb','--text-dim':'#9dafaa','--text-dimmer':'#657a71','--accent':'#79b79a','--accent-soft':'rgba(121,183,154,.34)','--accent-glow':'rgba(121,183,154,.21)','--ambient-a':'rgba(45,130,90,.17)','--ambient-b':'rgba(25,75,58,.14)','--radius':'15px','--blur':'26px'}},
     ocean:{name:'Ocean',description:'Cool blue-black glass with a clean modern edge.',vars:{'--bg':'#070c12','--panel':'rgba(13,22,32,.75)','--panel-strong':'rgba(10,18,27,.9)','--border':'rgba(190,220,245,.10)','--text':'#e7eef5','--text-dim':'#9aaabd','--text-dimmer':'#66788c','--accent':'#70a8d6','--accent-soft':'rgba(112,168,214,.34)','--accent-glow':'rgba(112,168,214,.22)','--ambient-a':'rgba(35,105,155,.18)','--ambient-b':'rgba(25,65,105,.15)','--radius':'13px','--blur':'28px'}},
-    violet:{name:'Violet',description:'Muted plum and graphite with a cinematic finish.',vars:{'--bg':'#0d0911','--panel':'rgba(25,18,30,.76)','--panel-strong':'rgba(20,14,25,.91)','--border':'rgba(230,210,245,.10)','--text':'#f0eaf4','--text-dim':'#afa2b8','--text-dimmer':'#776b80','--accent':'#a88bd0','--accent-soft':'rgba(168,139,208,.34)','--accent-glow':'rgba(168,139,208,.22)','--ambient-a':'rgba(120,65,155,.18)','--ambient-b':'rgba(65,35,95,.14)','--radius':'16px','--blur':'26px'}}
+    violet:{name:'Midnight',description:'Muted plum and graphite with a cinematic finish.',vars:{'--bg':'#0d0911','--panel':'rgba(25,18,30,.76)','--panel-strong':'rgba(20,14,25,.91)','--border':'rgba(230,210,245,.10)','--text':'#f0eaf4','--text-dim':'#afa2b8','--text-dimmer':'#776b80','--accent':'#a88bd0','--accent-soft':'rgba(168,139,208,.34)','--accent-glow':'rgba(168,139,208,.22)','--ambient-a':'rgba(120,65,155,.18)','--ambient-b':'rgba(65,35,95,.14)','--radius':'16px','--blur':'26px'}}
   };
   const BUILTIN_THEME_KEY='beehive:builtin-theme';
   const THEME_OPTIONS_KEY='beehive:theme-options';
@@ -15206,26 +15463,112 @@
     const root=document.documentElement.style;
     Object.entries(theme.vars).forEach(([k,v])=>root.setProperty(k,v));
     document.documentElement.dataset.hiveTheme=id;
-    const select=document.getElementById('builtin-theme-select');
+    // No select.value assignment here: the dropdown's options are always
+    // folder-sourced (see renderBuiltinThemes) -- this function is now only
+    // the last-resort fallback for when the themes folder itself is
+    // unreadable, so there is no matching "folder:..." option to select.
     const desc=document.getElementById('builtin-theme-description');
-    if(select) select.value=id;
     if(desc) desc.textContent=theme.description;
     if(persist)try{localStorage.setItem(BUILTIN_THEME_KEY,id)}catch{}
     applyThemeOptions();
   }
-  function renderBuiltinThemes(){
+  // Themes the user just drops into their themes folder (see the "Open
+  // themes folder" button), same .hive-theme JSON shape theme:export already
+  // writes. Cached here so the <select>'s change handler doesn't need to
+  // re-fetch the folder on every selection.
+  let themeFolderThemes = [];
+  function builtinThemeToCss(theme){
+    const lines = Object.entries(theme.vars).map(([k,v]) => `  ${k}: ${v};`);
+    return `:root {\n${lines.join('\n')}\n}\n`;
+  }
+  let stockThemesSeeded = false;
+  // Hive's built-in themes only ever lived as hardcoded CSS-variable objects
+  // (BUILTIN_THEMES above), never as real files -- opening the themes folder
+  // showed nothing to start from. Write each one out as an ordinary
+  // .hive-theme pack (skipped by the main-process handler if the file
+  // already exists, so this never clobbers an edit) so a user can see, copy,
+  // or edit them like any other theme.
+  async function seedStockThemesIntoFolder(){
+    if (stockThemesSeeded) return;
+    stockThemesSeeded = true;
+    try {
+      const themes = Object.values(BUILTIN_THEMES).map(theme => ({
+        file: `${theme.name.toLowerCase().replace(/[^a-z0-9]+/g, '-').replace(/^-+|-+$/g, '')}.hive-theme`,
+        name: theme.name,
+        css: builtinThemeToCss(theme)
+      }));
+      await window.beehive.seedStockThemes?.(themes);
+    } catch {}
+  }
+  async function loadThemeFolderThemes(){
+    await seedStockThemesIntoFolder();
+    try {
+      const result = await window.beehive.listThemeFolder?.();
+      themeFolderThemes = Array.isArray(result?.themes) ? result.themes : [];
+    } catch { themeFolderThemes = []; }
+    return themeFolderThemes;
+  }
+  // A folder theme is just the existing custom-CSS overlay (the same
+  // mechanism Import theme pack/paste-CSS already use), applied on top of
+  // whatever built-in theme is currently active, and persisted the same way
+  // so it survives a restart without any new startup-blocking logic.
+  //
+  // Description text: a stock theme (t.stock -- a seeded, unedited copy of
+  // one of Hive's own BUILTIN_THEMES, see seedStockThemesIntoFolder) uses
+  // its original built-in description, the same text it always showed
+  // before the dropdown was folder-only. Only a genuinely user-authored
+  // theme (or a stock one the user has actually edited) gets the "From your
+  // themes folder" phrasing -- a default that ships with Hive should never
+  // read as something the user made.
+  const builtinDescByName = new Map(Object.values(BUILTIN_THEMES).map(t => [t.name, t.description]));
+  async function applyFolderTheme(file, persist=true){
+    const theme=themeFolderThemes.find(t=>t.file===file);
+    if(!theme) return;
+    const desc=document.getElementById('builtin-theme-description');
+    if(desc) desc.textContent = theme.stock && builtinDescByName.has(theme.name)
+      ? builtinDescByName.get(theme.name)
+      : `From your themes folder: ${theme.name}`;
+    if(persist){
+      try { await window.beehive.setCustomCss?.(theme.css); } catch {}
+    }
+    applyCustomCss(theme.css, true, theme.name);
+  }
+  // Every theme shown in the dropdown comes from exactly one place: the
+  // themes folder (seedStockThemesIntoFolder writes Hive's own defaults
+  // there as ordinary files, the same as anything the user adds). A single
+  // flat list, sourced only from the folder, means the same theme can never
+  // appear twice (once as a hardcoded "built-in" option and again as its
+  // seeded folder copy) and a default theme is never grouped under a
+  // "Your themes" label that implies the user made it.
+  async function renderBuiltinThemes(){
     const select=document.getElementById('builtin-theme-select');
     if(!select)return;
-    select.innerHTML=Object.entries(BUILTIN_THEMES).map(([id,t])=>`<option value="${id}">${escapeHtml(t.name)}</option>`).join('');
-    select.addEventListener('change',()=>applyBuiltinTheme(select.value,true));
+    await loadThemeFolderThemes();
+    select.innerHTML=themeFolderThemes.map(t=>`<option value="folder:${escapeHtml(t.file)}">${escapeHtml(t.name)}</option>`).join('');
+    select.addEventListener('change',()=>{
+      void applyFolderTheme(select.value.slice('folder:'.length),true);
+    });
     const saved=(()=>{try{return localStorage.getItem(BUILTIN_THEME_KEY)||'midnight'}catch{return'midnight'}})();
-    const opts=loadThemeOptions();
-    // Ambient glow and rounded controls remain part of Hive's theme state, but
-    // their old Settings switches are intentionally no longer exposed. Preserve
-    // the stored values and apply them as before.
-    applyBuiltinTheme(BUILTIN_THEMES[saved]?saved:'midnight',false);
+    const savedTheme=BUILTIN_THEMES[saved]||BUILTIN_THEMES.midnight;
+    // Reflect whatever is actually active: a persisted custom-CSS overlay
+    // (restored on startup by loadCustomCssSettings(), independently of
+    // this function) takes priority if it matches a folder theme's css.
+    // Otherwise fall back to the folder's own copy of the last-selected
+    // default theme.
+    const activeFolderTheme = themeFolderThemes.find(t=>t.css===customCssRawSource)
+      || themeFolderThemes.find(t=>t.name===savedTheme.name);
+    if(activeFolderTheme){
+      select.value=`folder:${activeFolderTheme.file}`;
+      if(!customCssRawSource) await applyFolderTheme(activeFolderTheme.file,false);
+    } else {
+      // Last-resort fallback if the themes folder is empty/unreadable and
+      // seeding itself failed -- apply the default theme's CSS variables
+      // directly rather than leaving the app unstyled.
+      applyBuiltinTheme(saved,false);
+    }
   }
   renderBuiltinThemes();
+  document.getElementById('theme-open-folder-btn')?.addEventListener('click',async()=>{ try { await seedStockThemesIntoFolder(); await window.beehive.openThemeFolder?.(); } catch(err){ themedAlert?.(err?.message||'Could not open themes folder.','Themes'); } });
 
   // Electron window bar theme is a real BrowserWindow mode switch. Electron
   // cannot change BrowserWindow.frame after creation, so the main process
@@ -15938,7 +16281,7 @@
     navigation:'Choose destinations, order, visibility, and top-bar pins.',
     library:'Music folders, scans, lyrics, cache, and Favorites.',
     statistics:'Play counts and long-term listening history.',
-    discord:'Configure Music Presence without connecting Hive to Discord IPC.',
+    discord:"Hive's own Discord Rich Presence connection and activity label.",
     plugins:'Install and configure Hive extensions.',
     community:'Scrobbling services and listening integrations.',
     logs:'Inspect the current Hive session and scan diagnostics when troubleshooting.'
@@ -15954,81 +16297,62 @@
   });
   renderNavigationEditors();
 
-  // Music Presence remains the sole Discord publisher. Hive only edits the local
-  // Music Presence settings file; no Discord IPC or SET_ACTIVITY calls belong here.
-  const musicPresenceActivity = document.getElementById('setting-music-presence-activity-type');
-  const musicPresenceApplicationId = document.getElementById('setting-music-presence-application-id');
-  const musicPresenceApplyBtn = document.getElementById('music-presence-apply-btn');
-  const musicPresenceRestartBtn = document.getElementById('music-presence-restart-btn');
-  const musicPresenceStatus = document.getElementById('music-presence-status');
-  const musicPresenceSavePrompt = document.getElementById('music-presence-save-prompt');
+  // Hive publishes Discord Rich Presence directly (see app/main/discord-presence.js)
+  // -- Music Presence is not used or configured from here anymore.
+  const discordPresenceActivity = document.getElementById('setting-discord-presence-activity-type');
+  const discordPresenceRestartBtn = document.getElementById('discord-presence-restart-btn');
+  const discordPresenceStatusEl = document.getElementById('discord-presence-status');
 
-  function setMusicPresenceStatus(text, prompt = '') {
-    if (musicPresenceStatus) musicPresenceStatus.textContent = text;
-    if (musicPresenceSavePrompt) {
-      musicPresenceSavePrompt.textContent = prompt;
-      musicPresenceSavePrompt.classList.toggle('hidden', !prompt);
-    }
+  function setDiscordPresenceStatus(text) {
+    if (discordPresenceStatusEl) discordPresenceStatusEl.textContent = text;
   }
 
-  async function loadMusicPresenceSettings() {
-    if (!musicPresenceActivity || !musicPresenceApplicationId || !window.beehive.getMusicPresenceSettings) return;
-    setMusicPresenceStatus('Loading Music Presence settings…');
+  async function loadDiscordPresenceSettings() {
+    if (!discordPresenceActivity || !window.beehive.getDiscordPresenceSettings) return;
+    setDiscordPresenceStatus('Loading Discord Rich Presence status…');
     try {
-      const result = await window.beehive.getMusicPresenceSettings();
-      if (!result?.supported) {
-        setMusicPresenceStatus(result?.reason || 'Music Presence controls are unavailable.');
+      const result = await window.beehive.getDiscordPresenceSettings();
+      const activity = String(result?.activityType || 'playing').toLowerCase();
+      discordPresenceActivity.value = ['listening', 'playing', 'watching'].includes(activity) ? activity : 'playing';
+      if (!result?.configured) {
+        setDiscordPresenceStatus('Not configured -- no self-hosted Discord Rich Presence connection is set up. See setup-music-presence.sh.');
         return;
       }
-      if (!result?.available) {
-        setMusicPresenceStatus(result?.reason || 'Music Presence settings.json was not found.');
-        return;
-      }
-      const presence = result.settings?.presence || {};
-      const activity = String(presence.activity_type || 'playing').toLowerCase();
-      musicPresenceActivity.value = ['listening', 'playing', 'watching'].includes(activity) ? activity : 'listening';
-      const customId = presence.custom_discord_application_id;
-      musicPresenceApplicationId.value = String(customId?.valid ? customId?.value || '' : '');
-      setMusicPresenceStatus('Music Presence settings loaded.');
+      const discordPart = result.discordConnected ? 'connected to Discord' : 'not connected to Discord';
+      const loonPart = result.loonConnected ? 'artwork relay connected' : 'artwork relay not connected';
+      setDiscordPresenceStatus(`Configured · ${discordPart} · ${loonPart}.`);
     } catch (err) {
-      setMusicPresenceStatus(err?.message || 'Could not load Music Presence settings.');
+      setDiscordPresenceStatus(err?.message || 'Could not load Discord Rich Presence status.');
     }
   }
 
-  async function applyMusicPresenceSettings() {
-    if (!musicPresenceActivity || !musicPresenceApplicationId || !window.beehive.saveMusicPresenceSettings) return;
-    const activityType = String(musicPresenceActivity.value || 'listening').toLowerCase();
-    const applicationId = String(musicPresenceApplicationId.value || '').trim();
-    musicPresenceApplyBtn && (musicPresenceApplyBtn.disabled = true);
-    setMusicPresenceStatus('Saving Music Presence settings…');
+  discordPresenceActivity?.addEventListener('change', async () => {
+    if (!window.beehive.setDiscordPresenceActivityType) return;
     try {
-      await window.beehive.saveMusicPresenceSettings({ activityType, applicationId });
-      setMusicPresenceStatus('Saved. Check Discord to see if Music Presence picked it up live.', 'If it does not change, restart Music Presence.');
+      await window.beehive.setDiscordPresenceActivityType(discordPresenceActivity.value);
+      setDiscordPresenceStatus('Activity type saved and applied.');
     } catch (err) {
-      setMusicPresenceStatus(err?.message || 'Could not save Music Presence settings.');
-    } finally {
-      if (musicPresenceApplyBtn) musicPresenceApplyBtn.disabled = false;
+      setDiscordPresenceStatus(err?.message || 'Could not save the activity type.');
     }
-  }
+  });
 
-  async function restartMusicPresence() {
-    if (!window.beehive.restartMusicPresence) return;
-    musicPresenceRestartBtn && (musicPresenceRestartBtn.disabled = true);
-    setMusicPresenceStatus('Restarting Music Presence…');
+  discordPresenceRestartBtn?.addEventListener('click', async () => {
+    if (!window.beehive.restartDiscordPresence) return;
+    discordPresenceRestartBtn.disabled = true;
+    setDiscordPresenceStatus('Restarting the Discord Rich Presence connection…');
     try {
-      const result = await window.beehive.restartMusicPresence();
-      if (!result?.ok) throw new Error(result?.reason || 'Could not restart Music Presence.');
-      setMusicPresenceStatus('Music Presence restarted.');
+      const result = await window.beehive.restartDiscordPresence();
+      if (!result?.ok) throw new Error(result?.reason || 'Could not restart the connection.');
+      setDiscordPresenceStatus('Connection restarted.');
+      await loadDiscordPresenceSettings();
     } catch (err) {
-      setMusicPresenceStatus(err?.message || 'Could not restart Music Presence.');
+      setDiscordPresenceStatus(err?.message || 'Could not restart the connection.');
     } finally {
-      if (musicPresenceRestartBtn) musicPresenceRestartBtn.disabled = false;
+      discordPresenceRestartBtn.disabled = false;
     }
-  }
+  });
 
-  musicPresenceApplyBtn?.addEventListener('click', applyMusicPresenceSettings);
-  musicPresenceRestartBtn?.addEventListener('click', restartMusicPresence);
-  loadMusicPresenceSettings();
+  loadDiscordPresenceSettings();
 
   // Convert Chromium's native `title` popups into themed Hive tooltips. A Mutation
   // Observer also catches dynamically created rows, cards, and context-menu items.
@@ -16038,6 +16362,12 @@
     if (!(node instanceof Element) || node === globalTooltip) return;
     const title = node.getAttribute('title');
     if (title && !node.getAttribute('data-tooltip')) node.setAttribute('data-tooltip', title);
+    // Moving the description into a non-ARIA data attribute silently removed
+    // the only accessible name a lot of icon-only controls had (screen
+    // readers don't look at data-tooltip). Preserve it as aria-label so
+    // stripping title here never regresses accessibility, for these
+    // elements and any future ones that lean on title alone.
+    if (title && !node.getAttribute('aria-label')) node.setAttribute('aria-label', title);
     if (title) node.removeAttribute('title');
   }
   function positionGlobalTooltip(e) {

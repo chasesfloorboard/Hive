@@ -103,7 +103,7 @@ test('rating, artwork, general metadata, and Love writes for the same file are s
 // case, using the ".beehive-tmp" convention the scanner/watcher already skip.
 test('metadata temp files are created next to the target file, not only in the OS temp dir', () => {
   const start = metadataWriter.indexOf('async function createMetadataTempPath(');
-  const end = metadataWriter.indexOf('\n  async function backupFileBeforeMetadataCommit');
+  const end = metadataWriter.indexOf('\n  async function commitMetadataTemp');
   assert.ok(start >= 0 && end > start);
   const block = metadataWriter.slice(start, end);
   assert.match(block, /\.beehive-tmp/);

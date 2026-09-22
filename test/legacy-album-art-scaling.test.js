@@ -21,6 +21,31 @@ test('legacy scaling is unchecked by default while preserving fixed 178px legacy
   assert.match(css, /#albums-grid\.album-browse-grid > \.album-card \{ flex: 0 0 178px; width: 178px; \}/);
   assert.match(renderer, /const migratedValue = stored == null \? false : stored !== 'true';/);
   assert.match(renderer, /catch \{ return false; \}/);
+  // Real bug, confirmed: the migration branch above defaulted a genuinely
+  // fresh profile to false correctly, but the already-migrated return path
+  // right after it still defaulted an absent stored value to `true` --
+  // meaning a brand new install (already past the one-time migration, so it
+  // never hits the branch above) started with legacy scaling ON, contrary
+  // to the documented default.
+  assert.match(renderer, /return stored == null \? false : stored === 'true';/);
+});
+
+// Real bug, confirmed: the Artists tab's virtualized "picker" grid (used
+// whenever legacyArtScaling is off -- see isPicker) positioned cards using
+// the hardcoded fixed 178px legacy card width for its column-width math,
+// completely bypassing the responsive "grow to fill the row" sizing Albums
+// gets for free from CSS grid (minmax(178px, 1fr)). Artists therefore looked
+// identical to legacy scaling even with the setting turned off.
+test('the Artists virtualized picker computes a responsive card width that fills the row, not the fixed legacy width', () => {
+  const start = renderer.indexOf('const update = (force = false) => {');
+  const end = renderer.indexOf('artistVirtualState.viewport = el.main;', start);
+  assert.ok(start >= 0 && end > start, 'expected to find the artist picker update() function');
+  const block = renderer.slice(start, end);
+  assert.match(block, /const minCardWidth = artistVirtualState\.cardWidth;/);
+  assert.match(block, /const cardWidth = Math\.floor\(\(width - \(columns - 1\) \* gap\) \/ columns\);/);
+  assert.match(block, /const rowHeight = artistVirtualState\.rowHeight \+ \(cardWidth - minCardWidth\);/);
+  assert.match(block, /card\.style\.width = `\$\{cardWidth\}px`;/);
+  assert.match(block, /card\.style\.left = `\$\{\(i % columns\) \* \(cardWidth \+ gap\)\}px`;/);
 });
 
 test('Shuffle and Repeat restore independently of whether a queue exists', () => {

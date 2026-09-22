@@ -76,3 +76,88 @@ test('the setup script writes the credentials Hive itself needs to actually use 
 test('main.js publishes under a dedicated Hive Discord application, not an individual user\'s personal one', () => {
   assert.match(mainJs, /const DISCORD_PRESENCE_CLIENT_ID = '1548882733063733300';/);
 });
+
+// Settings > Discord was rewritten: it used to read/write Music Presence's
+// own settings.json (presence.activity_type, a custom Discord application
+// id) and shell out to `systemctl restart music-presence.service`. Hive
+// publishes Rich Presence directly now, so all of that must be gone in
+// favor of Hive's own small activity-type file and direct start()/stop()
+// control over its own DiscordPresence instance.
+test('Settings > Discord no longer reads/writes Music Presence settings.json or restarts music-presence.service', () => {
+  assert.doesNotMatch(mainJs, /music-presence:getSettings/);
+  assert.doesNotMatch(mainJs, /music-presence:saveSettings/);
+  assert.doesNotMatch(mainJs, /music-presence:restart/);
+  assert.doesNotMatch(mainJs, /MUSIC_PRESENCE_SETTINGS_PATH/);
+  assert.doesNotMatch(mainJs, /systemctl.*music-presence\.service.*restart|restart.*music-presence\.service/);
+
+  assert.match(mainJs, /const DISCORD_ACTIVITY_TYPE_PATH = \(\) => path\.join\(USER_DATA\(\), 'discord-activity-type\.json'\);/);
+  assert.match(mainJs, /ipcMain\.handle\('discord-presence:getSettings', async \(\) => \{/);
+  assert.match(mainJs, /ipcMain\.handle\('discord-presence:setActivityType', async \(_evt, patch = \{\}\) => \{/);
+  assert.match(mainJs, /ipcMain\.handle\('discord-presence:restart', async \(\) => \{/);
+  const restartStart = mainJs.indexOf("ipcMain.handle('discord-presence:restart'");
+  const restartEnd = mainJs.indexOf('});', restartStart);
+  const restartBlock = mainJs.slice(restartStart, restartEnd);
+  assert.match(restartBlock, /discordPresence\.stop\(\);/);
+  assert.match(restartBlock, /discordPresence\.start\(\);/);
+});
+
+test('DiscordPresence stores/reads its own activity type from a Hive-owned file, not Music Presence\'s', () => {
+  assert.match(discordPresence, /_readActivityTypeName\(\) \{/);
+  const readStart = discordPresence.indexOf('_readActivityTypeName() {');
+  const readEnd = discordPresence.indexOf('\n  }', readStart);
+  const readBlock = discordPresence.slice(readStart, readEnd);
+  assert.match(readBlock, /settings\?\.activityType/);
+  assert.doesNotMatch(readBlock, /presence\?\.activity_type/);
+
+  assert.match(discordPresence, /setActivityType\(name\) \{/);
+  const setStart = discordPresence.indexOf('setActivityType(name) {');
+  const setEnd = discordPresence.indexOf('\n  }', setStart);
+  const setBlock = discordPresence.slice(setStart, setEnd);
+  assert.match(setBlock, /JSON\.stringify\(\{ activityType: normalized \}, null, 2\)/);
+  // Changing the activity type re-publishes the current activity immediately
+  // instead of waiting for the next track change to pick it up.
+  assert.match(setBlock, /if \(this\.lastPayload\) this\._apply\(this\.lastPayload, true\);/);
+});
+
+// Real bug/UX gap the user reported: Rich Presence was working, but showed
+// up under Discord's "Activity" section with a Spotify-style "Listening to"
+// pill (activity type 2) instead of the "Playing <name>" treatment (type 0)
+// the user wants Hive to show up as, by default.
+test('the default activity type is "playing" (type 0), not "listening"', () => {
+  assert.match(discordPresence, /const ACTIVITY_TYPE_BY_NAME = \{ playing: 0, streaming: 1, listening: 2, watching: 3, competing: 5 \};/);
+  const readStart = discordPresence.indexOf('_readActivityTypeName() {');
+  const readEnd = discordPresence.indexOf('\n  }', readStart);
+  const readBlock = discordPresence.slice(readStart, readEnd);
+  assert.match(readBlock, /if \(!this\.activityTypeSettingsPath\) return 'playing';/);
+  assert.match(readBlock, /return Object\.prototype\.hasOwnProperty\.call\(ACTIVITY_TYPE_BY_NAME, name\) \? name : 'playing';/);
+  assert.doesNotMatch(readBlock, /'listening'/);
+
+  const typeStart = discordPresence.indexOf('_readActivityType() {');
+  const typeEnd = discordPresence.indexOf('\n  }', typeStart);
+  assert.match(discordPresence.slice(typeStart, typeEnd), /\?\? 0;/);
+});
+
+// Real bug the user reported and confirmed with screenshots: Rich Presence
+// data was correct (track/artist/artwork/pause state all showed correctly
+// under Discord's full profile Activity tab) but never appeared in the
+// compact hover-card the way games/Spotify do -- it always landed on the
+// deeper surface only. The activity object never set `instance`, which
+// every reference Discord RPC implementation includes; every other field
+// already matched a normal, complete Activity payload.
+test('the published activity sets instance: true, matching a standard/complete Activity payload', () => {
+  const start = discordPresence.indexOf('const activity = {');
+  const end = discordPresence.indexOf('\n    };', start);
+  assert.ok(start >= 0 && end > start, 'expected to find the activity object construction');
+  const block = discordPresence.slice(start, end);
+  assert.match(block, /instance:\s*true/);
+});
+
+test('DiscordPresence exposes a live status for Settings (configured/connected), not just activity type', () => {
+  const start = discordPresence.indexOf('status() {');
+  const end = discordPresence.indexOf('\n  }', start);
+  assert.ok(start >= 0 && end > start, 'expected a status() method');
+  const block = discordPresence.slice(start, end);
+  assert.match(block, /configured: !!this\.loon\?\.url/);
+  assert.match(block, /discordConnected: !!this\.rpc\?\.ready/);
+  assert.match(block, /loonConnected: !!this\.loon\?\.connected/);
+});

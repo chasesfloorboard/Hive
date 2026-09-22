@@ -8,6 +8,13 @@
 // this file is the behavioral coverage for one representative writer
 // (embedRatingInFile) plus the two pieces every writer shares
 // (withMusicBeeWriteLock, createMetadataTempPath).
+//
+// A full-file backup used to be made before every commit here (and tested
+// below). Removed: it ran on every write, including the automatic per-track
+// play-count embed, and grew unbounded with no pruning -- 98GB on one real
+// ~30k-track library. See build256-metadata-safety.test.js for the
+// replacement test covering the current (backup-free, still-atomic) commit
+// contract.
 const test = require('node:test');
 const assert = require('node:assert/strict');
 const fs = require('node:fs');
@@ -79,12 +86,11 @@ function makeStubWriter(overrides = {}) {
     waitForPlaybackProtectionRelease: async () => {},
     normalizePictureType: v => v,
     readEmbeddedRating: async () => 0,
-    tagBackupsDir: () => '/tmp',
     ...overrides,
   });
 }
 
-test('embedRatingInFile writes an atomic, backed-up, lock-protected rating end to end', async () => {
+test('embedRatingInFile writes an atomic, lock-protected rating end to end', async () => {
   const tempDir = fs.mkdtempSync(path.join(os.tmpdir(), 'hive-metadata-writer-'));
   const libraryDir = path.join(tempDir, 'library');
   fs.mkdirSync(libraryDir);
@@ -109,7 +115,6 @@ ID3().save(sys.argv[1], v2_version=3, v1=0)
     runTagHelper: worker.runTagHelper,
     waitForPlaybackProtectionRelease: async (p) => { waited.push(p); },
     readEmbeddedRating: async () => 5,
-    tagBackupsDir: () => path.join(tempDir, 'backups'),
   });
 
   try {
@@ -117,12 +122,6 @@ ID3().save(sys.argv[1], v2_version=3, v1=0)
 
     assert.equal(readPopmByte(mp3), 255, 'the real file must actually be rated 5 stars (POPM 255) on disk');
     assert.ok(waited.includes(path.resolve(mp3)), 'must wait for playback protection release before writing');
-
-    const backupsDir = path.join(tempDir, 'backups');
-    assert.ok(fs.existsSync(backupsDir), 'must create a recovery backup directory before committing');
-    const backups = fs.readdirSync(backupsDir);
-    assert.ok(backups.some(f => f.endsWith('.mp3')), 'a pre-write backup copy of the original file must exist');
-    assert.ok(backups.some(f => f.endsWith('manifest.json')), 'a backup manifest must be recorded');
 
     const tempSiblingDir = path.join(libraryDir, '.beehive-tmp');
     const leftovers = fs.existsSync(tempSiblingDir) ? fs.readdirSync(tempSiblingDir) : [];
@@ -151,73 +150,11 @@ ID3().save(sys.argv[1], v2_version=3, v1=0)
   const writer = makeStubWriter({
     runTagHelper: worker.runTagHelper,
     readEmbeddedRating: async () => 0,
-    tagBackupsDir: () => path.join(tempDir, 'backups'),
   });
 
   try {
     await assert.rejects(() => writer.embedRatingInFile(mp3, 5), /Rating write verification failed/);
     assert.deepEqual(fs.readFileSync(mp3), originalBytes, 'the original file must be byte-for-byte untouched after a failed write');
-    assert.ok(!fs.existsSync(path.join(tempDir, 'backups')), 'no backup should be made when the write never reaches commit');
-  } finally {
-    worker.stop();
-    fs.rmSync(tempDir, { recursive: true, force: true });
-  }
-});
-
-// Recording that a write happened (persistMetadataJob) is only half of crash
-// safety -- the other half is that the backup commitMetadataTemp makes
-// before every rename is a genuinely restorable copy of the pre-write file,
-// since that backup is exactly what a real restore (manual, or a future
-// recovery-tool feature) would copy back over the track. This simulates that
-// restore directly: write a rating, then verify copying the backup over the
-// (now-changed) file actually reproduces the untouched original byte for
-// byte, not just that a file happens to exist in the backups directory.
-test('the pre-write backup a rating write creates is a byte-exact, genuinely restorable copy of the original', async () => {
-  const tempDir = fs.mkdtempSync(path.join(os.tmpdir(), 'hive-metadata-writer-restore-'));
-  const libraryDir = path.join(tempDir, 'library');
-  fs.mkdirSync(libraryDir);
-  const mp3 = path.join(libraryDir, 'track.mp3');
-  const initScript = `
-import sys
-sys.path.insert(0, ${JSON.stringify(resourcesDir)})
-from mutagen.id3 import ID3, TIT2
-tag = ID3()
-tag.add(TIT2(encoding=3, text=['Original Title']))
-tag.save(sys.argv[1], v2_version=3, v1=0)
-`;
-  const init = spawnSync(PYTHON, ['-c', initScript, mp3], { encoding: 'utf8' });
-  assert.equal(init.status, 0, init.stderr || init.stdout);
-  const originalBytes = fs.readFileSync(mp3);
-  const originalSha256 = require('crypto').createHash('sha256').update(originalBytes).digest('hex');
-
-  const worker = startTagHelperWorker();
-  const backupsDir = path.join(tempDir, 'backups');
-  const writer = makeStubWriter({
-    runTagHelper: worker.runTagHelper,
-    readEmbeddedRating: async () => 5,
-    tagBackupsDir: () => backupsDir,
-  });
-
-  try {
-    await writer.embedRatingInFile(mp3, 5);
-    // The live file must now differ (it was actually rated) -- otherwise
-    // "restoring" it below would trivially match for the wrong reason.
-    assert.notDeepEqual(fs.readFileSync(mp3), originalBytes, 'the file must actually have changed after the rating write');
-
-    const manifestFile = fs.readdirSync(backupsDir).find(f => f.endsWith('manifest.json'));
-    assert.ok(manifestFile, 'a recovery manifest must exist');
-    const manifest = JSON.parse(fs.readFileSync(path.join(backupsDir, manifestFile), 'utf8'));
-    assert.equal(manifest.originalSha256, originalSha256, 'the manifest must record the true pre-write hash');
-    assert.equal(manifest.originalPath, path.resolve(mp3));
-    assert.ok(fs.existsSync(manifest.backupPath), 'the manifest must point at a backup file that actually exists');
-
-    const backupBytes = fs.readFileSync(manifest.backupPath);
-    assert.deepEqual(backupBytes, originalBytes, 'the backup file itself must be byte-identical to the pre-write original');
-
-    // Simulate an actual restore: copy the backup back over the (now rated)
-    // live file, exactly what a human or a recovery tool would do.
-    fs.copyFileSync(manifest.backupPath, mp3);
-    assert.deepEqual(fs.readFileSync(mp3), originalBytes, 'restoring from the backup must reproduce the untouched original exactly');
   } finally {
     worker.stop();
     fs.rmSync(tempDir, { recursive: true, force: true });

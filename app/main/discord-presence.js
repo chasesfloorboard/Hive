@@ -25,11 +25,11 @@ const { DiscordRPC } = require('./discord-rpc');
 const ACTIVITY_TYPE_BY_NAME = { playing: 0, streaming: 1, listening: 2, watching: 3, competing: 5 };
 
 class DiscordPresence extends EventEmitter {
-  // `activityTypeSettingsPath` points at Hive's existing Settings > Discord
-  // preference storage (Music Presence's settings.json `presence.activity_type`
-  // field, previously written by the music-presence:saveSettings IPC handler).
-  // Reusing that file as pure data storage keeps the existing Settings UI
-  // working without needing a parallel Hive-only settings store.
+  // `activityTypeSettingsPath` is Hive's own small settings file
+  // (userData/discord-activity-type.json, shape {activityType: 'listening'}),
+  // not Music Presence's -- Hive publishes Rich Presence directly and no
+  // longer delegates to or shares state with the external Music Presence
+  // app.
   constructor({ clientId, loonUrl, loonCa = null, activityTypeSettingsPath = '' }) {
     super();
     this.rpc = new DiscordRPC({ clientId });
@@ -43,15 +43,49 @@ class DiscordPresence extends EventEmitter {
     this.loon.on('connected', () => { if (this.lastPayload) this._apply(this.lastPayload, true); });
   }
 
-  _readActivityType() {
-    if (!this.activityTypeSettingsPath) return 2; // default: Listening, matching Music Presence's prior default
+  // Default is 'playing' (Discord activity type 0), not 'listening' (type
+  // 2): type 2 renders as a Spotify-style "Listening to" pill under
+  // Activity, not the "Playing <name>" treatment the user actually wants
+  // Hive to show up as.
+  _readActivityTypeName() {
+    if (!this.activityTypeSettingsPath) return 'playing';
     try {
       const settings = JSON.parse(fs.readFileSync(this.activityTypeSettingsPath, 'utf8'));
-      const name = String(settings?.presence?.activity_type || '').toLowerCase();
-      return Object.prototype.hasOwnProperty.call(ACTIVITY_TYPE_BY_NAME, name) ? ACTIVITY_TYPE_BY_NAME[name] : 2;
+      const name = String(settings?.activityType || '').toLowerCase();
+      return Object.prototype.hasOwnProperty.call(ACTIVITY_TYPE_BY_NAME, name) ? name : 'playing';
     } catch {
-      return 2;
+      return 'playing';
     }
+  }
+
+  _readActivityType() {
+    return ACTIVITY_TYPE_BY_NAME[this._readActivityTypeName()] ?? 0;
+  }
+
+  // Persists the chosen activity type and immediately re-publishes the
+  // current activity under it, rather than waiting for the next track change
+  // to pick it up.
+  setActivityType(name) {
+    const normalized = String(name || '').toLowerCase();
+    if (!Object.prototype.hasOwnProperty.call(ACTIVITY_TYPE_BY_NAME, normalized)) throw new Error('Invalid Discord activity type.');
+    if (this.activityTypeSettingsPath) {
+      fs.mkdirSync(path.dirname(this.activityTypeSettingsPath), { recursive: true });
+      fs.writeFileSync(this.activityTypeSettingsPath, JSON.stringify({ activityType: normalized }, null, 2), 'utf8');
+    }
+    if (this.lastPayload) this._apply(this.lastPayload, true);
+    return normalized;
+  }
+
+  // Live status for Settings -- whether a loon/Discord connection is even
+  // configured (see readDiscordPresenceConfigSync in main.js) and whether
+  // each half is actually connected right now.
+  status() {
+    return {
+      configured: !!this.loon?.url,
+      discordConnected: !!this.rpc?.ready,
+      loonConnected: !!this.loon?.connected,
+      activityType: this._readActivityTypeName()
+    };
   }
 
   start() {
@@ -125,7 +159,14 @@ class DiscordPresence extends EventEmitter {
     const activity = {
       type: this._readActivityType(),
       details: String(track.title || '').slice(0, 128),
-      assets: {}
+      assets: {},
+      // Every reference Discord RPC implementation sets this on the activity
+      // object; this one never did. Absent it, Discord appears to still
+      // accept and store the activity (it shows correctly under the full
+      // profile's Activity tab, per data alone) but does not treat it as a
+      // "live session" worth surfacing in the compact hover-card the way it
+      // does for games/Spotify -- it only shows the deeper, full-profile view.
+      instance: true
     };
     if (largeImageUrl) {
       activity.assets.large_image = largeImageUrl;

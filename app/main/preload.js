@@ -24,9 +24,9 @@ contextBridge.exposeInMainWorld('beehive', {
     ipcRenderer.on('devices:transferProgress', listener);
     return () => ipcRenderer.removeListener('devices:transferProgress', listener);
   },
-  getMusicPresenceSettings: () => ipcRenderer.invoke('music-presence:getSettings'),
-  saveMusicPresenceSettings: (settings) => ipcRenderer.invoke('music-presence:saveSettings', settings || {}),
-  restartMusicPresence: () => ipcRenderer.invoke('music-presence:restart'),
+  getDiscordPresenceSettings: () => ipcRenderer.invoke('discord-presence:getSettings'),
+  setDiscordPresenceActivityType: (activityType) => ipcRenderer.invoke('discord-presence:setActivityType', { activityType }),
+  restartDiscordPresence: () => ipcRenderer.invoke('discord-presence:restart'),
   mprisUpdate: (payload) => ipcRenderer.invoke('mpris:update', payload || {}),
   onMprisCommand: (cb) => { const listener = (_evt, command) => cb(command); ipcRenderer.on('mpris:command', listener); return () => ipcRenderer.removeListener('mpris:command', listener); },
   getGpuAcceleration: () => ipcRenderer.invoke('graphics:getGpuAcceleration'),
@@ -37,6 +37,9 @@ contextBridge.exposeInMainWorld('beehive', {
   clearCustomCss: () => ipcRenderer.invoke('custom-css:clear'),
   importTheme: () => ipcRenderer.invoke('theme:import'),
   exportTheme: (payload) => ipcRenderer.invoke('theme:export', payload || {}),
+  listThemeFolder: () => ipcRenderer.invoke('themes:list'),
+  openThemeFolder: () => ipcRenderer.invoke('themes:openFolder'),
+  seedStockThemes: (themes) => ipcRenderer.invoke('themes:seedStock', themes),
   getThemeMeta: () => ipcRenderer.invoke('theme:meta'),
   listPlugins: () => ipcRenderer.invoke('plugins:list'),
   setPluginEnabled: (id, enabled) => ipcRenderer.invoke('plugins:setEnabled', { id, enabled }),
@@ -122,6 +125,9 @@ contextBridge.exposeInMainWorld('beehive', {
   onYearlyWrapTheme: (callback) => ipcRenderer.on('yearly-wrap:theme', (_evt, theme) => callback(theme)),
   saveYearlyWrapImage: (payload) => ipcRenderer.invoke('yearly-wrap:saveImage', payload || {}),
   copyYearlyWrapImage: (dataUrl) => ipcRenderer.invoke('yearly-wrap:copyImage', dataUrl || ''),
+  // Despite the name, also the shared source for Hive's own logo image data
+  // used by the main renderer's brand button/About dialog -- see the
+  // handler's comment in main.js.
   getYearlyWrapBrandIcon: () => ipcRenderer.invoke('yearly-wrap:getBrandIcon'),
   clearPlayCounts: () => ipcRenderer.invoke('stats:clearPlayCounts'),
   setEmbedPlayCounts: (enabled) => ipcRenderer.invoke('stats:setEmbedPlayCounts', !!enabled),
@@ -192,7 +198,6 @@ contextBridge.exposeInMainWorld('beehive', {
     onMaximizedChanged: (cb) => { const listener = (_evt, value) => cb(!!value); ipcRenderer.on('window:maximized-changed', listener); return () => ipcRenderer.removeListener('window:maximized-changed', listener); }
   },
   repairLoveMetadata: (items) => ipcRenderer.invoke('audio:integrity-repair-love', Array.isArray(items) ? items : []),
-  openAudioIntegrityBackups: () => ipcRenderer.invoke('audio:integrity-open-backups'),
   repairCorruptAudioFile: (item) => ipcRenderer.invoke('audio:integrity-repair-corrupt', item || {}),
   generateAudioIntegrityReport: (result) => ipcRenderer.invoke('audio:integrity-report', result || null),
   openAudioIntegrityReports: () => ipcRenderer.invoke('audio:integrity-open-reports'),

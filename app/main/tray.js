@@ -27,7 +27,7 @@ function createTrayController(deps) {
   let hiveTrayState = { track: null, paused: true, volume: 1 };
 
   function hiveLogoPath() {
-    return runtimeResourcePath(path.join('resources', 'hive-logo-glass.png'));
+    return runtimeResourcePath(path.join('resources', 'hive-minimal-black.png'));
   }
   function trayIconPath() {
     return hiveLogoPath();

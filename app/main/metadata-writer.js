@@ -14,10 +14,15 @@
 //      OS temp dir) so the final commit is a real atomic rename, not a
 //      non-atomic copy+unlink -- which matters because a music library
 //      commonly lives on a different filesystem/device than the OS temp dir.
-//   4. Verify the write against the temp copy, back up the original
-//      (backupFileBeforeMetadataCommit), then atomically rename the temp
-//      file over the original (commitMetadataTemp). On any failure, the
-//      original file is left completely untouched.
+//   4. Verify the write against the temp copy, then atomically rename the
+//      temp file over the original (commitMetadataTemp). On any failure, the
+//      original file is left completely untouched. (A full-file backup used
+//      to be made before every commit here -- removed: it ran on every
+//      write, including the automatic per-track play-count embed, and grew
+//      unbounded with no pruning, reaching 98GB on one real library. Most
+//      other players don't back up files before a tag write at all; the
+//      temp-copy-then-atomic-rename step above already means a failed or
+//      interrupted write can never leave a half-written file in place.)
 //
 // Extracted out of app/main/main.js so this logic is a plain, dependency-
 // injected module: it can be constructed with fakes/spies in a test and
@@ -38,7 +43,6 @@ function createMetadataWriter(deps) {
     waitForPlaybackProtectionRelease,
     normalizePictureType,
     readEmbeddedRating,
-    tagBackupsDir,
     // Optional: defaults to the real OS temp dir (via node:os, which works
     // identically whether this module runs inside Electron's main process or
     // a plain Node test/CLI context). Only main.js needs to override this --
@@ -97,24 +101,7 @@ function createMetadataWriter(deps) {
     }
   }
 
-  async function backupFileBeforeMetadataCommit(trackPath) {
-    const absolutePath = path.resolve(String(trackPath));
-    await fsp.mkdir(tagBackupsDir(), { recursive: true, mode: 0o700 });
-    const stamp = new Date().toISOString().replace(/[:.]/g, '-');
-    const hash = crypto.createHash('sha256').update(absolutePath).digest('hex').slice(0, 12);
-    const safeBase = path.basename(absolutePath).replace(/[^A-Za-z0-9._-]+/g, '_');
-    const backupPath = path.join(tagBackupsDir(), `${stamp}-${hash}-${safeBase}`);
-    const originalSha256 = crypto.createHash('sha256').update(await fsp.readFile(absolutePath)).digest('hex');
-    await fsp.copyFile(absolutePath, backupPath);
-    const manifestPath = path.join(tagBackupsDir(), `${stamp}-${hash}-manifest.json`);
-    await fsp.writeFile(manifestPath, JSON.stringify({ hive:'Hive', purpose:'metadata write recovery backup', createdAt:new Date().toISOString(), originalPath:absolutePath, backupPath, originalSha256 }, null, 2), { mode:0o600 });
-    return { backupPath, manifestPath, originalSha256 };
-  }
-
   async function commitMetadataTemp(temp, trackPath, background = false) {
-    // A successful temp-file write is not enough: the pre-write media must remain
-    // recoverable. If the backup cannot be created, do not replace the original.
-    await backupFileBeforeMetadataCommit(trackPath);
     try {
       await fsp.rename(temp, trackPath);
     } catch (err) {
@@ -365,7 +352,6 @@ function createMetadataWriter(deps) {
   return {
     withMusicBeeWriteLock,
     createMetadataTempPath,
-    backupFileBeforeMetadataCommit,
     commitMetadataTemp,
     embedRatingInFile,
     performWriteArtwork,

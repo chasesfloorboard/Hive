@@ -368,7 +368,14 @@ install_hive_desktop_integration() {
   # and portable: no root access is needed, and rerunning the installer updates
   # the entry if the project directory moved.
   local applications_dir="${XDG_DATA_HOME:-$HOME/.local/share}/applications"
-  local icons_dir="${XDG_DATA_HOME:-$HOME/.local/share}/icons/hicolor/743x743/apps"
+  # 743x743 is not a real hicolor theme size (nothing declares it in
+  # index.theme), so GNOME's icon lookup never found it for the dock/taskbar
+  # and silently fell back to a generic placeholder icon. 512x512 is one of
+  # the standard sizes the system hicolor theme actually declares; the source
+  # PNG (1254x1254) is higher-resolution than that, which is fine -- desktop
+  # environments downscale a too-large icon without complaint, they just
+  # can't find one filed under a size nothing recognizes.
+  local icons_dir="${XDG_DATA_HOME:-$HOME/.local/share}/icons/hicolor/512x512/apps"
   local desktop_path="$applications_dir/hive.desktop"
   local icon_path="$icons_dir/hive.png"
   local template="$PROJECT_DIR/resources/hive.desktop"
@@ -383,8 +390,8 @@ install_hive_desktop_integration() {
   }
   chmod 644 "$desktop_path" 2>/dev/null || true
 
-  if [ -f "$PROJECT_DIR/resources/hive-logo-glass.png" ]; then
-    cp -f "$PROJECT_DIR/resources/hive-logo-glass.png" "$icon_path" 2>/dev/null || {
+  if [ -f "$PROJECT_DIR/resources/hive-minimal-black.png" ]; then
+    cp -f "$PROJECT_DIR/resources/hive-minimal-black.png" "$icon_path" 2>/dev/null || {
       printf '\nWARNING: Could not install the Hive application icon.\n' >&2
       return 0
     }

@@ -22,7 +22,11 @@ test('album playback uses only the actual player Shuffle state, never sidebar vi
 });
 
 test('album context menu and album-card playback routes all use isolated album playback', () => {
-  assert.match(source, /\{label:'Play album',(?: icon:'play',)? action:\(\)=>playAlbum\(album\)\}/);
+  // "Play Now" replaced the standalone "Play album" item (matching the
+  // track-menu convention), but a single-album click still routes through
+  // playAlbum() -- only a genuine multi-album bulk selection plays the
+  // flattened track list directly.
+  assert.match(source, /\{label:'Play Now', icon:'play', action:\(\)=>\{ if \(singleAlbum\) playAlbum\(album\); else playQueue\(albumTracks, 0, true\); \}\}/);
   assert.match(source, /if \(m\?\.tracks\?\.length\) playAlbum\(m\);/);
   assert.match(source, /if\(m\?\.tracks\?\.length\)playAlbum\(m\);/);
   assert.doesNotMatch(source, /playQueue\(album\.tracks,\s*0\)/);
@@ -102,14 +106,15 @@ test('right-clicking a selected album acts on every selected album, not just the
   assert.doesNotMatch(bulkBranch.slice(bulkBranch.indexOf('} else {')), /clearSongSelection\(\)/, 'the bulk branch must not clear the existing album selection');
 });
 
-test('the album context menu adds Add to queue and a Rating/Love submenu that apply to every selected album, matching the track-row context menu convention', () => {
+test('the album context menu adds Queue Next/Queue Last and a Rating/Love submenu that apply to every selected album, matching the track-row context menu convention', () => {
   const start = source.indexOf('async function showAlbumContextMenu(e, album)');
   const end = source.indexOf('\n\n  // click = preview panel', start);
   const block = source.slice(start, end);
-  assert.match(block, /label:`Add to queue\$\{countLabel\}`, icon:'queue', action:\(\)=>addTracksToQueue\(albumTracks\)/);
+  assert.match(block, /label:`Queue Next\$\{countLabel\}`, icon:'queue', action:\(\)=>addTracksToQueue\(albumTracks, currentIndex \+ 1\)/);
+  assert.match(block, /label:`Queue Last\$\{countLabel\}`, icon:'queue', action:\(\)=>addTracksToQueue\(albumTracks\)/);
   assert.match(block, /label:'Rating',icon:'star',submenu:\[/);
   assert.match(block, /action:\(\)=>applyLove\(true\)/);
-  assert.match(block, /action:\(\)=>applyLove\(false\)/);
+  assert.doesNotMatch(block, /label:'Remove Love'/);
   assert.match(block, /action:\(\)=>applyRating\(5\)/);
   // Reuses the existing shared bulk helpers rather than duplicating
   // showTrackContextMenu's optimized selective-write Love logic.
@@ -125,6 +130,8 @@ test('single-album-only actions are hidden once more than one album is selected'
   const start = source.indexOf('async function showAlbumContextMenu(e, album)');
   const end = source.indexOf('\n\n  // click = preview panel', start);
   const block = source.slice(start, end);
-  assert.match(block, /bulk && albums\.length > 1 \? \[\] : \[\s*\{label:'Auto-tag album…'/);
-  assert.match(block, /\{label:'Play album', icon:'play', action:\(\)=>playAlbum\(album\)\},\s*\]\)/);
+  assert.match(block, /const singleAlbum = !\(bulk && albums\.length > 1\);/);
+  assert.match(block, /singleAlbum \? \[\{label:'Auto-tag album…'/);
+  assert.match(block, /singleAlbum && album\.artist \? \[\{label:'Play More'/);
+  assert.match(block, /singleAlbum \? \[\s*\{label:`Search album:/);
 });

@@ -76,3 +76,17 @@ test('renderer wires diagnostic actions', () => {
 test('Build 216 diagnostic documentation exists', () => {
   assert.equal(fs.existsSync(path.join(__dirname, '..', 'docs/development-BUILD216-IN-APP-DIAGNOSTICS.md')), true);
 });
+
+// Moved here from build151-volume-unmute-safety.test.js during the #12
+// buildNNN consolidation pass -- this was a generic renderer diagnostics
+// check, not a volume test.
+test('renderer surfaces GStreamer diagnostic events for stalled-track investigation', () => {
+  const renderer = fs.readFileSync(path.join(__dirname, '..', 'app/renderer/renderer.js'), 'utf8');
+  const native = fs.readFileSync(path.join(__dirname, '..', 'app/native/gstreamer-player.c'), 'utf8');
+  assert.match(renderer, /GSTREAMER.*EVENT|GStreamer.*event|gstreamer:event/i);
+  assert.match(renderer, /console\.error|console\.warn|console\.log/);
+  assert.match(native, /HIVE_GST_TRACE/);
+  assert.match(native, /TRACE|trace/i);
+  assert.match(native, /COMMAND/);
+  assert.match(native, /STATE_CHANGED/);
+});

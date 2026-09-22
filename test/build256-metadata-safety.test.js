@@ -31,11 +31,22 @@ test('Build 256: MP4 FullBox meta header is preserved during native rating/Love 
   assert.ok(rebuilt.includes(newChild), 'rebuilt meta atom must contain the new ilst child');
 });
 
-test('Build 256: metadata replacement requires a recoverable original backup', () => {
-  assert.match(metadataWriter, /async function backupFileBeforeMetadataCommit\(trackPath\)/);
-  assert.match(metadataWriter, /purpose:'metadata write recovery backup'/);
-  assert.match(metadataWriter, /await backupFileBeforeMetadataCommit\(trackPath\);/);
-  assert.match(metadataWriter, /If the backup cannot be created, do not replace the original/);
+// Superseded: a full-file backup used to be made before every metadata
+// commit (recoverable via backupFileBeforeMetadataCommit). Removed -- it ran
+// on every write, including the automatic per-track play-count embed, and
+// grew unbounded with no pruning (98GB on one real library). The temp-copy-
+// then-atomic-rename sequence commitMetadataTemp already does (see the test
+// below) means a failed/interrupted write still can never leave a
+// half-written file in place; that safety property never depended on the
+// backup copy.
+test('metadata commits are staged via an atomic rename, with no full-file backup step', () => {
+  assert.doesNotMatch(metadataWriter, /function backupFileBeforeMetadataCommit/);
+  assert.doesNotMatch(metadataWriter, /Tag Backups/);
+  const start = metadataWriter.indexOf('async function commitMetadataTemp(temp, trackPath, background = false) {');
+  const end = metadataWriter.indexOf('\n  }', start);
+  assert.ok(start >= 0 && end > start, 'expected to find commitMetadataTemp()');
+  const block = metadataWriter.slice(start, end);
+  assert.match(block, /await fsp\.rename\(temp, trackPath\);/);
 });
 
 test('Build 256: ordinary tag writes verify embedded artwork was not changed', () => {
