@@ -310,6 +310,40 @@ otherwise:
   dedicated session per the "1.0 scope decisions" section above, not a
   side effect of other work.
 
+## Security audit, 2026-09-21/22 - one real finding, fixed
+
+A pre-1.0 security audit (built-in `runSecurityAudit` in
+`beta-diagnostics.js` plus a deeper manual pass) found one real,
+"must fix before 1.0" issue: **fixed.** `tracks:deleteFromDisk` and the
+`mbfile://` protocol handler already rejected any path outside every
+configured library folder (`isPathInsideFolder()` against
+`config.folders`), but the metadata/artwork write handlers
+(`track:writeArtwork`/`modifyArtwork`/`removeArtwork`/`removeFrontArtwork`/
+`writeTags`, plus the `metadata:saveBatch` queue used by Tag Editor Save
+and Auto-Tag) only checked that the file existed. A track record pointing
+outside `config.folders` (e.g. via an imported playlist referencing an
+external file) could have that file silently rewritten by an ordinary
+Love/Rating/tag edit. Fixed with a shared `isTrackPathAllowedInLibrary()`
+guard (same `isPathInsideFolder()` check) at every entry point - the 5
+single-file IPC handlers and the batch queue's per-job loop. Covered by a
+new test in `test/build256-metadata-safety.test.js`.
+
+Two low-severity, non-blocking items noted but not fixed (their own risk is
+low - `file:showInBrowser`/`files:startDrag` only reveal/drag a path, no
+content read/write): could get the same guard in a future pass if desired,
+not required for 1.0.
+
+Everything else checked out clean: native C buffer handling (GLib-safe
+allocators, bounds-checked `snprintf`), `tag_helper.py` (no
+`subprocess`/`eval`/`exec`/`pickle` on untrusted input), no hardcoded
+secrets, renderer `innerHTML` sites consistently go through
+`escapeHtml()`/`esc()`, network calls hit fixed hardcoded hosts (no SSRF
+vector in this single-user offline-first threat model), and the plugin
+sandbox boundary (`window.HivePlugin` in `renderer.js`) is correctly
+narrow - no fs/child_process access despite `new Function()` execution,
+consistent with the CSP `'unsafe-eval'` tradeoff already documented above
+as deliberate and accepted.
+
 ### Already completed this punch-list pass (don't redo)
 
 Crash reporting, auto-update wiring, CI workflow, i18n scope decision,

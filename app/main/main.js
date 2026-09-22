@@ -2084,6 +2084,24 @@ function isPathInsideFolder(filePath, folderPath) {
   return rel === '' || (rel && rel !== '..' && !rel.startsWith(`..${path.sep}`) && !path.isAbsolute(rel));
 }
 
+// Security-audit finding, fixed before 1.0: tracks:deleteFromDisk and the
+// mbfile:// protocol handler already reject a path outside every configured
+// library folder, but the metadata/artwork write handlers below (writeTags,
+// writeArtwork, modifyArtwork, removeArtwork, removeFrontArtwork, and the
+// metadata:saveBatch queue) only checked that the file existed -- so any
+// track record pointing outside config.folders (e.g. via an imported
+// playlist referencing an external file) could have its file silently
+// rewritten by an ordinary Love/Rating/Tag-Editor/Auto-Tag write. Same
+// isPathInsideFolder() check, same config.folders source of truth.
+async function isTrackPathAllowedInLibrary(trackPath) {
+  const resolved = path.resolve(String(trackPath || ''));
+  if (!resolved) return false;
+  const config = await readJsonSafe(CONFIG_PATH(), { folders: [] });
+  const folders = Array.isArray(config.folders) ? config.folders.map(f => path.resolve(String(f || ''))).filter(Boolean) : [];
+  return folders.some(folder => isPathInsideFolder(resolved, folder));
+}
+const LIBRARY_BOUNDARY_ERROR = 'File is outside a configured Beehive library folder.';
+
 ipcMain.on('files:startDrag', (evt, filePaths = []) => {
   const paths = Array.from(new Set((Array.isArray(filePaths) ? filePaths : [filePaths]).map(p => String(p || '')).filter(Boolean)))
     .filter(p => { try { return fs.existsSync(p) && fs.statSync(p).isFile(); } catch { return false; } });
@@ -5287,11 +5305,26 @@ const {
 // completion result.
 ipcMain.handle('metadata:bulkWriteStart', async (_evt, label = 'metadata') => { beginLibraryBulkWrite(String(label || 'metadata')); return true; });
 ipcMain.handle('metadata:bulkWriteEnd', async (_evt, label = 'metadata') => { endLibraryBulkWrite(String(label || 'metadata')); return true; });
-ipcMain.handle('track:writeArtwork', async (_evt, trackPath, imagePath, artworkMeta = {}) => performWriteArtwork(trackPath, imagePath, artworkMeta));
-ipcMain.handle('track:modifyArtwork', async (_evt, trackPath, operation = {}, options = {}) => performModifyArtwork(trackPath, operation, { background: !!options?.background }));
-ipcMain.handle('track:removeFrontArtwork', async (_evt, trackPath) => performRemoveFrontArtwork(trackPath));
-ipcMain.handle('track:removeArtwork', async (_evt, trackPath) => performRemoveArtwork(trackPath));
-ipcMain.handle('track:writeTags', async (_evt, trackPath, tags) => performWriteTags(trackPath, tags));
+ipcMain.handle('track:writeArtwork', async (_evt, trackPath, imagePath, artworkMeta = {}) => {
+  if (!(await isTrackPathAllowedInLibrary(trackPath))) throw new Error(LIBRARY_BOUNDARY_ERROR);
+  return performWriteArtwork(trackPath, imagePath, artworkMeta);
+});
+ipcMain.handle('track:modifyArtwork', async (_evt, trackPath, operation = {}, options = {}) => {
+  if (!(await isTrackPathAllowedInLibrary(trackPath))) throw new Error(LIBRARY_BOUNDARY_ERROR);
+  return performModifyArtwork(trackPath, operation, { background: !!options?.background });
+});
+ipcMain.handle('track:removeFrontArtwork', async (_evt, trackPath) => {
+  if (!(await isTrackPathAllowedInLibrary(trackPath))) throw new Error(LIBRARY_BOUNDARY_ERROR);
+  return performRemoveFrontArtwork(trackPath);
+});
+ipcMain.handle('track:removeArtwork', async (_evt, trackPath) => {
+  if (!(await isTrackPathAllowedInLibrary(trackPath))) throw new Error(LIBRARY_BOUNDARY_ERROR);
+  return performRemoveArtwork(trackPath);
+});
+ipcMain.handle('track:writeTags', async (_evt, trackPath, tags) => {
+  if (!(await isTrackPathAllowedInLibrary(trackPath))) throw new Error(LIBRARY_BOUNDARY_ERROR);
+  return performWriteTags(trackPath, tags);
+});
 
 let metadataSaveQueue = Promise.resolve();
 
@@ -5368,6 +5401,12 @@ async function runMetadataBatch(normalizedJobs, sender, options = {}) {
     const sendProgress=(active,phase,current='')=>{ try{ sender?.send('library:tagProgress',{active,operation:normalizedJobs.some(j=>j.operation==='artwork')?'artwork':'metadata',operationLabel:'Saving changes',phase,done,total,updated,failed,current,errors,paths:updatedPaths,recovered:!!options.recovered}); }catch{} };
     if(!total){sendProgress(false,'Finished');return;} sendProgress(true,'Writing');
     for(const job of normalizedJobs){
+      if (!(await isTrackPathAllowedInLibrary(job.path))) {
+        done++; failed++; errors.push({path:job.path,error:LIBRARY_BOUNDARY_ERROR});
+        await deleteMetadataJob(job.id);
+        sendProgress(true,'Writing',path.basename(job.path));
+        continue;
+      }
       let attempts=Number(job.attempts||0); let success=false; let lastError='';
       while(attempts<3 && !success){
         attempts++; await updateMetadataJob(job.id,'running',attempts,lastError);

@@ -68,6 +68,40 @@ test('Build 256: rating and Love writes stage changes before committing them', (
   assert.match(main, /const temp = await createMetadataTempPath\(trackPath, 'love'\);/);
 });
 
+// Security-audit finding, fixed before 1.0: tracks:deleteFromDisk and the
+// mbfile:// protocol handler already reject a path outside every configured
+// library folder (isPathInsideFolder against config.folders), but the
+// metadata/artwork writers only checked the file existed -- any track
+// record pointing outside config.folders (e.g. an imported playlist
+// referencing an external file) could have that file silently rewritten by
+// an ordinary Love/Rating/Tag-Editor/Auto-Tag write. Fixed with the same
+// isPathInsideFolder() check, reused as isTrackPathAllowedInLibrary(), at
+// every entry point: the 5 direct single-file IPC handlers AND the
+// metadata:saveBatch queue (runMetadataBatch), since both ultimately reach
+// the same writer functions.
+test('every metadata/artwork write entry point rejects a path outside the configured library folders', () => {
+  assert.match(main, /async function isTrackPathAllowedInLibrary\(trackPath\) \{/);
+  const guardBlock = main.slice(main.indexOf('async function isTrackPathAllowedInLibrary'), main.indexOf('\n}', main.indexOf('async function isTrackPathAllowedInLibrary')));
+  assert.match(guardBlock, /folders\.some\(folder => isPathInsideFolder\(resolved, folder\)\)/);
+
+  for (const channel of ['track:writeArtwork', 'track:modifyArtwork', 'track:removeFrontArtwork', 'track:removeArtwork', 'track:writeTags']) {
+    const start = main.indexOf(`ipcMain.handle('${channel}',`);
+    assert.ok(start >= 0, `expected an ipcMain.handle for ${channel}`);
+    const end = main.indexOf('});', start);
+    const block = main.slice(start, end);
+    assert.match(block, /if \(!\(await isTrackPathAllowedInLibrary\(trackPath\)\)\) throw new Error\(LIBRARY_BOUNDARY_ERROR\);/, `${channel} must reject an out-of-library path before delegating to the writer`);
+  }
+
+  // The batch queue path (Tag Editor Save / Auto-Tag / multi-file operations)
+  // is a separate entry point from the 5 single-file handlers above and
+  // needed its own guard inside the per-job loop.
+  const batchStart = main.indexOf('async function runMetadataBatch(normalizedJobs, sender, options = {}) {');
+  const batchLoopStart = main.indexOf('for(const job of normalizedJobs){', batchStart);
+  const batchBlock = main.slice(batchLoopStart, main.indexOf('let attempts=Number(job.attempts||0)', batchLoopStart));
+  assert.match(batchBlock, /if \(!\(await isTrackPathAllowedInLibrary\(job\.path\)\)\) \{/);
+  assert.match(batchBlock, /errors\.push\(\{path:job\.path,error:LIBRARY_BOUNDARY_ERROR\}\);/);
+});
+
 test('album auto-tag maps every track conservatively and writes only changed metadata', () => {
   assert.match(renderer, /function autoTagNeedsMetadata\(track\)/);
   assert.match(renderer, /function buildAutoTagMapping\(localTracks, remoteTracks\)/);
