@@ -462,7 +462,18 @@ if [ ! -f "$INSTALL_MARKER" ] || [ ! -d "$PROJECT_DIR/node_modules" ]; then
   say "Installing Beehive dependencies (Electron scripts intentionally skipped)"
   # dbus-next provides the Linux MPRIS2 service used by Music Presence. It is
   # ordinary JavaScript and needs no native build step.
-  npm install --ignore-scripts || fail "npm install failed."
+  #
+  # --no-bin-links: Hive is designed to be portable -- the whole folder,
+  # including node_modules, can live on a removable/external drive (see
+  # stableHiveDataRoot() in main.js). exFAT and FAT32, the most common
+  # filesystems for a cross-platform external drive, do not support symlinks
+  # at all, and npm's default node_modules/.bin layout is built entirely out
+  # of them -- without this flag, npm install hard-fails with EPERM on the
+  # very first dependency that has a "bin" entry (confirmed: @electron/asar's
+  # .bin/asar shim). None of Hive's own scripts invoke a dependency's CLI via
+  # node_modules/.bin/ (they require() the package or call a known binary
+  # path directly), so skipping those shims is free.
+  npm install --ignore-scripts --no-bin-links || fail "npm install failed."
 else
   say "Beehive dependencies already installed; skipping npm setup."
 fi
@@ -514,13 +525,26 @@ fi
 
 [ -x "$ELECTRON_BIN" ] || fail "Electron binary is still missing: $ELECTRON_BIN"
 
-# npm lifecycle scripts are intentionally skipped above, so npm does not create
-# the usual node_modules/.bin/electron shim. The package start script expects
-# that shim; create it explicitly after the Electron binary is installed.
+# npm lifecycle scripts (and --no-bin-links) are intentionally skipped/set
+# above, so npm does not create the usual node_modules/.bin/electron shim.
+# Hive's own launcher (scripts/hive-launcher.sh) does NOT need this shim --
+# it resolves the Electron binary directly via node_modules/electron/dist --
+# but create it anyway for anyone who manually runs `npx electron .` style
+# commands, and don't fail the install if it can't be created.
 ELECTRON_SHIM="$PROJECT_DIR/node_modules/.bin/electron"
 mkdir -p "$PROJECT_DIR/node_modules/.bin"
-ln -sfn "$ELECTRON_BIN" "$ELECTRON_SHIM"
-[ -x "$ELECTRON_SHIM" ] || fail "Could not create Electron command shim: $ELECTRON_SHIM"
+rm -f -- "$ELECTRON_SHIM"
+if ! ln -sfn "$ELECTRON_BIN" "$ELECTRON_SHIM" 2>/dev/null; then
+  # A symlink can't be created on filesystems without symlink support --
+  # exFAT/FAT32, the common choice for a portable/cross-platform external
+  # drive Hive's whole folder is designed to be able to live on (see
+  # stableHiveDataRoot() in main.js). Fall back to a tiny wrapper script
+  # instead, the same ln-then-fallback resilience scripts/hive-launcher.sh
+  # already uses (there: ln, falling back to cp) for its own stable binary.
+  printf '#!/usr/bin/env bash\nexec "%s" "$@"\n' "$ELECTRON_BIN" > "$ELECTRON_SHIM"
+  chmod +x "$ELECTRON_SHIM"
+fi
+[ -x "$ELECTRON_SHIM" ] || printf '\nWARNING: Could not create the node_modules/.bin/electron shim -- Hive itself does not need it (only manual `npx electron .`-style runs would).\n' >&2
 
 # Music Presence is the external Discord integration for Beehive.
 # This is a one-time machine/user setup. It must NOT run on every Beehive launch.
