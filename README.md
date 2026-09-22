@@ -42,3 +42,17 @@ Configure test folders in the app only when doing deliberate manual testing.
 - The renderer is sandboxed with context isolation and a narrow preload bridge.
 
 See [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md) for system boundaries.
+
+## Screenshots
+
+### Favorites
+
+![Hive Favorites](resources/readme/favorites.png)
+
+### Tag Editing
+
+![Hive Tag Editing](resources/readme/tag-editing.png)
+
+### Theming
+
+![Hive Theming](resources/readme/theming.png)
