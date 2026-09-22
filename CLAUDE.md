@@ -351,6 +351,48 @@ plugin-trust disclosure, bulk album multi-select context menu, and the
 mutagen/USLT-duplicate/library-rescan bug fixes above are all done. If a
 future session's notes contradict this list, trust the more recent note.
 
+## 1.0 shipped, 2026-09-22
+
+`v1.0.0` is tagged, released on GitHub (github.com/MADVlLLIAN/Hive), with a
+verified downloadable source archive (portable-mode/external-drive install
+confirmed end-to-end, security fix included, README rewritten as the
+project's public landing page). Full test suite: 701/701. The remaining
+volume popping (see "Volume architecture" below) shipped as a known,
+explicitly-accepted-for-1.0 issue, not silently unresolved - don't
+"rediscover" it as a surprise regression.
+
+## Post-1.0: Visualizer plugin (the user's actual answer to "make a
+plugin")
+
+The plugin the user originally planned to write for 1.0 turned out to be a
+visualizer - deliberately deferred to its own post-1.0 pass rather than
+rushed in. Source to build it from:
+https://github.com/marcopixel/monstercat-visualizer (an existing
+open-source visualizer the user wants adapted, not built from scratch).
+
+Plan, as the user described it:
+1. Pull in that project's source, strip it down to just the actual
+   visualizer rendering logic - not a wholesale import of its UI/packaging.
+2. Wire it up as a Hive plugin (see `docs/PLUGIN_API.md` and
+   `docs/EXTENSIONS.md` for the existing plugin contract - plugins run via
+   `new Function(source)` in the renderer with a narrow `window.HivePlugin`
+   API, per the security audit above; the sandboxing caveat already
+   documented under "1.0 scope decisions" applies here same as any other
+   plugin).
+3. The plugin should create a NEW tab on the LEFT sidebar (alongside the
+   existing pinned nav items - see `sidebarNavigation`/tab machinery in
+   `renderer.js`), labeled **"Visualizer"**.
+4. That tab's content: the current track's artist picture, the visualizer
+   itself, and the track name - i.e. a dedicated now-playing-with-visuals
+   view, not just the raw visualizer output alone.
+
+Note: two earlier bundled visualizer plugins (Monstercat + an example
+spectrum plugin) were removed entirely earlier in this project's history
+for being broken, with a note to rewrite from scratch rather than patch
+them (see "What's next"/completed-punch-list history above) - this
+Monstercat-visualizer pull is that promised rewrite, using a real
+upstream project as the base this time instead of starting from nothing.
+
 ## Volume architecture as of 2026-09-21 - the whack-a-mole saga continues, read before touching this again
 
 This is the single most-rewritten subsystem in the project (see "The core
@@ -360,15 +402,23 @@ against real hardware/ears, not sandboxed guesses - **including one that
 looked correct, shipped, and was then proven wrong by live testing and
 reverted the same day.** Read the whole list before touching this again.
 
-**Resolved and confirmed by the user's own listening test, 2026-09-21:**
-the ramp-finish double-apply bug and the ramp-start cross-thread race
-(both documented in full below) were the real causes of the reported
-popping. The user confirmed after relaunching that this is good enough -
-**do not reopen this investigation or re-attempt any of the reverted
-approaches below on the assumption popping is still unresolved.** If a
-NEW, different popping symptom is reported later, treat it as a
-genuinely new investigation (confirm the exact trigger/character first,
-the way this session did) rather than assuming it's the same bug
+**Status at 1.0 ship, 2026-09-22: intentionally left half-fixed, not fully
+resolved.** The ramp-finish double-apply bug and the ramp-start
+cross-thread race (both documented in full below) were real bugs, genuinely
+fixed, and made things noticeably better - confirmed by the user's own
+listening test. **But there is still real, audible popping left after both
+fixes**, and the user has explicitly decided NOT to chase it further before
+1.0 ships - this is a deliberate scope call, not a belief that it's fully
+solved. Do not read the "resolved and confirmed" framing on old fixes below
+as "popping is gone" - it means those two specific bugs are gone; something
+else in this same subsystem still causes audible popping.
+
+**Do not reopen this investigation as unprompted pre-1.0 work.** If asked
+to look at it again post-1.0, don't re-attempt any of the reverted
+approaches below - start from "the two known bugs are fixed, something
+else remains" and treat it as a genuinely new investigation (confirm the
+exact trigger/character first, the way this session did) rather than
+assuming it's a variant of either already-fixed bug
 recurring.
 
 **Current mechanism (sole mechanism again, after the revert below):
