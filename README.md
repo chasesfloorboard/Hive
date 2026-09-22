@@ -1,5 +1,5 @@
 <p align="center">
-  <img src="resources/hive-logo-glass.png" alt="Hive" width="96" />
+  <img src="resources/hive-minimal-black.png" alt="Hive" width="96" />
 </p>
 
 <h1 align="center">Hive</h1>
