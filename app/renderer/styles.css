@@ -69,7 +69,7 @@ button {
   inset: 0;
   z-index: 0;
   overflow: hidden;
-  background: radial-gradient(circle at 20% 10%, #17181b 0%, #0d0e10 58%);
+  background: radial-gradient(circle at 20% 10%, color-mix(in srgb, var(--bg) 92%, white) 0%, color-mix(in srgb, var(--bg) 92%, black) 58%);
 }
 #ambient-blob-a, #ambient-blob-b {
   position: absolute;
@@ -859,6 +859,33 @@ button {
 .empty-state { text-align: center; margin-top: 120px; color: var(--text-dim); }
 .empty-state h2 { color: var(--text); font-weight: 600; }
 
+/* The Playlists tab renders its full manager (list + create actions) into
+   #tab-placeholder, which otherwise only ever hosted short centered "no
+   content" text and so carries a large margin-top plus no defined height.
+   Left as-is, the playlist-list-viewport's own max-height (previously a
+   calc(100vh - ...) guess) could exceed #main's real available height and
+   get silently clipped by #main's overflow:hidden -- an invisible cutoff
+   with no scrollbar hint. Let the manager fill #tab-placeholder's real
+   available height instead of guessing at a viewport-relative number. */
+#tab-placeholder:has(.playlist-manager) {
+  margin-top: 0;
+  height: 100%;
+  display: flex;
+  overflow: hidden;
+}
+.playlist-manager:has(.playlist-list-viewport) {
+  flex: 1 1 auto;
+  min-height: 0;
+  display: flex;
+  flex-direction: column;
+}
+.playlist-manager > [data-role="playlist-manager-list"] {
+  flex: 1 1 auto;
+  min-height: 0;
+  display: flex;
+  flex-direction: column;
+}
+
 .artist-back-btn {
   appearance: none;
   border: 0;
@@ -1564,7 +1591,7 @@ input[type="range"]::-webkit-slider-thumb {
 .playlist-manager-kicker { margin:0 0 4px; color:var(--text-dimmer); font-size:9px; font-weight:700; letter-spacing:.12em; text-transform:uppercase; }
 .playlist-manager-head { display:flex;justify-content:space-between;align-items:center;gap:20px;margin-bottom:18px; }
 .playlist-row { display:flex;justify-content:space-between;align-items:center;gap:20px;padding:12px 14px;margin-bottom:8px;border:1px solid var(--border);border-radius:10px;background:rgba(255,255,255,.025); }
-.playlist-list-viewport { max-height:calc(100vh - 190px); min-height:140px; overflow:auto; position:relative; contain:strict; }
+.playlist-list-viewport { flex:1 1 auto; min-height:140px; overflow:auto; position:relative; contain:strict; }
 .playlist-list-spacer { width:1px; opacity:0; pointer-events:none; }
 .playlist-list-window { position:absolute; left:0; right:0; top:0; }
 .playlist-list-window .playlist-row { height:66px; box-sizing:border-box; margin-bottom:0; }
@@ -3830,7 +3857,6 @@ select option, select optgroup { background: var(--panel-strong); color: var(--t
 .hive-plugin-panel { min-width:0; }
 
 html[data-hive-theme="light"] { color-scheme:light; --rating-star-filled: #000000; }
-html[data-hive-theme="light"] #ambient-bg { background:radial-gradient(circle at 20% 10%, #ffffff 0%, #edf0f5 62%); }
 /* The light theme's panel is a near-opaque white (--panel is 94% alpha), so
    the base .glass rule's 7% accent mix -- tuned against dark theme's much
    more transparent panel -- reads as no color change at all. Mix in more

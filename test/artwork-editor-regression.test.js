@@ -71,12 +71,29 @@ test('artwork editor styles make the primary front/back slots visually distinct 
 
 test('artwork reconciliation stays incremental and does not replace the full 30k-track library', () => {
   const start = renderer.indexOf('async function reconcileArtworkAfterBackgroundWrite(');
-  const end = renderer.indexOf('\n  async function syncCurrentTrackArtwork(', start);
+  const end = renderer.indexOf('\n  function isPlaceholderAlbum(', start);
   assert.ok(start >= 0 && end > start);
   const block = renderer.slice(start, end);
   assert.doesNotMatch(block, /scanChangedLibrary\(/);
-  assert.doesNotMatch(block, /applyLibrary\(lib/);
+  assert.doesNotMatch(block, /applyLibrary\(/);
   assert.doesNotMatch(block, /buildAlbums\(/);
+  assert.doesNotMatch(block, /renderCurrentView\(/);
+});
+
+test('artwork reconciliation actually runs after a background write completes, not just on the currently-playing track', () => {
+  // Real bug, confirmed by reading the source: reconcileArtworkAfterBackgroundWrite
+  // and its per-track helper existed but were never called anywhere -- every
+  // edited track other than the currently-playing queue entry kept showing its
+  // optimistic preview (a data URL/temp path) indefinitely, until an unrelated
+  // full library scan happened to overwrite it. Fixed by wiring reconciliation
+  // into showTagOperationProgress's artwork-finished branch and generalizing
+  // the per-track sync so it isn't gated on "is this the currently playing track".
+  assert.match(renderer, /async function syncTrackArtwork\(trackPath\)/);
+  const start = renderer.indexOf('function showTagOperationProgress(payload)');
+  const end = renderer.indexOf('\n  tagOperationOff =', start);
+  assert.ok(start >= 0 && end > start);
+  const block = renderer.slice(start, end);
+  assert.match(block, /reconcileArtworkAfterBackgroundWrite\(payload\.paths\)/);
 });
 
 test('current-track cover rotation synchronizes player, queue, album, and expanded album surfaces', () => {

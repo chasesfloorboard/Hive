@@ -1,4 +1,8 @@
-# Hive
+<p align="center">
+  <img src="resources/hive-minimal-black.png" alt="Hive" width="96" />
+</p>
+
+<h1 align="center">Hive</h1>
 
 <p align="center">
   <strong>An offline-first Linux music library manager and player.</strong>
@@ -17,8 +21,6 @@
 </p>
 
 ---
-
-## Hive
 
 Hive is a Linux-first desktop music player built around your local library. It combines native GStreamer playback with a focused Electron interface for large collections, embedded metadata, artwork, playlists, queue management, and library tools.
 

@@ -373,6 +373,11 @@
     await spotifySend({ type:'shuffle', enabled:!!shuffle });
     await spotifySend({ type:'repeat', mode:Number(repeat)||0 });
     updateNowPlayingUI(t); renderQueue(); dispatchAudio('loadedmetadata'); dispatchAudio('durationchange');
+    // Publish immediately rather than relying on the 5s-debounced loadedmetadata
+    // sync (scheduleMprisSync(false)): MPRIS/Discord Rich Presence would otherwise
+    // keep showing the previous track's title/art for up to 5 seconds after a
+    // Spotify track change.
+    syncMpris(t, enginePaused);
     if (!sent || !bridgeReady) {
       setActivePlaybackProvider('none');
       enginePaused = true;
@@ -423,6 +428,7 @@
     await spotifySend({ type:'playUri', uri:t.spotifyUri, ...(contextUri ? { contextUri } : {}) });
     await spotifySend({ type:'pause' });
     updateNowPlayingUI(t); dispatchAudio('loadedmetadata'); dispatchAudio('durationchange'); dispatchAudio('timeupdate'); updateSeekUI();
+    syncMpris(t, true);
     return true;
   }
 
@@ -453,6 +459,7 @@
     activeDuration = Number.isFinite(audioElement.duration) ? audioElement.duration : Number(t.duration)||0;
     activeOffset = Number(position)||0;
     updateNowPlayingUI(t); dispatchAudio('loadedmetadata'); dispatchAudio('durationchange'); dispatchAudio('timeupdate'); updateSeekUI();
+    syncMpris(t, enginePaused);
     if (autoplay) { try { await audioElement.play(); void scrobbleStart(t); } catch (err) { enginePaused=true; engineEnded=false; dispatchAudio('pause'); console.warn('Podcast playback blocked:', err?.message || err); } }
     return true;
   }
@@ -2510,40 +2517,80 @@
   // completed, which could starve the renderer and make GStreamer appear frozen.
   // The next normal scan will pick up the changed mtime; failures are reported
   // separately and are never included in this success-only path list.
-  async function reconcileArtworkAfterBackgroundWrite(paths, options = {}) {
-    const wanted = [...new Set((Array.isArray(paths) ? paths : [paths]).map(p => String(p || '')).filter(Boolean))];
-    if (!wanted.length) return;
-    refreshCoverRotationTargets();
-  }
-
-  async function syncCurrentTrackArtwork(trackPath) {
+  // Real bug, confirmed live: the optimistic artwork preview painted at Save
+  // time (a raw data URL or the picked file's temp path) was never replaced
+  // with the authoritative embedded artwork for anything other than the
+  // currently-playing queue entry -- this function used to bail out early for
+  // every other edited track. Nothing else reconciled it either: this was the
+  // only caller wired to the background write's completion, and it wasn't
+  // even being invoked (showTagOperationProgress never called it). The result
+  // was an album cover that looked "stuck" between the old cached thumbnail
+  // and the new pick until the next full library scan (which can be minutes
+  // or a restart away) reconciled it -- visible as slow/self-contradicting
+  // updates when switching between the album grid and the edited album.
+  async function syncTrackArtwork(trackPath) {
     const wantedPath = String(trackPath || '');
     if (!wantedPath) return;
+    const libTrack = library.tracks.find(x => String(x?.path || '') === wantedPath);
     const current = currentQueue[currentIndex];
-    if (!current || String(current.path || '') !== wantedPath) return;
+    const isCurrent = !!current && String(current.path || '') === wantedPath;
+    if (!libTrack && !isCurrent) return;
     try {
       const fresh = await window.beehive.readTags(wantedPath);
       const pictures = Array.isArray(fresh?.pictures) ? fresh.pictures : [];
-      current.covers = pictures;
-      current.cover = pictures.find(p => normalizeArtworkType(p?.type || 'Other') === 'Cover (Front)')?.file || pictures[0]?.file || null;
-      const libTrack = library.tracks.find(x => String(x?.path || '') === wantedPath);
-      if (libTrack) {
-        libTrack.covers = pictures;
-        libTrack.cover = pictures.find(p => normalizeArtworkType(p?.type || 'Other') === 'Cover (Front)')?.file || pictures[0]?.file || null;
+      const cover = pictures.find(p => normalizeArtworkType(p?.type || 'Other') === 'Cover (Front)')?.file || pictures[0]?.file || null;
+      if (libTrack) { libTrack.covers = pictures; libTrack.cover = cover; }
+      if (isCurrent) {
+        current.covers = pictures;
+        current.cover = cover;
+        // Any temporary online visual must disappear as soon as the real file is
+        // known to have no artwork. refreshCoverRotationTargets() will then paint
+        // the normal placeholder rather than retaining the old cover.
+        if (!pictures.length) clearAutomaticCoverVisual(current);
       }
-      // Any temporary online visual must disappear as soon as the real file is
-      // known to have no artwork. refreshCoverRotationTargets() will then paint
-      // the normal placeholder rather than retaining the old cover.
-      if (!pictures.length) clearAutomaticCoverVisual(current);
-      refreshCoverRotationTargets();
+    } catch (err) {
+      artworkDebug('track artwork synchronization failed', { path: wantedPath, message: err?.message || String(err) });
+    }
+  }
+
+  async function reconcileArtworkAfterBackgroundWrite(paths, options = {}) {
+    const wanted = [...new Set((Array.isArray(paths) ? paths : [paths]).map(p => String(p || '')).filter(Boolean))];
+    if (!wanted.length) return;
+    const touchedAlbumKeys = new Set();
+    for (const p of wanted) {
+      const libTrack = library.tracks.find(x => String(x?.path || '') === p);
+      await syncTrackArtwork(p);
+      if (libTrack) touchedAlbumKeys.add(albumKey(libTrack));
+      // Patch the visible song row in place (same pattern as setTrackRating)
+      // instead of a full library rebuild, which would be far too expensive to
+      // run after every background artwork write on a large library.
+      const row = el.songsTable?.querySelector(`.song-row[data-path="${CSS.escape(p)}"]`);
+      const thumb = row?.querySelector('.song-thumb');
+      if (thumb && libTrack) thumb.src = coverSrc(visualCoverForTrack(libTrack));
+    }
+    if (touchedAlbumKeys.size) {
+      document.querySelectorAll('.album-card').forEach(card => {
+        if (!touchedAlbumKeys.has(String(card.dataset.key || ''))) return;
+        const img = card.querySelector('.art-wrap img');
+        const albumTrack = library.tracks.find(x => albumKey(x) === String(card.dataset.key || '') && x.cover);
+        if (img && albumTrack) img.src = coverSrc(albumTrack.cover);
+      });
+      document.querySelectorAll('.inline-album-dropdown').forEach(panel => {
+        if (!touchedAlbumKeys.has(String(panel.dataset.albumKey || ''))) return;
+        const img = panel.querySelector('.inline-album-cover img');
+        const albumTrack = library.tracks.find(x => albumKey(x) === String(panel.dataset.albumKey || '') && x.cover);
+        if (img && albumTrack) img.src = coverSrc(albumTrack.cover);
+      });
+    }
+    refreshCoverRotationTargets();
+    const current = currentQueue[currentIndex];
+    if (current && wanted.includes(String(current.path || ''))) {
       const visual = visualCoverForTrack(current);
       if (visual) applyPaletteFromCover(coverSrc(visual));
       else {
         const backdrop = document.querySelector('.np-cover-stage');
         if (backdrop) backdrop.style.removeProperty('--cover-backdrop');
       }
-    } catch (err) {
-      artworkDebug('current-track artwork synchronization failed', { path: wantedPath, message: err?.message || String(err) });
     }
   }
 
@@ -12214,6 +12261,7 @@
       setTimeout(() => {
         if (!tagOperationActive) box.classList.add('hidden');
       }, Number(payload.failed || 0) ? 1800 : 700);
+      if (Array.isArray(payload.paths) && payload.paths.length) void reconcileArtworkAfterBackgroundWrite(payload.paths);
       return;
     }
     // Non-artwork metadata operations no longer occupy either the old sidebar
