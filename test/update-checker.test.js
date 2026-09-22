@@ -109,9 +109,14 @@ const renderer = fs.readFileSync(path.join(root, 'app/renderer/renderer.js'), 'u
 const html = fs.readFileSync(path.join(root, 'app/renderer/index.html'), 'utf8');
 const packageJson = JSON.parse(fs.readFileSync(path.join(root, 'package.json'), 'utf8'));
 
-test('package.json declares a GitHub publish target for electron-updater, with a clearly-marked placeholder owner', () => {
+// The GitHub repo now exists (github.com/MADVlLLIAN/hive) -- the placeholder
+// owner is replaced with the real one, per the "1.0 scope decisions" note in
+// CLAUDE.md that said to do this once a real repo exists.
+test('package.json declares a GitHub publish target for electron-updater, pointed at the real repo', () => {
   assert.equal(packageJson.build?.publish?.provider, 'github');
-  assert.equal(packageJson.build.publish.owner, 'REPLACE_WITH_GITHUB_OWNER', 'the placeholder must stay obviously named until the real repo exists');
+  assert.equal(packageJson.build.publish.owner, 'MADVlLLIAN');
+  assert.equal(packageJson.build.publish.repo, 'hive');
+  assert.doesNotMatch(packageJson.build.publish.owner, /REPLACE_WITH/, 'the placeholder must not still be in place now that the real repo exists');
   assert.equal(typeof packageJson.dependencies?.['electron-updater'], 'string');
 });
 

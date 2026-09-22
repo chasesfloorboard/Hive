@@ -167,18 +167,23 @@ test file. Repeat.
   `package.json`). Upgrading is a dedicated, separately-scoped task (full
   re-test required across main-process APIs, `BrowserWindow` options, and IPC
   behavior) - do not bump it as a side effect of an unrelated change.
-- **GitHub Releases/`electron-updater`** are wired up (`app/main/update-checker.js`)
-  but `package.json`'s `build.publish.owner` is still the literal placeholder
-  `REPLACE_WITH_GITHUB_OWNER` - the update check silently no-ops (logs an
-  ordinary "not found"-style error, never crashes) until a real repo exists.
-  Replace that placeholder when the GitHub repo is created at 1.0.
+- **GitHub Releases/`electron-updater`** are wired up (`app/main/update-checker.js`).
+  **Done, 2026-09-21:** the real GitHub repo now exists
+  (github.com/MADVlLLIAN/hive, public), `package.json`'s
+  `build.publish.owner` placeholder is replaced with `MADVlLLIAN`, and this
+  session's pending work is committed and pushed to `main`. Auto-update can
+  now actually resolve a release once one is published there.
 
 ## Status as of 2026-09-20 - read this to pick up where the last session left off
 
-No git repo exists yet in this checkout (user plans to create one at 1.0 -
-package.json's `build.publish.owner` is deliberately still the placeholder
-`REPLACE_WITH_GITHUB_OWNER` until then, per the scope decision above). Full
-test suite: 605/605 passing (`node --test test/*.test.js`).
+**Update, 2026-09-21: a git repo now exists and is pushed to
+github.com/MADVlLLIAN/hive (public, `main` branch).** The note below about
+"no git repo yet" is stale -- see the GitHub Releases/`electron-updater`
+scope-decision entry above for what changed. Full test suite: 698/698
+passing (`node --test test/*.test.js`) as of the same date.
+
+*(Original 2026-09-20 note, kept for history: "No git repo exists yet in
+this checkout... Full test suite: 605/605 passing.")*
 
 Since the "What's next" list above was written, a long session worked
 through a 1.0 pre-release punch list the user asked for (plugin support,
