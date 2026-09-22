@@ -159,3 +159,9 @@ Keep `npm test` green and don't leave the build broken. Commit your
 changes with clear messages (not just "wip") so the next session can
 `git log`/`git diff` to see exactly what changed, in addition to reading
 this file.
+
+## README presentation refresh — 2026-09-22
+* Refreshed the public README as a project landing page using the real Hive player screenshots supplied by the user.
+* Added `resources/screenshots/` with main library, Favorites, Top 25, Tag Editor, Appearance/Frosted Glass, and Yearly Wrap screenshots.
+* No application source code or runtime behavior changed.
+* Screenshot assets are intentionally real UI captures from the portable Hive installation.
