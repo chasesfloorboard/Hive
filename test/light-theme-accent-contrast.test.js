@@ -135,3 +135,15 @@ test('light theme accent reads brighter than dark theme accent for the same satu
     );
   }
 });
+
+// Light mode: Settings and every dialog use Apple system blue, not the theme's
+// indigo. #settings-modal is itself a .modal-overlay and its base accent rule
+// includes the ID, so the light override must name the ID too, or its lower
+// specificity leaves Settings indigo (it did, in 1.0.3).
+test('light-mode Settings and dialogs get the Apple-blue accent', () => {
+  const css = require('fs').readFileSync(require('path').join(__dirname, '..', 'app', 'renderer', 'styles.css'), 'utf8');
+  const rule = css.match(/((?:html\[data-hive-theme="light"\][^{,]*,\s*)*html\[data-hive-theme="light"\][^{,]*)\{\s*--accent:\s*#0A84FF;/i);
+  assert.ok(rule, 'expected a light-theme --accent: #0A84FF rule');
+  assert.match(rule[1], /html\[data-hive-theme="light"\] #settings-modal\b/);
+  assert.match(rule[1], /html\[data-hive-theme="light"\] \.modal-overlay\b/);
+});

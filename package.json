@@ -68,8 +68,8 @@
     },
     "publish": {
       "provider": "github",
-      "owner": "MADVlLLIAN",
-      "repo": "hive"
+      "owner": "chasesfloorboard",
+      "repo": "Hive"
     }
   },
   "allowScripts": {

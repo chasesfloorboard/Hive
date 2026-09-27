@@ -13,11 +13,11 @@
 </p>
 
 <p align="center">
-  <a href="https://github.com/MADVlLLIAN/Hive/releases">Download Hive</a>
+  <a href="https://github.com/chasesfloorboard/Hive/releases">Download Hive</a>
   ·
-  <a href="https://github.com/MADVlLLIAN/Hive/issues">Report an issue</a>
+  <a href="https://github.com/chasesfloorboard/Hive/issues">Report an issue</a>
   ·
-  <a href="https://github.com/MADVlLLIAN/Hive/blob/main/CONTRIBUTING.md">Contributing</a>
+  <a href="https://github.com/chasesfloorboard/Hive/blob/main/CONTRIBUTING.md">Contributing</a>
 </p>
 
 ---
@@ -74,7 +74,7 @@ Hive can turn its local play history into a private yearly listening summary.
 
 ## Installation
 
-Download the latest release from the [GitHub Releases](https://github.com/MADVlLLIAN/Hive/releases) page, extract it, and run:
+Download the latest release from the [GitHub Releases](https://github.com/chasesfloorboard/Hive/releases) page, extract it, and run:
 
 ```bash
 tar -xzf Hive-*.tar.gz

@@ -4893,7 +4893,11 @@ html[data-hive-theme="light"] .inline-track-row.selected .inline-track-dur { col
   --control-border: color-mix(in srgb, var(--accent) 16%, var(--border));
 }
 /* Light mode: Settings and the tag editor use an Apple-style cyan-blue
-   (system blue #0A84FF) instead of the Light theme's indigo accent. */
+   (system blue #0A84FF) instead of the Light theme's indigo accent.
+   #settings-modal is itself a .modal-overlay, so it is named here too: the ID
+   in the rule above outranked a plain .modal-overlay override, and Settings
+   kept the indigo while the other dialogs turned blue. */
+html[data-hive-theme="light"] #settings-modal,
 html[data-hive-theme="light"] .modal-overlay { --accent: #0A84FF; }
 #settings-modal .modal-settings.glass,
 #settings-modal .modal-settings,
