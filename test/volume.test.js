@@ -90,7 +90,7 @@ test('a slider-driven VOLUME command starts a retargeting ramp while playing, un
   // command_tick is one-shot (G_SOURCE_REMOVE): returning CONTINUE from an
   // invoked callback kept it firing forever and pinned a CPU core (~98%).
   const apply = nativeBlock('if (pending_volume) {', 'return G_SOURCE_REMOVE;\n}');
-  assert.doesNotMatch(native, /return G_SOURCE_CONTINUE;\n\}\n\nstatic void \*stdin_thread/);
+  assert.doesNotMatch(nativeBlock('static gboolean command_tick(gpointer unused) {', 'static gboolean read_command_line(GString *line) {'), /return G_SOURCE_CONTINUE;/);
   assert.match(apply, /if \(playing_state\) begin_user_volume_ramp\(requested_volume\);/);
   assert.match(apply, /else \{ cancel_user_volume_ramp\(\); user_volume = requested_volume; \}/);
 });
@@ -354,16 +354,16 @@ test('muted volume changes update the stored target without touching the output 
 });
 
 test('one event-driven command callback drains the queued burst instead of scheduling one callback per command', () => {
-  const dispatch = nativeBlock('static void *stdin_thread(void *unused) {', 'int main(int argc, char **argv) {');
-  assert.match(dispatch, /g_async_queue_push\(commands, g_strdup\(line\)\)/);
+  const dispatch = nativeBlock('static gpointer stdin_thread(gpointer unused) {', 'int main(int argc, char **argv) {');
+  assert.match(dispatch, /g_async_queue_push\(commands, g_strdup\(line->str\)\)/);
   assert.match(dispatch, /g_atomic_int_compare_and_exchange\(&command_dispatch_pending, 0, 1\)/);
   assert.match(dispatch, /g_main_context_invoke\(NULL, command_tick, NULL\)/);
-  const tick = nativeBlock('static gboolean command_tick(gpointer unused) {', 'static void *stdin_thread(void *unused) {');
+  const tick = nativeBlock('static gboolean command_tick(gpointer unused) {', 'static gboolean read_command_line(GString *line) {');
   assert.match(tick, /while \(\(line = g_async_queue_try_pop\(commands\)\) != NULL\)/);
 });
 
 test('VOLUME bursts are applied once after the command queue drains', () => {
-  const tick = nativeBlock('static gboolean command_tick(gpointer unused) {', 'static void *stdin_thread(void *unused) {');
+  const tick = nativeBlock('static gboolean command_tick(gpointer unused) {', 'static gboolean read_command_line(GString *line) {');
   const drainEnd = tick.indexOf('if (pending_volume) {');
   assert.ok(drainEnd > 0);
   const drain = tick.slice(0, drainEnd);

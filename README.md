@@ -84,6 +84,14 @@ cd Hive
 
 The installer sets up Hive's dependencies, Electron runtime, native GStreamer helper, desktop entry, and MPRIS integration.
 
+### Windows
+
+Download `Hive-<version>-Win-x64.zip`, extract it, and run `Hive\Hive.exe`. Nothing else to install: the zip includes Hive's audio engine (GStreamer) and Python. Windows 10 or 11, 64-bit.
+
+On Windows, Hive plays MP3, FLAC, AAC/M4A, Ogg Vorbis, Opus, WavPack, WAV and AIFF. ALAC and WMA files are not supported yet. Linux-only features (bit-perfect output, output-device selection, MPRIS, Android sync) are not available.
+
+The build is not code-signed yet, so Windows SmartScreen may warn the first time: choose **More info → Run anyway**. Maintainers build the zip on Linux with `scripts/build-windows.sh`.
+
 ### Portable mode
 
 Hive can run as a self-contained portable installation. Keep the whole Hive folder together and it stores its application data in `Hive Data/` beside the installation.
@@ -91,6 +99,8 @@ Hive can run as a self-contained portable installation. Keep the whole Hive fold
 This makes it possible to keep Hive and a music library together on an external or removable drive.
 
 ## Requirements
+
+These are for the Linux build; the Windows zip is self-contained.
 
 - Linux
 - Node.js and npm

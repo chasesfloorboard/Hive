@@ -60,6 +60,10 @@ def reply(req, result=None, error=None):
     else: out.update(ok=True,result=result)
     sys.stdout.write(json.dumps(out,separators=(',',':'))+'\n'); sys.stdout.flush()
 
+# Hive speaks UTF-8 JSON over stdin/stdout. Windows Python defaults its pipes
+# to the ANSI code page (cp1252), which garbled every non-ASCII tag and path.
+for _stream in (sys.stdin, sys.stdout):
+    _stream.reconfigure(encoding='utf-8')
 for line in sys.stdin:
     try:
         req=json.loads(line)

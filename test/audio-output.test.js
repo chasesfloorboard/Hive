@@ -125,6 +125,6 @@ test('releasing an exclusive card runs a detached restore with the card, profile
 
 test('the native helper quits on its own when Hive closes its stdin', () => {
   const native = fs.readFileSync(path.join(__dirname, '..', 'app', 'native', 'gstreamer-player.c'), 'utf8');
-  const thread = native.slice(native.indexOf('static void *stdin_thread'), native.indexOf('int main('));
+  const thread = native.slice(native.indexOf('static gpointer stdin_thread'), native.indexOf('int main('));
   assert.match(thread, /g_async_queue_push\(commands, g_strdup\("QUIT"\)\)/);
 });

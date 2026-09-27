@@ -1290,6 +1290,10 @@ def main(req):
     raise RuntimeError(f'Unknown operation: {op}')
 
 if __name__=='__main__':
+    # Hive speaks UTF-8 JSON over stdin/stdout. Windows Python defaults its pipes
+    # to the ANSI code page (cp1252), which garbled every non-ASCII tag and path.
+    for _stream in (sys.stdin, sys.stdout):
+        _stream.reconfigure(encoding='utf-8')
     # Persistent request/reply mode. Beehive keeps this process alive so bulk
     # metadata operations do not repeatedly pay Python startup/import costs.
     for line in sys.stdin:

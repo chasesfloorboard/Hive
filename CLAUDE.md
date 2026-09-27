@@ -361,14 +361,18 @@ volume popping (see "Volume architecture" below) shipped as a known,
 explicitly-accepted-for-1.0 issue, not silently unresolved - don't
 "rediscover" it as a surprise regression.
 
-## 1.0.3 released, 2026-09-27
+## 1.0.3 released, 2026-09-27 -- Linux and Windows
 
-Linux build only (`Hive-1.0.3-Linux.tar.gz`, a `git archive` of the tag,
-same as 1.0.2's Linux asset). The 1.0.2 Windows zip was built outside this
-tree (its asar has `gstreamer-bridge.js.BEFORE-WINDOWS-MERGE` etc. and a
-prebuilt `beehive-gstreamer-player.exe`); this checkout's
-`gstreamer-bridge.js` has no win32 support and there's no MinGW here, so a
-Windows 1.0.3 needs that Windows branch merged first. See CHANGELOG 1.0.3.
+Linux: `Hive-1.0.3-Linux.tar.gz` (a `git archive` of the tag).
+Windows: `Hive-1.0.3-Win-x64.zip`, built on Linux by `scripts/build-windows.sh`
+(Zig cross-compiles the helper against MSYS2's GStreamer; the runtime is
+resolved from real DLL imports; python.org embeddable Python; electron-builder
+`--win dir`). Build from that script, not from the 1.0.2 Windows zip -- that
+was a concept build from another tree and isn't a base to build on. Windows
+lacks ALAC/WMA (needs FFmpeg, ~150 MB) and all Linux-only features (bit-perfect,
+output selection, MPRIS, MTP sync). `test/windows-port.test.js` covers the
+bridge, Python selection, UTF-8 pipes and the portable C. It was verified under
+Wine (UI, scan, gapless playback, tag save), not yet on a real Windows PC.
 
 ## Post-1.0: Visualizer plugin (the user's actual answer to "make a
 plugin")

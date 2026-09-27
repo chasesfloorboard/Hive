@@ -3,7 +3,13 @@
 // Native GStreamer playback backend bridge. GStreamer owns the actual audio
 // sink, clock, buffering, seeking and gapless transitions; the main process
 // only sends transport commands over stdin and receives lightweight
-// tab-separated events over an extra stdio pipe (fd 3).
+// tab-separated events over an extra stdio pipe (fd 3; stdout on Windows).
+//
+// Linux compiles the helper from source on first use (pkg-config + cc) and
+// uses the system GStreamer. Windows ships a prebuilt helper plus a trimmed
+// GStreamer runtime as extra resources (see scripts/build-windows.sh):
+//   <resources>/native/beehive-gstreamer-player.exe
+//   <resources>/GStreamer/{bin, lib/gstreamer-1.0, libexec/gstreamer-1.0}
 //
 // This is a factory rather than a bare module because it needs a handful of
 // main.js-level things (logging, path helpers, the current main window) —
@@ -40,9 +46,34 @@ function createGstreamerBridge(deps) {
   let gstreamerReadyWaiters = [];
 
   function gstreamerHelperSource() { return runtimeResourcePath(path.join('app', 'native', 'gstreamer-player.c')); }
-  function gstreamerHelperBinary() { return path.join(userDataDir(), 'beehive-gstreamer-player'); }
+  const isWindows = process.platform === 'win32';
+  function gstreamerHelperBinary() {
+    if (isWindows) return path.join(process.resourcesPath || '', 'native', 'beehive-gstreamer-player.exe');
+    return path.join(userDataDir(), 'beehive-gstreamer-player');
+  }
+
+  // The helper's environment: the chosen output, and on Windows the bundled
+  // GStreamer runtime -- first on PATH so its DLLs win over any other
+  // GStreamer install, with plugins, the plugin scanner and the plugin
+  // registry cache pinned to Hive's own copies.
+  function helperSpawnEnv(device) {
+    const env = { ...process.env, HIVE_AUDIO_OUTPUT_DEVICE: device };
+    if (!isWindows) return env;
+    const gst = path.join(process.resourcesPath || '', 'GStreamer');
+    const pathKey = Object.keys(env).find(key => key.toUpperCase() === 'PATH') || 'Path';
+    env[pathKey] = [path.join(gst, 'bin'), env[pathKey]].filter(Boolean).join(';');
+    env.GST_PLUGIN_SYSTEM_PATH_1_0 = path.join(gst, 'lib', 'gstreamer-1.0');
+    env.GST_PLUGIN_PATH_1_0 = '';
+    env.GST_PLUGIN_SCANNER_1_0 = path.join(gst, 'libexec', 'gstreamer-1.0', 'gst-plugin-scanner.exe');
+    env.GST_REGISTRY_1_0 = path.join(userDataDir(), 'gstreamer-registry-1.0.bin');
+    return env;
+  }
 
   function ensureGstreamerHelper() {
+    if (isWindows) {
+      gstreamerReady = fs.existsSync(gstreamerHelperBinary());
+      return gstreamerReady;
+    }
     if (process.platform !== 'linux') return false;
     if (gstreamerCompileAttempted) return !!gstreamerReady;
     gstreamerCompileAttempted = true;
@@ -99,8 +130,9 @@ function createGstreamerBridge(deps) {
         try { if (win && !win.isDestroyed()) win.webContents.send('gstreamer:event', { name: 'BIT_PERFECT_UNAVAILABLE', value: launchOutput.reason }); } catch {}
       }
       gstreamerProcess = spawnTracked(gstreamerHelperBinary(), [], {
-        stdio: ['pipe', 'ignore', 'pipe', 'pipe'],
-        env: { ...process.env, HIVE_AUDIO_OUTPUT_DEVICE: launchOutput.device }
+        stdio: isWindows ? ['pipe', 'pipe', 'pipe'] : ['pipe', 'ignore', 'pipe', 'pipe'],
+        env: helperSpawnEnv(launchOutput.device),
+        windowsHide: true
       });
       // Whenever this helper exits -- output switch, restart, crash, or Hive
       // quitting -- hand an exclusively-held card back to PipeWire properly.
@@ -113,7 +145,7 @@ function createGstreamerBridge(deps) {
         const text = chunk.toString('utf8').trim();
         if (text) crashDebug('GSTREAMER stderr', text);
       });
-      gstreamerProcess.stdio[3].on('data', chunk => {
+      (isWindows ? gstreamerProcess.stdout : gstreamerProcess.stdio[3]).on('data', chunk => {
         gstreamerEventBuffer += chunk.toString('utf8');
         let idx;
         while ((idx = gstreamerEventBuffer.indexOf('\n')) >= 0) {
