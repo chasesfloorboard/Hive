@@ -13,8 +13,9 @@
 #     production dependencies installed fresh
 #   - resources/native/beehive-gstreamer-player.exe: app/native/gstreamer-player.c
 #     cross-compiled with Zig against MSYS2's GStreamer
-#   - resources/GStreamer: the minimal GStreamer runtime for PLUGINS below,
-#     resolved from real DLL imports (scripts/windows-gstreamer-runtime.py)
+#   - resources/GStreamer: the minimal GStreamer runtime for PLUGINS below plus
+#     ffmpeg/metaflac, resolved from real DLL imports
+#     (scripts/windows-gstreamer-runtime.py)
 #   - resources/python-runtime: the python.org embeddable Python, which runs the
 #     tag writer and the library database worker (main.js sets BEEHIVE_PYTHON)
 set -euo pipefail
@@ -27,11 +28,16 @@ PYTHON_VERSION=3.13.15
 ELECTRON_BUILDER=electron-builder@26.15.3
 # Playback (playbin, volume, spectrum, format/rate conversion), Windows output
 # (WASAPI via autoaudiosink), and decoders: MP3, FLAC, Ogg Vorbis/Opus,
-# WavPack, WAV, AIFF, MP4/M4A AAC, Matroska. ALAC needs FFmpeg (gst-libav),
-# which adds ~150 MB, so it is not included yet.
+# WavPack, WAV, AIFF, MP4/M4A AAC, Matroska, WMA/ASF, Musepack, Speex, plus
+# gst-libav (FFmpeg) for ALAC, WMA, APE and the rest -- the same decoders the
+# Linux build gets from the system (covers every extension in main.js AUDIO_EXTS).
 PLUGINS=(coreelements playback typefindfunctions audioconvert audioresample volume spectrum
   autodetect wasapi wasapi2 audioparsers id3demux apetag flac mpg123 ogg vorbis opus
-  wavpack wavparse isomp4 fdkaac aiff matroska)
+  wavpack wavparse isomp4 fdkaac aiff matroska asf musepack speex libav)
+# Command-line tools Hive runs, which Linux has installed system-wide: ffmpeg
+# (pre-play integrity check, corrupt-file repair, downloaded cover art) and
+# metaflac (FLAC Love verification). main.js puts GStreamer/bin on PATH.
+TOOLS=(ffmpeg.exe metaflac.exe)
 
 STAGE="$WORK/stage"
 mkdir -p "$WORK" "$STAGE"
@@ -45,7 +51,7 @@ fi
 
 echo "== GStreamer runtime (MSYS2 ucrt64)"
 python3 "$ROOT/scripts/windows-gstreamer-runtime.py" "$WORK/msys2" "$STAGE/GStreamer" \
-  $(for p in "${PLUGINS[@]}"; do printf 'libgst%s.dll ' "$p"; done)
+  $(for p in "${PLUGINS[@]}"; do printf 'libgst%s.dll ' "$p"; done) "${TOOLS[@]}"
 
 echo "== Native helper"
 R="$WORK/msys2/root/ucrt64"
@@ -84,6 +90,9 @@ const config = {
   ...build,
   directories: { output },
   npmRebuild: false,
+  // Plain files, the same layout the Linux build runs from. With app.asar,
+  // the unpacked workers could not load the modules left in the archive.
+  asar: false,
   files: ['**/*', '!test/**', '!docs/**', '!tools/**', '!scripts/**', '!.github/**', '!.claude/**',
     '!resources/screenshots/**', '!*.sh', '!**/__pycache__/**', '!logs/**'],
   extraResources: [
@@ -94,6 +103,7 @@ const config = {
   win: { target: [{ target: 'dir', arch: ['x64'] }], icon: 'resources/hive-minimal-black.png' },
 };
 delete config.linux;
+delete config.asarUnpack;
 require('fs').writeFileSync(outPath, JSON.stringify(config, null, 2));
 EOF
 rm -rf "$WORK/out"

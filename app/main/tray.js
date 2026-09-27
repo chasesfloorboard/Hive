@@ -56,9 +56,11 @@ function createTrayController(deps) {
   }
 
   function createHiveTray() {
-    if (hiveTray || process.platform !== 'linux') return;
+    if (hiveTray || !['linux', 'win32'].includes(process.platform)) return;
     try {
-      const icon = nativeImage.createFromPath(trayIconPath());
+      let icon = nativeImage.createFromPath(trayIconPath());
+      // The Windows notification area wants a small icon; the logo is 1254 px.
+      if (process.platform === 'win32' && !icon.isEmpty()) icon = icon.resize({ width: 16, height: 16, quality: 'best' });
       hiveTray = new Tray(icon.isEmpty() ? nativeImage.createEmpty() : icon);
       hiveTray.on('click', () => {
         const mainWindow = getMainWindow();
@@ -66,9 +68,9 @@ function createTrayController(deps) {
         if (mainWindow.isVisible()) { mainWindow.focus(); } else { mainWindow.show(); mainWindow.focus(); }
       });
       rebuildHiveTrayMenu();
-      console.info('[Hive] Linux system tray initialized');
+      console.info('[Hive] System tray initialized');
     } catch (err) {
-      console.warn('[Hive] Linux system tray unavailable:', err?.message || err);
+      console.warn('[Hive] System tray unavailable:', err?.message || err);
     }
   }
 

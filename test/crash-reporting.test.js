@@ -18,7 +18,7 @@ const renderer = fs.readFileSync(path.join(root, 'app/renderer/renderer.js'), 'u
 const html = fs.readFileSync(path.join(root, 'app/renderer/index.html'), 'utf8');
 
 test('crashReporter is imported and started, with uploads disabled (Hive is offline-first and does not phone home)', () => {
-  assert.match(main, /const \{ app, BrowserWindow,.*crashReporter \} = require\('electron'\);/);
+  assert.match(main, /const \{ app, BrowserWindow,.*\bcrashReporter\b.*\} = require\('electron'\);/);
   assert.match(main, /crashReporter\.start\(\{ productName: 'Hive', companyName: 'Hive', uploadToServer: false, compress: true \}\)/);
 });
 

@@ -5,6 +5,7 @@ const os = require('os');
 const crypto = require('crypto');
 const { readWavMusicBeeLove: readSharedWavMusicBeeLove, readWavMusicBeePopmRaw: readSharedWavMusicBeePopmRaw } = require('../main/wav-id3');
 const { spawn } = require('child_process');
+const { replaceFile } = require('../main/replace-file');
 
 // Metadata work should yield to playback and UI activity on Linux.
 try { if (typeof process.setPriority === 'function') process.setPriority(process.pid, 10); } catch {}
@@ -41,12 +42,7 @@ async function writeAndSyncReplacement(temp, target, data) {
 async function syncAndRenameExistingTemp(temp, target) {
   const fd = await fsp.open(temp, 'r+');
   try { await fd.sync(); } finally { await fd.close(); }
-  try { await fsp.rename(temp, target); }
-  catch (err) {
-    if (err?.code !== 'EXDEV') throw err;
-    await fsp.copyFile(temp, target);
-    await fsp.unlink(temp);
-  }
+  await replaceFile(temp, target);
 }
 
 const musicBeeWriteLocks = new Map();

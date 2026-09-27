@@ -365,14 +365,26 @@ explicitly-accepted-for-1.0 issue, not silently unresolved - don't
 
 Linux: `Hive-1.0.3-Linux.tar.gz` (a `git archive` of the tag).
 Windows: `Hive-1.0.3-Win-x64.zip`, built on Linux by `scripts/build-windows.sh`
-(Zig cross-compiles the helper against MSYS2's GStreamer; the runtime is
-resolved from real DLL imports; python.org embeddable Python; electron-builder
-`--win dir`). Build from that script, not from the 1.0.2 Windows zip -- that
-was a concept build from another tree and isn't a base to build on. Windows
-lacks ALAC/WMA (needs FFmpeg, ~150 MB) and all Linux-only features (bit-perfect,
-output selection, MPRIS, MTP sync). `test/windows-port.test.js` covers the
-bridge, Python selection, UTF-8 pipes and the portable C. It was verified under
-Wine (UI, scan, gapless playback, tag save), not yet on a real Windows PC.
+(Zig cross-compiles the helper against MSYS2's GStreamer; the runtime,
+including gst-libav, ffmpeg.exe and metaflac.exe, is resolved from real DLL
+imports; python.org embeddable Python; electron-builder `--win dir` with
+`asar: false`). Build from that script, not from the 1.0.2 Windows zip -- that
+was a concept build from another tree.
+
+Windows gotchas already fixed, don't reintroduce: app.asar broke every forked
+worker (relative requires into the archive); Windows won't replace an open
+file (see `app/main/replace-file.js` and the gapless `setPlaybackProtectedPath`
+in the STREAM_START handler); Windows Python pipes default to cp1252 (the
+Python scripts reconfigure stdin/stdout to UTF-8); Discord uses named pipes
+there. Linux-only on purpose: bit-perfect/output selection, MPRIS (Windows gets
+tray + globalShortcut media keys), MTP sync, Spotify.
+
+Audit harness used (keep the approach): run the zip under Wine on Xvfb with
+`--remote-debugging-port`, drive it over CDP (scan, Love/rating/tags/artwork,
+playback of every format, gapless, watcher, restart persistence, quit) and
+check the files independently from Linux with tag_helper/mutagen. Wine inflates
+timings (first play ~2 s, then ~0.7 s); judge latency on real Windows.
+`test/windows-port.test.js` covers the Windows code paths.
 
 ## Post-1.0: Visualizer plugin (the user's actual answer to "make a
 plugin")

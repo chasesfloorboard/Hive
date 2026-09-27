@@ -101,42 +101,6 @@ test('Settings > Discord no longer reads/writes Music Presence settings.json or 
   assert.match(restartBlock, /discordPresence\.start\(\);/);
 });
 
-test('DiscordPresence stores/reads its own activity type from a Hive-owned file, not Music Presence\'s', () => {
-  assert.match(discordPresence, /_readActivityTypeName\(\) \{/);
-  const readStart = discordPresence.indexOf('_readActivityTypeName() {');
-  const readEnd = discordPresence.indexOf('\n  }', readStart);
-  const readBlock = discordPresence.slice(readStart, readEnd);
-  assert.match(readBlock, /settings\?\.activityType/);
-  assert.doesNotMatch(readBlock, /presence\?\.activity_type/);
-
-  assert.match(discordPresence, /setActivityType\(name\) \{/);
-  const setStart = discordPresence.indexOf('setActivityType(name) {');
-  const setEnd = discordPresence.indexOf('\n  }', setStart);
-  const setBlock = discordPresence.slice(setStart, setEnd);
-  assert.match(setBlock, /JSON\.stringify\(\{ activityType: normalized \}, null, 2\)/);
-  // Changing the activity type re-publishes the current activity immediately
-  // instead of waiting for the next track change to pick it up.
-  assert.match(setBlock, /if \(this\.lastPayload\) this\._apply\(this\.lastPayload, true\);/);
-});
-
-// Real bug/UX gap the user reported: Rich Presence was working, but showed
-// up under Discord's "Activity" section with a Spotify-style "Listening to"
-// pill (activity type 2) instead of the "Playing <name>" treatment (type 0)
-// the user wants Hive to show up as, by default.
-test('the default activity type is "playing" (type 0), not "listening"', () => {
-  assert.match(discordPresence, /const ACTIVITY_TYPE_BY_NAME = \{ playing: 0, streaming: 1, listening: 2, watching: 3, competing: 5 \};/);
-  const readStart = discordPresence.indexOf('_readActivityTypeName() {');
-  const readEnd = discordPresence.indexOf('\n  }', readStart);
-  const readBlock = discordPresence.slice(readStart, readEnd);
-  assert.match(readBlock, /if \(!this\.activityTypeSettingsPath\) return 'playing';/);
-  assert.match(readBlock, /return Object\.prototype\.hasOwnProperty\.call\(ACTIVITY_TYPE_BY_NAME, name\) \? name : 'playing';/);
-  assert.doesNotMatch(readBlock, /'listening'/);
-
-  const typeStart = discordPresence.indexOf('_readActivityType() {');
-  const typeEnd = discordPresence.indexOf('\n  }', typeStart);
-  assert.match(discordPresence.slice(typeStart, typeEnd), /\?\? 0;/);
-});
-
 // Real bug the user reported and confirmed with screenshots: Rich Presence
 // data was correct (track/artist/artwork/pause state all showed correctly
 // under Discord's full profile Activity tab) but never appeared in the
@@ -152,12 +116,98 @@ test('the published activity sets instance: true, matching a standard/complete A
   assert.match(block, /instance:\s*true/);
 });
 
-test('DiscordPresence exposes a live status for Settings (configured/connected), not just activity type', () => {
-  const start = discordPresence.indexOf('status() {');
-  const end = discordPresence.indexOf('\n  }', start);
-  assert.ok(start >= 0 && end > start, 'expected a status() method');
-  const block = discordPresence.slice(start, end);
-  assert.match(block, /configured: !!this\.loon\?\.url/);
-  assert.match(block, /discordConnected: !!this\.rpc\?\.ready/);
-  assert.match(block, /loonConnected: !!this\.loon\?\.connected/);
+// Behavior tests against the real module, with Discord and the loon relay
+// stubbed. Settings live in Hive's own file (userData/discord-activity-type.json),
+// never Music Presence's.
+function makePresence({ loonUrl = '', settings = null } = {}) {
+  const os = require('node:os');
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'hive-presence-'));
+  const settingsPath = path.join(dir, 'discord-activity-type.json');
+  if (settings) fs.writeFileSync(settingsPath, JSON.stringify(settings));
+  const { DiscordPresence } = require('../app/main/discord-presence');
+  const presence = new DiscordPresence({ clientId: '1', loonUrl, activityTypeSettingsPath: settingsPath });
+  const calls = [];
+  const sent = [];
+  Object.assign(presence.rpc, {
+    connect: () => calls.push('rpc.connect'), close: () => calls.push('rpc.close'),
+    setActivity: activity => { if (presence.rpc.ready) sent.push(activity); return presence.rpc.ready; },
+    clearActivity: () => calls.push('rpc.clear'),
+  });
+  Object.assign(presence.loon, { connect: () => calls.push('loon.connect'), close: () => calls.push('loon.close') });
+  const cleanup = () => fs.rmSync(dir, { recursive: true, force: true });
+  return { presence, calls, sent, settingsPath, cleanup };
+}
+const samplePayload = { track: { path: '/m/a.flac', title: 'Song', artist: 'Artist', album: 'Album' }, position: 10, duration: 200, paused: false };
+
+// Real UX gap: Rich Presence used to require the self-hosted loon relay
+// (only the developer's machine had it), so every other install -- and the
+// Windows build -- never showed presence at all. Discord alone is enough;
+// loon only adds local cover art.
+test('presence starts without the loon relay and shows the track once Discord is ready, even if it started first', async () => {
+  const { presence, calls, sent, cleanup } = makePresence();
+  try {
+    presence.start();
+    assert.deepEqual(calls, ['rpc.connect'], 'no loon connection when none is configured');
+    await presence.update(samplePayload); // Discord not ready yet: nothing can be sent
+    assert.equal(sent.length, 0);
+    presence.rpc.ready = true;
+    presence.rpc.emit('ready');
+    await new Promise(r => setImmediate(r));
+    assert.equal(sent.length, 1, 'the track that started before Discord connected is sent on READY');
+    assert.equal(sent[0].details, 'Song');
+    assert.equal(sent[0].state, 'Artist');
+    assert.equal(sent[0].type, 0, 'default activity type is "playing" (0), not "listening"');
+    assert.equal(sent[0].assets.large_image, undefined, 'no local cover art without the relay');
+  } finally { cleanup(); }
 });
+
+test('with a loon relay configured, start also connects it', () => {
+  const { presence, calls, cleanup } = makePresence({ loonUrl: 'wss://example.invalid/loon' });
+  try {
+    presence.start();
+    assert.deepEqual(calls, ['rpc.connect', 'loon.connect']);
+    assert.equal(presence.status().artworkRelayConfigured, true);
+  } finally { cleanup(); }
+});
+
+test('turning presence off persists, clears the activity, and stops publishing; activity type keeps the setting', async () => {
+  const { presence, calls, sent, settingsPath, cleanup } = makePresence({ settings: { activityType: 'listening' } });
+  try {
+    presence.rpc.ready = true;
+    assert.equal(presence.setEnabled(false), false);
+    assert.ok(calls.includes('rpc.clear') && calls.includes('rpc.close'));
+    await presence.update(samplePayload);
+    assert.equal(sent.length, 0, 'nothing is published while off');
+    presence.start();
+    assert.ok(!calls.includes('rpc.connect'), 'start() is a no-op while off');
+    assert.deepEqual(JSON.parse(fs.readFileSync(settingsPath, 'utf8')), { activityType: 'listening', enabled: false });
+    presence.setActivityType('watching');
+    assert.deepEqual(JSON.parse(fs.readFileSync(settingsPath, 'utf8')), { activityType: 'watching', enabled: false }, 'changing the type keeps the on/off setting');
+    const status = presence.status();
+    assert.equal(status.enabled, false);
+    assert.equal(status.activityType, 'watching');
+    assert.equal(status.artworkRelayConfigured, false);
+    assert.equal(typeof status.discordConnected, 'boolean');
+  } finally { cleanup(); }
+});
+
+test('an unreadable or unknown activity type falls back to "playing"', async () => {
+  const { presence, sent, cleanup } = makePresence({ settings: { activityType: 'dancing' } });
+  try {
+    presence.rpc.ready = true;
+    await presence.update(samplePayload);
+    assert.equal(sent[0].type, 0);
+  } finally { cleanup(); }
+});
+
+// Windows Discord listens on named pipes; looking only for socket files in
+// temp directories meant the Windows build could never connect.
+test('the Discord IPC client uses named pipes on Windows and socket files elsewhere', () => {
+  const { socketCandidates } = require('../app/main/discord-rpc');
+  const win = socketCandidates('win32');
+  assert.equal(win[0], '\\\\?\\pipe\\discord-ipc-0');
+  assert.equal(win.length, 10);
+  assert.ok(socketCandidates('linux').every(p => /discord-ipc-\d$/.test(p) && !p.startsWith('\\\\')));
+});
+
+

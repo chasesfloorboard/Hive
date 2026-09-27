@@ -27,6 +27,7 @@ contextBridge.exposeInMainWorld('beehive', {
   getDiscordPresenceSettings: () => ipcRenderer.invoke('discord-presence:getSettings'),
   setDiscordPresenceActivityType: (activityType) => ipcRenderer.invoke('discord-presence:setActivityType', { activityType }),
   restartDiscordPresence: () => ipcRenderer.invoke('discord-presence:restart'),
+  setDiscordPresenceEnabled: (enabled) => ipcRenderer.invoke('discord-presence:setEnabled', !!enabled),
   mprisUpdate: (payload) => ipcRenderer.invoke('mpris:update', payload || {}),
   onMprisCommand: (cb) => { const listener = (_evt, command) => cb(command); ipcRenderer.on('mpris:command', listener); return () => ipcRenderer.removeListener('mpris:command', listener); },
   getGpuAcceleration: () => ipcRenderer.invoke('graphics:getGpuAcceleration'),

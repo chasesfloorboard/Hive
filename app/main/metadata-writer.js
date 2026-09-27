@@ -34,6 +34,7 @@ const fs = require('fs');
 const fsp = fs.promises;
 const crypto = require('crypto');
 const os = require('os');
+const { replaceFile } = require('./replace-file');
 
 function createMetadataWriter(deps) {
   const {
@@ -102,13 +103,7 @@ function createMetadataWriter(deps) {
   }
 
   async function commitMetadataTemp(temp, trackPath, background = false) {
-    try {
-      await fsp.rename(temp, trackPath);
-    } catch (err) {
-      if (err?.code !== 'EXDEV') throw err;
-      await copyMetadataFile(temp, trackPath, background);
-      await fsp.unlink(temp);
-    }
+    await replaceFile(temp, trackPath, { copyOver: async (a, b) => { await copyMetadataFile(a, b, background); await fsp.unlink(a); } });
   }
 
   async function embedRatingInFile(trackPath, stars) {

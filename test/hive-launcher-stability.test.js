@@ -56,8 +56,11 @@ test('the stable executable is named Hive, not the generic "electron" every othe
 test('runtimeResourcePath/workerForkOptions trust HIVE_PORTABLE_ROOT over bare app.isPackaged', () => {
   const start = sessionLog.indexOf('function runningFromPortableCheckout()');
   assert.ok(start >= 0, 'expected a dedicated portable-checkout detector, not inline app.isPackaged checks');
-  const lineEnd = sessionLog.indexOf('\n', start);
-  assert.match(sessionLog.slice(start, lineEnd), /process\.env\.HIVE_PORTABLE_ROOT/);
+  const detectorEnd = sessionLog.indexOf('\n  }', start);
+  const detector = sessionLog.slice(start, detectorEnd);
+  // HIVE_PORTABLE_ROOT is checked first; a packaged build with no app.asar
+  // (the Windows plain-file package) is treated like a checkout too.
+  assert.match(detector, /if \(String\(process\.env\.HIVE_PORTABLE_ROOT \|\| ''\)\.trim\(\) \|\| !app\.isPackaged\) return true;/);
 
   const resourcePathStart = sessionLog.indexOf('function runtimeResourcePath(relativePath) {');
   const resourcePathEnd = sessionLog.indexOf('\n  }', resourcePathStart);
@@ -73,7 +76,7 @@ test('runtimeResourcePath/workerForkOptions trust HIVE_PORTABLE_ROOT over bare a
 });
 
 test('the passive update-check startup gate also trusts HIVE_PORTABLE_ROOT over bare app.isPackaged', () => {
-  assert.match(main, /if \(!process\.env\.HIVE_PORTABLE_ROOT && app\.isPackaged\) \{/);
+  assert.match(main, /if \(!process\.env\.HIVE_PORTABLE_ROOT && app\.isPackaged && fs\.existsSync\(path\.join\(process\.resourcesPath \|\| '', 'app-update\.yml'\)\)\) \{/);
 });
 
 test('Hive launcher cleans stale Hive build processes before starting', () => {

@@ -1285,6 +1285,11 @@
           selectedQueueIndex = ni;
           selectedQueueIndices.clear(); selectedQueueIndices.add(ni);
           gstTrackIndex = ni;
+          // The file now open in the helper is the next one: protect it like a
+          // fresh LOAD does, so a Love/tag write waits for it. Without this a
+          // gaplessly reached song was unprotected, and on Windows (which
+          // won't replace an open file) liking it failed with EPERM.
+          window.beehive.setPlaybackProtectedPath?.(next.path);
           const nextStart = Math.max(0, parseTimeValue(next.startTime));
           const nextEnd = Math.max(0, parseTimeValue(next.endTime));
           gstDuration = nextEnd > nextStart ? Math.max(0, Math.min(nextEnd, Number(next.duration) || nextEnd) - nextStart) : Math.max(0, Number(next.duration) || 0);
@@ -2358,7 +2363,7 @@
     songDragState = { tracks: paths.slice(), preview: null };
     e.dataTransfer.effectAllowed = 'copy';
     e.dataTransfer.setData('text/plain', `beehive:${paths.length}`);
-    e.dataTransfer.setData('text/uri-list', paths.map(t => `file://${encodeURI(String(t.path))}`).join('\r\n'));
+    e.dataTransfer.setData('text/uri-list', paths.map(t => fileUriForPath(t.path)).join('\r\n'));
     const preview = makeSongDragPreview(paths);
     songDragState.preview = preview;
     if (preview && e.dataTransfer.setDragImage) {
@@ -4042,7 +4047,7 @@
     songDragState = { tracks: paths.slice(), preview: null };
     e.dataTransfer.effectAllowed = 'copy';
     e.dataTransfer.setData('text/plain', `beehive:${paths.length}`);
-    e.dataTransfer.setData('text/uri-list', paths.map(t => `file://${encodeURI(String(t.path))}`).join('\r\n'));
+    e.dataTransfer.setData('text/uri-list', paths.map(t => fileUriForPath(t.path)).join('\r\n'));
 
     const preview = makeSongDragPreview(paths);
     songDragState.preview = preview;
@@ -5410,6 +5415,13 @@
       console.warn('[Beehive] FAVORITES PIPELINE DIAGNOSTIC REPORT WRITE FAILED', err);
     }
     return null;
+  }
+  // file:// URI for drag-and-drop. A Windows path (C:\Music\a.mp3) needs
+  // forward slashes and a third slash: file:///C:/Music/a.mp3.
+  function fileUriForPath(value) {
+    const p = String(value || '');
+    if (/^[A-Za-z]:[\\/]/.test(p)) return `file:///${encodeURI(p.replace(/\\/g, '/'))}`;
+    return `file://${encodeURI(p)}`;
   }
   function normalizePlaylistPath(value){
     let raw=String(value||'').trim();
@@ -17027,6 +17039,7 @@
   // Hive publishes Discord Rich Presence directly (see app/main/discord-presence.js)
   // -- Music Presence is not used or configured from here anymore.
   const discordPresenceActivity = document.getElementById('setting-discord-presence-activity-type');
+  const discordPresenceEnabled = document.getElementById('setting-discord-presence-enabled');
   const discordPresenceRestartBtn = document.getElementById('discord-presence-restart-btn');
   const discordPresenceStatusEl = document.getElementById('discord-presence-status');
 
@@ -17041,17 +17054,32 @@
       const result = await window.beehive.getDiscordPresenceSettings();
       const activity = String(result?.activityType || 'playing').toLowerCase();
       discordPresenceActivity.value = ['listening', 'playing', 'watching'].includes(activity) ? activity : 'playing';
-      if (!result?.configured) {
-        setDiscordPresenceStatus('Not configured -- no self-hosted Discord Rich Presence connection is set up. See setup-music-presence.sh.');
-        return;
-      }
-      const discordPart = result.discordConnected ? 'connected to Discord' : 'not connected to Discord';
-      const loonPart = result.loonConnected ? 'artwork relay connected' : 'artwork relay not connected';
-      setDiscordPresenceStatus(`Configured · ${discordPart} · ${loonPart}.`);
+      const enabled = result?.enabled !== false;
+      if (discordPresenceEnabled) discordPresenceEnabled.checked = enabled;
+      discordPresenceActivity.disabled = !enabled;
+      if (discordPresenceRestartBtn) discordPresenceRestartBtn.disabled = !enabled;
+      if (!enabled) { setDiscordPresenceStatus('Off.'); return; }
+      const discordPart = result.discordConnected ? 'Connected to Discord.' : 'Waiting for Discord. Open the Discord app and Hive connects on its own.';
+      // Local cover art needs the optional self-hosted artwork relay (loon);
+      // Spotify and podcast artwork already has a public URL.
+      const artPart = !result.artworkRelayConfigured ? '' : result.loonConnected ? ' Album art relay connected.' : ' Album art relay not connected.';
+      setDiscordPresenceStatus(discordPart + artPart);
     } catch (err) {
       setDiscordPresenceStatus(err?.message || 'Could not load Discord Rich Presence status.');
     }
   }
+
+  discordPresenceEnabled?.addEventListener('change', async () => {
+    if (!window.beehive.setDiscordPresenceEnabled) return;
+    try {
+      await window.beehive.setDiscordPresenceEnabled(discordPresenceEnabled.checked);
+      // Discord's handshake takes a moment; show the settled state after it.
+      await loadDiscordPresenceSettings();
+      if (discordPresenceEnabled.checked) setTimeout(() => { void loadDiscordPresenceSettings(); }, 1500);
+    } catch (err) {
+      setDiscordPresenceStatus(err?.message || 'Could not change Discord Rich Presence.');
+    }
+  });
 
   discordPresenceActivity?.addEventListener('change', async () => {
     if (!window.beehive.setDiscordPresenceActivityType) return;

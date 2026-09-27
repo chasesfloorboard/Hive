@@ -1,6 +1,7 @@
-const { app, BrowserWindow, protocol, net, ipcMain, dialog, clipboard, nativeImage, shell, nativeTheme, Tray, Menu, crashReporter } = require('electron');
+const { app, BrowserWindow, protocol, net, ipcMain, dialog, clipboard, nativeImage, shell, nativeTheme, Tray, Menu, crashReporter, globalShortcut } = require('electron');
 const path = require('path');
 const fs = require('fs');
+const { replaceFile } = require('./replace-file');
 // Windows has no `python3`. Hive's tag writer, library database worker and
 // MusicBee Wrapped import all run Python, and every one of them reads
 // BEEHIVE_PYTHON, so point it once at the embeddable Python bundled next to
@@ -9,6 +10,16 @@ const fs = require('fs');
 if (process.platform === 'win32' && !process.env.BEEHIVE_PYTHON) {
   const bundledPython = path.join(process.resourcesPath || '', 'python-runtime', 'python.exe');
   process.env.BEEHIVE_PYTHON = fs.existsSync(bundledPython) ? bundledPython : 'python';
+}
+// The tools Linux has installed system-wide (ffmpeg, metaflac) ship in the
+// Windows build's GStreamer/bin; put it first on PATH so `spawn('ffmpeg')`
+// and friends find them.
+if (process.platform === 'win32') {
+  const bundledBin = path.join(process.resourcesPath || '', 'GStreamer', 'bin');
+  if (fs.existsSync(bundledBin)) {
+    const pathKey = Object.keys(process.env).find(key => key.toUpperCase() === 'PATH') || 'Path';
+    process.env[pathKey] = [bundledBin, process.env[pathKey]].filter(Boolean).join(';');
+  }
 }
 const fsp = fs.promises;
 const crypto = require('crypto');
@@ -432,6 +443,21 @@ const mpris = new BeehiveMPRIS({
     try { if (mainWindow && !mainWindow.isDestroyed()) mainWindow.webContents.send('mpris:command', String(command || '')); } catch {}
   }
 });
+
+// Linux routes the keyboard's media keys to Hive through MPRIS. Windows has no
+// MPRIS, so register them directly and send the same commands.
+function registerWindowsMediaKeys() {
+  if (process.platform !== 'win32') return;
+  const keys = { MediaPlayPause: 'PLAYPAUSE', MediaNextTrack: 'NEXT', MediaPreviousTrack: 'PREVIOUS', MediaStop: 'STOP' };
+  for (const [accelerator, command] of Object.entries(keys)) {
+    try {
+      if (!globalShortcut.register(accelerator, () => mpris.command(command))) startupDebug('MEDIA KEY UNAVAILABLE', { accelerator });
+    } catch (err) {
+      startupDebug('MEDIA KEY REGISTER FAILED', { accelerator, message: err?.message || String(err) });
+    }
+  }
+}
+app.on('will-quit', () => { try { globalShortcut.unregisterAll(); } catch {} });
 
 try {
   const desktopEntry = path.join(process.env.XDG_DATA_HOME || path.join(process.env.HOME || '', '.local', 'share'), 'applications', 'hive.desktop');
@@ -1388,6 +1414,7 @@ updateChecker.onStatus(status => {
   // ordinary launches. The database is important for durability/recovery, but
   // it should never sit in front of the first paint on normal cached startups.
   createHiveTray();
+  registerWindowsMediaKeys();
   createWindow();
   startupDebug('WINDOW REQUESTED');
   // The artwork proxy improves Music Presence compatibility but must never make
@@ -1399,11 +1426,9 @@ updateChecker.onStatus(status => {
     .then(() => mpris.start())
     .then(() => startupDebug('MPRIS START COMPLETE'))
     .catch(err => startupDebug('MPRIS START FAILED', {message:err?.message}));
-  if (discordPresenceConfig.loonUrl) {
-    try { discordPresence.start(); } catch (err) { startupDebug('DISCORD PRESENCE START FAILED', { message: err?.message || String(err) }); }
-  } else {
-    startupDebug('DISCORD PRESENCE DISABLED', { reason: 'No userData/discord-presence.json loon WebSocket URL configured.' });
-  }
+  // Starts unless turned off in Settings. The loon artwork relay is optional
+  // (without it, local cover art just isn't shown); see DiscordPresence.start.
+  try { discordPresence.start(); } catch (err) { startupDebug('DISCORD PRESENCE START FAILED', { message: err?.message || String(err) }); }
   if (!databaseReady) {
     startupDebug('DATABASE INITIALIZATION START');
     await initializeDatabase();
@@ -1443,7 +1468,10 @@ updateChecker.onStatus(status => {
   // hive-launcher.sh) makes unreliable; electron-updater expects a real
   // packaged build's app-update.yml, and running this against an unpacked
   // dev checkout would just log noisy, meaningless errors every launch.
-  if (!process.env.HIVE_PORTABLE_ROOT && app.isPackaged) {
+  // electron-updater needs the app-update.yml an installer build carries; the
+  // Windows zip has none (it is updated by downloading the new zip), so
+  // checking there only logged an ENOENT error on every launch.
+  if (!process.env.HIVE_PORTABLE_ROOT && app.isPackaged && fs.existsSync(path.join(process.resourcesPath || '', 'app-update.yml'))) {
     setTimeout(() => { void updateChecker.check(); }, 5000);
   }
   if (Array.isArray(recoveredMetadataJobs) && recoveredMetadataJobs.length) {
@@ -1757,7 +1785,8 @@ ipcMain.handle('config:saveUiState', async (_evt, uiState = {}) => {
 ipcMain.handle('discord-presence:getSettings', async () => {
   const status = discordPresence.status();
   return {
-    configured: status.configured,
+    enabled: status.enabled,
+    artworkRelayConfigured: status.artworkRelayConfigured,
     discordConnected: status.discordConnected,
     loonConnected: status.loonConnected,
     activityType: status.activityType
@@ -1769,8 +1798,10 @@ ipcMain.handle('discord-presence:setActivityType', async (_evt, patch = {}) => {
   return { activityType };
 });
 
+ipcMain.handle('discord-presence:setEnabled', async (_evt, enabled) => ({ enabled: discordPresence.setEnabled(!!enabled) }));
+
 ipcMain.handle('discord-presence:restart', async () => {
-  if (!discordPresenceConfig.loonUrl) return { ok: false, reason: 'Discord Rich Presence is not configured (no loon connection set up). See setup-music-presence.sh.' };
+  if (!discordPresence.isEnabled()) return { ok: false, reason: 'Discord Rich Presence is turned off.' };
   try {
     discordPresence.stop();
     discordPresence.start();
@@ -3110,7 +3141,7 @@ async function writeAndSyncReplacement(temp, target, data) {
   await fsp.writeFile(temp, data);
   const fd = await fsp.open(temp, 'r+');
   try { await fd.sync(); } finally { await fd.close(); }
-  await fsp.rename(temp, target);
+  await replaceFile(temp, target);
 }
 
 // withMusicBeeWriteLock, createMetadataTempPath, commitMetadataTemp,
@@ -4177,6 +4208,12 @@ ipcMain.handle('library:scan', async (evt, options = {}) => {
   await runPool();
   scanToken.onCancel = null;
   throwIfCancelled();
+  // The flush labelled "finalization" above runs before the pool starts, so
+  // the last partial batch (< DATABASE_BATCH_SIZE) of scanned tracks never
+  // reached SQLite: a first scan of a small library left the database empty
+  // and search found nothing until the next launch's incremental scan
+  // rewrote it.
+  await flushDatabaseBatch();
 
   // Love is part of normal library reconciliation, not a separate Favorites
   // scanner. A one-time compatibility version lets us repair caches created by
