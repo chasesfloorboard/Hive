@@ -136,7 +136,7 @@ with zipfile.ZipFile(out, 'w', compression=zipfile.ZIP_DEFLATED, compresslevel=6
 if not os.path.getsize(out): raise RuntimeError('Export archive is empty.')`;
   await fsp.mkdir(path.dirname(destinationPath), { recursive: true });
   try {
-    await execFileAsync('python3', ['-c', python, root, temp], { encoding: 'utf8', timeout: 30000 });
+    await execFileAsync(process.env.BEEHIVE_PYTHON || 'python3', ['-c', python, root, temp], { encoding: 'utf8', timeout: 30000 });
     await fsp.rename(temp, destinationPath);
     return destinationPath;
   } catch (err) {

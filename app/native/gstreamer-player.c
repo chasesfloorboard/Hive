@@ -11,9 +11,11 @@
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
-#include <unistd.h>
-#include <pthread.h>
 #include <math.h>
+#ifdef G_OS_WIN32
+#include <fcntl.h>
+#include <io.h>
+#endif
 
 /* GstPlayFlags belongs to the playbin plugin API rather than the GStreamer
  * core headers. GStreamer documents soft-volume as bit 0x10, but the enum
@@ -563,8 +565,23 @@ static void about_to_finish_cb(GstElement *pb, gpointer unused) {
   g_free(uri);
 }
 
+/* A LOAD's start seek that could not run yet because the pipeline was still
+ * prerolling (the bounded 250 ms wait expired -- a cold disk, a slow machine,
+ * the first load after launch). Applied on ASYNC_DONE instead. -1 = none. */
+static gint64 pending_start_seek = -1;
+
 static gboolean bus_cb(GstBus *bus, GstMessage *msg, gpointer unused) {
   switch (GST_MESSAGE_TYPE(msg)) {
+    case GST_MESSAGE_ASYNC_DONE:
+      if (pending_start_seek >= 0 && GST_MESSAGE_SRC(msg) == GST_OBJECT(player)) {
+        gint64 pos = pending_start_seek;
+        pending_start_seek = -1;
+        if (!gst_element_seek(player, 1.0, GST_FORMAT_TIME,
+            GST_SEEK_FLAG_FLUSH | GST_SEEK_FLAG_ACCURATE,
+            GST_SEEK_TYPE_SET, pos, GST_SEEK_TYPE_NONE, GST_CLOCK_TIME_NONE))
+          trace_line("SEEK", "deferred start seek failed");
+      }
+      break;
     case GST_MESSAGE_EOS:
       event_line("EOS", NULL);
       break;
@@ -647,6 +664,7 @@ static void handle_load(const gchar *b64, gdouble offset, gdouble start, gdouble
   g_clear_pointer(&next_uri, g_free);
   g_mutex_unlock(&next_lock);
 
+  pending_start_seek = -1;
   gst_element_set_state(player, GST_STATE_READY);
   g_object_set(player, "uri", uri, NULL);
   GstStateChangeReturn r = gst_element_set_state(player, GST_STATE_PAUSED);
@@ -672,7 +690,11 @@ static void handle_load(const gchar *b64, gdouble offset, gdouble start, gdouble
     if (!gst_element_seek(player, 1.0, GST_FORMAT_TIME,
         GST_SEEK_FLAG_FLUSH | GST_SEEK_FLAG_ACCURATE,
         GST_SEEK_TYPE_SET, pos, GST_SEEK_TYPE_NONE, GST_CLOCK_TIME_NONE)) {
-      event_line("ERROR", "initial seek failed");
+      /* Not an error: the pipeline is still prerolling. Any ERROR event puts
+       * the renderer's backend into its fatal state, so a slow first load
+       * used to fail the song outright. Seek once preroll completes. */
+      pending_start_seek = pos;
+      trace_line("SEEK", "start seek deferred until preroll completes");
     }
   }
   event_line("LOADED", path);
@@ -901,12 +923,24 @@ static gboolean command_tick(gpointer unused) {
   return G_SOURCE_REMOVE;
 }
 
-static void *stdin_thread(void *unused) {
-  char *line = NULL; size_t cap = 0;
-  while (!shutting_down && getline(&line, &cap, stdin) >= 0) {
-    g_strchomp(line);
-    if (!*line) continue;
-    g_async_queue_push(commands, g_strdup(line));
+/* Reads one command line of any length (portable: Windows has no getline). */
+static gboolean read_command_line(GString *line) {
+  char chunk[4096];
+  g_string_truncate(line, 0);
+  while (fgets(chunk, sizeof(chunk), stdin)) {
+    g_string_append(line, chunk);
+    if (line->len && line->str[line->len - 1] == '\n') return TRUE;
+  }
+  return line->len > 0;
+}
+
+static gpointer stdin_thread(gpointer unused) {
+  (void)unused;
+  GString *line = g_string_new(NULL);
+  while (!shutting_down && read_command_line(line)) {
+    g_strstrip(line->str); /* also drops a Windows \r */
+    if (!*line->str) continue;
+    g_async_queue_push(commands, g_strdup(line->str));
 
     /* Wake the GLib main context immediately instead of waiting for the old
      * 5 ms command timer. Coalesce wakeups: command_tick() drains everything
@@ -916,7 +950,7 @@ static void *stdin_thread(void *unused) {
       g_main_context_invoke(NULL, command_tick, NULL);
     }
   }
-  free(line);
+  g_string_free(line, TRUE);
   /* stdin reaching EOF means Hive itself is gone (closed, crashed or killed)
    * without sending QUIT. Exit instead of lingering as an orphan that keeps
    * the audio device open -- in bit-perfect mode that held the DAC away from
@@ -933,7 +967,16 @@ static void *stdin_thread(void *unused) {
 int main(int argc, char **argv) {
   gst_init(&argc, &argv);
   trace_enabled = g_getenv("HIVE_GST_TRACE") && g_strcmp0(g_getenv("HIVE_GST_TRACE"), "1") == 0;
+#ifdef G_OS_WIN32
+  /* Windows has no reliable inherited fd 3, so events go to stdout (nothing
+   * else writes there; GStreamer's own logging uses stderr). Binary mode keeps
+   * "\n" line endings exact. */
+  _setmode(_fileno(stdout), _O_BINARY);
+  _setmode(_fileno(stdin), _O_BINARY);
+  event_fp = stdout;
+#else
   event_fp = fdopen(3, "w");
+#endif
   commands = g_async_queue_new();
   g_mutex_init(&next_lock);
   loop = g_main_loop_new(NULL, FALSE);
@@ -1081,8 +1124,7 @@ int main(int argc, char **argv) {
   gst_bus_add_watch(bus, bus_cb, NULL);
   gst_object_unref(bus);
 
-  pthread_t tin;
-  pthread_create(&tin, NULL, stdin_thread, NULL);
+  GThread *tin = g_thread_new("hive-stdin", stdin_thread, NULL);
   g_timeout_add(100, position_tick, NULL);
 
   trace_line("READY", "helper_initialized=1");
@@ -1090,7 +1132,7 @@ int main(int argc, char **argv) {
   g_main_loop_run(loop);
   shutting_down = TRUE;
   gst_element_set_state(player, GST_STATE_NULL);
-  pthread_join(tin, NULL);
+  g_thread_join(tin);
   g_clear_pointer(&next_uri, g_free);
   g_async_queue_unref(commands);
   g_main_loop_unref(loop);

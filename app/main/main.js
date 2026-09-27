@@ -1,6 +1,15 @@
 const { app, BrowserWindow, protocol, net, ipcMain, dialog, clipboard, nativeImage, shell, nativeTheme, Tray, Menu, crashReporter } = require('electron');
 const path = require('path');
 const fs = require('fs');
+// Windows has no `python3`. Hive's tag writer, library database worker and
+// MusicBee Wrapped import all run Python, and every one of them reads
+// BEEHIVE_PYTHON, so point it once at the embeddable Python bundled next to
+// the app (resources/python-runtime, see scripts/build-windows.sh). Falls
+// back to an installed `python` for a dev checkout.
+if (process.platform === 'win32' && !process.env.BEEHIVE_PYTHON) {
+  const bundledPython = path.join(process.resourcesPath || '', 'python-runtime', 'python.exe');
+  process.env.BEEHIVE_PYTHON = fs.existsSync(bundledPython) ? bundledPython : 'python';
+}
 const fsp = fs.promises;
 const crypto = require('crypto');
 const zlib = require('zlib');

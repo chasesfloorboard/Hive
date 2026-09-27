@@ -91,7 +91,7 @@ with zipfile.ZipFile(archive, 'r') as z:
         raise ValueError('No play_history.xml + year_metadata.xml pairs were found in the archive.')
     print(json.dumps({'years': groups}, separators=(',', ':')))`;
   return new Promise((resolve, reject) => {
-    execFile('python3', ['-c', python, archivePath], { encoding: 'utf8', maxBuffer: 32 * 1024 * 1024, timeout: 30000 }, (error, stdout, stderr) => {
+    execFile(process.env.BEEHIVE_PYTHON || 'python3', ['-c', python, archivePath], { encoding: 'utf8', maxBuffer: 32 * 1024 * 1024, timeout: 30000 }, (error, stdout, stderr) => {
       if (error) return reject(new Error(String(stderr || error.message || 'Could not read MusicBee Wrapped archive.').trim()));
       try { resolve(JSON.parse(stdout)); } catch (err) { reject(new Error(`Could not parse MusicBee Wrapped import data: ${err.message}`)); }
     });
