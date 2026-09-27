@@ -48,6 +48,10 @@ if 'loved' not in columns:
                 loved = 0
             if loved:
                 conn.execute('UPDATE tracks SET loved=1 WHERE path=?', (path_value,))
+# Startup reads the Loved set on every launch. Without an index that is a
+# full scan of every track payload, which on a cold, spun-down disk means
+# reading most of the database file before the window can show the library.
+conn.execute('CREATE INDEX IF NOT EXISTS idx_tracks_loved_path ON tracks(loved, path)')
 conn.commit()
 
 def reply(req, result=None, error=None):
@@ -120,6 +124,23 @@ for line in sys.stdin:
                     conn.execute('UPDATE tracks SET loved=?,payload=?,updated_at=? WHERE path=?',(1 if loved else 0,json.dumps(payload,separators=(',',':')),int(time.time()*1000),key))
                     updated += 1
             reply(req, {'count':updated})
+        elif cmd=='compact':
+            # Rescans rewrite every changed payload, and SQLite never returns
+            # freed pages to the filesystem on its own. One real library grew
+            # to 958 MB holding ~100 MB of data, with its live rows scattered
+            # across the whole file. VACUUM only when mostly free space, so
+            # this is a no-op on ordinary launches.
+            pages=conn.execute('PRAGMA page_count').fetchone()[0]
+            free=conn.execute('PRAGMA freelist_count').fetchone()[0]
+            vacuumed=False
+            if pages and free > 2048 and free / pages >= float(req.get('threshold', 0.25)):
+                conn.commit()
+                conn.execute('VACUUM')
+                vacuumed=True
+            conn.execute('PRAGMA wal_checkpoint(TRUNCATE)')
+            reply(req, {'vacuumed':vacuumed,'pagesBefore':pages,'freeBefore':free,'pagesAfter':conn.execute('PRAGMA page_count').fetchone()[0]})
+        elif cmd=='get_track_paths':
+            reply(req, {'paths':[row[0] for row in conn.execute('SELECT path FROM tracks')]})
         elif cmd=='remove_tracks':
             paths=[str(p) for p in req.get('paths') or []]
             with conn: conn.executemany('DELETE FROM tracks WHERE path=?',[(p,) for p in paths])

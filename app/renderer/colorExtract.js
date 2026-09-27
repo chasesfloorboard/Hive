@@ -28,6 +28,20 @@
     return `hsla(${h.toFixed(1)}, ${(s * 100).toFixed(1)}%, ${(l * 100).toFixed(1)}%, ${a})`;
   }
 
+  function hslToRgb(h, s, l) {
+    const c = (1 - Math.abs(2 * l - 1)) * s;
+    const x = c * (1 - Math.abs(((h / 60) % 2) - 1));
+    const m = l - c / 2;
+    let rp = 0, gp = 0, bp = 0;
+    if (h < 60) [rp, gp, bp] = [c, x, 0];
+    else if (h < 120) [rp, gp, bp] = [x, c, 0];
+    else if (h < 180) [rp, gp, bp] = [0, c, x];
+    else if (h < 240) [rp, gp, bp] = [0, x, c];
+    else if (h < 300) [rp, gp, bp] = [x, 0, c];
+    else [rp, gp, bp] = [c, 0, x];
+    return [(rp + m) * 255, (gp + m) * 255, (bp + m) * 255];
+  }
+
   function rgba(r, g, b, a) {
     return `rgba(${Math.round(r)}, ${Math.round(g)}, ${Math.round(b)}, ${a})`;
   }
@@ -55,16 +69,41 @@
   // nearest integer for CSS output (rgba()), which can round the resulting
   // luminance back up by a fraction of a percent. The margin absorbs that so
   // the *rendered* color never exceeds the intended ceiling.
-  const LIGHT_THEME_MAX_LUMINANCE = 0.70;
+  //
+  // Raised from 0.70 (1.0.2): at 0.70 this cap was actually kicking in for
+  // ordinary saturated hues (green/cyan covers routinely land at ~0.79-0.87
+  // pre-cap -- see targetS/accentL below) and clamping them to LESS luminance
+  // than dark theme's own accent for the same hue, which is backwards -- the
+  // whole point of the light-theme tuning is to read brighter than dark, not
+  // dimmer. 0.84 sits above dark theme's own accent range for every hue so
+  // the cap only ever trims genuinely near-white covers, not ordinary color.
+  const LIGHT_THEME_MAX_LUMINANCE = 0.84;
   function relativeLuminance(r, g, b) {
     return (0.2126 * r + 0.7152 * g + 0.0722 * b) / 255;
   }
+  // Reduces luminance by trimming HSL lightness only (hue and saturation
+  // held fixed), instead of scaling the RGB triple toward black. Scaling
+  // toward black moves the color along a line to the origin, which -- for
+  // any lightness above 50%, exactly the range light theme's palette lives
+  // in -- reduces saturation *faster* than it reduces luminance (the HSL
+  // saturation formula's denominator grows as lightness drops toward 50%).
+  // That was the real source of the "muddy" light-theme colors: every cover
+  // whose accent tripped this cap got desaturated as a side effect of being
+  // dimmed. Binary-searching lightness instead keeps the hue and richness
+  // of the actual cover color intact and only pulls brightness down to the
+  // ceiling.
   function capLuminance(rgbTriple, maxLuminance) {
     const [r, g, b] = rgbTriple;
     const lum = relativeLuminance(r, g, b);
     if (lum <= maxLuminance || lum <= 0) return rgbTriple;
-    const scale = maxLuminance / lum;
-    return [r * scale, g * scale, b * scale];
+    const [h, s] = rgbToHsl(r, g, b);
+    let lo = 0, hi = 1;
+    for (let i = 0; i < 20; i++) {
+      const mid = (lo + hi) / 2;
+      const [tr, tg, tb] = hslToRgb(h, s, mid);
+      if (relativeLuminance(tr, tg, tb) > maxLuminance) hi = mid; else lo = mid;
+    }
+    return hslToRgb(h, s, lo);
   }
 
   function extractPaletteFromImage(imgEl, opts) {
@@ -204,19 +243,7 @@
         // LIGHT_THEME_MAX_LUMINANCE below still guards solid-fill consumers.
         const targetS = light ? Math.min(0.9, Math.max(ss, ss * 1.32)) : Math.min(0.96, Math.max(ss, ss * 1.28));
         const accentL = light ? Math.min(0.72, Math.max(0.52, ll + 0.14)) : Math.min(0.64, Math.max(0.36, ll));
-        let accentRgb = (() => {
-          const c = (1 - Math.abs(2 * accentL - 1)) * targetS;
-          const x = c * (1 - Math.abs(((hh / 60) % 2) - 1));
-          const m = accentL - c / 2;
-          let rp = 0, gp = 0, bp = 0;
-          if (hh < 60) [rp, gp, bp] = [c, x, 0];
-          else if (hh < 120) [rp, gp, bp] = [x, c, 0];
-          else if (hh < 180) [rp, gp, bp] = [0, c, x];
-          else if (hh < 240) [rp, gp, bp] = [0, x, c];
-          else if (hh < 300) [rp, gp, bp] = [x, 0, c];
-          else [rp, gp, bp] = [c, 0, x];
-          return [(rp + m) * 255, (gp + m) * 255, (bp + m) * 255];
-        })();
+        let accentRgb = hslToRgb(hh, targetS, accentL);
         // Same hard ceiling as the monochrome branch above: accentL's 0.8
         // upper bound is still bright enough, combined with a pale cover's
         // low saturation, to wash out a full-opacity consumer.
@@ -230,23 +257,32 @@
           return Math.abs(rr - r) + Math.abs(gg - g) + Math.abs(bb - b) > 35;
         }) || best;
         const sr = second.r / second.count, sg = second.g / second.count, sb = second.b / second.count;
-        // The ambient blobs are large blurred glows sitting behind the glass
-        // panels. Dark-theme tuning darkens them and blends them in strong,
-        // since they need to read against near-black; light theme instead
-        // lightens them and blends them faint, so they stay a soft color wash
-        // behind bright panels instead of a dark smudge.
-        // Light theme's ambient blobs used to be pulled most of the way to
-        // white (0.55/0.62) *and* blended in at low alpha (0.12-0.32), which
-        // stacked into an effectively invisible wash against the bright
-        // panel background. Keep only a light lift here -- enough to stay
-        // comfortable behind bright glass without darkening it -- and rely
-        // on alpha for how strongly it reads, not on desaturating the color.
-        const [ar, ag, ab] = light
-          ? capLuminance(lighten(accentRgb[0], accentRgb[1], accentRgb[2], 0.18), LIGHT_THEME_MAX_LUMINANCE)
-          : darken(accentRgb[0], accentRgb[1], accentRgb[2], 0.42);
-        const [br, bg, bb] = light
-          ? capLuminance(lighten(sr, sg, sb, 0.22), LIGHT_THEME_MAX_LUMINANCE)
-          : darken(sr, sg, sb, 0.34);
+        // The ambient blobs are large blurred glows sitting behind (and
+        // showing through) the glass panels -- they ARE the app's visible
+        // background behind the album view and everything else, not a minor
+        // decoration. Dark-theme tuning darkens them and blends them in
+        // strong, since they need to read against near-black.
+        //
+        // Light theme used to run the same second cover color through a
+        // plain RGB `lighten()` (an additive blend toward white, which cuts
+        // chroma by the same fraction it lightens by) BEFORE alpha-blending
+        // it again over the near-white page at a low 0.38-0.5 alpha -- two
+        // compounding desaturation steps stacked on top of each other. The
+        // result read as a barely-there, grayish "muddy" wash no matter how
+        // rich the underlying accent color was, because almost none of its
+        // chroma survived both dilutions. Fixed by: (1) boosting the second
+        // color's saturation/lightness the same way the primary accent is
+        // boosted above, instead of flattening it toward white, and (2)
+        // raising the blend alpha so less of the page's white shows through.
+        // The luminance cap still guards against a too-bright result.
+        const [sh, ssSecond, slSecond] = rgbToHsl(sr, sg, sb);
+        let secondRgb = light
+          ? hslToRgb(sh, Math.min(0.9, Math.max(ssSecond, ssSecond * 1.32)), Math.min(0.72, Math.max(0.52, slSecond + 0.14)))
+          : [sr, sg, sb];
+        if (light) secondRgb = capLuminance(secondRgb, LIGHT_THEME_MAX_LUMINANCE);
+
+        const [ar, ag, ab] = light ? accentRgb : darken(accentRgb[0], accentRgb[1], accentRgb[2], 0.42);
+        const [br, bg, bb] = light ? secondRgb : darken(sr, sg, sb, 0.34);
 
         const accentSoftRgb = light
           ? capLuminance([Math.min(255, accentRgb[0] + 30), Math.min(255, accentRgb[1] + 30), Math.min(255, accentRgb[2] + 30)], LIGHT_THEME_MAX_LUMINANCE)
@@ -254,9 +290,9 @@
         resolve({
           accent: rgba(accentRgb[0], accentRgb[1], accentRgb[2], 1),
           accentSoft: rgba(accentSoftRgb[0], accentSoftRgb[1], accentSoftRgb[2], light ? 0.4 : 0.52),
-          accentGlow: rgba(ar, ag, ab, light ? 0.55 : 0.86),
-          ambientA: rgba(ar, ag, ab, light ? 0.5 : 0.62),
-          ambientB: rgba(br, bg, bb, light ? 0.38 : 0.48),
+          accentGlow: rgba(ar, ag, ab, light ? 0.68 : 0.86),
+          ambientA: rgba(ar, ag, ab, light ? 0.64 : 0.62),
+          ambientB: rgba(br, bg, bb, light ? 0.52 : 0.48),
           isDark: light ? false : accentL < 0.45
         });
       } catch (err) {

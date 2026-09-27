@@ -24,7 +24,7 @@ const { createDiagnosticsController } = require('./diagnostics');
 const { PlaybackProtection } = require('./playback-protection');
 const { ScrobblingService } = require('./scrobbling');
 const { refreshDevices, sendTracksToDevice } = require('./device-manager');
-const { listAudioOutputs } = require('./audio-output-manager');
+const { listAudioOutputs, effectiveOutputDevice } = require('./audio-output-manager');
 const { readMusicBeeWrappedArchive, musicBeeImportPlayId } = require('./musicbee-wrapped-import');
 const { selectPreferredLyrics } = require('./lyrics-provider');
 const { autoUpdater } = require('electron-updater');
@@ -743,6 +743,16 @@ async function readJsonSafe(p, fallback) {
   }
 }
 
+async function writeFileDurable(file, data) {
+  const handle = await fsp.open(file, 'w');
+  try {
+    await handle.writeFile(data);
+    await handle.sync();
+  } finally {
+    await handle.close();
+  }
+}
+
 async function writeJsonSafe(p, data) {
   await fsp.mkdir(path.dirname(p), { recursive: true });
   const isLibraryCache = p === LIBRARY_CACHE_PATH();
@@ -760,7 +770,11 @@ async function writeJsonSafe(p, data) {
   // only the handful of tracks it was refreshing. Write a complete temporary
   // file first and replace the destination only after the new JSON is complete.
   const temp = `${p}.beehive-write-${process.pid}-${crypto.randomBytes(6).toString('hex')}.tmp`;
-  await fsp.writeFile(temp, payload, 'utf8');
+  // The library cache is flushed to disk before it replaces the old one: on a
+  // portable exFAT data drive an abrupt exit could otherwise leave the renamed
+  // file truncated, and a truncated cache made Hive open on an empty library.
+  if (isLibraryCache) await writeFileDurable(temp, payload);
+  else await fsp.writeFile(temp, payload, 'utf8');
   try {
     await fsp.rename(temp, p);
     try { await fsp.chmod(p, 0o600); } catch {}
@@ -810,7 +824,7 @@ async function writeJsonSafe(p, data) {
       });
       const gzipPath = LIBRARY_CACHE_GZIP_PATH();
       const gzipTemp = `${gzipPath}.beehive-write-${process.pid}-${crypto.randomBytes(6).toString('hex')}.tmp`;
-      await fsp.writeFile(gzipTemp, compressed);
+      await writeFileDurable(gzipTemp, compressed);
       try { await fsp.rename(gzipTemp, gzipPath); }
       catch (err) {
         if (process.platform === 'win32' && (err?.code === 'EEXIST' || err?.code === 'EPERM')) {
@@ -1386,6 +1400,19 @@ updateChecker.onStatus(status => {
     await initializeDatabase();
     startupDebug('DATABASE INITIALIZATION COMPLETE', { ready:databaseReady });
   }
+  // Reclaim free space in the library database once startup has settled.
+  // Holding the scan lock keeps it from overlapping a scan's batch writes.
+  setTimeout(async () => {
+    const release = await acquireLibraryScanLock();
+    try {
+      const result = await databaseRequest('compact');
+      if (result?.vacuumed) scanLog('DATABASE COMPACTED', result);
+    } catch (err) {
+      crashDebug('DATABASE compaction skipped', { message: err?.message || String(err) });
+    } finally {
+      release();
+    }
+  }, 90000);
   startupDebug('LIBRARY WATCHERS START');
   // Do not await this. fs.watch(folder, {recursive:true}) is emulated on
   // Linux by walking and stat-ing the whole watched tree to register a
@@ -1557,6 +1584,22 @@ async function startLibraryWatchers() {
 
 // ---------- IPC ----------
 
+// The user-data folder can live on a portable exFAT drive. Without fsync, an
+// abrupt exit right after the rename can leave a 0-byte playback-state.json
+// (seen in the wild), losing the queue and position.
+function writePlaybackStateDurableSync(target, payload) {
+  fs.mkdirSync(path.dirname(target), { recursive: true });
+  const tmp = `${target}.tmp`;
+  const fd = fs.openSync(tmp, 'w');
+  try {
+    fs.writeFileSync(fd, JSON.stringify(payload, null, 2), 'utf8');
+    fs.fsyncSync(fd);
+  } finally {
+    fs.closeSync(fd);
+  }
+  fs.renameSync(tmp, target);
+}
+
 // Playback recovery is written synchronously on renderer shutdown so the last
 // position/queue snapshot is on disk before the BrowserWindow disappears.
 // The renderer also updates this file periodically while playing.
@@ -1577,10 +1620,7 @@ ipcMain.on('playback-state:saveSync', (_evt, state = {}) => {
       savedAt: Date.now()
     };
     const target = PLAYBACK_STATE_PATH();
-    fs.mkdirSync(path.dirname(target), { recursive: true });
-    const tmp = `${target}.tmp`;
-    fs.writeFileSync(tmp, JSON.stringify(payload, null, 2), 'utf8');
-    fs.renameSync(tmp, target);
+    writePlaybackStateDurableSync(target, payload);
     _evt.returnValue = true;
   } catch (err) {
     try { _evt.returnValue = false; } catch {}
@@ -1592,7 +1632,11 @@ ipcMain.on('playback:protectPath', (_evt, trackPath) => { setPlaybackProtectedPa
 ipcMain.on('playback-state:updateTransportSync', (_evt, state = {}) => {
   try {
     const target = PLAYBACK_STATE_PATH();
-    const existing = readJsonSafe(target, {}) || {};
+    // Must be a synchronous read: readJsonSafe() is async, so this used to
+    // spread a Promise (i.e. nothing) and every shutdown save rewrote the file
+    // without the queue (`paths`), selection, or version fields.
+    let existing = {};
+    try { existing = JSON.parse(fs.readFileSync(target, 'utf8')) || {}; } catch {}
     const payload = {
       ...existing,
       position: Number.isFinite(Number(state.position)) ? Math.max(0, Number(state.position)) : Number(existing.position || 0),
@@ -1604,10 +1648,7 @@ ipcMain.on('playback-state:updateTransportSync', (_evt, state = {}) => {
       wasPlaying: state.wasPlaying == null ? !!existing.wasPlaying : !!state.wasPlaying,
       savedAt: Date.now()
     };
-    fs.mkdirSync(path.dirname(target), { recursive: true });
-    const tmp = `${target}.tmp`;
-    fs.writeFileSync(tmp, JSON.stringify(payload, null, 2), 'utf8');
-    fs.renameSync(tmp, target);
+    writePlaybackStateDurableSync(target, payload);
     _evt.returnValue = true;
   } catch (err) {
     try { _evt.returnValue = false; } catch {}
@@ -1667,12 +1708,22 @@ ipcMain.handle('devices:setDestination', async (_evt, payload = {}) => {
   return { ok: true, deviceId: id, destinationPath };
 });
 ipcMain.handle('audio-output:list', async () => listAudioOutputs());
-ipcMain.handle('audio-output:set', async (_evt, deviceId = '') => {
-  const id = String(deviceId || '').trim();
+// Settings sends { sink, bitPerfect }: the output the user picked and the
+// bit-perfect toggle. config.audioOutputDevice stays the single value the
+// native helper reads (a PipeWire sink, or alsa:hw:... for bit-perfect); the
+// two choices are kept alongside so Settings can show them. The renderer then
+// restarts the helper live -- no Hive restart needed.
+ipcMain.handle('audio-output:set', async (_evt, choice = {}) => {
+  const legacy = typeof choice === 'string';
+  const sink = String(legacy ? choice : (choice?.sink || '')).trim();
+  const bitPerfect = legacy ? sink.startsWith('alsa:') : !!choice?.bitPerfect;
+  const { device, error } = legacy ? { device: sink } : await effectiveOutputDevice(sink, bitPerfect);
   const config = await readJsonSafe(CONFIG_PATH(), { folders: [] });
-  if (id) config.audioOutputDevice = id; else delete config.audioOutputDevice;
+  if (device) config.audioOutputDevice = device; else delete config.audioOutputDevice;
+  config.audioOutputSink = sink;
+  config.audioBitPerfect = bitPerfect && !error;
   await writeJsonSafe(CONFIG_PATH(), config);
-  return { ok: true, deviceId: id, restartRequired: true };
+  return { ok: !error, deviceId: device, bitPerfect: config.audioBitPerfect, error: error || '' };
 });
 ipcMain.handle('devices:sendTracks', async (evt, payload = {}) => {
   const result = await sendTracksToDevice(payload?.device || {}, Array.isArray(payload?.tracks) ? payload.tracks : [], {
@@ -1780,10 +1831,10 @@ ipcMain.handle('mpris:update', async (_evt, payload = {}) => {
 
 ipcMain.handle('stats:getEmbedPlayCounts', async () => {
   const config = await readJsonSafe(CONFIG_PATH(), { folders: [] });
-  // Embedding is on by default; only an explicit false (the user turned it
-  // off) should disable it. A profile that has never touched this setting
-  // has config.embedPlayCounts === undefined, which must read as enabled.
-  return config.embedPlayCounts !== false;
+  // Embedding is OFF by default: Hive only writes play counts into music
+  // files after the user explicitly turns this on. A profile that has never
+  // touched the setting (config.embedPlayCounts === undefined) reads as off.
+  return config.embedPlayCounts === true;
 });
 
 ipcMain.handle('stats:setEmbedPlayCounts', async (_evt, enabled) => {
@@ -2068,12 +2119,53 @@ ipcMain.handle('config:addFolder', async () => {
   return config;
 });
 
+// Removing a library folder takes its tracks out of the library immediately
+// (cache + SQLite) instead of waiting for the next full scan. The files on disk
+// are never touched. A scan that is running at the same time was started with
+// the old folder list, so it is stopped first; otherwise it would write the
+// removed folder's tracks straight back into the cache when it finishes.
 ipcMain.handle('config:removeFolder', async (_evt, folder) => {
+  const target = path.resolve(String(folder || ''));
   const config = await readJsonSafe(CONFIG_PATH(), { folders: [] });
-  config.folders = config.folders.filter((f) => resolveConfiguredFolder(f) !== path.resolve(String(folder || '')));
+  config.folders = (Array.isArray(config.folders) ? config.folders : []).filter((f) => resolveConfiguredFolder(f) !== target);
   await writeJsonSafe(CONFIG_PATH(), config);
   await startLibraryWatchers();
-  return config;
+  cancelActiveLibraryScan();
+
+  const remaining = resolveConfigFolders(config);
+  const releaseLibraryScan = await acquireLibraryScanLock();
+  let removedPaths = [];
+  try {
+    const cache = await readJsonSafe(LIBRARY_CACHE_PATH(), { tracks: [] });
+    const tracks = Array.isArray(cache.tracks) ? cache.tracks : [];
+    // A track stays if another configured library still contains it (nested
+    // or overlapping library folders).
+    const isRemoved = trackPath => isPathInsideFolder(trackPath, target) && !remaining.some(f => isPathInsideFolder(trackPath, f));
+    const kept = [];
+    for (const track of tracks) {
+      const trackPath = String(track?.path || '');
+      if (trackPath && isRemoved(trackPath)) removedPaths.push(trackPath);
+      else kept.push(track);
+    }
+    try {
+      // SQLite can also hold tracks the JSON cache never saw, e.g. ones a
+      // scan of this folder upserted before it was stopped.
+      const db = await databaseRequest('get_track_paths');
+      const known = new Set(removedPaths);
+      for (const trackPath of (Array.isArray(db?.paths) ? db.paths : [])) {
+        if (trackPath && !known.has(trackPath) && isRemoved(trackPath)) { known.add(trackPath); removedPaths.push(trackPath); }
+      }
+    } catch (err) { crashDebug('DATABASE library read for folder removal failed', { message: err?.message || String(err) }); }
+    if (removedPaths.length) {
+      await writeJsonSafe(LIBRARY_CACHE_PATH(), { ...cache, tracks: kept, scannedAt: Date.now() });
+      try { await databaseRequest('remove_tracks', { paths: removedPaths }); }
+      catch (err) { crashDebug('DATABASE folder-removal cleanup failed', { message: err?.message || String(err) }); }
+    }
+    scanLog('LIBRARY FOLDER REMOVED', { folder: target, removedTracks: removedPaths.length });
+  } finally {
+    releaseLibraryScan();
+  }
+  return { ...config, folders: remaining, removedPaths };
 });
 
 function isPathInsideFolder(filePath, folderPath) {
@@ -2192,12 +2284,14 @@ async function reconcileCachedLovedWithDatabase(cached) {
   }
 }
 
-ipcMain.handle('library:getCached', async () => {
+ipcMain.handle('library:getCached', async (_evt, options = {}) => {
   // Fast-start transport: prefer the compressed sidecar so Electron clones a
   // small Uint8Array instead of a huge nested track object graph. The renderer
   // decompresses/parses this off the synchronous startup path.
   const fastStartAt = process.hrtime.bigint();
-  try {
+  // skipGzip: the renderer could not decode the compressed sidecar (e.g. it
+  // was truncated); fall through to the plain JSON cache / SQLite instead.
+  if (!options?.skipGzip) try {
     const compressed = await fsp.readFile(LIBRARY_CACHE_GZIP_PATH());
     if (compressed.length) {
       startupDebug('FAST LIBRARY CACHE GZIP READY', {
@@ -2230,6 +2324,7 @@ ipcMain.handle('library:getCached', async () => {
 });
 
 async function walk(dir, out, onDirectory = null, state = { directories: 0 }) {
+  if (state.isCancelled?.()) return;
   let entries;
   try {
     entries = await fsp.readdir(dir, { withFileTypes: true });
@@ -2240,6 +2335,7 @@ async function walk(dir, out, onDirectory = null, state = { directories: 0 }) {
   state.directories++;
   try { onDirectory?.(state.directories, dir); } catch {}
   for (const entry of entries) {
+    if (state.isCancelled?.()) return;
     const full = path.join(dir, entry.name);
     if (entry.isDirectory()) {
       if (/^\.beehive-tmp$/i.test(entry.name)) continue;
@@ -2413,7 +2509,48 @@ async function validateAudioForLibraryScan(trackPath, scanState = null) {
   const key = `${absolutePath}\t${stat.size}\t${stat.mtimeMs}`;
   const cached = audioIntegrityLibraryCache.get(key);
   if (cached) return cached;
-  const result = await new Promise(resolve => {
+  let result = await runAudioPreflightDecode(absolutePath);
+  // ffmpeg's MP4 demuxer can't skip a leading ID3v2 tag, so an MP4/FLAC stream
+  // saved as ".mp3" with an ID3 tag in front was rejected as corrupt and
+  // skipped, although GStreamer plays it fine. Before calling it corrupt,
+  // decode again from where the real container starts.
+  if (result.status === 'corrupt') {
+    const containerOffset = leadingId3ContainerOffset(absolutePath);
+    if (containerOffset > 0) {
+      const retry = await runAudioPreflightDecode(absolutePath, containerOffset);
+      if (retry.status === 'ok') result = retry;
+    }
+  }
+  if (result.status === 'ok' || result.status === 'corrupt') audioIntegrityCache.set(key, result);
+  writeSession(result.status === 'corrupt' ? 'WARN' : 'DEBUG', 'AUDIO PREFLIGHT', result.status === 'corrupt' ? 'Corrupt audio detected before playback' : 'Audio preflight passed', { path:absolutePath, ...result });
+  return result;
+}
+
+// Byte offset of a non-MPEG container (fLaC/OggS/RIFF/ftyp) hidden behind
+// leading ID3v2 tags, or 0 when there is none.
+function leadingId3ContainerOffset(filePath) {
+  let fd;
+  try {
+    fd = fs.openSync(filePath, 'r');
+    const head = Buffer.alloc(12);
+    let offset = 0;
+    for (let i = 0; i < 4; i++) {
+      if (fs.readSync(fd, head, 0, 12, offset) < 12) return 0;
+      if (head.toString('latin1', 0, 3) !== 'ID3') break;
+      offset += 10 + (((head[6] & 0x7f) << 21) | ((head[7] & 0x7f) << 14) | ((head[8] & 0x7f) << 7) | (head[9] & 0x7f)) + ((head[5] & 0x10) ? 10 : 0);
+    }
+    if (!offset) return 0;
+    const tag4 = head.toString('latin1', 0, 4);
+    return (tag4 === 'fLaC' || tag4 === 'OggS' || tag4 === 'RIFF' || head.toString('latin1', 4, 8) === 'ftyp') ? offset : 0;
+  } catch {
+    return 0;
+  } finally {
+    if (fd !== undefined) try { fs.closeSync(fd); } catch {}
+  }
+}
+
+function runAudioPreflightDecode(absolutePath, startOffset = 0) {
+  return new Promise(resolve => {
     let settled = false;
     let stderr = '';
     let child = null;
@@ -2837,7 +2974,48 @@ async function validateAudioForPlayback(trackPath) {
   // files are cached by path/size/mtime and each track is preflighted only when
   // Hive is about to play it. Runtime GStreamer errors remain the final safety net
   // for corruption that occurs later in a file.
-  const result = await new Promise(resolve => {
+  let result = await runAudioPreflightDecode(absolutePath);
+  // ffmpeg's MP4 demuxer can't skip a leading ID3v2 tag, so an MP4/FLAC stream
+  // saved as ".mp3" with an ID3 tag in front was rejected as corrupt and
+  // skipped, although GStreamer plays it fine. Before calling it corrupt,
+  // decode again from where the real container starts.
+  if (result.status === 'corrupt') {
+    const containerOffset = leadingId3ContainerOffset(absolutePath);
+    if (containerOffset > 0) {
+      const retry = await runAudioPreflightDecode(absolutePath, containerOffset);
+      if (retry.status === 'ok') result = retry;
+    }
+  }
+  if (result.status === 'ok' || result.status === 'corrupt') audioIntegrityCache.set(key, result);
+  writeSession(result.status === 'corrupt' ? 'WARN' : 'DEBUG', 'AUDIO PREFLIGHT', result.status === 'corrupt' ? 'Corrupt audio detected before playback' : 'Audio preflight passed', { path:absolutePath, ...result });
+  return result;
+}
+
+// Byte offset of a non-MPEG container (fLaC/OggS/RIFF/ftyp) hidden behind
+// leading ID3v2 tags, or 0 when there is none.
+function leadingId3ContainerOffset(filePath) {
+  let fd;
+  try {
+    fd = fs.openSync(filePath, 'r');
+    const head = Buffer.alloc(12);
+    let offset = 0;
+    for (let i = 0; i < 4; i++) {
+      if (fs.readSync(fd, head, 0, 12, offset) < 12) return 0;
+      if (head.toString('latin1', 0, 3) !== 'ID3') break;
+      offset += 10 + (((head[6] & 0x7f) << 21) | ((head[7] & 0x7f) << 14) | ((head[8] & 0x7f) << 7) | (head[9] & 0x7f)) + ((head[5] & 0x10) ? 10 : 0);
+    }
+    if (!offset) return 0;
+    const tag4 = head.toString('latin1', 0, 4);
+    return (tag4 === 'fLaC' || tag4 === 'OggS' || tag4 === 'RIFF' || head.toString('latin1', 4, 8) === 'ftyp') ? offset : 0;
+  } catch {
+    return 0;
+  } finally {
+    if (fd !== undefined) try { fs.closeSync(fd); } catch {}
+  }
+}
+
+function runAudioPreflightDecode(absolutePath, startOffset = 0) {
+  return new Promise(resolve => {
     let settled = false;
     let stderr = '';
     let child = null;
@@ -2853,10 +3031,16 @@ async function validateAudioForPlayback(trackPath) {
     }, AUDIO_PREFLIGHT_TIMEOUT_MS);
     try {
       child = spawnTracked('ffmpeg', [
-        '-hide_banner', '-nostdin', '-v', 'error', '-xerror',
-        '-t', String(AUDIO_PREFLIGHT_SECONDS), '-i', absolutePath,
+        '-hide_banner', ...(startOffset ? [] : ['-nostdin']), '-v', 'error', '-xerror',
+        '-t', String(AUDIO_PREFLIGHT_SECONDS), '-i', startOffset ? 'pipe:0' : absolutePath,
         '-map', '0:a:0', '-vn', '-sn', '-dn', '-f', 'null', '-'
       ], { windowsHide:true });
+      if (startOffset) {
+        const input = fs.createReadStream(absolutePath, { start: startOffset });
+        input.on('error', () => { try { child.stdin.destroy(); } catch {} });
+        child.stdin.on('error', () => {}); // ffmpeg closes stdin once it has read enough
+        input.pipe(child.stdin);
+      }
       child.stderr.on('data', data => {
         stderr += data.toString();
         if (stderr.length > 12000) stderr = stderr.slice(-12000);
@@ -2874,9 +3058,6 @@ async function validateAudioForPlayback(trackPath) {
       finish({ status:'unavailable', error:err?.message || String(err) });
     }
   });
-  if (result.status === 'ok' || result.status === 'corrupt') audioIntegrityCache.set(key, result);
-  writeSession(result.status === 'corrupt' ? 'WARN' : 'DEBUG', 'AUDIO PREFLIGHT', result.status === 'corrupt' ? 'Corrupt audio detected before playback' : 'Audio preflight passed', { path:absolutePath, ...result });
-  return result;
 }
 
 function runFfmpeg(args) {
@@ -3411,6 +3592,25 @@ function ffmpegMetadataArgs(tags) {
 // two scans to read/write library.json concurrently can let an older snapshot win
 // and make the UI temporarily appear empty.
 let libraryScanChain = Promise.resolve();
+// Full library scans in flight or queued. Cancelling only flips a flag: every
+// phase of library:scan polls it at a safe boundary (between directories,
+// stat()s, parsed files) and bails out with LIBRARY_SCAN_CANCELLED before the
+// cache/removed-track cleanup runs, so a stopped scan never commits a partial
+// file list as if it were the whole library.
+const activeLibraryScans = new Set();
+const LIBRARY_SCAN_CANCELLED = 'LIBRARY_SCAN_CANCELLED';
+function cancelActiveLibraryScan() {
+  let cancelled = false;
+  for (const token of activeLibraryScans) {
+    if (token.cancelled) continue;
+    token.cancelled = true;
+    cancelled = true;
+    try { token.onCancel?.(); } catch {}
+  }
+  if (cancelled) scanLog('SCAN CANCEL REQUESTED');
+  return cancelled;
+}
+ipcMain.handle('library:cancelScan', async () => cancelActiveLibraryScan());
 async function acquireLibraryScanLock() {
   let releaseNext;
   const wait = libraryScanChain;
@@ -3426,7 +3626,14 @@ ipcMain.handle('library:scanChanged', async (evt, changedPaths = []) => {
   try {
   const requested = [...new Set((Array.isArray(changedPaths) ? changedPaths : [])
     .filter(Boolean).map(p => path.resolve(String(p))))];
-  if (!requested.length) return await readJsonSafe(LIBRARY_CACHE_PATH(), { tracks: [] });
+  // Always answer with the incremental shape ({ incremental, changed,
+  // removedPaths }). This handler used to return the whole library (~30k
+  // tracks) with no incremental flag, so the renderer treated every watcher
+  // refresh -- e.g. after Hive embedded a play count -- as a full library
+  // replacement: every index was rebuilt and the open view went blank before
+  // repainting.
+  const noChanges = () => ({ incremental: true, changed: [], removedPaths: [], scannedAt: Date.now() });
+  if (!requested.length) return noChanges();
 
   const previous = await readJsonSafe(LIBRARY_CACHE_PATH(), { tracks: [] });
   const oldTracks = Array.isArray(previous.tracks) ? previous.tracks : [];
@@ -3448,7 +3655,7 @@ ipcMain.handle('library:scanChanged', async (evt, changedPaths = []) => {
     }
   }
 
-  if (!existing.length && !removed.length) return previous;
+  if (!existing.length && !removed.length) return noChanges();
 
   const tracksByPath = new Map(oldTracks.map(t => [path.resolve(String(t?.path || '')), t]));
   for (const filePath of removed) tracksByPath.delete(filePath);
@@ -3559,22 +3766,41 @@ ipcMain.handle('library:scanChanged', async (evt, changedPaths = []) => {
   // could immediately resurrect stale metadata after a restart.
   await persistLibraryDatabase(ordered);
   scanLog('Incremental library scan finished', { requested: requested.length, existing: existing.length, removed: removed.length, tracks: ordered.length });
-  return { tracks: ordered.map(rendererTrackPayload), scannedAt };
+  const changedPayload = [];
+  for (const { info } of changedResults) {
+    const merged = tracksByPath.get(path.resolve(info.path));
+    if (merged) changedPayload.push(rendererTrackPayload(merged));
+  }
+  return { incremental: true, changed: changedPayload, removedPaths: removed, scannedAt };
   } finally {
     releaseLibraryScan();
   }
 });
 
 ipcMain.handle('library:scan', async (evt, options = {}) => {
+  const scanToken = { cancelled: false, onCancel: null };
+  // Register before waiting on the lock so Stop also works for a scan that is
+  // still queued behind another library operation.
+  activeLibraryScans.add(scanToken);
+  const throwIfCancelled = () => {
+    if (!scanToken.cancelled) return;
+    scanLog('SCAN CANCELLED');
+    const err = new Error('Library scan stopped.');
+    err.code = LIBRARY_SCAN_CANCELLED;
+    throw err;
+  };
   const releaseLibraryScan = await acquireLibraryScanLock();
   try {
+  throwIfCancelled();
   const forceFull = options?.forceFull === true;
   scanLog('SCAN IPC ENTER', { forceFull });
   const config = await readJsonSafe(CONFIG_PATH(), { folders: [] });
   scanLog('SCAN CONFIG LOADED', { folders: Array.isArray(config.folders) ? config.folders.length : 0 });
   const files = [];
   const folders = resolveConfigFolders(config);
+  const walkState = { directories: 0, isCancelled: () => scanToken.cancelled };
   for (const folder of folders) {
+    throwIfCancelled();
     const before = files.length;
     scanLog('WALK START', { folder });
     await walk(folder, files, (count, currentDir) => {
@@ -3587,9 +3813,10 @@ ipcMain.handle('library:scan', async (evt, options = {}) => {
           });
         } catch {}
       }
-    });
+    }, walkState);
     scanLog('WALK DONE', { folder, addedFiles: files.length - before, totalFiles: files.length });
   }
+  throwIfCancelled();
   scanLog('FILE ENUMERATION DONE', { total: files.length });
   try {
     evt.sender.send('library:scanProgress', {
@@ -3622,6 +3849,7 @@ ipcMain.handle('library:scan', async (evt, options = {}) => {
   const statWorkers = Array.from({ length: statWorkerCount }, async (_, workerIndex) => {
     scanLog('STAT WORKER START', { worker: workerIndex, total: statWorkerCount });
     while (true) {
+      if (scanToken.cancelled) return;
       const i = statCursor++;
       if (i >= files.length) return;
       const filePath = files[i];
@@ -3649,6 +3877,7 @@ ipcMain.handle('library:scan', async (evt, options = {}) => {
     }
   });
   await Promise.all(statWorkers);
+  throwIfCancelled();
   scanLog('STAT PHASE DONE', { totalFiles: files.length, completed: statDone });
 
   const changed = [];
@@ -3792,6 +4021,7 @@ ipcMain.handle('library:scan', async (evt, options = {}) => {
     if (!changed.length) return resolve();
     let finished=false;
     const failAll = err => { if(finished)return; finished=true; for(const slot of pool)cleanupSlot(slot); reject(err); };
+    scanToken.onCancel = () => { try { throwIfCancelled(); } catch (err) { failAll(err); } };
     const completeIfDone = () => {
       if (done >= total && !finished) { finished=true; for(const slot of pool)cleanupSlot(slot); resolve(); }
       else if (cursor >= changed.length && pool.every(s => !s.busy) && done >= total && !finished) { finished=true; for(const slot of pool)cleanupSlot(slot); resolve(); }
@@ -3921,6 +4151,7 @@ ipcMain.handle('library:scan', async (evt, options = {}) => {
   if (databasePersistError) {
     scanLog('DATABASE scan persistence degraded', { message: databasePersistError.message });
   }
+  throwIfCancelled();
   const currentPaths = new Set(fileInfo.filter(Boolean).map(info => info.path));
   const removedPaths = oldTracks.map(track => track.path).filter(trackPath => !currentPaths.has(trackPath));
   if (removedPaths.length) {
@@ -3935,6 +4166,8 @@ ipcMain.handle('library:scan', async (evt, options = {}) => {
   done = unchanged.length;
   sendProgress('', changed.length ? 'Scanning changed files' : 'No changes detected');
   await runPool();
+  scanToken.onCancel = null;
+  throwIfCancelled();
 
   // Love is part of normal library reconciliation, not a separate Favorites
   // scanner. A one-time compatibility version lets us repair caches created by
@@ -3958,6 +4191,7 @@ ipcMain.handle('library:scan', async (evt, options = {}) => {
     let loveFailed = 0;
     const loveWorkers = Array.from({ length: Math.min(12, staleLoveTracks.length) }, async () => {
       while (true) {
+        if (scanToken.cancelled) return;
         const i = loveCursor++;
         if (i >= staleLoveTracks.length) return;
         const track = staleLoveTracks[i];
@@ -3987,6 +4221,7 @@ ipcMain.handle('library:scan', async (evt, options = {}) => {
       }
     });
     await Promise.all(loveWorkers);
+    throwIfCancelled();
     scanLog('LOVE RECONCILIATION FINISHED', { total: staleLoveTracks.length, updated: loveUpdated, failed: loveFailed, version: LOVE_SCAN_VERSION });
   }
 
@@ -4023,7 +4258,9 @@ ipcMain.handle('library:scan', async (evt, options = {}) => {
   // replace the database from this compact renderer/cache view: that would
   // recreate a whole-library serialization pass and discard nativeTags from
   // the lossless records stored by the scanner batches.
-  if (!forceFull) {
+  // fullPayload: the renderer has no library in memory (its cache failed to
+  // load), so a changes-only answer would leave it empty. Send everything.
+  if (!forceFull && !options?.fullPayload) {
     const orderedByPath = new Map(ordered.map(track => [track?.path, track]));
     const rendererChanged = changed.map(info => {
       const track = orderedByPath.get(info.path);
@@ -4049,7 +4286,13 @@ ipcMain.handle('library:scan', async (evt, options = {}) => {
   const rendererResult = { tracks: ordered.map(rendererTrackPayload), scannedAt };
   scanLog('SCAN IPC RESULT READY', { ms: Date.now() - rendererPayloadStartedAt, totalMs: Date.now() - finalizationStartedAt, tracks: ordered.length });
   return rendererResult;
+  } catch (err) {
+    // ipcRenderer.invoke only preserves an error's message, so a stop is
+    // reported as a normal result the renderer can tell apart from a failure.
+    if (err?.code === LIBRARY_SCAN_CANCELLED) return { cancelled: true };
+    throw err;
   } finally {
+    activeLibraryScans.delete(scanToken);
     releaseLibraryScan();
   }
 });
@@ -4432,7 +4675,7 @@ ipcMain.handle('track:recordPlay', async (_evt, trackPath, meta = {}) => withSta
   let pCountEmbedding = null;
   try {
     const config = await readJsonSafe(CONFIG_PATH(), { folders: [] });
-    if (config.embedPlayCounts !== false) {
+    if (config.embedPlayCounts === true) {
       const previousEmbeddedLocal = Number(entry.pCountEmbeddedLocal);
       const baseline = Number.isFinite(previousEmbeddedLocal) && previousEmbeddedLocal >= 0 ? previousEmbeddedLocal : 0;
       const delta = Math.max(0, entry.playCount - baseline);
@@ -5297,6 +5540,7 @@ const {
   performRemoveArtwork,
   performWriteMetadata,
   performWriteTags,
+  artworkArrangementMatches,
 } = metadataWriter;
 
 // Direct single-file APIs remain available to the artwork editor, but all
@@ -5356,6 +5600,11 @@ async function metadataJobAlreadySatisfied(job) {
         const wanted = crypto.createHash('sha256').update(await fsp.readFile(job.artwork.imagePath)).digest('hex');
         const result = await runTagHelper({op:'artwork_contains_hash',path:job.path,sha256:wanted});
         if (result?.match !== true) return false;
+      } else if (action === 'arrange') {
+        // Without this, an unknown action fell through to "already satisfied"
+        // and the arrangement job was skipped entirely.
+        const result = await runTagHelper({op:'read_artwork_metadata',path:job.path});
+        if (!artworkArrangementMatches(result?.pictures, job.artwork.order, job.path)) return false;
       } else if (action === 'remove_all' || action === 'remove_front') {
         const result = await runTagHelper({op:'read_artwork_metadata',path:job.path});
         const pictures = Array.isArray(result?.pictures) ? result.pictures : [];
@@ -5435,7 +5684,18 @@ async function runMetadataBatch(normalizedJobs, sender, options = {}) {
         }
       }
       done++;
-      if(success){ updated++; updatedPaths.push(job.path); await deleteMetadataJob(job.id); }
+      if(success){
+        updated++; updatedPaths.push(job.path); await deleteMetadataJob(job.id);
+        // A Love write recovered after a quit (the user liked a song, then
+        // closed Hive before it finished playing, so the tag write was still
+        // waiting for the file to be released) must also update Hive's own
+        // Love records and the open window -- otherwise the heart showed empty
+        // after restart until a later rescan noticed the changed file.
+        if (job.kind === 'love') {
+          try { await updateCachedLoved(job.path, !!job.loved); } catch {}
+          try { sender?.send('library:scanTrack', [{ path: job.path, loved: !!job.loved, loveHydrated: true }]); } catch {}
+        }
+      }
       else { failed++; errors.push({path:job.path,error:lastError||job.lastError||'Metadata operation failed after 3 attempts.'}); }
       sendProgress(true,'Writing',path.basename(job.path));
     }
@@ -6388,6 +6648,7 @@ const {
   mp4Children,
   mp4FindPath,
   parseMp4FreeformName,
+  readMp4MoovBytes,
 } = require('./mp4-atoms');
 function mp4LoveValuesFromBuffer(input) {
   let p = 0;
@@ -6555,7 +6816,12 @@ async function readFlacMusicBeeLove(filePath) {
 }
 
 async function readMp4MusicBeeLove(filePath) {
-  try { return mp4LoveValuesFromBuffer(await fsp.readFile(filePath)).some(isFavoriteLoveValue); } catch {}
+  // Only the moov atom is needed (see readMp4MoovBytes); the moov buffer starts
+  // at offset 0, so mp4LoveValuesFromBuffer walks it like the whole file.
+  try {
+    const moov = await readMp4MoovBytes(filePath);
+    return !!moov && mp4LoveValuesFromBuffer(moov).some(isFavoriteLoveValue);
+  } catch {}
   return false;
 }
 

@@ -792,11 +792,30 @@ button {
   0% { background-position: -100% 0; }
   100% { background-position: 100% 0; }
 }
+.scan-progress-head { display: flex; align-items: center; justify-content: space-between; gap: 8px; margin-bottom: 4px; }
 .scan-progress-title {
   font-size: 10.5px;
   color: var(--text-dim);
-  margin-bottom: 4px;
 }
+.scan-progress-cancel {
+  flex: none;
+  padding: 1px 8px;
+  border-radius: 999px;
+  border: 1px solid var(--border);
+  background: var(--control-bg);
+  color: var(--text-dim);
+  font-size: 10px;
+  line-height: 16px;
+  cursor: pointer;
+}
+.scan-progress-cancel:hover:not(:disabled) { color: var(--text); border-color: var(--accent); }
+.scan-progress-cancel:disabled { opacity: .6; cursor: default; }
+.scan-progress-cancel[hidden] { display: none; }
+
+.settings-folder-list { display: flex; flex-direction: column; gap: 6px; margin: 4px 0 10px; }
+.settings-folder-row { display: flex; align-items: center; gap: 10px; min-width: 0; padding: 6px 8px 6px 12px; border-radius: 9px; border: 1px solid var(--border); background: var(--control-bg); }
+.settings-folder-path { flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-size: 12px; color: var(--text); }
+.settings-folder-row .settings-folder-remove { flex: none; margin: 0; }
 .scan-progress-label {
   font-size: 10.5px;
   color: var(--text-dimmer);
@@ -1873,6 +1892,9 @@ input[type="range"]::-webkit-slider-thumb {
   animation: inlineDropIn 140ms ease-out;
 }
 @keyframes inlineDropIn { from { opacity: 0; transform: translateY(-5px) scale(.985); } to { opacity: 1; transform: none; } }
+/* Only the first open animates. Re-placing an open panel after a grid reflow
+   must not replay the drop-in (that made it flash during window resizes). */
+.inline-album-dropdown.is-placed { animation: none !important; }
 .inline-album-head {
   display:flex; align-items:center; justify-content:space-between; gap:10px;
   padding: 2px 4px 8px;
@@ -2773,6 +2795,11 @@ body.legacy-art-scaling .album-year-grid > .inline-album-dropdown {
      the right side of the frosted Music frame without changing album/card
      padding. */
   padding-right: 18px;
+  /* Match the 16px top inset at the bottom. With 0 here the scroll viewport
+     ran to the frame's bottom edge while stopping 16px short of the top, so
+     scrolled content was clipped at an inset line at the top but ran to the
+     very last pixel at the bottom. */
+  padding-bottom: 16px;
 }
 .tab-content-host {
   width: calc(100% + 6px);
@@ -3364,6 +3391,10 @@ input::placeholder, textarea::placeholder { color: var(--text-dimmer); opacity: 
   transition:opacity 90ms ease, transform 90ms ease;
 }
 .beehive-global-tooltip.visible { opacity:1; transform:translateY(0); }
+/* Two-part tooltips (data-tooltip-secondary): the main value at full
+   strength, the secondary one dimmer, smaller and separated. */
+.beehive-global-tooltip .tooltip-primary { font-weight:650; color:var(--text); }
+.beehive-global-tooltip .tooltip-secondary { margin-left:7px; padding-left:7px; border-left:1px solid var(--border); color:var(--text-dimmer); font-weight:500; }
 
 /* Themed alert/confirm/prompt replacement */
 .app-dialog-modal { width:min(500px, calc(100vw - 32px)); }
@@ -4830,3 +4861,404 @@ html[data-hive-theme="light"] .inline-track-row.selected .inline-track-dur { col
   .device-card-actions { justify-content:flex-start; }
   .device-destination-row { grid-template-columns:1fr; }
 }
+
+/* ======================================================================
+   Settings -- unified design (2026-09 overhaul)
+   One component system for every tab. Everything is scoped to
+   #settings-modal so it deliberately outranks the dozen earlier,
+   overlapping settings passes above (builds 79/110/225/...), which are left
+   in place only because other surfaces share some of those class names.
+   Structure: tab rail (styled like the player's sidebar) | panel:
+     .settings-panel-intro   page title + one-line description
+     .settings-section       card
+       .settings-section-head  title + optional description (+ action)
+       .settings-row           text left, control right (min 52px tall)
+   ====================================================================== */
+/* Every dialog (Settings, the tag editor, playlist info, smart playlists,
+   confirmations...) is a solid surface in the theme's own colors. It deliberately
+   does not follow the song: the cover palette overwrites --accent (and the
+   --control-* values derived from it) on <html>, and .glass adds a tinted,
+   see-through blur -- both made Settings change color track to track and
+   hurt readability. Re-derive everything here from --theme-accent (the
+   theme's own accent, recorded by syncThemeModeFromCss) and paint the panel
+   opaque over --bg. */
+#settings-modal,
+.modal-overlay {
+  --accent: var(--theme-accent, #9aa0ad);
+  --accent-soft: color-mix(in srgb, var(--accent) 30%, transparent);
+  --accent-glow: color-mix(in srgb, var(--accent) 20%, transparent);
+  --control-bg: color-mix(in srgb, var(--accent) 5%, var(--panel-strong));
+  --control-bg-hover: color-mix(in srgb, var(--accent) 12%, var(--panel-strong));
+  --control-bg-active: color-mix(in srgb, var(--accent) 20%, var(--panel-strong));
+  --control-border: color-mix(in srgb, var(--accent) 16%, var(--border));
+}
+/* Light mode: Settings and the tag editor use an Apple-style cyan-blue
+   (system blue #0A84FF) instead of the Light theme's indigo accent. */
+html[data-hive-theme="light"] .modal-overlay { --accent: #0A84FF; }
+#settings-modal .modal-settings.glass,
+#settings-modal .modal-settings,
+.modal-overlay > .modal.glass,
+.modal-overlay > .modal {
+  background: linear-gradient(var(--panel-strong), var(--panel-strong)), var(--bg);
+  border-color: var(--border);
+  backdrop-filter: none;
+  -webkit-backdrop-filter: none;
+  box-shadow: 0 30px 60px -20px rgba(0, 0, 0, 0.55);
+  transition: none;
+}
+#settings-modal .settings-tabs,
+#settings-modal .settings-footer,
+#settings-modal .settings-body { background-color: transparent; }
+#settings-modal .modal-settings {
+  width: min(940px, calc(100vw - 40px));
+  height: min(780px, calc(100vh - 40px));
+  display: grid;
+  grid-template-columns: 188px minmax(0, 1fr);
+  grid-template-rows: auto minmax(0, 1fr) auto;
+  border-radius: var(--radius);
+}
+#settings-modal .modal-settings > .modal-header { grid-column: 1 / -1; padding: 14px 20px; }
+#settings-modal .modal-settings > .modal-header h3 { font-size: 15px; font-weight: 650; }
+
+/* ---- tab rail: same shape and active treatment as the main sidebar ---- */
+#settings-modal .settings-tabs {
+  grid-column: 1; grid-row: 2;
+  width: auto; display: flex; flex-direction: column; gap: 2px;
+  padding: 14px 10px; overflow-y: auto;
+  border-right: 1px solid var(--border); border-bottom: 0;
+  background: color-mix(in srgb, var(--panel-strong) 60%, transparent);
+}
+#settings-modal .settings-tab-btn {
+  width: 100%; min-height: 36px; padding: 8px 12px;
+  border: 0; border-radius: 9px; text-align: left;
+  font-size: 13px; font-weight: 500; letter-spacing: 0;
+  color: var(--text-dim); background: transparent; box-shadow: none;
+}
+#settings-modal .settings-tab-btn::before { display: none; }
+#settings-modal .settings-tab-btn:hover { color: var(--text); background: var(--control-bg-hover); }
+#settings-modal .settings-tab-btn.active {
+  color: var(--text);
+  background: linear-gradient(90deg, var(--accent-soft), transparent);
+  box-shadow: inset 2px 0 0 var(--accent);
+  border: 0;
+}
+
+/* ---- panel ---- */
+#settings-modal .settings-body { grid-column: 2; grid-row: 2; padding: 0; background: transparent; }
+#settings-modal .settings-tab-panel { gap: 16px; padding: 22px 26px 30px; }
+#settings-modal .settings-panel-intro { margin: 0 0 2px; padding: 0; border: 0; }
+#settings-modal .settings-panel-title { margin: 0 0 4px; font-size: 19px; font-weight: 700; color: var(--text); letter-spacing: -0.01em; }
+#settings-modal .settings-panel-intro p { margin: 0; font-size: 12.5px; line-height: 1.45; color: var(--text-dim); }
+
+/* ---- section card ---- */
+#settings-modal .settings-section {
+  display: flex; flex-direction: column;
+  padding: 4px 16px;
+  border: 1px solid var(--border);
+  border-radius: 12px;
+  background: color-mix(in srgb, var(--control-bg) 70%, transparent);
+}
+#settings-modal .settings-section-head { padding: 14px 0 10px; border-bottom: 1px solid var(--border); }
+#settings-modal .settings-section-head-with-action { display: flex; align-items: flex-start; justify-content: space-between; gap: 16px; }
+#settings-modal .settings-section-head-with-action > .sidebar-add { flex: none; }
+#settings-modal .settings-section-title { margin: 0; font-size: 13.5px; font-weight: 650; color: var(--text); letter-spacing: 0; }
+#settings-modal .settings-section-desc { margin: 4px 0 0; font-size: 12px; line-height: 1.45; color: var(--text-dim); }
+#settings-modal .settings-section-head:only-child { border-bottom: 0; }
+
+/* ---- rows ---- */
+#settings-modal .settings-row {
+  display: flex; align-items: center; justify-content: space-between; gap: 20px;
+  min-height: 52px; padding: 10px 0; margin: 0;
+  border-radius: initial; border-bottom: 1px solid color-mix(in srgb, var(--border) 70%, transparent);
+  font-size: 13px; background: transparent;
+}
+/* An older generic rule gives every .settings-row a transparent border on
+   all four sides and colors it (plus a background) on hover -- inside these
+   cards that showed as a hard square box around whatever was hovered. Rows
+   here only ever have their divider line, and no hover box. */
+#settings-modal .settings-row { border-top: 0; border-left: 0; border-right: 0; }
+#settings-modal .settings-row:hover {
+  background: transparent;
+  border-bottom-color: color-mix(in srgb, var(--border) 70%, transparent);
+}
+#settings-modal .settings-section > .settings-row:last-child,
+#settings-modal .settings-subsection > .settings-row:last-child,
+#settings-modal .settings-section > :last-child { border-bottom: 0; }
+#settings-modal label.settings-row { cursor: pointer; }
+#settings-modal .settings-row-text { display: flex; flex-direction: column; gap: 3px; min-width: 0; flex: 1 1 auto; }
+#settings-modal .settings-row-label { font-size: 13px; font-weight: 550; color: var(--text); line-height: 1.3; }
+#settings-modal .settings-hint { display: block; margin: 0; font-size: 11.5px; line-height: 1.45; color: var(--text-dim); font-weight: 400; }
+#settings-modal .settings-hint code, #settings-modal .settings-section-desc code { font-size: 11px; padding: 1px 5px; border-radius: 5px; background: var(--control-bg-hover); }
+#settings-modal .settings-row-control { display: flex; align-items: center; gap: 8px; flex: none; flex-wrap: wrap; justify-content: flex-end; }
+#settings-modal .settings-row-actions-only { justify-content: flex-end; min-height: 56px; }
+#settings-modal .settings-row-actions-only .settings-row-control { justify-content: flex-start; width: 100%; }
+#settings-modal .settings-row-stacked { flex-direction: column; align-items: stretch; gap: 12px; }
+#settings-modal .settings-subsection { margin: 4px 0; padding-top: 4px; border-top: 1px solid var(--border); }
+
+/* ---- switch (every boolean setting) ----
+   A global rule (~line 3680) styles every checkbox in the app as a switch
+   with !important, using var(--text) for the knob -- near-black in light
+   theme. Settings owns its switches, so these declarations need !important
+   too (id + !important outranks the global plain !important). */
+#settings-modal .settings-row > input[type="checkbox"] {
+  appearance: none !important; -webkit-appearance: none !important; flex: none !important;
+  width: 40px !important; min-width: 40px !important; height: 22px !important; margin: 0 !important; padding: 0 !important;
+  border-radius: 999px !important; border: 1px solid var(--control-border) !important;
+  background: var(--control-track) !important; position: relative !important; cursor: pointer !important;
+  transition: background 160ms ease, border-color 160ms ease !important;
+}
+#settings-modal .settings-row > input[type="checkbox"]::before {
+  content: "" !important; position: absolute !important; top: 2px !important; left: 2px !important; width: 16px !important; height: 16px !important;
+  border-radius: 50% !important; background: var(--text-dim) !important; box-shadow: 0 1px 3px rgba(0,0,0,.3) !important;
+  transition: transform 160ms ease, background 160ms ease !important;
+}
+#settings-modal .settings-row > input[type="checkbox"]:checked { background: var(--accent) !important; border-color: var(--accent) !important; }
+#settings-modal .settings-row > input[type="checkbox"]:checked::before { transform: translateX(18px) !important; background: #fff !important; }
+#settings-modal .settings-row > input[type="checkbox"]:disabled { opacity: .5 !important; cursor: default !important; }
+#settings-modal .settings-row > input[type="checkbox"]:focus-visible { outline: 2px solid color-mix(in srgb, var(--accent) 70%, transparent) !important; outline-offset: 2px !important; }
+
+/* ---- chip checkboxes (multi-choice, e.g. frosted surfaces) ---- */
+#settings-modal .settings-chip-grid { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 8px; }
+#settings-modal .settings-chip {
+  display: flex; align-items: center; gap: 9px; min-height: 38px; padding: 8px 11px;
+  border: 1px solid var(--control-border); border-radius: 9px; background: var(--control-bg);
+  font-size: 12.5px; color: var(--text); cursor: pointer;
+}
+#settings-modal .settings-chip:hover { background: var(--control-bg-hover); }
+/* Chip inputs use the app-wide switch style; only the knob color needs the
+   same light-theme fix as the settings switches above. */
+#settings-modal .settings-chip input:checked::before { background: #fff !important; }
+#settings-modal .settings-chip:has(input:checked) { border-color: color-mix(in srgb, var(--accent) 45%, var(--border)); background: color-mix(in srgb, var(--accent) 12%, var(--control-bg)); }
+
+/* ---- buttons (one style; primary and danger variants) ---- */
+#settings-modal .settings-body .sidebar-add,
+#settings-modal .settings-footer .sidebar-add {
+  display: inline-flex; align-items: center; justify-content: center;
+  width: auto; min-width: 0; min-height: 32px; margin: 0; padding: 6px 14px;
+  border: 1px solid var(--control-border); border-radius: 9px;
+  background: var(--control-bg); color: var(--text);
+  font-size: 12.5px; font-weight: 550; text-align: center; white-space: nowrap;
+  transition: background 140ms ease, border-color 140ms ease;
+}
+#settings-modal .settings-body .sidebar-add:hover:not(:disabled),
+#settings-modal .settings-footer .sidebar-add:hover:not(:disabled) { background: var(--control-bg-hover); border-color: var(--accent-soft); }
+#settings-modal .sidebar-add:disabled { opacity: .45; cursor: default; }
+#settings-modal .settings-primary-action,
+#settings-modal .settings-save-primary {
+  background: var(--accent) !important; border-color: var(--accent) !important;
+  color: var(--bg) !important; box-shadow: none;
+}
+#settings-modal .settings-primary-action:hover:not(:disabled),
+#settings-modal .settings-save-primary:hover { filter: brightness(1.08); }
+#settings-modal .settings-danger-button { color: #ff7b72; border-color: color-mix(in srgb, #ff7b72 45%, var(--border)); }
+#settings-modal .settings-danger-button:hover:not(:disabled) { background: color-mix(in srgb, #ff7b72 12%, var(--control-bg)) !important; }
+#settings-modal .settings-icon-btn {
+  width: 32px; height: 32px; display: inline-flex; align-items: center; justify-content: center;
+  border: 1px solid var(--control-border); border-radius: 9px; background: var(--control-bg);
+  color: var(--text-dim); font-size: 15px; padding: 0;
+}
+#settings-modal .settings-icon-btn:hover:not(:disabled) { color: var(--text); background: var(--control-bg-hover); }
+
+/* ---- selects and text fields ---- */
+#settings-modal .settings-row select,
+#settings-modal .settings-select { width: 240px; max-width: 100%; min-height: 34px; font-size: 12.5px; border-radius: 9px; }
+#settings-modal .settings-select-compact { width: 150px; }
+#settings-modal .settings-field { display: flex; flex-direction: column; gap: 6px; padding: 10px 0; font-size: 12px; font-weight: 550; color: var(--text-dim); }
+#settings-modal .settings-field-grid { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); column-gap: 12px; }
+#settings-modal .settings-field-wide { grid-column: 1 / -1; }
+#settings-modal .settings-field input,
+#settings-modal .settings-inline-fields input,
+#settings-modal .device-destination-input {
+  width: 100%; box-sizing: border-box; min-height: 34px; padding: 6px 10px;
+  border: 1px solid var(--control-border); border-radius: 9px;
+  background: var(--control-bg); color: var(--text); font-size: 12.5px; outline: none;
+}
+#settings-modal .settings-field input:focus,
+#settings-modal .settings-inline-fields input:focus { border-color: var(--accent); }
+#settings-modal .settings-inline-fields { gap: 10px; }
+#settings-modal .settings-inline-fields label { display: inline-flex; align-items: center; gap: 6px; font-size: 12px; color: var(--text-dim); }
+#settings-modal .settings-inline-fields input { width: 74px; }
+#settings-modal .settings-inline-or { font-size: 12px; color: var(--text-dimmer); }
+
+/* ---- status / notes ---- */
+#settings-modal .settings-status {
+  min-height: 0; margin: 10px 0 12px; padding: 9px 12px;
+  border-radius: 9px; background: color-mix(in srgb, var(--accent) 7%, var(--control-bg));
+  font-size: 12px; line-height: 1.45; color: var(--text-dim);
+}
+#settings-modal .settings-status:empty { display: none; }
+#settings-modal .settings-note:empty, #settings-modal .settings-note[hidden] { display: none; }
+
+/* ---- generated content: folders, devices, plugins, sidebar editor ---- */
+#settings-modal .settings-folder-list { display: flex; flex-direction: column; gap: 0; margin: 0; }
+#settings-modal .settings-folder-row {
+  display: flex; align-items: center; gap: 14px; min-height: 52px; padding: 8px 0;
+  border: 0; border-bottom: 1px solid color-mix(in srgb, var(--border) 70%, transparent);
+  border-radius: initial; background: transparent;
+}
+#settings-modal .settings-folder-path { font-size: 13px; }
+#settings-modal .settings-folder-empty { padding: 14px 0; }
+#settings-modal .device-list { display: flex; flex-direction: column; gap: 10px; margin: 6px 0 12px; }
+#settings-modal .device-card { padding: 12px 14px; border: 1px solid var(--border); border-radius: 10px; background: var(--control-bg); }
+#settings-modal #device-status, #settings-modal #device-transfer-status { padding: 10px 0 4px; }
+#settings-modal #device-transfer-status:empty { display: none; }
+#settings-modal .plugin-list { display: flex; flex-direction: column; gap: 10px; padding: 12px 0 14px; }
+#settings-modal .plugin-list-card { margin: 0; padding: 12px 14px; border: 1px solid var(--border); border-radius: 10px; background: var(--control-bg); }
+#settings-modal .plugin-list-card strong { font-size: 13px; }
+#settings-modal .plugin-list-meta { font-size: 11.5px; color: var(--text-dim); }
+#settings-modal .navigation-editor { display: flex; flex-direction: column; gap: 6px; padding: 12px 0 14px; }
+#settings-modal .navigation-editor-row { min-height: 52px; padding: 8px 12px; border: 1px solid var(--border); border-radius: 10px; background: var(--control-bg); }
+#settings-modal .navigation-editor-name strong { font-size: 13px; }
+#settings-modal .navigation-editor-name span { font-size: 11.5px; }
+#settings-modal .navigation-editor-action, #settings-modal .navigation-editor-switch { min-height: 30px; border-radius: 8px; font-size: 12px; }
+
+/* ---- health check, diagnostics, log ---- */
+#settings-modal .audio-integrity-progress,
+#settings-modal .audio-integrity-results { margin: 0 0 14px; border-radius: 10px; }
+#settings-modal .audio-integrity-results { font-size: 12px; }
+#settings-modal .diagnostics-crash-course { margin: 0 0 12px; padding: 0; border: 0; border-radius: initial; background: transparent; max-height: none; overflow: visible; font-size: 12px; color: var(--text-dim); }
+#settings-modal .diagnostics-crash-course summary { cursor: pointer; color: var(--text); font-size: 12.5px; font-weight: 550; padding: 6px 0; }
+#settings-modal .diagnostics-crash-course ol { margin: 8px 0 0; padding-left: 20px; line-height: 1.55; }
+#settings-modal .settings-log-output { min-height: 220px; margin: 0 0 14px; border-radius: 10px; font-size: 11.5px; }
+
+/* ---- footer ---- */
+#settings-modal .settings-footer { grid-column: 1 / -1; grid-row: 3; padding: 12px 20px; }
+#settings-modal .settings-footer .settings-save-status { font-size: 12px; color: var(--text-dim); }
+#settings-modal .settings-footer .sidebar-add { min-width: 96px; }
+
+/* ---- narrow windows ---- */
+@media (max-width: 760px) {
+  #settings-modal .modal-settings { width: calc(100vw - 20px); grid-template-columns: 1fr; grid-template-rows: auto auto minmax(0, 1fr) auto; }
+  #settings-modal .settings-tabs { grid-row: 2; flex-direction: row; overflow-x: auto; border-right: 0; border-bottom: 1px solid var(--border); padding: 8px; }
+  #settings-modal .settings-tab-btn { width: auto; white-space: nowrap; }
+  #settings-modal .settings-body { grid-column: 1; grid-row: 3; }
+  #settings-modal .settings-tab-panel { padding: 16px; }
+  #settings-modal .settings-row { flex-direction: column; align-items: stretch; gap: 10px; }
+  #settings-modal .settings-row > input[type="checkbox"] { align-self: flex-start; }
+  #settings-modal .settings-row select, #settings-modal .settings-select { width: 100%; }
+  #settings-modal .settings-chip-grid, #settings-modal .settings-field-grid { grid-template-columns: 1fr 1fr; }
+}
+
+/* ---------------- Tag editor: trim start/end (h : m : s) ---------------- */
+.tag-time-rows { display: flex; flex-direction: column; gap: 10px; margin: 6px 0 12px; }
+.tag-time-row { display: flex; align-items: center; justify-content: space-between; gap: 16px; padding: 10px 12px; border: 1px solid var(--border); border-radius: 10px; background: var(--control-bg); }
+.tag-time-row[data-invalid] { border-color: color-mix(in srgb, #ff7b72 60%, var(--border)); }
+.tag-time-label { display: flex; flex-direction: column; gap: 3px; min-width: 0; }
+.tag-time-label strong { font-size: 12.5px; font-weight: 600; color: var(--text); }
+.tag-time-label .settings-hint { font-size: 11px; line-height: 1.4; }
+.tag-time-hms { display: flex; align-items: center; gap: 8px; flex: none; }
+.tag-time-part { display: inline-flex; align-items: center; gap: 4px; font-size: 11px; color: var(--text-dim); }
+.tag-time-part input { width: 56px; min-height: 30px; padding: 4px 6px; text-align: right; border: 1px solid var(--control-border); border-radius: 7px; background: var(--panel-strong); color: var(--text); font-size: 12.5px; font-variant-numeric: tabular-nums; }
+.tag-time-part input[data-part="s"] { width: 66px; }
+.tag-time-part input:focus { outline: none; border-color: var(--accent); }
+.tag-time-clear { min-height: 30px; padding: 4px 10px; border: 1px solid var(--control-border); border-radius: 7px; background: transparent; color: var(--text-dim); font-size: 11.5px; }
+.tag-time-clear:hover { color: var(--text); background: var(--control-bg-hover); }
+.tag-time-summary { font-size: 11.5px; color: var(--text-dim); padding: 0 2px; }
+.tag-time-summary.is-error { color: #ff7b72; }
+@media (max-width: 700px) { .tag-time-row { flex-direction: column; align-items: stretch; } }
+
+
+/* ======================================================================
+   Dialogs -- shared design (2026-09 dialog audit)
+   Every right-click edit page and confirmation follows the Settings rules:
+   solid theme surface and theme accent (tokens above), one field style, one
+   button style with primary/danger variants, and a readable text-size floor.
+   Scoped to .modal-overlay .modal; the image lightbox is not a .modal.
+   ====================================================================== */
+.modal-overlay .modal { color: var(--text); font-size: 13px; }
+.modal-overlay .modal > .modal-header { padding: 14px 20px; }
+.modal-overlay .modal > .modal-header h3 { font-size: 15px; font-weight: 650; }
+
+/* Fields: text-like inputs, selects and textareas look the same everywhere. */
+.modal-overlay .modal input:not([type="checkbox"]):not([type="radio"]):not([type="range"]):not([type="hidden"]):not([type="color"]):not([type="file"]),
+.modal-overlay .modal select,
+.modal-overlay .modal textarea {
+  box-sizing: border-box;
+  min-height: 34px;
+  padding: 6px 10px;
+  border: 1px solid var(--control-border);
+  border-radius: 9px;
+  background-color: var(--control-bg);
+  color: var(--text);
+  font-size: 12.5px;
+  outline: none;
+  box-shadow: none;
+}
+.modal-overlay .modal select { padding-right: 30px; }
+.modal-overlay .modal textarea { min-height: 72px; line-height: 1.5; }
+.modal-overlay .modal input:not([type="checkbox"]):not([type="radio"]):not([type="range"]):not([type="hidden"]):focus,
+.modal-overlay .modal select:focus,
+.modal-overlay .modal textarea:focus { border-color: var(--accent); background-color: var(--control-bg-hover); }
+.modal-overlay .modal input::placeholder,
+.modal-overlay .modal textarea::placeholder { color: var(--text-dimmer); }
+.modal-overlay .tag-time-part input { padding: 4px 6px !important; }
+
+/* Buttons: one base style, plus primary (the dialog's main action) and danger. */
+.modal-overlay .modal :is(.sidebar-add, .modal-action, .cover-picker-tool, .tag-failure-copy-all, .compact-action, .tag-time-clear) {
+  display: inline-flex; align-items: center; justify-content: center;
+  width: auto; min-height: 32px; margin: 0; padding: 6px 14px;
+  border: 1px solid var(--control-border); border-radius: 9px;
+  background: var(--control-bg); color: var(--text);
+  font-size: 12.5px; font-weight: 550; text-align: center; white-space: nowrap;
+  box-shadow: none; transition: background 140ms ease, border-color 140ms ease;
+}
+.modal-overlay .modal :is(.sidebar-add, .modal-action, .cover-picker-tool, .tag-failure-copy-all, .compact-action, .tag-time-clear):hover:not(:disabled) {
+  background: var(--control-bg-hover); border-color: var(--accent-soft);
+}
+.modal-overlay .modal :is(.settings-primary-action, .settings-save-primary, .playlist-info-save-pill, .cover-picker-apply) {
+  display: inline-flex; align-items: center; justify-content: center; min-height: 32px; padding: 6px 16px;
+  border: 1px solid var(--accent) !important; border-radius: 9px;
+  /* Text in the theme background color: dark on Dark's silver accent, light
+     on Light's blue -- fixed white was unreadable on the silver. */
+  background: var(--accent) !important; color: var(--bg) !important;
+  font-size: 12.5px; font-weight: 600; box-shadow: none;
+}
+.modal-overlay .modal :is(.settings-primary-action, .settings-save-primary, .playlist-info-save-pill, .cover-picker-apply):hover:not(:disabled) { filter: brightness(1.08); }
+.modal-overlay .modal :is(.modal-action.danger, .settings-danger-button) {
+  background: color-mix(in srgb, #ff5a52 14%, var(--control-bg)) !important;
+  border-color: color-mix(in srgb, #ff5a52 55%, var(--border)) !important;
+  color: #ff7b72 !important;
+}
+html[data-hive-theme="light"] .modal-overlay .modal :is(.modal-action.danger, .settings-danger-button) { color: #d1242f !important; }
+.modal-overlay .modal :is(button, .sidebar-add):disabled { opacity: .45; cursor: default; }
+
+/* Readable text floor (several dialog rules had shrunk hints to 7-10px). */
+.modal-overlay .modal :is(small, .settings-hint, [class*="-hint"], [class*="-help"], [class*="-note"],
+  [class*="subtitle"], [class*="-muted"], [class*="-status"], [class*="-meta"], .playlist-info-section-heading small,
+  .smart-section-heading span, .smart-source-card-copy small, .smart-switch-row small, .playlist-info-switch-row small,
+  .playlist-info-preview-copy small, .cover-picker-result small, .cover-picker-result em, .cover-picker-result-info small,
+  .cover-picker-result-info em, .cover-picker-preview-info small, .cover-picker-preview-info span) {
+  font-size: 11.5px; line-height: 1.45;
+}
+.modal-overlay .modal :is(label, .tag-property span, .tag-property-band span, .playlist-info-grid span,
+  .playlist-info-control-label span, .musicbee-main-fields label, .smart-results-grid label, .smart-advanced-grid label,
+  .tag-wide-field, .cover-picker-manual label, .tag-editor-advanced-wrap label) { font-size: 12px; }
+.modal-overlay .modal :is(.tag-property strong, .tag-property-band strong, .playlist-info-control-label strong,
+  .cover-picker-result strong, .cover-picker-result-info strong) { font-size: 12.5px; }
+.modal-overlay .modal :is([class*="kicker"], [class*="eyebrow"], .smart-step, .smart-badge) { font-size: 10.5px; letter-spacing: .08em; }
+.modal-overlay .modal :is(.tag-editor-advanced-wrap summary, .cover-picker-tool, .cover-picker-source, .cover-picker-scope,
+  .cover-picker-selection, .tag-lyrics-preview) { font-size: 12px; }
+
+/* Section cards inside dialogs share the Settings card look. */
+.modal-overlay .modal :is(.playlist-info-section, .smart-section, .tag-property-band, .theme-control-card) {
+  border: 1px solid var(--border);
+  border-radius: 12px;
+  background: color-mix(in srgb, var(--control-bg) 70%, transparent);
+}
+
+/* The app-wide switch rule uses var(--text) for an "on" knob -- near-black in
+   light theme. Dialog switches get a white knob on the accent. */
+.modal-overlay .modal input[type="checkbox"]:checked::before { background: #fff !important; }
+/* Dialog bodies scroll vertically only: a few px of overflowing content left a
+   horizontal scrollbar strip along the bottom of the tag editor. */
+.modal-overlay .modal .modal-body { overflow-x: hidden; }
+/* Tabs inside dialogs (tag editor) read at the same size as the Settings rail. */
+.modal-overlay .modal .tag-editor-tab { font-size: 12.5px; }
+.modal-overlay .modal .tag-editor-tab.active { color: var(--text); box-shadow: inset 0 -2px 0 var(--accent); }
+
+/* Album artwork arrangement (tag editor, several tracks, same pictures). */
+.artwork-arrange-intro { display: flex; flex-direction: column; gap: 4px; margin: 0 0 12px; padding: 12px 14px; border: 1px solid var(--border); border-radius: 12px; background: color-mix(in srgb, var(--control-bg) 70%, transparent); }
+.artwork-arrange-intro strong { font-size: 13.5px; color: var(--text); }
+.artwork-arrange-intro span { font-size: 12px; line-height: 1.5; color: var(--text-dim); }
+.artwork-arrange-intro .artwork-arrange-warning { color: #e3a008; }
+.artwork-arrange-card .artwork-library-actions button:disabled { opacity: .45; cursor: default; }

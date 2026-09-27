@@ -102,5 +102,5 @@ test('Discord display mode remains user-selectable, via Hive\'s own Rich Presenc
   // 'listening' -- the user explicitly wants Hive to show up like a game,
   // not under Discord's Spotify-style "Listening to" pill.
   assert.match(renderer, /const activity = String\(result\?\.activityType \|\| 'playing'\)/);
-  assert.match(html, /Registered Games detection remains controlled by Discord/);
+  assert.match(html, /Show what you're listening to on your Discord profile/);
 });

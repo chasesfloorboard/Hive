@@ -547,6 +547,7 @@
   function renderVolumeSliderFromEngine(engineValue) {
     const slider = Math.max(0, Math.min(100, Math.round(clampUnitVolume(engineValue) * 100)));
     if (!el.pbVolume) return slider;
+    if (el.pbVolume.disabled && document.body.classList.contains('bit-perfect-output')) return slider;
     el.pbVolume.value = String(slider);
     el.pbVolume.style.setProperty('--volume-progress', `${slider}%`);
     renderVolumeIcon();
@@ -600,7 +601,7 @@
     gstWaitingNextStream = false;
     gstExpectInitialStream = false;
   }
-  async function gstLoadCurrent(offset = 0, requestGeneration = playbackLoadRequestGeneration) {
+  async function gstLoadCurrent(offset = 0, requestGeneration = playbackLoadRequestGeneration, { startPaused = false } = {}) {
     const t = currentQueue[currentIndex];
     if (!t?.path || !gstAvailable || !gstCompatibleTrack(t)) return false;
     if (requestGeneration !== playbackLoadRequestGeneration) return false;
@@ -640,7 +641,14 @@
     // 25 ms renderer delay.
     if (generation !== gstLoadGeneration || !gstActive || requestGeneration !== playbackLoadRequestGeneration) return false;
     // Transport remains a direct GStreamer state change in this volume-focused branch.
-    gstSend('PLAY');
+    // startPaused (live output switch while paused): LOAD already prerolled the
+    // track PAUSED at the right position; leave it there so Play resumes it.
+    if (startPaused) {
+      enginePaused = true;
+      dispatchAudio('pause');
+    } else {
+      gstSend('PLAY');
+    }
     dispatchAudio('loadedmetadata');
     dispatchAudio('durationchange');
     // For GStreamer, the transport's PLAYING state is authoritative for the
@@ -1229,6 +1237,12 @@
   window.beehive.onGstreamerEvent?.((ev) => {
     if (!ev) return;
     const name = ev.name;
+    // The helper reports what it really opened; the audio-output settings code
+    // owns the volume lock, so hand these over as DOM events.
+    if (name === 'BIT_PERFECT' || name === 'BIT_PERFECT_UNAVAILABLE') {
+      window.dispatchEvent(new CustomEvent('hive:bit-perfect', { detail: { active: name === 'BIT_PERFECT', reason: String(ev.value || '') } }));
+      return;
+    }
     if (name === 'SPECTRUM') {
       const parts = String(ev.value || '').split(',');
       nowPlayingSpectrum = parts.map(Number).filter(Number.isFinite).slice(0, 64);
@@ -1444,6 +1458,8 @@
   const el = {
     folderList: document.getElementById('folder-list'),
     addFolderBtn: document.getElementById('add-folder-btn'),
+    settingsFolderList: document.getElementById('settings-folder-list'),
+    scanCancelBtn: document.getElementById('scan-cancel-btn'),
     rescanBtn: document.getElementById('rescan-btn'),
     scanProgress: document.getElementById('scan-progress'),
     scanTitle: document.getElementById('scan-progress-title'),
@@ -2227,16 +2243,56 @@
     } else {
       count = selectedSongPaths.size;
     }
+    scheduleTagEditorFollowSelection();
     node.textContent = count ? `${count.toLocaleString()} song${count === 1 ? '' : 's'} selected` : '';
     node.classList.toggle('hidden', count === 0);
     if (count) {
       const tracks = selectedTracksForStatus();
       const totalSeconds = tracks.reduce((sum, t) => sum + (Number(t?.duration) || 0), 0);
       const totalBytes = tracks.reduce((sum, t) => sum + (Number(t?.fileSize) || 0), 0);
-      node.dataset.tooltip = `${formatDurationLong(totalSeconds)} · ${formatFileSizeShort(totalBytes)}`;
+      // Length and size render as two visibly different parts (see
+      // data-tooltip-secondary in the global tooltip): "44m 45s · 41.1mb" as
+      // one flat string made it hard to tell which number was which.
+      node.dataset.tooltip = formatDurationLong(totalSeconds);
+      node.dataset.tooltipSecondary = formatFileSizeShort(totalBytes);
     } else {
       delete node.dataset.tooltip;
+      delete node.dataset.tooltipSecondary;
     }
+  }
+
+  // ---- Tag editor follows the selection ----
+  // With the editor open, clicking another song (or album, for an album edit)
+  // reloads the editor with it, keeping the current tab (e.g. Artwork), instead
+  // of staying on the original until right-click → Edit again. Unsaved edits are
+  // never discarded silently.
+  let tagEditorFollowTimer = 0;
+  function tagEditorHasUnsavedChanges() {
+    return !!(tagEditorDirty || pendingArtworkPath || window.__beehiveRemoveArtwork || window.__beehiveRemoveFrontArtwork);
+  }
+  function scheduleTagEditorFollowSelection() {
+    if (!el.tagModal || el.tagModal.classList.contains('hidden') || !editingTrack) return;
+    clearTimeout(tagEditorFollowTimer);
+    tagEditorFollowTimer = setTimeout(() => { void followTagEditorSelection(); }, 150);
+  }
+  async function followTagEditorSelection() {
+    if (!el.tagModal || el.tagModal.classList.contains('hidden') || !editingTrack) return;
+    const tracks = selectedTracksForStatus().filter(t => t?.path && !isSpotifyTrack(t) && !isPodcastTrack(t));
+    if (!tracks.length) return;
+    const editingPaths = new Set(editingTracks.map(t => String(t?.path || '')));
+    const samePaths = tracks.length === editingPaths.size && tracks.every(t => editingPaths.has(String(t.path)));
+    if (samePaths) return;
+    const albumEdit = editingTracks.length > 1;
+    let target = null;
+    if (!albumEdit && tracks.length === 1) target = { track: tracks[0], list: null };
+    else if (albumEdit && activeSelectionScope === 'albums' && tracks.every(t => albumKey(t) === albumKey(tracks[0]))) target = { track: tracks[0], list: tracks };
+    if (!target) return;
+    if (tagEditorHasUnsavedChanges()) {
+      const name = target.list ? (target.track.album || 'this album') : (target.track.title || 'this track');
+      const ok = await themedConfirm(`You have unsaved changes in the tag editor.\n\nDiscard them and edit ${name} instead?`, 'Unsaved tag changes');
+      if (!ok) return;
+    }
+    await openTagEditor(target.track, target.list, { keepTab: true });
   }
 
   function clearAlbumSelection() {
@@ -2855,12 +2911,73 @@
           { label:'Rescan library', action:()=>runScan(true) },
           { label:'Play library', action:()=>playQueue(folderTracks,0) },
           { label:'Queue library', action:()=>addTracksToQueue(folderTracks) },
-          { label:'Library Info', action:()=>showSidebarListInfo({key:folderNavKey(folder),name:folderName,description:folder,tracks:folderTracks,folder}) }
+          { label:'Library Info', action:()=>showSidebarListInfo({key:folderNavKey(folder),name:folderName,description:folder,tracks:folderTracks,folder}) },
+          { label:'Remove library', icon:'trash', danger:true, action:()=>removeLibraryFolder(folder) }
         ]);
       });
       el.folderList.appendChild(div);
     }
     const add=document.createElement('button');add.type='button';add.className='sidebar-add sidebar-library-add';add.textContent='+ Library';add.title='Add a music library folder';add.addEventListener('click',async()=>{const next=await window.beehive.addFolder();if(!next)return;await refreshFolders();await runScan(false);});el.folderList.appendChild(add);
+    renderSettingsFolderList(config.folders||[]);
+  }
+
+  // Settings -> Library lists every configured folder with its own Remove
+  // button; the sidebar entry's context menu offers the same action.
+  function renderSettingsFolderList(folders) {
+    if (!el.settingsFolderList) return;
+    el.settingsFolderList.innerHTML = '';
+    if (!folders.length) {
+      const empty = document.createElement('div');
+      empty.className = 'settings-hint settings-folder-empty';
+      empty.textContent = 'No music folders yet.';
+      el.settingsFolderList.appendChild(empty);
+      return;
+    }
+    for (const folder of folders) {
+      const row = document.createElement('div');
+      row.className = 'settings-folder-row';
+      const label = document.createElement('span');
+      label.className = 'settings-folder-path';
+      label.textContent = folder;
+      label.title = folder;
+      const remove = document.createElement('button');
+      remove.type = 'button';
+      remove.className = 'sidebar-add settings-folder-remove';
+      remove.textContent = 'Remove';
+      remove.setAttribute('aria-label', `Remove ${folder} from library`);
+      remove.addEventListener('click', () => removeLibraryFolder(folder));
+      row.append(label, remove);
+      el.settingsFolderList.appendChild(row);
+    }
+  }
+
+  // Takes a folder out of the library. Files on disk are untouched; the main
+  // process stops any running scan (it was started with the old folder list)
+  // and prunes the folder's tracks from the cache and database, and this
+  // drops them from the in-memory library so the views update immediately.
+  async function removeLibraryFolder(folder) {
+    const result = await window.beehive.removeFolder(folder);
+    if (!result) return;
+    const removed = new Set(Array.isArray(result.removedPaths) ? result.removedPaths : []);
+    // Tracks a stopped scan streamed into the renderer may not be in the main
+    // process's cache, so also drop anything under the folder that no
+    // remaining library still covers.
+    const remaining = Array.isArray(result.folders) ? result.folders : [];
+    const under = (trackPath, root) => {
+      const p = String(trackPath || '').toLowerCase();
+      const r = String(root || '').replace(/[\\/]$/, '').toLowerCase();
+      return !!r && (p === r || p.startsWith(r + '/') || p.startsWith(r + '\\'));
+    };
+    const drop = t => removed.has(String(t?.path || '')) || (under(t?.path, folder) && !remaining.some(f => under(t?.path, f)));
+    if (specialView === 'folder' && activeFolderPath === folder) {
+      const tab = tabs.find(t => t.id === activeTabId);
+      if (tab) resetMusicHomeView(tab);
+      specialView = null;
+      activeFolderPath = '';
+    }
+    if (library.tracks.some(drop)) applyLibrary({ ...library, tracks: library.tracks.filter(t => !drop(t)) });
+    else renderCurrentView();
+    await refreshFolders();
   }
 
   function hideContentViews(){ stopNowPlayingSpectrum(); document.body.classList.remove('sandbox-mode'); [el.emptyState,el.tabPlaceholder,el.albumsToolbar,el.albumsGrid,el.songsTable,el.artistsGrid,el.contentTools].forEach(x=>x.classList.add('hidden')); }
@@ -6888,20 +7005,24 @@
     const text = (v) => Array.isArray(v) ? (v[0] ?? '') : v;
     if (key === 'genre') return text(common?.genre);
     if (key === 'composer') return text(common?.composer);
-    if (key === 'publisher') return text(common?.label) || text(common?.publisher);
+    // Tag-editor audit: music-metadata maps some fields only for some formats
+    // (e.g. original artist/album only from ID3 TOPE/TOAL, publisher only as
+    // "label"). Fall back to the raw tag so a value saved by Hive -- or by
+    // another tagger -- always shows up again when the editor reopens.
+    if (key === 'publisher') return text(common?.label) || text(common?.publisher) || nativeTagValue(native, 'PUBLISHER') || nativeTagValue(native, 'TPUB') || nativeTagValue(native, '©pub');
     if (key === 'conductor') return text(common?.conductor);
     if (key === 'comment') return normalizeMetadataText(common?.comment);
     if (key === 'lyrics') return normalizeLyricsText(common?.lyrics);
-    if (key === 'lyricist') return text(common?.lyricist);
-    if (key === 'originalartist') return text(common?.originalartist);
-    if (key === 'originalalbum') return text(common?.originalalbum);
-    if (key === 'originalyear') return common?.originalyear ?? '';
+    if (key === 'lyricist') return text(common?.lyricist) || nativeTagValue(native, 'LYRICIST');
+    if (key === 'originalartist') return text(common?.originalartist) || nativeTagValue(native, 'ORIGINALARTIST');
+    if (key === 'originalalbum') return text(common?.originalalbum) || nativeTagValue(native, 'ORIGINALALBUM');
+    if (key === 'originalyear') return common?.originalyear || String(common?.originaldate || '').slice(0, 4) || nativeTagValue(native, 'ORIGINALYEAR');
     if (key === 'mood') return text(common?.mood) || nativeTagValue(native, 'MOOD');
     if (key === 'occasion') return text(common?.occasion) || nativeTagValue(native, 'OCCASION');
     if (key === 'quality') return nativeTagValue(native, 'QUALITY');
     if (key === 'tempo') return common?.tempo ?? nativeTagValue(native, 'TEMPO');
     if (key === 'keywords') return text(common?.keywords);
-    if (key === 'language') return common?.language ?? '';
+    if (key === 'language') return common?.language || nativeTagValue(native, 'LANGUAGE') || '';
     if (key === 'replaygain_track_gain') return nativeTagValue(native, 'REPLAYGAIN_TRACK_GAIN');
     if (key === 'replaygain_track_peak') return nativeTagValue(native, 'REPLAYGAIN_TRACK_PEAK');
     if (key === 'replaygain_album_gain') return nativeTagValue(native, 'REPLAYGAIN_ALBUM_GAIN');
@@ -7071,6 +7192,99 @@
     focusArtworkEditorBlankSlot(artworkEditorBlankSlots.length - 1);
     el.tagStatus.textContent = 'Blank artwork slot added. Choose an image or search for a cover.';
   }
+  // ---- Album artwork arrangement (same images, different slots per file) ----
+  let artworkArrangement = null;      // [{hash, type, mime, description, dataUrl}] in the chosen order
+  let artworkArrangementFiles = [];   // [{path, pictures:[{hash,type}]}] as loaded
+  let artworkEditorLoadedFiles = [];  // same shape, for the regular (matching) artwork list
+  function artworkArrangementKey(pictures) {
+    return (pictures || []).map(p => `${p.hash}|${normalizeArtworkType(p.type || 'Other')}`).join('\n');
+  }
+  function artworkArrangementChangedFor(file) {
+    return artworkArrangementKey(file.pictures) !== artworkArrangementKey(artworkArrangement);
+  }
+  function renderArtworkArrangement() {
+    const list = document.getElementById('tag-artwork-list');
+    const count = document.getElementById('tag-artwork-count');
+    if (!list || !artworkArrangement) return;
+    const files = artworkArrangementFiles.length;
+    const needsChange = artworkArrangementFiles.filter(artworkArrangementChangedFor).length;
+    const filesAlike = artworkArrangementFiles.every(f => artworkArrangementKey(f.pictures) === artworkArrangementKey(artworkArrangementFiles[0]?.pictures));
+    if (count) count.textContent = `${artworkArrangement.length} pictures · ${needsChange} of ${files} file${files === 1 ? '' : 's'} will change`;
+    const fronts = artworkArrangement.filter(p => p.type === 'Cover (Front)').length;
+    const cards = artworkArrangement.map((picture, i) => `<article class="artwork-library-card artwork-arrange-card" data-arrange-index="${i}">
+        <div class="artwork-library-thumb-column">
+          <div class="artwork-library-thumb-wrap"><img class="artwork-library-thumb" src="${escapeHtml(picture.dataUrl || '')}" alt=""><span class="artwork-index-badge">${i + 1}</span>${picture.type === 'Cover (Front)' ? '<span class="artwork-primary-badge">PRIMARY</span>' : ''}</div>
+        </div>
+        <div class="artwork-library-details">
+          <div class="artwork-library-heading"><strong>Position ${i + 1}</strong><span>${escapeHtml(picture.mime || '')}</span></div>
+          <label>Picture type<select data-arrange-type>${artworkTypeOptions(picture.type || 'Other')}</select></label>
+          <div class="artwork-library-actions">
+            <button type="button" data-arrange-primary ${picture.type === 'Cover (Front)' && i === 0 ? 'disabled' : ''}>Make primary cover</button>
+            <button type="button" data-arrange-up ${i === 0 ? 'disabled' : ''}>Move up</button>
+            <button type="button" data-arrange-down ${i === artworkArrangement.length - 1 ? 'disabled' : ''}>Move down</button>
+          </div>
+        </div>
+      </article>`).join('');
+    list.innerHTML = `<div class="artwork-arrange-intro"><strong>Arrange album artwork</strong><span>${files === 1 ? `Set the order and type of this track's ${artworkArrangement.length} pictures. Save writes the new arrangement.` : filesAlike ? `Set the order and type of the ${artworkArrangement.length} pictures. Save applies this arrangement to all ${files} tracks.` : `These ${files} tracks share the same ${artworkArrangement.length} pictures, but in different positions. Set the order and type once — Save applies this arrangement to every track.`}</span>${fronts === 0 ? '<span class="artwork-arrange-warning">No picture is set as the front cover yet.</span>' : fronts > 1 ? '<span class="artwork-arrange-warning">More than one picture is set as the front cover.</span>' : ''}</div>${cards}`;
+  }
+  // Move up/down in the regular artwork list: start an arrangement from what
+  // is shown (types taken from the visible pickers, which save immediately)
+  // and apply the move. Each file's own current order is kept for comparison,
+  // so Save only rewrites files whose order or types actually differ.
+  function startArtworkArrangementFromEditor(from, to) {
+    const list = document.getElementById('tag-artwork-list');
+    const pictures = artworkEditorPictures || [];
+    if (!list || pictures.length < 2 || to < 0 || to >= pictures.length) return;
+    artworkArrangement = pictures.map((p, i) => ({
+      hash: String(p.hash || '').toLowerCase(),
+      type: normalizeArtworkType(list.querySelector(`[data-artwork-index="${i}"] [data-artwork-type]`)?.value || p.type || 'Other'),
+      mime: p.mime || '', description: p.description || '', dataUrl: p.dataUrl || artworkEditorPictureSrc(p)
+    }));
+    const typeOf = new Map(artworkArrangement.map(p => [p.hash, p.type]));
+    artworkArrangementFiles = artworkEditorLoadedFiles.map(f => ({ path: f.path, pictures: f.pictures.map(p => ({ hash: p.hash, type: typeOf.get(p.hash) || p.type })) }));
+    const [item] = artworkArrangement.splice(from, 1);
+    artworkArrangement.splice(to, 0, item);
+    tagEditorDirty = true;
+    renderArtworkArrangement();
+  }
+  document.getElementById('tag-artwork-list')?.addEventListener('click', (event) => {
+    const moveButton = !artworkArrangement && event.target.closest?.('[data-artwork-move]');
+    if (moveButton) {
+      const from = Number(moveButton.closest('[data-artwork-index]')?.dataset.artworkIndex);
+      event.preventDefault();
+      event.stopPropagation();
+      if (Number.isFinite(from)) startArtworkArrangementFromEditor(from, from + Number(moveButton.dataset.artworkMove));
+      return;
+    }
+    if (!artworkArrangement) return;
+    const card = event.target.closest?.('[data-arrange-index]');
+    if (!card) return;
+    const i = Number(card.dataset.arrangeIndex);
+    const move = (from, to) => { const [item] = artworkArrangement.splice(from, 1); artworkArrangement.splice(to, 0, item); };
+    if (event.target.closest('[data-arrange-up]') && i > 0) move(i, i - 1);
+    else if (event.target.closest('[data-arrange-down]') && i < artworkArrangement.length - 1) move(i, i + 1);
+    else if (event.target.closest('[data-arrange-primary]')) {
+      // One front cover: the chosen picture becomes it and moves to position 1;
+      // a previous front cover becomes a back cover.
+      for (const p of artworkArrangement) if (p.type === 'Cover (Front)') p.type = 'Cover (Back)';
+      artworkArrangement[i].type = 'Cover (Front)';
+      move(i, 0);
+    } else return;
+    event.preventDefault();
+    event.stopPropagation();
+    tagEditorDirty = true;
+    renderArtworkArrangement();
+  }, true);
+  document.getElementById('tag-artwork-list')?.addEventListener('change', (event) => {
+    if (!artworkArrangement) return;
+    const select = event.target.closest?.('[data-arrange-type]');
+    const card = event.target.closest?.('[data-arrange-index]');
+    if (!select || !card) return;
+    event.stopPropagation();
+    artworkArrangement[Number(card.dataset.arrangeIndex)].type = normalizeArtworkType(select.value || 'Other');
+    renderArtworkArrangement();
+  }, true);
+
   function renderArtworkEditorList() {
     const list = document.getElementById('tag-artwork-list');
     const count = document.getElementById('tag-artwork-count');
@@ -7078,6 +7292,10 @@
     const pictures = artworkEditorPictures || [];
     ensureArtworkEditorBlankSlot();
     if (count) count.textContent = `${pictures.length} picture${pictures.length === 1 ? '' : 's'}`;
+    // Reordering switches to the arrangement view (saved on Save, for every
+    // selected file), so it is offered only while nothing else is pending.
+    const canArrange = pictures.length > 1 && artworkEditorLoadedFiles.length > 0 && !pendingArtworkPath
+      && pictures.every(p => p?.hash) && !artworkEditorBlankSlots.some(slot => slot?.previewDataUrl);
 
     const pictureCards = pictures.map((picture, i) => {
       const primary = artworkTypeLabel(picture?.type) === 'Album Cover' && i === pictures.findIndex(p => artworkTypeLabel(p?.type) === 'Album Cover');
@@ -7090,7 +7308,7 @@
           <div class="artwork-library-heading"><strong>${escapeHtml(artworkTypeLabel(picture?.type))}</strong><span>${escapeHtml(picture?.mime || '')}</span></div>
           <label>Picture type<select data-artwork-type>${artworkTypeOptions(picture?.type || 'Other')}</select></label>
           <label>Comments<textarea data-artwork-comment rows="2">${escapeHtml(picture?.description || '')}</textarea></label>
-          <div class="artwork-library-actions"><button type="button" data-artwork-search>Search Internet for Cover…</button><button type="button" data-artwork-upload>Upload…</button><button type="button" data-artwork-save>Save To…</button><button type="button" data-artwork-delete class="danger">Delete</button></div>
+          <div class="artwork-library-actions"><button type="button" data-artwork-search>Search Internet for Cover…</button><button type="button" data-artwork-upload>Upload…</button><button type="button" data-artwork-save>Save To…</button><button type="button" data-artwork-delete class="danger">Delete</button>${canArrange ? `<button type="button" data-artwork-move="-1" ${i === 0 ? 'disabled' : ''}>Move up</button><button type="button" data-artwork-move="1" ${i === pictures.length - 1 ? 'disabled' : ''}>Move down</button>` : ''}</div>
         </div>
       </article>`;
     }).join('');
@@ -7297,6 +7515,33 @@
     const first = loaded[0]?.data?.pictures || [];
     const keys = loaded.map(x => (x.data?.pictureSignatures || []).map(p => `${p.type}|${p.mime}|${p.hash}`).sort().join('\n'));
     const mismatch = loaded.length > 1 && keys.some(k => k !== keys[0]);
+    artworkArrangement = null;
+    artworkArrangementFiles = [];
+    // Same images in every file, just in different slots/types (e.g. an album
+    // whose 3 covers are shuffled per track): offer to arrange them once for
+    // the whole selection instead of the "Mismatching Covers" dead end.
+    if (mismatch) {
+      const imageSet = x => (x.data?.pictureSignatures || []).map(p => String(p.hash || '').toLowerCase()).sort().join('|');
+      const firstSet = imageSet(loaded[0]);
+      if (firstSet && loaded.every(x => imageSet(x) === firstSet)) {
+        // Start from the most common arrangement among the files.
+        const orderKey = x => (x.data?.pictures || []).map(p => `${String(p.hash || '').toLowerCase()}|${normalizeArtworkType(p.type || 'Other')}`).join('\n');
+        const counts = new Map();
+        for (const x of loaded) counts.set(orderKey(x), (counts.get(orderKey(x)) || 0) + 1);
+        const [bestKey] = [...counts.entries()].sort((a, b) => b[1] - a[1])[0];
+        const model = loaded.find(x => orderKey(x) === bestKey) || loaded[0];
+        artworkArrangement = (model.data?.pictures || []).map(p => ({
+          hash: String(p.hash || '').toLowerCase(), type: normalizeArtworkType(p.type || 'Other'),
+          mime: p.mime || '', description: p.description || '', dataUrl: p.dataUrl || artworkEditorPictureSrc(p)
+        }));
+        artworkArrangementFiles = loaded.map(x => ({ path: String(x.track?.path || ''), pictures: (x.data?.pictures || []).map(p => ({ hash: String(p.hash || '').toLowerCase(), type: normalizeArtworkType(p.type || 'Other') })) }));
+        const list = document.getElementById('tag-artwork-list');
+        list?.classList.remove('mismatching-covers');
+        renderArtworkArrangement();
+        return;
+      }
+    }
+    artworkEditorLoadedFiles = mismatch ? [] : loaded.map(x => ({ path: String(x.track?.path || ''), pictures: (x.data?.pictures || []).map(p => ({ hash: String(p.hash || '').toLowerCase(), type: normalizeArtworkType(p.type || 'Other') })) }));
     artworkEditorPictures = mismatch ? [] : first;
     artworkEditorSelected = artworkEditorPictures.length ? 0 : -1;
     if (!Array.isArray(artworkEditorBlankSlots) || !artworkEditorBlankSlots.length) {
@@ -7305,7 +7550,7 @@
     const list = document.getElementById('tag-artwork-list');
     list?.classList.toggle('mismatching-covers', mismatch);
     if (mismatch) {
-      if (list) list.innerHTML = `<div class="artwork-library-mismatch"><strong>Mismatching Covers</strong><span>The selected files do not contain the same embedded artwork set. Open a single file to edit its pictures individually, or use the main Tags cover control to apply one front cover to the whole selection.</span></div>`;
+      if (list) list.innerHTML = `<div class="artwork-library-mismatch"><strong>Mismatching Covers</strong><span>These files contain different pictures, not just the same pictures in a different order. Open a single file to edit its pictures individually, or use the main Tags cover control to apply one front cover to the whole selection.</span></div>`;
       const count = document.getElementById('tag-artwork-count'); if (count) count.textContent = `${loaded.length} files differ`;
       return;
     }
@@ -7666,7 +7911,9 @@
     addArtworkBlankSlot();
   }
 
-  async function openTagEditor(t, tracksOverride=null){
+  async function openTagEditor(t, tracksOverride=null, { keepTab = false } = {}){
+    const previousTab = document.querySelector('.tag-editor-tab.active')?.dataset.tagTab || 'tags';
+    tagEditorDirty = false;
     editingTrack=t;
     editingTracks = Array.isArray(tracksOverride) && tracksOverride.length ? tracksOverride : [t];
     pendingArtworkPath = null;
@@ -7685,7 +7932,7 @@
     document.getElementById('tag-editor-scope').textContent = albumMode
       ? `Changes will be applied to all ${editingTracks.length} tracks in this album.`
       : (bulkMode ? `Changes will be applied to all ${editingTracks.length} selected tracks.` : 'Changes apply to this track.');
-    setTagEditorTab('tags');
+    setTagEditorTab(keepTab ? previousTab : 'tags');
     el.tagStatus.textContent='Loading tags from file…';
 
     // IMPORTANT: never use the cached library metadata as the edit source of truth.
@@ -7738,6 +7985,10 @@
     const lyricOffsets = loaded.map(item => nativeTagValue(item.data?.native,'BEEHIVE_LYRICS_OFFSET'));
     setMerged('tag-start-time', starts, bulkMode, multiValueGhost);
     setMerged('tag-end-time', ends, bulkMode, multiValueGhost);
+    tagTrimDuration = bulkMode ? 0 : (Number(firstData.format?.duration ?? t.duration ?? 0) || 0);
+    syncTrimBoxesFromValue('tag-start-time', multiValueGhost);
+    syncTrimBoxesFromValue('tag-end-time', multiValueGhost);
+    updateTrimSummary();
     setMerged('tag-lyrics-offset', lyricOffsets, bulkMode, multiValueGhost);
     for (const [key,id] of [['REPLAYGAIN_TRACK_GAIN','tag-replaygain-track-gain'],['REPLAYGAIN_TRACK_PEAK','tag-replaygain-track-peak'],['REPLAYGAIN_ALBUM_GAIN','tag-replaygain-album-gain'],['REPLAYGAIN_ALBUM_PEAK','tag-replaygain-album-peak'],['R128_TRACK_GAIN','tag-r128-track-gain']]) {
       setMerged(id, loaded.map(item => nativeTagValue(item.data?.native, key)), bulkMode, multiValueGhost);
@@ -8860,6 +9111,70 @@
     }
   }
 
+  // Puts an expanded album's panel directly after the last card in its
+  // album's row. The row can change whenever the grid reflows (window resize,
+  // dragging a panel divider), so this re-runs on every width change -- it used
+  // to be computed only when the album was opened, which left the panel
+  // stranded mid-row after a resize.
+  //
+  // The row end is computed from the column count and the card's index, never
+  // by taking the panel out to measure: removing and re-inserting it on every
+  // resize frame replayed its open animation and collapsed the grid, which
+  // made the expanded album flash while the window was being resized. The
+  // panel is only moved when its target card actually changes.
+  function albumGridColumnCount(container, firstCard) {
+    const style = getComputedStyle(container);
+    if (/grid/.test(style.display)) {
+      const cols = String(style.gridTemplateColumns || '').trim().split(/\s+/).filter(Boolean).length;
+      if (cols > 0) return cols;
+    }
+    const inner = container.clientWidth - (parseFloat(style.paddingLeft) || 0) - (parseFloat(style.paddingRight) || 0);
+    const cardWidth = firstCard?.getBoundingClientRect().width || 0;
+    const gap = parseFloat(style.columnGap) || 0;
+    return cardWidth > 0 ? Math.max(1, Math.floor((inner + gap) / (cardWidth + gap))) : 1;
+  }
+  function placeInlineAlbumPanel(panel, card) {
+    const container = card?.parentElement;
+    if (!panel || !container) return;
+    const cards = Array.from(container.children).filter(node => node.classList?.contains('album-card'));
+    const index = cards.indexOf(card);
+    if (index < 0) return;
+    const cols = albumGridColumnCount(container, cards[0]);
+    const lastCardInRow = cards[Math.min(cards.length - 1, Math.floor(index / cols) * cols + cols - 1)] || card;
+    if (panel.isConnected && panel.previousElementSibling === lastCardInRow) return;
+    // The open animation belongs to opening the album only, not to moving it.
+    if (panel.isConnected) panel.classList.add('is-placed');
+    else panel.addEventListener('animationend', () => panel.classList.add('is-placed'), { once: true });
+    lastCardInRow.after(panel);
+  }
+  const inlineAlbumReflowObserver = typeof ResizeObserver === 'function'
+    ? new ResizeObserver(entries => {
+      if (inlineAlbumReflowObserver.pending) return;
+      inlineAlbumReflowObserver.pending = requestAnimationFrame(() => {
+        inlineAlbumReflowObserver.pending = 0;
+        for (const entry of entries) {
+          const container = entry.target;
+          // Rows only change with the grid's width; ignore the height changes
+          // that moving the panel itself causes.
+          const width = Math.round(entry.contentRect.width);
+          if (inlineAlbumGridWidths.get(container) === width) continue;
+          inlineAlbumGridWidths.set(container, width);
+          for (const panel of container.querySelectorAll(':scope > .inline-album-dropdown')) {
+            const card = Array.from(container.children).find(node => node.classList?.contains('album-card') && String(node.dataset.key || '') === String(panel.dataset.albumKey || ''));
+            if (card) placeInlineAlbumPanel(panel, card);
+          }
+        }
+      });
+    })
+    : null;
+  const inlineAlbumWatchedGrids = new WeakSet();
+  const inlineAlbumGridWidths = new WeakMap();
+  function watchInlineAlbumReflow(container) {
+    if (!inlineAlbumReflowObserver || !container || inlineAlbumWatchedGrids.has(container)) return;
+    inlineAlbumWatchedGrids.add(container);
+    inlineAlbumReflowObserver.observe(container);
+  }
+
   function toggleInlineAlbum(card, album) {
     const container = card.parentElement;
     if (album?.cover) applyPaletteFromCover(coverSrc(album.cover));
@@ -8894,12 +9209,9 @@
     const panel = makeInlineTrackDropdown(album, card);
     panel.dataset.albumKey = key;
 
-    const cards = Array.from(container.children).filter(node => node.classList?.contains('album-card'));
-    const clickedTop = card.offsetTop;
-    const rowCards = cards.filter(node => Math.abs(node.offsetTop - clickedTop) <= 2);
-    const lastCardInRow = rowCards[rowCards.length - 1] || card;
-    lastCardInRow.after(panel);
     card.classList.add('inline-expanded');
+    placeInlineAlbumPanel(panel, card);
+    watchInlineAlbumReflow(container);
     // The panel must be connected before the shared rotator paints it. This
     // preserves the existing artwork index/timer instead of starting a second
     // rotation clock for the expanded view.
@@ -10421,7 +10733,7 @@
     return loadAndPlayCurrent(requestGeneration, !!freshPlayback);
   }
 
-  async function loadAndPlayCurrent(requestGeneration = playbackLoadRequestGeneration, freshPlayback = false) {
+  async function loadAndPlayCurrent(requestGeneration = playbackLoadRequestGeneration, freshPlayback = false, { startPaused = false } = {}) {
     const t = currentQueue[currentIndex];
     if (!t?.path && !isSpotifyTrack(t)) return;
     if (isSpotifyTrack(t)) { await spotifyPlayCurrent(); return true; }
@@ -10476,7 +10788,7 @@
       // in place and let LOAD replace its URI directly.
       const desired = freshPlayback ? 0 : (Number.isFinite(Number(pendingRestoredOffset)) ? Number(pendingRestoredOffset) : readRememberedTrackPosition(t));
       pendingRestoredOffset = null;
-      const gstLoaded = await gstLoadCurrent(desired, requestGeneration);
+      const gstLoaded = await gstLoadCurrent(desired, requestGeneration, { startPaused });
       await gainPromise;
       if (requestGeneration !== playbackLoadRequestGeneration) return false;
       if (gstLoaded) { applyOutputGain(); return true; }
@@ -11174,6 +11486,7 @@
 
   const paletteCache = new Map();
   let paletteRequestId = 0;
+  let lastPaletteSrc = '';
 
   // Yearly Wrap opens as its own BrowserWindow/process, so it cannot read
   // this window's --accent CSS var directly. Convert to "r,g,b" and hand it
@@ -11190,6 +11503,7 @@
 
   function applyPaletteFromCover(src) {
     if (!src) return;
+    lastPaletteSrc = src;
     const isLightTheme = document.documentElement.dataset.hiveTheme === 'light';
     const cacheKey = `${src}|${isLightTheme ? 'light' : 'dark'}`;
     const cached = paletteCache.get(cacheKey);
@@ -11663,6 +11977,10 @@
     diagnosticMark('VOLUME INPUT', { value: Number(el.pbVolume.value) || 0, provider: activePlaybackProvider, gstActive });
     if (activePlaybackProvider === 'spotify' && !spotifyVolumeUserInteracting) spotifyVolumeInteractionUntil = Date.now() + 900;
     audioEngine.volume = value;
+    // A leftover hard mute (e.g. from an older session) must never leave the
+    // slider moving with no sound. Clear it only after the new gain has been
+    // sent, so unmuting can't briefly play at the previous volume.
+    if (audio.muted && value > 0) audio.muted = false;
     el.pbVolume.style.setProperty('--volume-progress', `${Math.max(0, Math.min(100, Number(el.pbVolume.value) || 0))}%`);
     renderVolumeIcon();
     scheduleVolumePersistence();
@@ -11673,28 +11991,46 @@
   // scrolling while the pointer is over the control.
   el.pbVolume.addEventListener('wheel', (e) => {
     e.preventDefault();
+    if (el.pbVolume.disabled) return;
     const current = Number(el.pbVolume.value) || 0;
     const direction = e.deltaY < 0 ? 1 : -1;
     const next = Math.max(0, Math.min(100, current + (direction * 5)));
     if (next === current) return;
     el.pbVolume.value = String(next);
     el.pbVolume.dispatchEvent(new Event('input', { bubbles: true }));
+    el.pbVolume.dispatchEvent(new Event('change', { bubbles: true }));
   }, { passive: false });
   el.pbVolume.style.setProperty('--volume-progress', `${Math.max(0, Math.min(100, Number(el.pbVolume.value) || 0))}%`);
   audio.volume = audioEngine.volume;
 
+  // Mute is simply volume 0, the same state the slider reaches when dragged to
+  // the left. The icon used to toggle a separate hard mute while leaving the
+  // engine at its old gain, so the two states disagreed at 0: dragging up from
+  // a muted 0 moved the slider with no sound, and clicking the icon while the
+  // slider sat at 0 jumped the slider to 80% without changing the real volume.
+  // Going through audioEngine.volume also means mute/unmute use the same
+  // smoothed gain ramp as the slider instead of an instant cut.
+  // volBeforeMute is the last volume the user settled on above 0 (a drag's
+  // commit, a wheel step, or keyboard), not whatever value a drag passed
+  // through on its way down to 0.
   let volBeforeMute = Number(el.pbVolume.value) || 80;
+  el.pbVolume.addEventListener('change', () => {
+    const v = Number(el.pbVolume.value) || 0;
+    if (v > 0) volBeforeMute = v;
+  });
   el.pbVolIcon.addEventListener('click', () => {
-    if (!audio.muted && Number(el.pbVolume.value) > 0) {
-      volBeforeMute = Number(el.pbVolume.value);
-      audio.muted = true;
-      el.pbVolume.value = '0';
-    } else {
-      audio.muted = false;
-      el.pbVolume.value = String(volBeforeMute || 80);
-      audio.volume = audioEngine.volume;
+    if (document.body.classList.contains('bit-perfect-output')) {
+      audio.muted = !audio.muted;
+      renderVolumeIcon();
+      return;
     }
-    el.pbVolume.style.setProperty('--volume-progress', `${Math.max(0, Math.min(100, Number(el.pbVolume.value) || 0))}%`);
+    const current = Number(el.pbVolume.value) || 0;
+    const target = (current > 0 && !audio.muted) ? 0 : Math.max(1, Math.min(100, volBeforeMute || 80));
+    if (current > 0) volBeforeMute = current;
+    el.pbVolume.value = String(target);
+    audioEngine.volume = target / 100;
+    if (audio.muted) audio.muted = false;
+    el.pbVolume.style.setProperty('--volume-progress', `${target}%`);
     renderVolumeIcon();
     saveLastPlayback();
   });
@@ -11787,6 +12123,26 @@
     setTrackLove(t, !t.loved, false);
     if (!el.songsTable.classList.contains('hidden')) renderCurrentView();
   });
+
+  // Adds a track unless one with the same path is already in the library, and
+  // returns the canonical object. The path index can briefly be incomplete
+  // (applyLibraryProgressive rebuilds it in chunks), so a miss is confirmed
+  // against the list itself before adding -- a song can never appear twice.
+  function addLibraryTrackOnce(track) {
+    const filePath = String(track?.path || '');
+    if (!filePath) return null;
+    const indexed = libraryTrackByPath.get(filePath);
+    if (indexed) return indexed;
+    const listed = library.tracks.find(t => String(t?.path || '') === filePath);
+    if (listed) {
+      Object.assign(listed, track);
+      libraryTrackByPath.set(filePath, listed);
+      return listed;
+    }
+    library.tracks.push(track);
+    libraryTrackByPath.set(filePath, track);
+    return track;
+  }
 
   // ---------------- library loading / scanning ----------------
   function applyLibrary(lib, options = {}) {
@@ -12119,7 +12475,14 @@
     // begin the normal quiet reconciliation. This preserves the existing cache
     // and scan behavior without making first interaction wait for the cache.
     Promise.all([cachedPromise, playlistsPromise]).then(async ([cachedSnapshot, playlistList]) => {
-      const cached = await decodeStartupLibrarySnapshot(cachedSnapshot);
+      let cached = await decodeStartupLibrarySnapshot(cachedSnapshot);
+      // A compressed cache that fails to decode used to leave Hive open on an
+      // empty library (the startup scan only sends changes). Ask for the plain
+      // JSON cache / database copy instead.
+      if (cachedSnapshot?.compressed && !cached?.tracks?.length) {
+        startupMark('LIBRARY CACHE FALLBACK TO PLAIN JSON');
+        try { cached = await window.beehive.getCachedLibrary({ skipGzip: true }); } catch { cached = null; }
+      }
       startupMark('CACHE AND PLAYLIST SNAPSHOTS READY', { cachedTracks:cached?.tracks?.length || 0, playlists:Array.isArray(playlistList)?playlistList.length:0, elapsedMs:Number((performance.now()-startupPerfStart).toFixed(1)) });
       playlists = (Array.isArray(playlistList) ? playlistList : []).map(normalizeSpotifyPlaylistRecord);
       migrateFavoritesSidebarToCanonicalPlaylist();
@@ -12171,6 +12534,13 @@
       }), 900);
     });
   }
+
+  el.scanCancelBtn?.addEventListener('click', () => {
+    el.scanCancelBtn.disabled = true;
+    el.scanCancelBtn.textContent = 'Stopping…';
+    el.scanLabel.textContent = 'Stopping scan…';
+    window.beehive.cancelLibraryScan?.().catch(() => {});
+  });
 
   el.addFolderBtn.addEventListener('click', async () => {
     const config = await window.beehive.addFolder();
@@ -12284,11 +12654,23 @@
       // flood Electron with tens of thousands of individual IPC messages.
       const existing = libraryTrackByPath.get(filePath) || null;
       const wasLoved = !!existing?.loved;
-      track.comment = normalizeMetadataText(track.comment);
-      track.lyrics = normalizeLyricsText(track.lyrics);
-      if (existing) Object.assign(existing, track);
-      else library.tracks.push(track);
-      libraryTrackByPath.set(filePath, existing || track);
+      // Only normalize fields the record actually carries: a partial update
+      // (e.g. a recovered Love write sends just { path, loved }) must not
+      // blank the existing track's comment/lyrics via Object.assign below.
+      if ('comment' in track) track.comment = normalizeMetadataText(track.comment);
+      if ('lyrics' in track) track.lyrics = normalizeLyricsText(track.lyrics);
+      if (!existing && !('title' in track)) continue; // partial update for a track not in the library
+      if (existing) {
+        Object.assign(existing, track);
+        if ('loved' in track && wasLoved !== !!track.loved) syncLoveStateForPath(filePath, !!track.loved);
+      } else {
+        // An earlier edit put the love-sync line between the if and its else, so
+        // this push ran for every update to a track already in the library and
+        // duplicated it (e.g. both files touched by an artwork save showed up
+        // twice). addLibraryTrackOnce also guards an incomplete path index.
+        addLibraryTrackOnce(track);
+      }
+      libraryTrackByPath.set(filePath, libraryTrackByPath.get(filePath) || existing || track);
       applied++;
       if (specialView === 'playlist' && activePlaylistId && wasLoved !== !!track.loved) needsViewRefresh = true;
     }
@@ -12331,6 +12713,10 @@
     scanRunning = true;
     el.scanProgress.classList.remove('hidden');
     if (el.scanTitle) el.scanTitle.textContent = 'Library scan';
+    // Only full scans can be stopped; the changed-files path is a handful of
+    // watcher-reported files and finishes on its own almost immediately.
+    const cancellable = !(changedPaths?.length && !forceFull);
+    if (el.scanCancelBtn) { el.scanCancelBtn.hidden = !cancellable; el.scanCancelBtn.disabled = false; el.scanCancelBtn.textContent = 'Stop'; }
     el.scanFill.style.width = '0%';
     el.scanProgress.classList.add('busy');
     el.scanLabel.textContent = forceFull ? 'Reading tags from library…' : 'Starting scan…';
@@ -12357,7 +12743,15 @@
       startupMark('SCAN WORK BEGIN', { forceFull, changedCount:Array.isArray(changedPaths)?changedPaths.length:0 });
       const lib = changedPaths?.length && !forceFull
         ? await window.beehive.scanChangedLibrary(changedPaths)
-        : await window.beehive.scanLibrary({ forceFull });
+        : await window.beehive.scanLibrary({ forceFull, fullPayload: !library.tracks.length });
+      if (lib?.cancelled) {
+        startupMark('SCAN CANCELLED');
+        el.scanProgress.classList.remove('busy');
+        el.scanLabel.textContent = 'Scan stopped';
+        if (!library.tracks.length) el.emptyState.textContent = 'Scan stopped. Rescan from Settings → Library when ready.';
+        await new Promise(resolve => setTimeout(resolve, 900));
+        return;
+      }
       startupMark('SCAN RESULT RECEIVED', {
         incremental: !!lib?.incremental,
         tracks: lib?.tracks?.length || 0,
@@ -12371,6 +12765,7 @@
         // from the main process. This avoids a ~93 MB IPC payload and the
         // resulting ~1.5 s renderer event-loop stall seen in the performance audit.
         const removedPaths = Array.isArray(lib.removedPaths) ? lib.removedPaths : [];
+        let removedFromLibrary = 0;
         for (const removedPath of removedPaths) {
           const removedKey = String(removedPath);
           const existing = libraryTrackByPath.get(removedKey);
@@ -12381,7 +12776,7 @@
           const oldTitleKeys = oldTitle ? [`${oldTitle}||${oldArtist}`, `${oldTitle}||`] : [];
           const oldBase = oldNormalized.split('/').pop();
           const index = library.tracks.indexOf(existing);
-          if (index >= 0) library.tracks.splice(index, 1);
+          if (index >= 0) { library.tracks.splice(index, 1); removedFromLibrary++; }
           libraryTrackByPath.delete(removedKey);
           if (oldNormalized && libraryTrackByNormalizedPath.get(oldNormalized) === existing) libraryTrackByNormalizedPath.delete(oldNormalized);
           for (const key of oldTitleKeys) if (libraryTrackByTitleArtist.get(key) === existing) libraryTrackByTitleArtist.delete(key);
@@ -12406,15 +12801,34 @@
         }
         const changedTracks = Array.isArray(lib.changed) ? lib.changed : [];
         const indexKeysToRefresh = new Set();
+        // Only rebuild/re-render the album views when something they show
+        // changed. A Love write (e.g. one finished on the next launch), a
+        // rating or a play count changes the file, so the scan reports it --
+        // but that can't change any album card, and re-rendering the whole
+        // grid for it made the albums view visibly refresh for no reason.
+        const albumViewSignature = t => JSON.stringify([
+          t?.album, t?.albumArtist, t?.artist, t?.year, t?.albumUri, t?.compilation,
+          t?.cover, Array.isArray(t?.covers) ? t.covers.map(c => c?.file || '').join('|') : '',
+          t?.title, t?.track, t?.disk, Math.round(Number(t?.duration) || 0)
+        ]);
+        let albumViewsAffected = removedFromLibrary > 0;
+        const loveChanges = [];
         for (const track of changedTracks) {
           track.comment = normalizeMetadataText(track.comment);
           track.lyrics = normalizeLyricsText(track.lyrics);
           const filePath = String(track?.path || '');
           if (!filePath) continue;
           const existing = libraryTrackByPath.get(filePath);
-          if (existing) Object.assign(existing, track);
-          else library.tracks.push(track);
-          const current = existing || track;
+          if (existing) {
+            const before = albumViewSignature(existing);
+            const wasLoved = !!existing.loved;
+            Object.assign(existing, track);
+            if (albumViewSignature(existing) !== before) albumViewsAffected = true;
+            if (wasLoved !== !!existing.loved) loveChanges.push(existing);
+          } else {
+            if (addLibraryTrackOnce(track) === track) albumViewsAffected = true;
+          }
+          const current = libraryTrackByPath.get(filePath) || existing || track;
           libraryTrackByPath.set(filePath, current);
           indexKeysToRefresh.add(current);
         }
@@ -12439,10 +12853,17 @@
           const base = np.split('/').pop();
           if (base && !libraryTrackByBasename.has(base)) libraryTrackByBasename.set(base, track);
         }
-        albums = buildAlbums(library.tracks);
-        artistPickerEntries = [];
-        artistPickerEntriesReady = false;
-        applyTabView((tabs.find(t => t.id === activeTabId) || {}).kind || 'music');
+        for (const track of loveChanges) syncLoveStateForPath(track.path, !!track.loved);
+        if (albumViewsAffected) {
+          albums = buildAlbums(library.tracks);
+          artistPickerEntries = [];
+          artistPickerEntriesReady = false;
+          applyTabView((tabs.find(t => t.id === activeTabId) || {}).kind || 'music');
+        } else if (changedTracks.length && (specialView === 'playlist' || viewMode === 'songs')) {
+          // Track-level changes (Love, rating, plays) only matter to views that
+          // list individual tracks, e.g. Favorites or the song table.
+          renderCurrentView();
+        }
       } else {
         await applyLibraryProgressive(lib, { status: false });
       }
@@ -12463,11 +12884,12 @@
       // makes the player hitch even though the scan itself has finished.
       el.scanFill.style.width = '100%';
       el.scanProgress.classList.remove('busy');
-      el.scanLabel.textContent = `${lib?.tracks?.length || 0} tracks found`;
+      el.scanLabel.textContent = `${(lib?.incremental ? library.tracks.length : lib?.tracks?.length) || 0} tracks found`;
       await new Promise(resolve => setTimeout(resolve, 500));
     } finally {
       off();
       scanRunning = false;
+      if (el.scanCancelBtn) el.scanCancelBtn.hidden = true;
       startupMark('SCAN EXIT', { forceFull, tracks:library?.tracks?.length || 0 });
       if (!tagOperationActive) el.scanProgress.classList.add('hidden');
     }
@@ -12765,11 +13187,17 @@
     // Brand-new profiles start with the compact sidebar layout shown in the
     // reference UI. The dividers are persisted as ordinary custom divider entries
     // after the first preference save, so existing users are never rewritten.
+    // Fresh-install layout (per the user's reference): Music, Playlists,
+    // Favorites (inserted after Playlists by
+    // migrateFavoritesSidebarToCanonicalPlaylist), one divider, then History,
+    // Podcasts, Top 25 Most Played, Recently Added, Yearly Wrap. The plugin
+    // Sandbox launcher is not shown by default; it stays available (hidden) in
+    // Settings → Sidebar.
     if (!hasSavedNavigation) {
-      const dividerOne = { id:'divider-top', type:'divider', label:'' };
-      const dividerTwo = { id:'divider-bottom', type:'divider', label:'' };
-      custom = [dividerOne, dividerTwo];
-      order = ['music', 'pl-explorer', dividerOne.id, 'pl-top', 'podcasts', 'history', 'pl-recent', dividerTwo.id, 'sandbox', 'yearly-wrap'];
+      const divider = { id:'divider-top', type:'divider', label:'' };
+      custom = [divider];
+      order = ['music', 'pl-explorer', divider.id, 'history', 'podcasts', 'pl-top', 'pl-recent', 'yearly-wrap', 'sandbox'];
+      hidden = new Set(['sandbox']);
     }
     order = order.filter(id => id !== 'explorer');
     hidden.delete('explorer');
@@ -14869,12 +15297,95 @@
   // click-through track switching can await this same save logic directly,
   // instead of dispatching a synthetic click and having no way to know when
   // the async save actually finished.
+  // ---- Trim (start/end time) controls ----
+  // Each is three boxes (hours / minutes / seconds) backed by the hidden
+  // #tag-start-time / #tag-end-time inputs, which keep the saved text format
+  // (m:ss or h:mm:ss, optional fraction) that the save and playback code read.
+  let tagTrimDuration = 0;
+  function formatTrimValue(total) {
+    if (!(total > 0)) return '';
+    const h = Math.floor(total / 3600);
+    const m = Math.floor((total % 3600) / 60);
+    const sec = Math.round((total % 60) * 100) / 100;
+    const ss = (sec < 10 ? '0' : '') + String(sec);
+    return h ? `${h}:${String(m).padStart(2, '0')}:${ss}` : `${m}:${ss}`;
+  }
+  function trimRow(targetId) { return document.querySelector(`.tag-time-row[data-time-target="${targetId}"]`); }
+  function syncTrimBoxesFromValue(targetId, multiLabel = '') {
+    const row = trimRow(targetId); const hidden = document.getElementById(targetId);
+    if (!row || !hidden) return;
+    const boxes = { h: row.querySelector('[data-part="h"]'), m: row.querySelector('[data-part="m"]'), s: row.querySelector('[data-part="s"]') };
+    const mixed = !hidden.value && multiLabel && hidden.placeholder === multiLabel;
+    row.classList.toggle('is-mixed', !!mixed);
+    row.removeAttribute('data-invalid');
+    const total = parseTimeValue(hidden.value);
+    for (const [part, node] of Object.entries(boxes)) {
+      if (!node) continue;
+      node.placeholder = mixed ? '–' : '0';
+      if (!(total > 0)) { node.value = ''; continue; }
+      node.value = part === 'h' ? String(Math.floor(total / 3600))
+        : part === 'm' ? String(Math.floor((total % 3600) / 60))
+        : String(Math.round((total % 60) * 100) / 100);
+    }
+  }
+  function syncTrimValueFromBoxes(row) {
+    const hidden = document.getElementById(row.dataset.timeTarget);
+    if (!hidden) return;
+    const read = part => row.querySelector(`[data-part="${part}"]`)?.value.trim() || '';
+    const raw = { h: read('h'), m: read('m'), s: read('s') };
+    row.classList.remove('is-mixed');
+    if (!raw.h && !raw.m && !raw.s) { hidden.value = ''; row.removeAttribute('data-invalid'); updateTrimSummary(); return; }
+    const h = Number(raw.h || 0), m = Number(raw.m || 0), sec = Number(raw.s || 0);
+    let problem = '';
+    if (![h, m, sec].every(n => Number.isFinite(n) && n >= 0)) problem = 'Use whole numbers for hours and minutes, and a number for seconds.';
+    else if (!Number.isInteger(h) || !Number.isInteger(m)) problem = 'Hours and minutes must be whole numbers.';
+    else if (m > 59) problem = 'Minutes must be 0–59.';
+    else if (sec >= 60) problem = 'Seconds must be less than 60.';
+    if (problem) { row.dataset.invalid = problem; updateTrimSummary(); return; }
+    row.removeAttribute('data-invalid');
+    hidden.value = formatTrimValue(h * 3600 + m * 60 + sec);
+    updateTrimSummary();
+  }
+  function updateTrimSummary() {
+    const node = document.getElementById('tag-time-summary');
+    if (!node) return;
+    const invalid = document.querySelector('.tag-time-row[data-invalid]');
+    node.classList.toggle('is-error', !!invalid);
+    if (invalid) { node.textContent = invalid.dataset.invalid; return; }
+    const start = parseTimeValue(document.getElementById('tag-start-time')?.value);
+    const end = parseTimeValue(document.getElementById('tag-end-time')?.value);
+    const length = tagTrimDuration;
+    const parts = [];
+    if (length > 0) parts.push(`Song length ${fmtTime(length)}`);
+    if (start > 0 || end > 0) {
+      const to = end > 0 ? end : length;
+      if (end > 0 && end <= start) { node.classList.add('is-error'); node.textContent = 'The end must be after the start.'; return; }
+      if (length > 0 && start >= length) { node.classList.add('is-error'); node.textContent = `The start must be before the end of the song (${fmtTime(length)}).`; return; }
+      if (length > 0 && end > length) { node.classList.add('is-error'); node.textContent = `The end is past the end of the song (${fmtTime(length)}).`; return; }
+      parts.push(to > 0 ? `plays ${fmtTime(start)} → ${fmtTime(to)} (${fmtTime(to - start)})` : `starts at ${fmtTime(start)}`);
+    } else if (document.querySelector('.tag-time-row.is-mixed')) {
+      parts.push('Different on the selected tracks; leave empty to keep each one.');
+    } else {
+      parts.push('plays the whole song');
+    }
+    node.textContent = parts.join(' · ');
+  }
+  document.querySelectorAll('.tag-time-row').forEach(row => {
+    row.querySelectorAll('input[data-part]').forEach(input => input.addEventListener('input', () => syncTrimValueFromBoxes(row)));
+    row.querySelector('.tag-time-clear')?.addEventListener('click', () => {
+      row.querySelectorAll('input[data-part]').forEach(input => { input.value = ''; });
+      syncTrimValueFromBoxes(row);
+    });
+  });
+
   async function saveTagEdits() {
     if(!editingTrack)return;
     const v=id=>document.getElementById(id)?.value.trim()||'';
     let custom={};
     try{custom=v('tag-advanced')?JSON.parse(v('tag-advanced')):{};}catch{el.tagStatus.textContent='Advanced tags must be valid JSON.';return;}
     const bulk = editingTracks.length > 1;
+    const invalidTrim = document.querySelector('.tag-time-row[data-invalid]');
+    if (invalidTrim) { el.tagStatus.textContent = invalidTrim.dataset.invalid; return; }
     const timePattern = /^\d+(?::\d{1,2}(?::\d{1,2})?)?(?:\.\d+)?$/;
     const startText = v('tag-start-time'), endText = v('tag-end-time');
     if ((startText && !timePattern.test(startText)) || (endText && !timePattern.test(endText))) {
@@ -14890,6 +15401,10 @@
       const duration = Number(item.data?.format?.duration ?? item.track?.duration ?? 0) || 0;
       if (duration > 0 && startSeconds >= duration && startText) {
         el.tagStatus.textContent = `Start time must be before the track duration (${fmtTime(duration)}).`;
+        return;
+      }
+      if (duration > 0 && endText && endSeconds > duration + 0.5) {
+        el.tagStatus.textContent = `End time is past the end of the song (${fmtTime(duration)}).`;
         return;
       }
     }
@@ -14922,6 +15437,26 @@
             const outKey = key === 'albumartist' ? 'albumArtist' : key;
             perTrack[outKey]=shownValue;
           }
+        }
+        // Track/disc totals ("3 of 12") live in their own boxes and were never
+        // saved. Send "number/total"; "number/" tells the writer the total was
+        // cleared. In bulk mode each file keeps its own number when only the
+        // shared total changed.
+        for (const [key, totalId] of [['track', 'tag-track-total'], ['disk', 'tag-disc-total']]) {
+          const numberNode = document.getElementById(key === 'track' ? 'tag-track' : 'tag-disk');
+          const totalNode = document.getElementById(totalId);
+          if (!numberNode || !totalNode) continue;
+          const shownNumber = numberNode.value.trim();
+          const shownTotal = totalNode.value.trim();
+          const originalNumber = String(common?.[key]?.no ?? '');
+          const originalTotal = String(common?.[key]?.of ?? '');
+          const originalTotalMerged = bulk ? mergeEditorValues(editingTagSnapshots.map(item => String(item.data?.common?.[key]?.of ?? ''))) : originalTotal;
+          const totalChanged = editorComparable(shownTotal) !== editorComparable(originalTotalMerged);
+          const numberChanged = key in perTrack;
+          if (!totalChanged && !numberChanged) continue;
+          const number = numberChanged ? String(perTrack[key] ?? '') : (shownNumber || originalNumber);
+          const total = totalChanged ? shownTotal : originalTotal;
+          perTrack[key] = number ? (total ? `${number}/${total}` : `${number}/`) : '';
         }
         // Tags (2) fields map directly to their native/custom tag IDs. In bulk mode,
         // only write fields whose visible value differs from the common value.
@@ -15021,6 +15556,13 @@
             else if (modelKey === 'p_count') track.p_count = value;
             else if (modelKey.startsWith('custom')) track[modelKey] = value;
             else if (['START_TIME','END_TIME'].includes(modelKey)) track[modelKey === 'START_TIME' ? 'startTime' : 'endTime'] = value;
+            else if (modelKey === 'track' || modelKey === 'disk') {
+              // The saved value is "number/total"; the in-memory model keeps
+              // them as separate numbers like the scanner does.
+              const [number, total] = String(value || '').split('/');
+              track[modelKey] = number ? Number(number) || number : null;
+              track[modelKey === 'track' ? 'trackCount' : 'discCount'] = total ? Number(total) || null : null;
+            }
             else if (modelKey === 'BEEHIVE_EXCLUDE_PLAYBACK') track.excludePlayback = value;
             else if (modelKey === 'BEEHIVE_DO_NOT_CROSSFADE') track.doNotCrossfade = value;
             else if (modelKey === 'BEEHIVE_REMEMBER_POSITION') track.rememberPosition = value;
@@ -15034,7 +15576,19 @@
           track._searchText = '';
           backgroundTagJobs.push({ path: track.path, perTrack });
         }
-        if (window.__beehiveRemoveFrontArtwork) {
+        const arrangeFile = artworkArrangement ? artworkArrangementFiles.find(f => f.path === String(track.path || '')) : null;
+        if (arrangeFile && artworkArrangementChangedFor(arrangeFile)) {
+          const order = artworkArrangement.map(p => ({ hash: p.hash, type: p.type, description: p.description || '' }));
+          // Optimistic: show the new arrangement now, using this track's own
+          // cached picture files (matched by image hash).
+          const own = new Map((Array.isArray(track.covers) ? track.covers : []).map(c => [String(c?.hash || '').toLowerCase(), c]));
+          const arranged = order.map(o => ({ ...(own.get(o.hash) || {}), type: o.type })).filter(c => c.file || c.dataUrl);
+          if (arranged.length === order.length) {
+            track.covers = arranged;
+            track.cover = arranged.find(c => normalizeArtworkType(c.type) === 'Cover (Front)')?.file || arranged[0]?.file || track.cover;
+          }
+          backgroundArtworkJobs.push({ path: track.path, action: 'arrange', order });
+        } else if (window.__beehiveRemoveFrontArtwork) {
           const remaining = (Array.isArray(track.covers) ? track.covers : []).filter(p => normalizeArtworkType(p?.type || 'Other') !== 'Cover (Front)');
           track.covers = remaining;
           track.cover = remaining[0]?.file || null;
@@ -15111,6 +15665,11 @@
         if (!key) continue;
         const entry = metadataByPath.get(key) || { kind:'metadata', path:key, tags:{}, artwork:null, operation:'metadata' };
         entry.operation = 'artwork';
+        if (job.action === 'arrange') {
+          entry.artwork = { action: 'arrange', order: job.order };
+          metadataByPath.set(key, entry);
+          continue;
+        }
         entry.artwork = {
           action: job.action === 'removeFront' ? 'remove_front' :
                   job.action === 'removeAll' ? 'remove_all' :
@@ -15133,6 +15692,9 @@
     }
   }
   el.tagSave.addEventListener('click', saveTagEdits);
+  for (const type of ['input', 'change']) {
+    el.tagModal?.addEventListener(type, (event) => { if (event.isTrusted) tagEditorDirty = true; }, true);
+  }
 
   const audioIntegrityScanBtn = document.querySelector('#audio-integrity-scan-btn');
   const audioIntegrityScanCancelBtn = document.querySelector('#audio-integrity-scan-cancel-btn');
@@ -15386,45 +15948,129 @@
   const audioOutputSelect = document.getElementById('setting-audio-output');
   const audioOutputStatus = document.getElementById('audio-output-status');
   const audioOutputRefreshBtn = document.getElementById('audio-output-refresh-btn');
-  const audioOutputApplyBtn = document.getElementById('audio-output-apply-btn');
-  let audioOutputConfigId = '';
+  const bitPerfectToggle = document.getElementById('setting-bit-perfect');
+  let audioOutputs = [];
+  let audioOutputDefaultId = '';
+  // Set only from what the native helper reports (BIT_PERFECT when it really
+  // opened the card exclusively, BIT_PERFECT_UNAVAILABLE when the card was busy
+  // and it fell back to the shared mixer), never from the saved setting alone.
+  let bitPerfectActiveOutput = '';
+  let bitPerfectNoticeShown = false;
+  window.addEventListener('hive:bit-perfect', (event) => {
+    const { active, reason } = event.detail || {};
+    bitPerfectActiveOutput = active ? 'active' : '';
+    applyBitPerfectVolumeLock();
+    if (!active && reason && !bitPerfectNoticeShown) {
+      bitPerfectNoticeShown = true;
+      showAppNotice(reason, 'Bit-perfect output');
+    }
+    if (audioOutputStatus) audioOutputStatus.textContent = active ? 'Bit-perfect output active.' : (reason || audioOutputStatus.textContent);
+  });
+  // Bit-perfect output never scales samples, so Hive's own volume can't work:
+  // pin the slider at 100% and leave loudness to the DAC. The speaker icon
+  // still mutes (through the player's mute, not the gain).
+  function applyBitPerfectVolumeLock() {
+    const locked = !!bitPerfectActiveOutput;
+    document.body.classList.toggle('bit-perfect-output', locked);
+    if (!el.pbVolume) return;
+    el.pbVolume.disabled = locked;
+    if (!locked) {
+      el.pbVolume.closest('.playbar-volume')?.removeAttribute('title');
+      el.pbVolume.setAttribute('aria-label', 'Volume');
+      renderVolumeSliderFromEngine(audioEngine.volume);
+    }
+    if (locked) {
+      el.pbVolume.value = '100';
+      el.pbVolume.style.setProperty('--volume-progress', '100%');
+      el.pbVolume.setAttribute('aria-label', 'Volume (fixed at 100% for bit-perfect output)');
+      el.pbVolume.closest('.playbar-volume')?.setAttribute('title', "Bit-perfect output: Hive's volume is fixed at 100%. Use your DAC or amplifier volume.");
+      renderVolumeIcon();
+    }
+  }
+  function setAudioOutputStatus(text) { if (audioOutputStatus) audioOutputStatus.textContent = text; }
+  function describeActiveOutput() {
+    const chosen = String(audioOutputSelect?.value || '');
+    const target = audioOutputs.find(o => o.id === (chosen || audioOutputDefaultId));
+    const name = target?.name || (chosen ? chosen : 'System default');
+    if (bitPerfectToggle?.checked) return `Bit-perfect to ${name}.`;
+    return chosen ? `Playing through ${name}.` : `Playing through the system default${target ? ` (${target.name})` : ''}.`;
+  }
   async function refreshAudioOutputs() {
     if (!audioOutputSelect || !window.beehive.listAudioOutputs) return;
     audioOutputRefreshBtn && (audioOutputRefreshBtn.disabled = true);
     try {
       const [result, config] = await Promise.all([window.beehive.listAudioOutputs(), window.beehive.getConfig?.()]);
-      audioOutputConfigId = String(config?.audioOutputDevice || '').trim();
-      const outputs = Array.isArray(result?.outputs) ? result.outputs : [];
+      audioOutputs = Array.isArray(result?.outputs) ? result.outputs : [];
+      audioOutputDefaultId = String(result?.defaultId || '');
+      // Older configs stored only audioOutputDevice (possibly an alsa: id from
+      // the first bit-perfect version); map that back onto the two controls.
+      const saved = String(config?.audioOutputDevice || '').trim();
+      const savedSink = config?.audioOutputSink != null
+        ? String(config.audioOutputSink || '')
+        : (saved.startsWith('alsa:') ? (audioOutputs.find(o => o.alsaId === saved)?.id || '') : saved);
+      const savedBitPerfect = config?.audioBitPerfect != null ? !!config.audioBitPerfect : saved.startsWith('alsa:');
       audioOutputSelect.innerHTML = '<option value="">System default</option>';
-      for (const output of outputs) {
+      for (const output of audioOutputs) {
         const option = document.createElement('option');
         option.value = String(output.id || '');
         option.textContent = String(output.name || output.description || output.id || 'Audio output');
         audioOutputSelect.appendChild(option);
       }
-      audioOutputSelect.value = audioOutputConfigId;
-      if (audioOutputSelect.value !== audioOutputConfigId) audioOutputSelect.value = '';
-      if (!result?.supported) audioOutputStatus && (audioOutputStatus.textContent = result?.reason || 'Audio output selection is unavailable.');
-      else if (!outputs.length) audioOutputStatus && (audioOutputStatus.textContent = 'No selectable outputs were reported. Hive will use the system default.');
-      else {
-        const active = outputs.find(x => x.id === audioOutputConfigId);
-        audioOutputStatus && (audioOutputStatus.textContent = active ? `Selected: ${active.name}` : (result.defaultId ? `System default: ${outputs.find(x => x.id === result.defaultId)?.name || result.defaultId}` : 'System default output'));
-      }
+      audioOutputSelect.value = savedSink;
+      if (audioOutputSelect.value !== savedSink) audioOutputSelect.value = '';
+      if (bitPerfectToggle) bitPerfectToggle.checked = savedBitPerfect;
+      if (!result?.supported) setAudioOutputStatus(result?.reason || 'Audio output selection is unavailable.');
+      else setAudioOutputStatus(describeActiveOutput());
     } catch (error) {
-      audioOutputStatus && (audioOutputStatus.textContent = error?.message || 'Could not enumerate audio outputs.');
+      setAudioOutputStatus(error?.message || 'Could not list audio outputs.');
     } finally { audioOutputRefreshBtn && (audioOutputRefreshBtn.disabled = false); }
   }
+
+  // Output changes apply live: save, restart the native player (it reads the
+  // output at launch), then reload the current local track at the same
+  // position -- playing if it was playing, paused if it was paused.
+  async function applyAudioOutputLive() {
+    const choice = { sink: String(audioOutputSelect?.value || ''), bitPerfect: !!bitPerfectToggle?.checked };
+    return (async () => {
+      audioOutputSelect && (audioOutputSelect.disabled = true);
+      bitPerfectToggle && (bitPerfectToggle.disabled = true);
+      setAudioOutputStatus('Switching output…');
+      try {
+        const result = await window.beehive.setAudioOutput?.(choice);
+        if (result?.error) {
+          if (bitPerfectToggle) bitPerfectToggle.checked = false;
+          showAppNotice(result.error, 'Bit-perfect output');
+        }
+        const t = currentQueue[currentIndex];
+        const isLocal = !!t?.path && !isSpotifyTrack(t) && !isPodcastTrack(t) && activePlaybackProvider === 'local';
+        const hadTrack = isLocal && gstActive;
+        const wasPlaying = hadTrack && !audioEngine.paused;
+        const position = hadTrack ? Math.max(0, Number(audioEngine.currentTime) || 0) : 0;
+        bitPerfectNoticeShown = false;
+        // Until the new helper reports otherwise, assume shared output.
+        bitPerfectActiveOutput = '';
+        applyBitPerfectVolumeLock();
+        if (window.beehive.gstreamerRestart && !(await recoverFromGstFatalError())) {
+          setAudioOutputStatus('Saved, but the audio engine could not restart. Press Play to try again.');
+          return;
+        }
+        if (hadTrack) {
+          pendingRestoredOffset = position;
+          const requestGeneration = ++playbackLoadRequestGeneration;
+          await loadAndPlayCurrent(requestGeneration, false, { startPaused: !wasPlaying });
+        }
+        setAudioOutputStatus(describeActiveOutput());
+      } catch (error) {
+        setAudioOutputStatus(error?.message || 'Could not switch the output.');
+      } finally {
+        audioOutputSelect && (audioOutputSelect.disabled = false);
+        bitPerfectToggle && (bitPerfectToggle.disabled = false);
+      }
+    })();
+  }
+  audioOutputSelect?.addEventListener('change', () => { void applyAudioOutputLive(); });
+  bitPerfectToggle?.addEventListener('change', () => { void applyAudioOutputLive(); });
   audioOutputRefreshBtn?.addEventListener('click', () => { void refreshAudioOutputs(); });
-  audioOutputApplyBtn?.addEventListener('click', async () => {
-    const id = String(audioOutputSelect?.value || '').trim();
-    try {
-      const result = await window.beehive.setAudioOutput?.(id);
-      audioOutputConfigId = id;
-      audioOutputStatus && (audioOutputStatus.textContent = id ? 'Output saved. Restart Hive to route playback to this device.' : 'System default saved. Restart Hive to apply it.');
-      if (result?.restartRequired) audioOutputApplyBtn.textContent = 'Saved — restart Hive';
-      setTimeout(() => { if (audioOutputApplyBtn) audioOutputApplyBtn.textContent = 'Apply output'; }, 3000);
-    } catch (error) { audioOutputStatus && (audioOutputStatus.textContent = error?.message || 'Could not save the output device.'); }
-  });
   void refreshAudioOutputs();
 
   const replayGainModeSelect = document.getElementById('setting-replaygain-mode');
@@ -15673,6 +16319,41 @@
     customCssRemoteImports.clear();
   }
 
+  // Every theme (the stock Light/Dark files included) is applied as a
+  // themes-folder stylesheet through applyCustomCss, which never set
+  // data-hive-theme. So choosing Light left data-hive-theme unset: none of the
+  // html[data-hive-theme="light"] rules applied, and applyPaletteFromCover()
+  // extracted cover colors with the DARK tuning (darkened ambient blobs, a
+  // mid/low-lightness accent) and painted them onto white panels -- the
+  // grey, muddy look that retuning colorExtract.js could never fix. Derive
+  // the mode from the theme's actual --bg instead, so it also works for any
+  // light theme a user drops into the themes folder.
+  function parseCssColorRgb(color) {
+    const raw = String(color || '').trim();
+    const hex = raw.match(/^#([0-9a-f]{3}|[0-9a-f]{6})\b/i);
+    if (hex) {
+      const h = hex[1].length === 3 ? hex[1].split('').map(c => c + c).join('') : hex[1];
+      return [0, 2, 4].map(i => parseInt(h.slice(i, i + 2), 16));
+    }
+    return accentRgbFromColor(raw);
+  }
+  function syncThemeModeFromCss() {
+    const root = document.documentElement;
+    // Settings uses the theme's own accent, not the current song's (the cover
+    // palette overwrites --accent inline on <html>, so read the theme's value
+    // from its stylesheet text instead of from computed style).
+    const themeAccent = /--accent\s*:\s*([^;}]+)[;}]/.exec(String(customCssRawSource || ''))?.[1]?.trim();
+    if (themeAccent) root.style.setProperty('--theme-accent', themeAccent);
+    else root.style.removeProperty('--theme-accent');
+    const rgb = parseCssColorRgb(getComputedStyle(root).getPropertyValue('--bg'));
+    if (!rgb) return;
+    const mode = (0.2126 * rgb[0] + 0.7152 * rgb[1] + 0.0722 * rgb[2]) / 255 > 0.5 ? 'light' : 'dark';
+    if (root.dataset.hiveTheme === mode) return;
+    root.dataset.hiveTheme = mode;
+    // The cover palette is tuned per mode; re-derive it for the new one.
+    if (lastPaletteSrc) applyPaletteFromCover(lastPaletteSrc);
+  }
+
   function applyCustomCss(css = '', enabled = true, sourceLabel = '') {
     if (!customThemeStyle) {
       customThemeStyle = document.createElement('style');
@@ -15685,6 +16366,7 @@
     if (customCssInput && document.activeElement !== customCssInput) customCssInput.value = rawCss;
     const parsed = enabled ? splitCustomCssImports(rawCss) : { imports: [], css: '' };
     customThemeStyle.textContent = enabled ? parsed.css : '';
+    syncThemeModeFromCss();
 
     // Remote stylesheets are deliberately loaded as <link> elements rather than
     // leaving @import inside the inline style. This keeps local CSS in Hive's
@@ -16322,24 +17004,21 @@
     });
   });
   const settingsDescriptions = {
-    general:'Playback, audio output, and normalization.',
-    devices:'Android/MTP device connections and music transfer.',
-    performance:'GPU acceleration and playback responsiveness.',
-    appearance:"Theme, surfaces, window chrome, and layout.",
-    navigation:'Choose destinations, order, visibility, and top-bar pins.',
-    library:'Music folders, scans, lyrics, cache, and Favorites.',
-    statistics:'Play counts and long-term listening history.',
-    discord:"Hive's own Discord Rich Presence connection and activity label.",
-    plugins:'Install and configure Hive extensions.',
-    community:'Scrobbling services and listening integrations.',
-    logs:'Inspect the current Hive session and scan diagnostics when troubleshooting.'
+    general:'Where your music plays and how it sounds.',
+    library:'Your music folders, what Hive writes into files, and listening history.',
+    appearance:'Theme, window, glass effects and layout.',
+    navigation:'Choose what shows in the left sidebar and in what order.',
+    connections:'Discord, scrobbling services and phones.',
+    plugins:'Add and configure Hive extensions.',
+    logs:'Tools for reporting and investigating problems.'
   };
   document.querySelectorAll('.settings-tab-panel').forEach(panel => {
     panel.hidden=!panel.classList.contains('active');
     const key=panel.dataset.settingsPanel;
     if(settingsDescriptions[key] && !panel.querySelector(':scope > .settings-panel-intro')) {
-      const intro=document.createElement('div'); intro.className='settings-panel-intro';
-      intro.innerHTML=`<span class="settings-panel-kicker">SETTINGS</span><p>${escapeHtml(settingsDescriptions[key])}</p>`;
+      const title=document.querySelector(`.settings-tab-btn[data-settings-tab="${key}"]`)?.textContent || '';
+      const intro=document.createElement('header'); intro.className='settings-panel-intro';
+      intro.innerHTML=`<h3 class="settings-panel-title">${escapeHtml(title)}</h3><p>${escapeHtml(settingsDescriptions[key])}</p>`;
       panel.prepend(intro);
     }
   });
@@ -16432,7 +17111,18 @@
     prepareTooltipNode(node); globalTooltipTarget=node;
     if(!globalTooltip){ globalTooltip=document.createElement('div'); globalTooltip.className='beehive-global-tooltip'; document.body.appendChild(globalTooltip); }
     if(globalTooltipTimer)clearTimeout(globalTooltipTimer); globalTooltip.classList.remove('visible');
-    globalTooltipTimer=setTimeout(()=>{ if(globalTooltipTarget!==node)return; globalTooltip.textContent=text; globalTooltip.classList.add('visible'); positionGlobalTooltip(e); }, 420);
+    globalTooltipTimer=setTimeout(()=>{
+      if(globalTooltipTarget!==node)return;
+      // Optional second, dimmer part (e.g. file size after a duration).
+      const secondary=String(node.dataset.tooltipSecondary||'');
+      if(secondary){
+        globalTooltip.textContent='';
+        const main=document.createElement('span'); main.className='tooltip-primary'; main.textContent=text;
+        const sub=document.createElement('span'); sub.className='tooltip-secondary'; sub.textContent=secondary;
+        globalTooltip.append(main,sub);
+      } else globalTooltip.textContent=text;
+      globalTooltip.classList.add('visible'); positionGlobalTooltip(e);
+    }, 420);
   });
   document.addEventListener('pointermove', e => positionGlobalTooltip(e));
   document.addEventListener('pointerout', e => { const node=e.target?.closest?.('[data-tooltip]'); if(node && !node.contains(e.relatedTarget)){ if(globalTooltipTimer)clearTimeout(globalTooltipTimer); globalTooltipTarget=null; globalTooltip?.classList.remove('visible'); } });

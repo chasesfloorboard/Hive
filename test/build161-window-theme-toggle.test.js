@@ -19,8 +19,8 @@ test('window theme preference is persisted and exposed through IPC', () => {
 
 test('Settings contains an Electron window bar theme toggle', () => {
   assert.match(html, /id="setting-theme-window-bar"/);
-  assert.match(html, /Theme Electron window bar/);
-  assert.match(html, /custom title bar.*drag.*minimize.*maximize.*close/i);
+  assert.match(html, /Themed title bar/);
+  assert.match(html, /own title bar with window controls/i);
 });
 
 test('renderer wires the Electron window bar toggle to the window mode', () => {

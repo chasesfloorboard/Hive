@@ -91,3 +91,47 @@ id3.save(p, v2_version=3, v1=0)
   assert.equal(finalFront.type, 'Cover (Back)');
   assert.equal(finalBack.type, 'Cover (Front)');
 });
+
+// Album artwork arrangement: the same pictures in different slots/types per
+// file are rewritten to one chosen order + types, reusing each file's own
+// image bytes (matched by sha256). The order must survive a later unrelated
+// save too: mutagen sorts ID3 frames by size, so MP3/WAV lost it until
+// tag_helper patched the writer. The images differ in size on purpose.
+test('artwork "arrange" rewrites FLAC/MP3/WAV to the chosen order and types, and a later save keeps it', () => {
+  const { spawnSync } = require('node:child_process');
+  const os = require('node:os');
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'hive-arrange-'));
+  try {
+    const script = String.raw`
+import json, sys, subprocess, hashlib
+sys.path.insert(0, '..')
+import tag_helper
+d = sys.argv[1]
+imgs = []
+for i, (color, size) in enumerate([('red', 16), ('green', 32), ('blue', 64)]):
+    p = f'{d}/c{i}.png'
+    subprocess.run(['ffmpeg', '-v', 'error', '-y', '-f', 'lavfi', '-i', f'color=c={color}:s={size}x{size}', '-frames:v', '1', p], check=True)
+    imgs.append(p)
+H = [hashlib.sha256(open(p, 'rb').read()).hexdigest() for p in imgs]
+out = {}
+for ext in ('flac', 'mp3', 'wav'):
+    f = f'{d}/t.{ext}'
+    subprocess.run(['ffmpeg', '-v', 'error', '-y', '-f', 'lavfi', '-i', 'anullsrc=r=8000:cl=mono', '-t', '0.1', f], check=True)
+    tag_helper.write_metadata(f, {}, {'action': 'add', 'imagePath': imgs[2], 'pictureType': 'Cover (Front)'})
+    tag_helper.write_metadata(f, {}, {'action': 'add', 'imagePath': imgs[0], 'pictureType': 'Cover (Back)', 'comment': 'b'})
+    tag_helper.write_metadata(f, {}, {'action': 'add', 'imagePath': imgs[1], 'pictureType': 'Other', 'comment': 'o'})
+    tag_helper.write_metadata(f, {}, {'action': 'arrange', 'order': [{'hash': H[0], 'type': 'Cover (Front)'}, {'hash': H[2], 'type': 'Cover (Back)'}]})
+    tag_helper.write_metadata(f, {'title': 'later save'}, None)
+    out[ext] = [(p['sha256'], p['type']) for p in tag_helper.read_artwork_metadata(f)]
+print(json.dumps({'H': H, 'out': out}))
+`;
+    const r = spawnSync('python3', ['-c', script, dir], { cwd: path.join(__dirname, '..', 'resources', 'python'), encoding: 'utf8' });
+    assert.equal(r.status, 0, r.stderr || r.stdout);
+    const { H, out } = JSON.parse(r.stdout.trim().split('\n').pop());
+    for (const ext of ['flac', 'mp3', 'wav']) {
+      assert.deepEqual(out[ext], [[H[0], 'Cover (Front)'], [H[2], 'Cover (Back)'], [H[1], 'Other']], `${ext}: arranged pictures first, unmentioned ones kept after`);
+    }
+  } finally {
+    fs.rmSync(dir, { recursive: true, force: true });
+  }
+});

@@ -87,7 +87,10 @@ test('a slider-driven VOLUME command starts a retargeting ramp while playing, un
   assert.match(block, /latest_volume\s*=\s*requested_volume/);
   assert.match(block, /pending_volume\s*=\s*TRUE/);
   assert.doesNotMatch(block, /set_user_volume\(requested_volume\)/);
-  const apply = nativeBlock('if (pending_volume) {', 'return G_SOURCE_CONTINUE;');
+  // command_tick is one-shot (G_SOURCE_REMOVE): returning CONTINUE from an
+  // invoked callback kept it firing forever and pinned a CPU core (~98%).
+  const apply = nativeBlock('if (pending_volume) {', 'return G_SOURCE_REMOVE;\n}');
+  assert.doesNotMatch(native, /return G_SOURCE_CONTINUE;\n\}\n\nstatic void \*stdin_thread/);
   assert.match(apply, /if \(playing_state\) begin_user_volume_ramp\(requested_volume\);/);
   assert.match(apply, /else \{ cancel_user_volume_ramp\(\); user_volume = requested_volume; \}/);
 });
@@ -100,7 +103,7 @@ test('a slider-driven VOLUME command starts a retargeting ramp while playing, un
 // again. Since there's no audio playing (nothing to pop) while paused, the
 // fix applies the change directly instead of ramping.
 test('a VOLUME command applies immediately while paused/stopped, instead of starting an inert ramp', () => {
-  const apply = nativeBlock('if (pending_volume) {', 'return G_SOURCE_CONTINUE;');
+  const apply = nativeBlock('if (pending_volume) {', 'return G_SOURCE_REMOVE;\n}');
   assert.match(apply, /if \(playing_state\) begin_user_volume_ramp\(requested_volume\);\s*\n\s*else \{ cancel_user_volume_ramp\(\); set_user_volume\(requested_volume\); \}/);
 });
 
@@ -142,7 +145,9 @@ test('the volume ramp retargets in place from wherever it currently is, uncondit
 test('the ramp is driven from inside a buffer probe on the volume element\'s own sink pad, not an external timer', () => {
   assert.doesNotMatch(native, /g_timeout_add\(VOLUME_RAMP_TICK_MS/);
   const probe = nativeBlock('static GstPadProbeReturn volume_ramp_probe_cb(GstPad *pad, GstPadProbeInfo *info, gpointer unused) {', 'static void begin_user_volume_ramp');
-  assert.match(probe, /if \(!volume_ramp_active\) return GST_PAD_PROBE_OK;/);
+  // The probe also runs for the transport fade (track changes), so its early
+  // exit checks both.
+  assert.match(probe, /if \(!volume_ramp_active && !fade_on\) return GST_PAD_PROBE_OK;/);
   assert.match(probe, /GstBuffer \*buffer = GST_PAD_PROBE_INFO_BUFFER\(info\);/);
   assert.match(probe, /if \(finishing\) \{/);
   assert.match(probe, /volume_ramp_active = FALSE;/);
@@ -177,10 +182,11 @@ test('an active ramp forces the element to a 1.0 pass-through and applies gain d
   assert.doesNotMatch(beginFn, /g_object_set\(G_OBJECT\(user_volume_element\), "volume", 1\.0, NULL\);/, 'the property must not be forced from the main thread -- see volume_ramp_pending_start');
 
   const probe = nativeBlock('static GstPadProbeReturn volume_ramp_probe_cb(GstPad *pad, GstPadProbeInfo *info, gpointer unused) {', 'static void begin_user_volume_ramp');
-  assert.match(probe, /if \(volume_ramp_pending_start\) \{\s*\n\s*volume_ramp_pending_start = FALSE;\s*\n\s*if \(user_volume_element\) g_object_set\(G_OBJECT\(user_volume_element\), "volume", 1\.0, NULL\);/);
+  assert.match(probe, /if \(volume_ramp_active && volume_ramp_pending_start\) \{\s*\n\s*volume_ramp_pending_start = FALSE;\s*\n\s*if \(user_volume_element\) g_object_set\(G_OBJECT\(user_volume_element\), "volume", 1\.0, NULL\);/);
   assert.match(probe, /buffer = gst_buffer_make_writable\(buffer\);/);
   assert.match(probe, /GST_PAD_PROBE_INFO_DATA\(info\) = buffer;/);
-  assert.match(probe, /apply_sample_ramp\(buffer, &ramp_audio_info, start_gain, end_gain\)/);
+  // User-ramp gains are multiplied by the transport fade in the same pass.
+  assert.match(probe, /apply_sample_ramp\(buffer, &ramp_audio_info, start_gain \* fade_start, end_gain \* fade_end\)/);
 });
 
 test('cancelling a ramp also clears any pending start-force so a late/cancelled ramp cannot still force pass-through', () => {
@@ -213,9 +219,11 @@ test('ensure_ramp_audio_info rejects a non-interleaved layout rather than risk s
 
 test('a sample-ramp mapping failure falls back to the property step for that buffer instead of leaving audio at the forced 1.0 pass-through', () => {
   const probe = nativeBlock('static GstPadProbeReturn volume_ramp_probe_cb(GstPad *pad, GstPadProbeInfo *info, gpointer unused) {', 'static void begin_user_volume_ramp');
-  const ifStart = probe.indexOf('if (apply_sample_ramp(buffer, &ramp_audio_info, start_gain, end_gain)) {');
+  const ifStart = probe.indexOf('if (apply_sample_ramp(buffer, &ramp_audio_info, start_gain * fade_start, end_gain * fade_end)) {');
   assert.ok(ifStart >= 0);
-  const elseBlock = probe.slice(ifStart, probe.indexOf('}', probe.indexOf('} else {', ifStart) + 8) + 1);
+  const elseStart = probe.indexOf('} else if (ramping) {', ifStart);
+  assert.ok(elseStart >= 0);
+  const elseBlock = probe.slice(elseStart, probe.indexOf('}', elseStart + 22) + 1);
   assert.match(elseBlock, /set_user_volume\(end_gain\);/);
 });
 
@@ -367,8 +375,10 @@ test('VOLUME bursts are applied once after the command queue drains', () => {
 });
 
 test('user-volume initialization happens before the sink bin is handed to playbin', () => {
-  const sinkBlock = nativeBlock('GstElement *sink_bin = gst_bin_new("hive-audio-sink");', '/* Keep ReplayGain and visualization');
-  const setIndex = sinkBlock.indexOf('g_object_set(G_OBJECT(user_volume_element), "volume", user_volume, NULL);');
+  const sinkBlock = nativeBlock('GstElement *sink_bin = bit_perfect ? NULL : gst_bin_new("hive-audio-sink");', '/* Keep ReplayGain and visualization');
+  // The value may be floored (see USER_VOLUME_ELEMENT_FLOOR); what matters is
+  // that the initial user volume is applied before playbin gets the sink bin.
+  const setIndex = sinkBlock.search(/g_object_set\(G_OBJECT\(user_volume_element\), "volume", [^;]*user_volume[^;]*\);/);
   const playbinIndex = sinkBlock.indexOf('g_object_set(player, "audio-sink", sink_bin, NULL);');
   assert.ok(setIndex >= 0 && playbinIndex > setIndex, 'initial user volume should be set before assigning the sink bin to playbin');
 });
@@ -427,3 +437,19 @@ test('local volume stays on the direct native audio path, with no rAF-batched pe
   assert.match(renderer, /pointerup.*flushVolumePersistence/s);
 });
 
+
+// Double-clicking a new track while one played cut the pipeline to READY
+// mid-waveform (an audible pop). LOAD during playback now fades out, waits
+// until the faded point is being heard, loads, and fades the new track in;
+// later commands (its PLAY) are held until then.
+test('a LOAD during playback fades out before switching and holds later commands', () => {
+  const load = nativeBlock('if (!g_strcmp0(parts[0], "LOAD") && parts[1]) {\n        const gdouble load_offset', '} else if (!g_strcmp0(parts[0], "NEXT")');
+  assert.match(load, /if \(playing_state && stream_started && user_volume_element && !bit_perfect\)/);
+  assert.match(load, /begin_transport_fade\(0\.0, TRANSPORT_FADE_OUT_US, FALSE\)/);
+  assert.match(load, /stop_draining = TRUE;/);
+  assert.match(native, /if \(load_pending\) return G_SOURCE_REMOVE;/);
+  const run = nativeBlock('static void run_pending_load(void) {', '\n}');
+  assert.match(run, /begin_transport_fade\(1\.0, TRANSPORT_FADE_IN_US, TRUE\)/);
+  assert.match(run, /command_tick\(NULL\);/);
+  assert.match(native, /gst_element_query_position\(player, GST_FORMAT_TIME, &position\) && position >= \(gint64\)silent_pts/);
+});

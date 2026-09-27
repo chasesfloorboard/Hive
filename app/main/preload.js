@@ -17,7 +17,7 @@ contextBridge.exposeInMainWorld('beehive', {
   listDevices: () => ipcRenderer.invoke('devices:list'),
   setDeviceDestination: (deviceId, destinationPath) => ipcRenderer.invoke('devices:setDestination', { deviceId, destinationPath }),
   listAudioOutputs: () => ipcRenderer.invoke('audio-output:list'),
-  setAudioOutput: (deviceId) => ipcRenderer.invoke('audio-output:set', deviceId || ''),
+  setAudioOutput: (choice) => ipcRenderer.invoke('audio-output:set', choice && typeof choice === 'object' ? choice : { sink: String(choice || '') }),
   sendTracksToDevice: (device, tracks) => ipcRenderer.invoke('devices:sendTracks', { device, tracks }),
   onDeviceTransferProgress: (cb) => {
     const listener = (_evt, payload) => cb(payload);
@@ -63,10 +63,11 @@ contextBridge.exposeInMainWorld('beehive', {
   deleteTracksFromDisk: (filePaths) => ipcRenderer.invoke('tracks:deleteFromDisk', filePaths),
   startNativeFileDrag: (filePaths) => ipcRenderer.send('files:startDrag', Array.isArray(filePaths) ? filePaths : [filePaths]),
 
-  getCachedLibrary: () => ipcRenderer.invoke('library:getCached'),
+  getCachedLibrary: (options) => ipcRenderer.invoke('library:getCached', options || {}),
   clearLibraryCacheNow: () => ipcRenderer.invoke('library:clearCacheNow'),
   scanLibrary: (options) => ipcRenderer.invoke('library:scan', options),
   scanChangedLibrary: (paths) => ipcRenderer.invoke('library:scanChanged', paths),
+  cancelLibraryScan: () => ipcRenderer.invoke('library:cancelScan'),
   searchLibraryDatabase: (text, limit) => ipcRenderer.invoke('library:searchDatabase', { text, limit }),
   getTaskStatus: () => ipcRenderer.invoke('library:taskStatus'),
   betaSecurityAudit: () => ipcRenderer.invoke('beta:securityAudit'),

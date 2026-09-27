@@ -146,7 +146,7 @@ test('artwork embedding status has a compact spinner and stays in the top bar', 
 
 
 test('album tag editor derives album scope from canonical album identity instead of a nonexistent track albumKey property', () => {
-  const start = renderer.indexOf('async function openTagEditor(t, tracksOverride=null)');
+  const start = renderer.indexOf('async function openTagEditor(t, tracksOverride=null');
   const end = renderer.indexOf('\n    document.getElementById(\'tag-editor-title\')', start);
   assert.ok(start >= 0 && end > start);
   const block = renderer.slice(start, end);

@@ -8,31 +8,29 @@ const renderer = fs.readFileSync(path.join(root, 'app/renderer/renderer.js'), 'u
 const main = fs.readFileSync(path.join(root, 'app/main/main.js'), 'utf8');
 const css = fs.readFileSync(path.join(root, 'app/renderer/styles.css'), 'utf8');
 
-test('Build 225 keeps settings compact and moves lyric mode into Library', () => {
-  assert.match(html, />Playback<\/button>/);
-  assert.match(html, />History<\/button>/);
-  assert.match(html, />Scrobbling<\/button>/);
-  assert.match(html, />Diagnostics<\/button>/);
+// 2026-09 settings overhaul: 11 tabs condensed to 7, one component system.
+test('Settings has seven tabs, with lyrics display under Playback and file writes under Library', () => {
+  const tabs = [...html.matchAll(/class="settings-tab-btn[^"]*"[^>]*data-settings-tab="([a-z]+)">([^<]+)</g)].map(m => `${m[1]}:${m[2]}`);
+  assert.deepEqual(tabs, ['general:Playback', 'library:Library', 'appearance:Appearance', 'navigation:Sidebar', 'connections:Connections', 'plugins:Plugins', 'logs:Diagnostics']);
+  const panel = key => html.match(new RegExp(`id="settings-panel-${key}"[\\s\\S]*?(?=<!-- =+ |\\n      </div>\\n      <div class="settings-footer")`))[0];
+  assert.match(panel('general'), /id="setting-highlighted-lyrics"/);
+  assert.match(panel('library'), /id="setting-embed-lyrics-automatically"/);
+  assert.match(panel('library'), /id="setting-embed-play-counts"/);
   assert.match(html, /id="setting-theme-window-bar" checked/);
-  assert.match(html, /settings-panel-library[\s\S]*id="setting-highlighted-lyrics"/);
-  const appearance = html.match(/id="settings-panel-appearance"[\s\S]*?(?=<div id="settings-panel-navigation")/)[0];
-  assert.doesNotMatch(appearance, /id="setting-highlighted-lyrics"/);
   assert.doesNotMatch(html, /id="settings-save-btn"/);
 });
 
-test('Audio integrity moved from Library to Diagnostics', () => {
-  const library = html.match(/id="settings-panel-library"[\s\S]*?(?=<div id="settings-panel-statistics")/)[0];
-  assert.doesNotMatch(library, /id="audio-integrity-scan-btn"/);
-  const diagnostics = html.match(/id="settings-panel-logs"[\s\S]*?(?=<div id="settings-panel-discord")/)[0];
-  assert.match(diagnostics, /id="audio-integrity-scan-btn"/);
-  assert.match(diagnostics, /id="audio-integrity-scan-results"/);
+test('The library health check lives in Library, next to the folders it checks', () => {
+  const library = html.match(/id="settings-panel-library"[\s\S]*?(?=<!-- =+ APPEARANCE)/)[0];
+  assert.match(library, /id="audio-integrity-scan-btn"/);
+  assert.match(library, /id="audio-integrity-scan-results"/);
 });
 
 test('Hive Theme selection and import/export sit at the top of Appearance, before Interface', () => {
   const appearance = html.match(/id="settings-panel-appearance"[\s\S]*?(?=<div id="settings-panel-navigation")/)[0];
   const themeIdx = appearance.indexOf('id="builtin-theme-select"');
   const importIdx = appearance.indexOf('id="theme-import-btn"');
-  const interfaceIdx = appearance.indexOf('>Interface<');
+  const interfaceIdx = appearance.indexOf('>Window &amp; glass<');
   assert.ok(themeIdx >= 0 && importIdx >= 0 && interfaceIdx >= 0);
   assert.ok(themeIdx < interfaceIdx, 'theme selector must come before the Interface section');
   assert.ok(importIdx < interfaceIdx, 'theme import/export must come before the Interface section');

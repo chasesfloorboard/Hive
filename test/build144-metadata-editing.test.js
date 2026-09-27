@@ -10,8 +10,10 @@ const html = fs.readFileSync(path.join(root, 'app', 'renderer', 'index.html'), '
 test('empty editable tag fields use Empty ghost text while trim fields show millisecond format', () => {
   assert.match(renderer, /function applyEmptyEditGhosts\(/);
   assert.match(renderer, /placeholder\s*=\s*['"]Empty['"]/);
-  assert.match(html, /id="tag-start-time"[^>]*placeholder="00:00\.00"/);
-  assert.match(html, /id="tag-end-time"[^>]*placeholder="00:00\.00"/);
+  // Trim times are edited as hour / minute / second boxes backed by hidden
+  // #tag-start-time / #tag-end-time inputs (see build195 test).
+  assert.match(html, /<input type="hidden" id="tag-start-time">/);
+  assert.match(html, /<input type="hidden" id="tag-end-time">/);
 });
 
 // Tags (2) used to be a raw "add any native tag key/value" editor -- exactly

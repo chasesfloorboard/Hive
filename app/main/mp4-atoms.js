@@ -43,7 +43,43 @@ function rebuildMp4Parent(buffer,parent,oldChild,newChild){
   return mp4AtomWithPayload(parent.type, Buffer.concat([fullBoxPrefix, before, newChild, after]));
 }
 
+const fsp = require('fs/promises');
+
+// Reads only the top-level atom headers and then the moov atom (where the
+// iTunes metadata lives) instead of the whole file -- same reason as
+// readId3v2TagBytes in musicbee-love.js; shared by the scanner worker and main. The moov buffer starts at offset 0,
+// so the Love readers walk it exactly as it walked the full file.
+async function readMp4MoovBytes(filePath) {
+  const fd = await fsp.open(filePath, 'r');
+  try {
+    const { size: fileSize } = await fd.stat();
+    const header = Buffer.alloc(16);
+    let pos = 0;
+    while (pos + 8 <= fileSize) {
+      const { bytesRead } = await fd.read(header, 0, 16, pos);
+      if (bytesRead < 8) break;
+      let size = header.readUInt32BE(0);
+      const type = header.toString('latin1', 4, 8);
+      if (size === 1) { if (bytesRead < 16) break; size = Number(header.readBigUInt64BE(8)); }
+      else if (size === 0) size = fileSize - pos;
+      if (size < 8) break;
+      if (type === 'moov') {
+        if (size > 256 * 1024 * 1024) return null;
+        const buf = Buffer.alloc(size);
+        const { bytesRead: n } = await fd.read(buf, 0, size, pos);
+        return buf.subarray(0, n);
+      }
+      pos += size;
+    }
+    return null;
+  } finally {
+    await fd.close();
+  }
+}
+
+
 module.exports = {
+  readMp4MoovBytes,
   mp4Atom,
   mp4Children,
   mp4FindPath,

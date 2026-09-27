@@ -12,9 +12,32 @@ HERE = Path(__file__).resolve().parent
 sys.path.insert(0, str(HERE.parent))
 
 from mutagen import File
-from mutagen.id3 import Frames, ID3, ID3NoHeaderError, TIT2, TPE1, TALB, TPE2, TCON, TDRC, TRCK, TPOS, COMM, TCOM, TIT1, TCOP, TPUB, TPE3, TBPM, USLT, TCMP, TXXX, APIC, POPM, SYLT, ID3TimeStamp, TSOA, TSOT, TSO2, TSOP, TSOC
+from mutagen.id3 import Frames, ID3, ID3NoHeaderError, TIT2, TPE1, TALB, TPE2, TCON, TDRC, TRCK, TPOS, COMM, TCOM, TIT1, TCOP, TPUB, TPE3, TBPM, USLT, TCMP, TXXX, APIC, POPM, SYLT, ID3TimeStamp, TSOA, TSOT, TSO2, TSOP, TSOC, TEXT, TOPE, TOAL, TDOR, TLAN, TMOO
 from mutagen.flac import FLAC, Picture
 from mutagen.mp4 import MP4, MP4Cover
+from mutagen.id3._tags import ID3Tags, save_frame
+
+# mutagen writes ID3 frames sorted by size, so every save shuffled the
+# embedded pictures and the order a user chose in the tag editor (picture 1,
+# 2, 3...) was lost -- including on unrelated saves such as a Love write.
+# This is mutagen's own _write with one change: APIC frames go last, in the
+# order they sit in the tag (file order when read, insertion order when
+# arranged), instead of by size.
+def _write_keeping_picture_order(self, config):
+    order = ["TIT2", "TPE1", "TRCK", "TALB", "TPOS", "TDRC", "TCON"]
+    frames = list(self.values())
+    picture_index = {id(f): i for i, f in enumerate(f for f in frames if f.FrameID == 'APIC')}
+    def sort_key(item):
+        frame, data = item
+        if id(frame) in picture_index: return (len(order) + 1, picture_index[id(frame)], '')
+        prio = order.index(frame.FrameID) if frame.FrameID in order else len(order)
+        return (prio, len(data), frame.HashKey)
+    framedata = sorted(((f, save_frame(f, config=config)) for f in frames), key=sort_key)
+    framedata = [d for (_f, d) in framedata]
+    if self._unknown_v2_version == config.v2_version:
+        framedata.extend(data for data in self.unknown_frames if len(data) > 10)
+    return bytearray().join(framedata)
+ID3Tags._write = _write_keeping_picture_order
 
 TYPE_TO_ID3 = {
     'other': 0, 'file icon': 1, 'other file icon': 2, 'cover (front)': 3,
@@ -38,7 +61,15 @@ STANDARD_MP3 = {
     'publisher': ('TPUB', TPUB), 'conductor': ('TPE3', TPE3), 'bpm': ('TBPM', TBPM),
     'albumSort': ('TSOA', TSOA), 'titleSort': ('TSOT', TSOT), 'albumArtistSort': ('TSO2', TSO2),
     'artistSort': ('TSOP', TSOP), 'composerSort': ('TSOC', TSOC),
+    # Tag-editor audit (2026-09): these used to fall through to TXXX frames
+    # ("TXXX:originalartist"), which neither Hive's editor nor other players
+    # read back. They have real ID3v2.4 frames.
+    'lyricist': ('TEXT', TEXT), 'originalartist': ('TOPE', TOPE), 'originalalbum': ('TOAL', TOAL),
+    'originalyear': ('TDOR', TDOR), 'language': ('TLAN', TLAN), 'mood': ('TMOO', TMOO),
 }
+# Earlier Hive builds stored the fields above as TXXX:<key>; remove that copy
+# whenever the real frame is written so the two can't disagree.
+LEGACY_TXXX_FOR_STANDARD = ('lyricist', 'originalartist', 'originalalbum', 'originalyear', 'language', 'mood')
 STANDARD_FLAC = {
     'title':'TITLE','artist':'ARTIST','album':'ALBUM','albumArtist':'ALBUMARTIST','genre':'GENRE',
     'year':'DATE','track':'TRACKNUMBER','disk':'DISCNUMBER','comment':'COMMENT','albumSort':'ALBUMSORT','titleSort':'TITLESORT','albumArtistSort':'ALBUMARTISTSORT','artistSort':'ARTISTSORT','composerSort':'COMPOSERSORT','composer':'COMPOSER',
@@ -48,9 +79,19 @@ STANDARD_FLAC = {
 STANDARD_MP4 = {
     'title':'\xa9nam','artist':'\xa9ART','album':'\xa9alb','albumArtist':'aART','genre':'\xa9gen',
     'year':'\xa9day','comment':'\xa9cmt','composer':'\xa9wrt','grouping':'\xa9grp','copyright':'cprt',
-    'publisher':'\xa9pub','bpm':'tmpo','track':'trkn','disk':'disk'
+    'publisher':'\xa9pub','bpm':'tmpo','track':'trkn','disk':'disk',
+    # Standard iTunes lyrics atom. Lyrics used to be written as a custom
+    # ----:com.apple.iTunes:lyrics atom that no reader (including Hive) sees.
+    'lyrics':'\xa9lyr'
 }
 
+
+def normalize_number_pair(value):
+    """'3/12' -> '3/12', '3/' (total explicitly cleared) -> '3', '3' -> '3'."""
+    s = str(value or '').strip()
+    if '/' not in s: return s
+    n, total = (part.strip() for part in s.split('/', 1))
+    return f'{n}/{total}' if n and total else n
 
 def first(v):
     if isinstance(v, list): return v[0] if v else ''
@@ -95,11 +136,33 @@ def unique_apic_desc(id3, desc):
 def read_bytes(p):
     return bytes(p.data) if hasattr(p, 'data') else bytes(p)
 
+def arranged_pictures(old, order, data_of):
+    """Album artwork arrangement: return this file's own pictures reordered to
+    match `order` (a list of {'hash': sha256, 'type', 'description'}), plus the
+    requested type for each. Pictures are matched by the sha256 of their image
+    bytes, so every file keeps its own copy of each image. Pictures in the file
+    that the arrangement doesn't mention are kept, after the arranged ones --
+    arranging never drops artwork."""
+    pool = {}
+    for picture in old:
+        pool.setdefault(hashlib.sha256(bytes(data_of(picture))).hexdigest().lower(), []).append(picture)
+    arranged, used = [], set()
+    for item in (order or []):
+        wanted = str((item or {}).get('hash') or '').lower()
+        candidates = pool.get(wanted) or []
+        if not candidates: raise RuntimeError('Artwork item no longer exists.')
+        picture = candidates.pop(0)
+        used.add(id(picture))
+        arranged.append((picture, norm_type((item or {}).get('type') or 'Other'), str((item or {}).get('description') or '')))
+    rest = [p for p in old if id(p) not in used]
+    return arranged, rest
+
 def picture_json(data, ptype, mime, desc, index, width=0, height=0):
     return {
         'index': index, 'type': norm_type(ptype), 'mime': mime or 'image/jpeg', 'description': visible_apic_desc(desc),
         'width': int(width or 0), 'height': int(height or 0),
         'dataBase64': base64.b64encode(data).decode('ascii') if data else '',
+        'sha256': hashlib.sha256(data).hexdigest() if data else '',
     }
 
 def read_artwork(path, include_data=True):
@@ -109,14 +172,18 @@ def read_artwork(path, include_data=True):
         if include_data:
             pics.append(picture_json(data, ptype, mime, desc, index, width, height))
         else:
-            pics.append({'index': index, 'type': norm_type(ptype), 'mime': mime or 'image/jpeg', 'description': visible_apic_desc(desc), 'width': int(width or 0), 'height': int(height or 0)})
+            pics.append({'index': index, 'type': norm_type(ptype), 'mime': mime or 'image/jpeg', 'description': visible_apic_desc(desc), 'width': int(width or 0), 'height': int(height or 0), 'sha256': hashlib.sha256(data).hexdigest() if data else ''})
     if ext == '.flac':
         f=FLAC(path)
         for i,p in enumerate(f.pictures):
             add_picture(bytes(p.data), p.type, p.mime, p.desc, i, p.width, p.height)
-    elif ext == '.mp3':
-        try: tag=ID3(path)
-        except ID3NoHeaderError: tag=None
+    elif ext in ('.mp3', '.wav'):
+        if ext == '.wav':
+            from mutagen.wave import WAVE
+            tag=WAVE(path).tags
+        else:
+            try: tag=ID3(path)
+            except ID3NoHeaderError: tag=None
         if tag:
             for i,p in enumerate(tag.getall('APIC')):
                 add_picture(bytes(p.data), p.type, p.mime, p.desc, i)
@@ -197,8 +264,13 @@ def set_comm(tag, value):
     # stale frame every time this ran, since Hive is the single authoritative
     # writer for its own default-language field and never intended to keep a
     # duplicate around just because its language tag was malformed.
+    # Also replace "ID3v1 Comment": a legacy copy of the same user-visible
+    # comment that some taggers keep. Leaving it made the edited comment show
+    # up glued to the old text (readers concatenate every comment frame).
+    # Other described COMM frames (e.g. iTunNORM loudness data) stay intact.
     for frame in list(tag.getall('COMM')):
-        if (frame.desc or '') == '' and (frame.lang or '').strip().lower() in ('eng','und',''):
+        desc = (frame.desc or '').strip()
+        if desc.lower() == 'id3v1 comment' or (desc == '' and (frame.lang or '').strip().lower() in ('eng','und','')):
             try: tag.delall(frame.HashKey)
             except Exception: pass
     if str(value) != '': tag.add(COMM(encoding=3, lang='eng', desc='', text=[str(value)]))
@@ -279,7 +351,17 @@ def apply_id3_fields(id3, tags):
         if key not in tags: continue
         value=tags[key]
         if key == 'comment': set_comm(id3,value)
+        elif key == 'track' or key == 'disk':
+            # A bare number keeps the existing total ("3/12" + "5" -> "5/12"),
+            # matching FLAC; "5/" explicitly clears it.
+            text_value = str(value or '').strip()
+            if text_value and '/' not in text_value:
+                existing = id3.get(fid)
+                old_text = str(existing.text[0]) if existing and getattr(existing, 'text', None) else ''
+                if '/' in old_text and old_text.split('/', 1)[1].strip(): text_value = f"{text_value}/{old_text.split('/', 1)[1].strip()}"
+            set_text_frame(id3,fid,cls,normalize_number_pair(text_value))
         else: set_text_frame(id3,fid,cls,value)
+        if key in LEGACY_TXXX_FOR_STANDARD: remove_txxx(id3, key)
     if 'lyrics' in tags:
         # USLT is the plain-lyrics tag every player reads, so it must never
         # contain raw [mm:ss.xx] timestamps regardless of what was passed in --
@@ -363,6 +445,17 @@ def write_flac(path, tags, save=True):
             # frame), so the single LYRICS comment must never carry raw
             # [mm:ss.xx] timestamps -- strip them unconditionally.
             if key == 'lyrics' and val is not None: val = plain_from_lrc(val)
+            if key in ('track', 'disk') and val is not None and '/' in str(val):
+                # Vorbis comments keep the total in its own field. Writing
+                # TRACKNUMBER=3/12 left an existing TRACKTOTAL=8 in place, so
+                # every reader still showed "of 8". "3/" means the user cleared
+                # the total.
+                number, total = (part.strip() for part in str(val).split('/', 1))
+                total_fields = ('TRACKTOTAL', 'TOTALTRACKS') if key == 'track' else ('DISCTOTAL', 'TOTALDISCS')
+                for name in total_fields:
+                    if f.tags and name in f.tags: del f.tags[name]
+                if total: f[total_fields[0]] = total
+                val = number
             if val is None or str(val)=='':
                 if f.tags and field in f.tags: del f.tags[field]
             else: f[field]=str(val)
@@ -404,6 +497,13 @@ def write_mp4(path,tags,save=True):
     for key,atom in STANDARD_MP4.items():
         if key not in tags: continue
         v=tags[key]
+        if key == 'lyrics':
+            if v is not None: v = plain_from_lrc(v)
+            _remove_freeform_mp4(f.tags, ('lyrics',))
+        if key in ('track', 'disk') and v is not None and str(v).strip() and '/' not in str(v):
+            # Same rule as ID3/FLAC: a bare number keeps the existing total.
+            existing = f.tags.get(atom)
+            if existing and existing[0][1]: v = f'{str(v).strip()}/{existing[0][1]}'
         if v is None or str(v)=='': f.tags.pop(atom,None)
         else: f.tags[atom]=mp4_value(key,v)
     if 'compilation' in tags:
@@ -560,6 +660,10 @@ def apply_artwork_flac(f, op):
             if seen == occurrence: index=i; break
         if index < 0: raise RuntimeError('Artwork item no longer exists.')
         old[index]=make_flac_picture(image,ptype,desc)
+    elif action=='arrange':
+        arranged, rest = arranged_pictures(old, op.get('order'), lambda p: p.data)
+        for picture, wanted_type, _desc in arranged: picture.type = type_id(wanted_type)
+        old = [p for p, _t, _d in arranged] + rest
     else:
         raise RuntimeError('Unknown artwork action.')
     f.clear_pictures()
@@ -599,6 +703,13 @@ def apply_artwork_mp3(id3, op):
         keep=[p for i,p in enumerate(old) if i not in set(front_indexes)]
         id3.delall('APIC')
         for picture in keep: id3.add(picture)
+    elif action=='arrange':
+        arranged, rest = arranged_pictures(old, op.get('order'), lambda p: p.data)
+        # APIC frames are keyed by description, so each keeps its own (already
+        # unique) description; only the type and the order change.
+        for picture, wanted_type, _desc in arranged: picture.type = type_id(wanted_type)
+        id3.delall('APIC')
+        for picture in [p for p, _t, _d in arranged] + rest: id3.add(picture)
     elif action=='remove_all':
         id3.delall('APIC')
     elif action=='write':
@@ -663,6 +774,9 @@ def apply_artwork_mp4(f, op):
         old[candidates[occurrence-1]]=cover(image)
     elif action=='update':
         pass
+    elif action=='arrange':
+        arranged, rest = arranged_pictures(old, op.get('order'), lambda p: p)
+        old = [p for p, _t, _d in arranged] + rest
     else: raise RuntimeError('Unknown artwork action.')
     if f.tags is None: f.add_tags()
     f.tags['covr']=old
@@ -815,7 +929,9 @@ def read_metadata_fields(path, fields):
         atom_map = {key: atom for key, atom in STANDARD_MP4.items()}
         for key in requested:
             if key == 'lyrics':
-                atom = '----:com.apple.iTunes:lyrics'
+                # Standard ©lyr first; older Hive builds wrote a custom
+                # freeform atom instead, so still read that as a fallback.
+                atom = '\xa9lyr' if tags.get('\xa9lyr') else '----:com.apple.iTunes:lyrics'
             else:
                 atom = atom_map.get(key, f'----:com.apple.iTunes:{key}')
             value = tags.get(atom)
@@ -907,6 +1023,11 @@ def write_rating(path, stars):
     reconstruction for a one-field metadata edit.
     """
     value=max(0.0, min(5.0, float(stars or 0)))
+    # Clearing a rating removes Hive's rating fields entirely. Writing POPM 0 /
+    # FMPS_Rating 0.0 instead is an explicit "zero stars" value, which some
+    # players (MusicBee among them) show as a bomb/rejected track rather than
+    # as unrated.
+    clear=value <= 0
     ext=Path(path).suffix.lower()
     if ext in ('.mp3','.wav'):
         if ext=='.mp3':
@@ -922,19 +1043,24 @@ def write_rating(path, stars):
                 try: tag.delall(frame.HashKey)
                 except Exception: pass
         remove_txxx(tag,'FMPS_Rating')
-        tag.add(__import__('mutagen.id3', fromlist=['POPM']).POPM(email='musicbee', rating=_rating_255(value), count=0))
-        set_txxx(tag,'FMPS_Rating',str(value/5.0))
+        if not clear:
+            tag.add(__import__('mutagen.id3', fromlist=['POPM']).POPM(email='musicbee', rating=_rating_255(value), count=0))
+            set_txxx(tag,'FMPS_Rating',str(value/5.0))
         if ext=='.mp3': tag.save(path, v2_version=4, v1=0)
         else: f.save()
         return
     if ext=='.flac':
         f=FLAC(path)
-        f['FMPS_RATING']=str(value/5.0)
+        if clear:
+            for key in list((f.tags or {}).keys()):
+                if str(key).strip().upper()=='FMPS_RATING': del f.tags[key]
+        else: f['FMPS_RATING']=str(value/5.0)
         f.save(); return
     if ext in ('.m4a','.mp4','.m4b'):
         f=MP4(path)
         if f.tags is None: f.add_tags()
-        _set_freeform_mp4(f.tags,'FMPS_Rating',str(value/5.0))
+        _remove_freeform_mp4(f.tags, ('FMPS_Rating',))
+        if not clear: _set_freeform_mp4(f.tags,'FMPS_Rating',str(value/5.0))
         f.save(); return
     f=File(path, easy=False)
     if f is None: raise RuntimeError(f'Unsupported audio format: {ext}')
@@ -943,8 +1069,11 @@ def write_rating(path, stars):
         except Exception: pass
     if f.tags is None: raise RuntimeError(f'No writable metadata container for {ext}')
     key='FMPS/Rating' if ext=='.wma' else 'FMPS_RATING'
-    if value <= 0: f.tags.pop(key,None)
-    else: f.tags[key]=str(value/5.0)
+    # ASF (WMA) tags don't support pop(key, default), so delete by matching
+    # key instead; this also removes differently-cased copies of the field.
+    for existing in list(f.tags.keys()):
+        if str(existing).strip().upper()==key.upper(): del f.tags[existing]
+    if not clear: f.tags[key]=str(value/5.0)
     f.save()
 
 def write_pcount(path, count):

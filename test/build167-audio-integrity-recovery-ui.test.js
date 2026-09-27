@@ -39,6 +39,6 @@ test('audio scan checkpoint writes are serialized so concurrent workers cannot o
 });
 
 test('the normal Scan entire library button remains the single idle scan action', () => {
-  assert.match(html, /id="audio-integrity-scan-btn"[^>]*>⌕ Scan entire library</);
-  assert.match(html, /id="audio-integrity-scan-cancel-btn"[^>]*disabled>Cancel scan</);
+  assert.match(html, /id="audio-integrity-scan-btn"[^>]*>Check library</);
+  assert.match(html, /id="audio-integrity-scan-cancel-btn"[^>]*disabled>Stop</);
 });

@@ -9,6 +9,8 @@
 // main.js-level things (logging, path helpers, the current main window) —
 // passing them in as `deps` keeps this file independently testable instead
 // of reaching back into main.js's shared closure state.
+const { resolveLaunchOutput, scheduleExclusiveReleaseRestore } = require('./audio-output-manager');
+
 function createGstreamerBridge(deps) {
   const {
     runtimeResourcePath,
@@ -87,10 +89,22 @@ function createGstreamerBridge(deps) {
       gstreamerEventBuffer = '';
       gstreamerRuntimeReady = false;
       gstreamerStartupFailed = false;
+      // A bit-perfect (alsa:) output is only used when the card is actually
+      // free; otherwise play through the same DAC's shared sink and tell the
+      // renderer why (see resolveLaunchOutput).
+      const launchOutput = resolveLaunchOutput(String(getAudioOutputDevice() || '').trim());
+      if (launchOutput.fallback) {
+        writeSession('WARN', 'AUDIO OUTPUT', launchOutput.reason, { device: launchOutput.device || 'system-default' });
+        const win = getMainWindow();
+        try { if (win && !win.isDestroyed()) win.webContents.send('gstreamer:event', { name: 'BIT_PERFECT_UNAVAILABLE', value: launchOutput.reason }); } catch {}
+      }
       gstreamerProcess = spawnTracked(gstreamerHelperBinary(), [], {
         stdio: ['pipe', 'ignore', 'pipe', 'pipe'],
-        env: { ...process.env, HIVE_AUDIO_OUTPUT_DEVICE: String(getAudioOutputDevice() || '').trim() }
+        env: { ...process.env, HIVE_AUDIO_OUTPUT_DEVICE: launchOutput.device }
       });
+      // Whenever this helper exits -- output switch, restart, crash, or Hive
+      // quitting -- hand an exclusively-held card back to PipeWire properly.
+      if (launchOutput.bitPerfect) gstreamerProcess.once('exit', () => { scheduleExclusiveReleaseRestore(launchOutput.restore); });
       // GStreamer owns the real-time-ish audio path. Do not deliberately nice the
       // helper below normal priority: doing so can starve the native transport and
       // make short ramp/transport transitions audible as stutter or clicks under

@@ -125,8 +125,31 @@ function readId3LoveFromBuffer(input) {
   return false;
 }
 
-async function readMp3MusicBeeLove(filePath) {
-  try { return readId3LoveFromBuffer(await fsp.readFile(filePath)); } catch { return false; }
+// Reads only the leading ID3v2 tag (header + the size it declares), which is
+// all readId3LoveFromBuffer ever looks at. This used to fsp.readFile() the
+// whole MP3 -- several MB per track -- on every library scan, which on a
+// spinning disk was most of the time a full rescan took.
+async function readId3v2TagBytes(filePath) {
+  const fd = await fsp.open(filePath, 'r');
+  try {
+    const head = Buffer.alloc(10);
+    const { bytesRead } = await fd.read(head, 0, 10, 0);
+    if (bytesRead < 10 || head.toString('ascii', 0, 3) !== 'ID3') return head.subarray(0, bytesRead);
+    const tagSize = readId3Size(head);
+    if (!tagSize || tagSize > 64 * 1024 * 1024) return head;
+    const total = 10 + tagSize + ((head[5] & 0x10) ? 10 : 0);
+    const buf = Buffer.alloc(total);
+    head.copy(buf, 0);
+    const { bytesRead: tagBytes } = await fd.read(buf, 10, total - 10, 10);
+    // A damaged header can over-declare the size; keep what physically exists.
+    return buf.subarray(0, 10 + tagBytes);
+  } finally {
+    await fd.close();
+  }
 }
 
-module.exports = { readId3LoveFromBuffer, readMp3MusicBeeLove, isFavoriteLoveValue, isBeehiveLoveFieldName };
+async function readMp3MusicBeeLove(filePath) {
+  try { return readId3LoveFromBuffer(await readId3v2TagBytes(filePath)); } catch { return false; }
+}
+
+module.exports = { readId3LoveFromBuffer, readId3v2TagBytes, readMp3MusicBeeLove, isFavoriteLoveValue, isBeehiveLoveFieldName };
