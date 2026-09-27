@@ -140,7 +140,9 @@ test('main.js wires the update checker to IPC and never auto-checks in an unpack
   const checkCallIndex = main.indexOf('setTimeout(() => { void updateChecker.check(); }, 5000);');
   assert.ok(checkCallIndex >= 0, 'the deferred startup check must exist');
   const guardWindow = main.slice(Math.max(0, checkCallIndex - 400), checkCallIndex);
-  assert.match(guardWindow, /if \(!process\.env\.HIVE_PORTABLE_ROOT && app\.isPackaged\) \{/);
+  // Also requires app-update.yml, which only installer builds carry (the
+  // Windows zip has none).
+  assert.match(guardWindow, /if \(!process\.env\.HIVE_PORTABLE_ROOT && app\.isPackaged && fs\.existsSync\(path\.join\(process\.resourcesPath \|\| '', 'app-update\.yml'\)\)\) \{/);
 });
 
 test('preload exposes the update IPC channels to the renderer', () => {

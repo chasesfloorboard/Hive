@@ -41,7 +41,13 @@ function createSessionLog({ hiveProjectRoot, startupDebugEnabled, startupDebugSt
   let startupDebugStopped = false;
   const startupTrackedChildren = new Map();
 
-  function portableLogDir() { return path.join(hiveProjectRoot, 'logs'); }
+  // A genuinely packaged build (the Windows zip) keeps its logs next to
+  // Hive.exe, not buried in resources/app. The Linux launcher sets
+  // HIVE_PORTABLE_ROOT, so it keeps using the checkout's own logs folder.
+  function portableLogDir() {
+    if (app.isPackaged && !String(process.env.HIVE_PORTABLE_ROOT || '').trim()) return path.join(path.dirname(process.execPath), 'logs');
+    return path.join(hiveProjectRoot, 'logs');
+  }
   function userLogDir() {
     try { return path.join(app.getPath('userData'), 'logs'); } catch { return path.join(process.env.HOME || process.env.USERPROFILE || '/tmp', '.hive', 'logs'); }
   }
@@ -218,7 +224,18 @@ function createSessionLog({ hiveProjectRoot, startupDebugEnabled, startupDebugSt
   // signal for "this is a portable/dev launch" (see getPortableApplicationRoot
   // in main.js, which already uses this same priority) -- trust that over
   // app.isPackaged, which only applies when it's genuinely absent.
-  function runningFromPortableCheckout() { return !!String(process.env.HIVE_PORTABLE_ROOT || '').trim() || !app.isPackaged; }
+  //
+  // A packaged build without an app.asar (the Windows build ships the app as
+  // plain files, see scripts/build-windows.sh) has the same layout as a
+  // checkout, so it resolves resources and workers the same way. Splitting
+  // workers into app.asar.unpacked left their relative requires (e.g.
+  // ../main/hive-love) inside the archive, crashing every scanner worker.
+  let plainFilePackage = null;
+  function runningFromPortableCheckout() {
+    if (String(process.env.HIVE_PORTABLE_ROOT || '').trim() || !app.isPackaged) return true;
+    if (plainFilePackage === null) plainFilePackage = !fs.existsSync(path.join(process.resourcesPath || '', 'app.asar'));
+    return plainFilePackage;
+  }
   function runtimeResourcePath(relativePath) {
     if (!runningFromPortableCheckout()) {
       const unpackedPath = path.join(process.resourcesPath, 'app.asar.unpacked', relativePath);

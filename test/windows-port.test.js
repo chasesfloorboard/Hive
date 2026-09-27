@@ -127,3 +127,71 @@ test('the native helper builds for Windows: no POSIX-only calls outside a G_OS_W
   assert.match(native, /#ifdef G_OS_WIN32[\s\S]*?event_fp = stdout;[\s\S]*?#else\s*\n\s*event_fp = fdopen\(3, "w"\);/);
   assert.match(native, /g_thread_new\("hive-stdin", stdin_thread, NULL\)/);
 });
+
+// Windows refuses to replace a file another program has open (EPERM/EBUSY/
+// EACCES): Hive's audio helper, the Search indexer, antivirus. Every metadata
+// write ends in replaceFile, which retries there before failing clearly.
+test('replaceFile retries a locked file on Windows, then gives a clear error; other platforms fail fast', async () => {
+  const { replaceFile } = require('../app/main/replace-file');
+  const lockedThenFree = () => { let n = 0; return async () => { if (n++ < 2) { const e = new Error('locked'); e.code = 'EPERM'; throw e; } }; };
+  const sleeps = [];
+  await replaceFile('t', 'f', { platform: 'win32', rename: lockedThenFree(), sleep: async ms => { sleeps.push(ms); } });
+  assert.deepEqual(sleeps, [100, 200], 'retried with backoff, then succeeded');
+
+  const alwaysLocked = async () => { const e = new Error('busy'); e.code = 'EBUSY'; throw e; };
+  await assert.rejects(replaceFile('t', 'C:\\Music\\a.mp3', { platform: 'win32', rename: alwaysLocked, retryForMs: 0, sleep: async () => {} }),
+    err => err.code === 'EBUSY' && /open in another program/.test(err.message));
+  await assert.rejects(replaceFile('t', 'f', { platform: 'linux', rename: alwaysLocked, sleep: async () => { throw new Error('should not retry'); } }), { code: 'EBUSY' });
+
+  let copied = false;
+  const crossDevice = async () => { const e = new Error('xdev'); e.code = 'EXDEV'; throw e; };
+  await replaceFile('t', 'f', { platform: 'win32', rename: crossDevice, copyOver: async () => { copied = true; } });
+  assert.equal(copied, true, 'EXDEV falls back to copy');
+
+  // Every media-file writer goes through it.
+  for (const file of ['app/main/metadata-writer.js', 'app/workers/metadata-worker.js']) {
+    assert.match(fs.readFileSync(path.join(root, file), 'utf8'), /replaceFile\(/, file);
+  }
+});
+
+// A song reached by a gapless transition was never marked as playing, so a
+// Love/tag write went straight at the open file -- harmless on Linux, EPERM on
+// Windows (the "liking a song failed" report).
+test('a gapless transition protects the newly playing file like a fresh load does', () => {
+  const renderer = fs.readFileSync(path.join(root, 'app', 'renderer', 'renderer.js'), 'utf8');
+  const start = renderer.indexOf("if (name === 'STREAM_START') {");
+  const block = renderer.slice(start, renderer.indexOf('updateNowPlayingUI(next);', start));
+  assert.match(block, /currentIndex = ni;[\s\S]*window\.beehive\.setPlaybackProtectedPath\?\.\(next\.path\);/);
+});
+
+// The Windows package ships the app as plain files: with app.asar, the
+// unpacked workers could not load modules left in the archive, every scanner
+// worker crashed, and every track showed 0:00.
+test('the Windows package is plain files, bundles the Linux-equivalent tools and decoders, and resolves like a checkout', () => {
+  const script = fs.readFileSync(path.join(root, 'scripts', 'build-windows.sh'), 'utf8');
+  assert.match(script, /asar: false/);
+  for (const plugin of ['libav', 'asf', 'isomp4', 'fdkaac', 'flac', 'mpg123', 'opus', 'vorbis', 'wavpack', 'musepack', 'speex', 'wasapi2']) {
+    assert.match(script, new RegExp(`PLUGINS=\\([^)]*\\b${plugin}\\b`), plugin);
+  }
+  assert.match(script, /TOOLS=\(ffmpeg\.exe metaflac\.exe\)/);
+  const sessionLog = fs.readFileSync(path.join(root, 'app', 'main', 'session-log.js'), 'utf8');
+  assert.match(sessionLog, /plainFilePackage = !fs\.existsSync\(path\.join\(process\.resourcesPath \|\| '', 'app\.asar'\)\)/);
+  const main = fs.readFileSync(path.join(root, 'app', 'main', 'main.js'), 'utf8');
+  assert.match(main, /path\.join\(process\.resourcesPath \|\| '', 'GStreamer', 'bin'\)[\s\S]{0,300}process\.env\[pathKey\] = \[bundledBin/);
+});
+
+test('Windows gets a tray icon and keyboard media keys (Linux uses MPRIS for both)', () => {
+  const tray = fs.readFileSync(path.join(root, 'app', 'main', 'tray.js'), 'utf8');
+  assert.match(tray, /\['linux', 'win32'\]\.includes\(process\.platform\)/);
+  const main = fs.readFileSync(path.join(root, 'app', 'main', 'main.js'), 'utf8');
+  for (const key of ['MediaPlayPause', 'MediaNextTrack', 'MediaPreviousTrack', 'MediaStop']) assert.match(main, new RegExp(key));
+  assert.match(main, /globalShortcut\.register\(accelerator, \(\) => mpris\.command\(command\)\)/);
+});
+
+// The scan's "finalization" flush ran before the worker pool started, so the
+// last partial batch of scanned tracks never reached SQLite (a small library's
+// first scan left the database empty; search found nothing).
+test('a library scan flushes its last database batch after the workers finish', () => {
+  const main = fs.readFileSync(path.join(root, 'app', 'main', 'main.js'), 'utf8');
+  assert.match(main, /await runPool\(\);\s*scanToken\.onCancel = null;\s*throwIfCancelled\(\);[\s\S]{0,400}await flushDatabaseBatch\(\);/);
+});

@@ -46,7 +46,9 @@ test('metadata commits are staged via an atomic rename, with no full-file backup
   const end = metadataWriter.indexOf('\n  }', start);
   assert.ok(start >= 0 && end > start, 'expected to find commitMetadataTemp()');
   const block = metadataWriter.slice(start, end);
-  assert.match(block, /await fsp\.rename\(temp, trackPath\);/);
+  // replaceFile is the atomic rename (plus a Windows retry for locked files).
+  assert.match(block, /await replaceFile\(temp, trackPath/);
+  assert.match(fs.readFileSync(path.join(__dirname, '..', 'app', 'main', 'replace-file.js'), 'utf8'), /await rename\(temp, target\);/);
 });
 
 test('Build 256: ordinary tag writes verify embedded artwork was not changed', () => {

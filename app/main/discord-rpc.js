@@ -1,6 +1,6 @@
 'use strict';
 
-// Minimal Discord IPC client for Rich Presence (the same local Unix-socket
+// Minimal Discord IPC client for Rich Presence (the same local IPC
 // protocol the official discord-rpc library and every third-party Rich
 // Presence client use). Intentionally hand-rolled and dependency-free: the
 // protocol is a small fixed binary framing over a JSON payload.
@@ -14,7 +14,9 @@ const EventEmitter = require('events');
 
 const OP = { HANDSHAKE: 0, FRAME: 1, CLOSE: 2, PING: 3, PONG: 4 };
 
-function socketCandidates() {
+function socketCandidates(platform = process.platform) {
+  // Windows Discord listens on named pipes, not socket files in a temp dir.
+  if (platform === 'win32') return Array.from({ length: 10 }, (_, i) => `\\\\?\\pipe\\discord-ipc-${i}`);
   const paths = [];
   const bases = [
     process.env.XDG_RUNTIME_DIR,
@@ -169,4 +171,4 @@ class DiscordRPC extends EventEmitter {
   }
 }
 
-module.exports = { DiscordRPC };
+module.exports = { DiscordRPC, socketCandidates };

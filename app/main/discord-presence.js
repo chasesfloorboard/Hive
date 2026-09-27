@@ -41,6 +41,42 @@ class DiscordPresence extends EventEmitter {
     this.rpc.on('error', (err) => this.emit('error', err));
     this.loon.on('error', (err) => this.emit('error', err));
     this.loon.on('connected', () => { if (this.lastPayload) this._apply(this.lastPayload, true); });
+    // setActivity is a no-op until Discord's READY, so a track that started
+    // before the connection (Hive launched before Discord, or Discord
+    // restarted) stayed blank until the next track change. Re-send it.
+    this.rpc.on('ready', () => { if (this.lastPayload) this._apply(this.lastPayload, true); });
+  }
+
+  // Shape: {activityType: 'playing', enabled: true}. Both keys optional.
+  // Cached after the first read: this is consulted on every playback update,
+  // and only Hive writes the file.
+  _readSettings() {
+    if (this._settings) return this._settings;
+    let settings = {};
+    if (this.activityTypeSettingsPath) {
+      try { settings = JSON.parse(fs.readFileSync(this.activityTypeSettingsPath, 'utf8')) || {}; } catch {}
+    }
+    this._settings = settings;
+    return settings;
+  }
+
+  _writeSettings(patch) {
+    this._settings = { ...this._readSettings(), ...patch };
+    if (!this.activityTypeSettingsPath) return;
+    fs.mkdirSync(path.dirname(this.activityTypeSettingsPath), { recursive: true });
+    fs.writeFileSync(this.activityTypeSettingsPath, JSON.stringify(this._settings, null, 2), 'utf8');
+  }
+
+  // On unless the user turned it off in Settings.
+  isEnabled() {
+    return this._readSettings().enabled !== false;
+  }
+
+  setEnabled(enabled) {
+    this._writeSettings({ enabled: !!enabled });
+    if (enabled) this.start();
+    else this.stop();
+    return !!enabled;
   }
 
   // Default is 'playing' (Discord activity type 0), not 'listening' (type
@@ -48,14 +84,8 @@ class DiscordPresence extends EventEmitter {
   // Activity, not the "Playing <name>" treatment the user actually wants
   // Hive to show up as.
   _readActivityTypeName() {
-    if (!this.activityTypeSettingsPath) return 'playing';
-    try {
-      const settings = JSON.parse(fs.readFileSync(this.activityTypeSettingsPath, 'utf8'));
-      const name = String(settings?.activityType || '').toLowerCase();
-      return Object.prototype.hasOwnProperty.call(ACTIVITY_TYPE_BY_NAME, name) ? name : 'playing';
-    } catch {
-      return 'playing';
-    }
+    const name = String(this._readSettings().activityType || '').toLowerCase();
+    return Object.prototype.hasOwnProperty.call(ACTIVITY_TYPE_BY_NAME, name) ? name : 'playing';
   }
 
   _readActivityType() {
@@ -68,39 +98,45 @@ class DiscordPresence extends EventEmitter {
   setActivityType(name) {
     const normalized = String(name || '').toLowerCase();
     if (!Object.prototype.hasOwnProperty.call(ACTIVITY_TYPE_BY_NAME, normalized)) throw new Error('Invalid Discord activity type.');
-    if (this.activityTypeSettingsPath) {
-      fs.mkdirSync(path.dirname(this.activityTypeSettingsPath), { recursive: true });
-      fs.writeFileSync(this.activityTypeSettingsPath, JSON.stringify({ activityType: normalized }, null, 2), 'utf8');
-    }
+    this._writeSettings({ activityType: normalized });
     if (this.lastPayload) this._apply(this.lastPayload, true);
     return normalized;
   }
 
-  // Live status for Settings -- whether a loon/Discord connection is even
-  // configured (see readDiscordPresenceConfigSync in main.js) and whether
-  // each half is actually connected right now.
+  // Live status for Settings: whether presence is on, whether Discord is
+  // connected, and whether the optional loon artwork relay (which turns local
+  // cover art into a public image URL; see readDiscordPresenceConfigSync in
+  // main.js) is configured and connected.
   status() {
     return {
-      configured: !!this.loon?.url,
+      enabled: this.isEnabled(),
+      artworkRelayConfigured: !!this.loon?.url,
       discordConnected: !!this.rpc?.ready,
       loonConnected: !!this.loon?.connected,
       activityType: this._readActivityTypeName()
     };
   }
 
+  // Presence needs only Discord itself: title, artist, album and progress
+  // always show, as does artwork that already has a public URL (Spotify,
+  // podcasts). The loon relay is optional and only adds local cover art.
   start() {
+    if (!this.isEnabled()) return;
+    this.lastKey = '';
     this.rpc.connect();
-    this.loon.connect();
+    if (this.loon.url) this.loon.connect();
   }
 
   stop() {
     try { this.rpc.clearActivity(); } catch {}
     this.rpc.close();
     this.loon.close();
+    this.lastKey = '';
   }
 
   async update(payload) {
     this.lastPayload = payload;
+    if (!this.isEnabled()) return;
     await this._apply(payload, false);
   }
 

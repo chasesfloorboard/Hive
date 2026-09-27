@@ -1,15 +1,15 @@
 #!/usr/bin/env python3
 """Assemble Hive's Windows GStreamer runtime from MSYS2 ucrt64 packages.
 
-usage: windows-gstreamer-runtime.py <work-dir> <out-dir> <plugin.dll>...
+usage: windows-gstreamer-runtime.py <work-dir> <out-dir> <plugin.dll | tool.exe>...
 
 Downloads the MSYS2 ucrt64 package index into <work-dir>, then starts from the
-requested plugin DLLs and follows their real PE imports (objdump -p) until the
+requested plugin DLLs and tools (ffmpeg.exe, metaflac.exe) and follows their real PE imports (objdump -p) until the
 set is closed, fetching only the packages that own those DLLs. Everything is
 extracted under <work-dir>/root (which also provides the headers and import
 libraries used to compile the helper), and the minimal runtime is copied to:
 
-  <out-dir>/bin                      core DLLs and codec libraries
+  <out-dir>/bin                      core DLLs, codec libraries and tools
   <out-dir>/lib/gstreamer-1.0        plugins
   <out-dir>/libexec/gstreamer-1.0    gst-plugin-scanner.exe
 
@@ -51,7 +51,7 @@ def main():
         name = desc['NAME'][0]; filename[name] = desc['FILENAME'][0]
         if not (entry / 'files').exists(): continue
         for rel in parse_desc(entry / 'files').get('FILES', []):
-            if rel.lower().endswith('.dll') and rel.startswith(('ucrt64/bin/', 'ucrt64/lib/gstreamer-1.0/')):
+            if rel.lower().endswith(('.dll', '.exe')) and rel.startswith(('ucrt64/bin/', 'ucrt64/lib/gstreamer-1.0/')):
                 owner.setdefault(Path(rel).name.lower(), (name, rel))
 
     extracted = set()
