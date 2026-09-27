@@ -178,8 +178,12 @@ test('scanner worker also matches namespaced MP4 freeform ids for rating, not ju
   // but was comparing the un-stripped id for FMPS_RATING, so a full library
   // scan/rescan would overwrite a just-written M4A rating back to 0 -- the
   // write succeeded but the visible star rating reverted on the next scan.
+  // The FMPS read now lives in its own block covering every non-MP3/WAV format
+  // (it used to sit inside the MP4 branch, which left FLAC/Ogg/WMA ratings
+  // unread by scans); the idTail requirement is unchanged.
   const scanner = fs.readFileSync(path.join(root, 'app', 'workers', 'scanner-worker.js'), 'utf8');
-  const start = scanner.indexOf("ext === '.m4a'");
+  const start = scanner.indexOf("if (ext !== '.mp3' && ext !== '.wav') {");
+  assert.ok(start >= 0, 'expected the all-formats FMPS rating block');
   const end = scanner.indexOf('\n  }', start);
   const block = scanner.slice(start, end);
   assert.match(block, /idTail === 'FMPS_RATING'/);

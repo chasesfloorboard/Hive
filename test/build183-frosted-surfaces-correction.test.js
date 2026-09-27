@@ -9,7 +9,7 @@ const renderer = fs.readFileSync(path.join(ROOT, 'app/renderer/renderer.js'), 'u
 const css = fs.readFileSync(path.join(ROOT, 'app/renderer/styles.css'), 'utf8');
 
 test('Frosted surfaces keeps Now Playing / player as the single area control', () => {
-  assert.match(html, /<div class="settings-subsection-title">Frosted surfaces<\/div>[\s\S]*?data-glass-area="playbar"/);
+  assert.match(html, /Frosted surfaces<\/span>[\s\S]*?data-glass-area="playbar"/);
   assert.doesNotMatch(html, /id="setting-playbar-frosted"/);
   assert.doesNotMatch(html, />Frosted Now Playing bar</);
 });

@@ -38,6 +38,11 @@ static gboolean user_muted = FALSE;
 static gboolean trace_enabled = FALSE;
 static gdouble track_gain = 1.0; /* optional ReplayGain multiplier for the current track */
 static gdouble user_volume = 0.8; /* explicit 0-1 user slider value */
+/* Bit-perfect output: HIVE_AUDIO_OUTPUT_DEVICE="alsa:<device>" opens that ALSA
+ * hardware device directly (bypassing PipeWire's mixer/resampler) and leaves
+ * every sample untouched -- no user-volume element and no ReplayGain. Volume is
+ * then the DAC's job; MUTE still works through playbin. */
+static gboolean bit_perfect = FALSE;
 static GstElement *spectrum = NULL;
 static GstElement *track_gain_element = NULL;
 static GstElement *user_volume_element = NULL;
@@ -103,6 +108,36 @@ static GstElement *audio_filter_bin = NULL;
 static gdouble volume_ramp_start = 0.8;
 static gdouble volume_ramp_target = 0.8;
 static gint64 volume_ramp_started_at = 0;
+/* The ramp is timed in audio frames actually processed, not wall-clock time.
+ * GStreamer pushes buffers in bursts, ahead of playback; timing each buffer by
+ * when the probe happened to run gave consecutive buffers overlapping or
+ * skipped slices of the ramp, so the applied gain stepped backwards/forwards
+ * at every ~26 ms buffer boundary -- audible clicks, worst when coming up from
+ * silence, and a volume that seemed to fight the slider. Counting frames makes
+ * each buffer start at exactly the gain the previous one ended on.
+ * volume_ramp_lock guards start/target/elapsed/user_volume between the main
+ * thread (begin_user_volume_ramp) and the streaming thread (the probe). */
+static guint64 volume_ramp_elapsed_frames = 0;
+static GMutex volume_ramp_lock;
+/* Transport fade: a short gain envelope applied on top of the user volume
+ * when the track changes during playback. LOAD used to switch the pipeline to
+ * READY while audio was playing, cutting the waveform mid-cycle -- an audible
+ * pop on every double-click of a new track. Now: fade out, wait until the
+ * silent point is actually being heard, then switch, then fade the new track
+ * in. Frame-timed in the same probe as the volume ramp; guarded by
+ * volume_ramp_lock. transport_fade_gain is the gain of the last processed
+ * frame. */
+#define TRANSPORT_FADE_OUT_US (25 * 1000)
+#define TRANSPORT_FADE_IN_US (20 * 1000)
+#define TRANSPORT_FADE_MAX_WAIT_US (400 * 1000)
+static gdouble transport_fade_gain = 1.0;
+static gdouble transport_fade_from = 1.0;
+static gdouble transport_fade_target = 1.0;
+static gint64 transport_fade_duration_us = 0;
+static guint64 transport_fade_elapsed_frames = 0;
+static gboolean transport_fade_active = FALSE;
+static gboolean transport_fade_silent = FALSE;          /* fade-out reached 0 */
+static GstClockTime transport_fade_silent_pts = GST_CLOCK_TIME_NONE; /* stream time where silence begins */
 static gboolean volume_ramp_active = FALSE;
 /* Set when a ramp finishes, so the element's "volume" property gets
  * restored on the START of the NEXT buffer probe call instead of
@@ -140,11 +175,19 @@ static void trace_line(const char *kind, const char *detail);
  * sink. This placement is important: putting the user-volume element back in
  * playbin's audio-filter chain reintroduces the ~1 second queue latency that
  * the user reported. ReplayGain remains a separate upstream element. */
+/* Never hand the volume element exactly 0.0. At 0.0 GstVolume switches to
+ * emitting GAP-flagged silence, and while in that mode about 1.4 s of audio
+ * piled up downstream (measured on a null sink): dragging the slider back up
+ * from 0 left the level frozen near the first step for ~1.4 s, then it jumped
+ * straight to the target -- the "fighting" slider and the pop. -120 dB is
+ * still true silence for 16/24-bit output (samples round to 0) but keeps the
+ * element on its normal processing path. */
+#define USER_VOLUME_ELEMENT_FLOOR 1e-6
 static void set_user_volume(gdouble value) {
   value = CLAMP(value, 0.0, 1.0);
   user_volume = value;
   if (!user_volume_element) return;
-  g_object_set(G_OBJECT(user_volume_element), "volume", value, NULL);
+  g_object_set(G_OBJECT(user_volume_element), "volume", MAX(value, USER_VOLUME_ELEMENT_FLOOR), NULL);
 }
 
 static void cancel_user_volume_ramp(void) {
@@ -259,7 +302,10 @@ static GstPadProbeReturn volume_ramp_probe_cb(GstPad *pad, GstPadProbeInfo *info
     volume_ramp_pending_restore = FALSE;
     set_user_volume(volume_ramp_target);
   }
-  if (!volume_ramp_active) return GST_PAD_PROBE_OK;
+  g_mutex_lock(&volume_ramp_lock);
+  const gboolean fade_on = transport_fade_active || transport_fade_gain < 1.0;
+  g_mutex_unlock(&volume_ramp_lock);
+  if (!volume_ramp_active && !fade_on) return GST_PAD_PROBE_OK;
   GstBuffer *buffer = GST_PAD_PROBE_INFO_BUFFER(info);
   if (!buffer) return GST_PAD_PROBE_OK;
 
@@ -268,13 +314,20 @@ static GstPadProbeReturn volume_ramp_probe_cb(GstPad *pad, GstPadProbeInfo *info
 
   if (!ensure_ramp_audio_info(pad)) {
     /* Format not yet known/supported -- fall back to the old buffer-level
-     * property step rather than leaving audio unramped or silent. This path
-     * never enters direct sample-scaling/pass-through mode, so there is
-     * nothing for volume_ramp_pending_start to force here -- clear it so a
-     * later format change can't have it fire out of context. */
-    volume_ramp_pending_start = FALSE;
-    if (buf_start_us >= VOLUME_RAMP_DURATION_US) { set_user_volume(volume_ramp_target); volume_ramp_active = FALSE; }
-    else { const gdouble fraction = (gdouble)buf_start_us / (gdouble)VOLUME_RAMP_DURATION_US; set_user_volume(volume_ramp_start + (volume_ramp_target - volume_ramp_start) * fraction); }
+     * property step for the user ramp (the fade can't scale samples it
+     * can't read, so it completes immediately rather than stalling a LOAD). */
+    if (volume_ramp_active) {
+      volume_ramp_pending_start = FALSE;
+      if (buf_start_us >= VOLUME_RAMP_DURATION_US) { set_user_volume(volume_ramp_target); volume_ramp_active = FALSE; }
+      else { const gdouble fraction = (gdouble)buf_start_us / (gdouble)VOLUME_RAMP_DURATION_US; set_user_volume(volume_ramp_start + (volume_ramp_target - volume_ramp_start) * fraction); }
+    }
+    g_mutex_lock(&volume_ramp_lock);
+    if (transport_fade_active) {
+      transport_fade_active = FALSE;
+      transport_fade_gain = transport_fade_target;
+      if (transport_fade_target <= 0.0) { transport_fade_silent = TRUE; transport_fade_silent_pts = GST_BUFFER_PTS(buffer); }
+    }
+    g_mutex_unlock(&volume_ramp_lock);
     return GST_PAD_PROBE_OK;
   }
 
@@ -282,44 +335,80 @@ static GstPadProbeReturn volume_ramp_probe_cb(GstPad *pad, GstPadProbeInfo *info
    * buffer apply_sample_ramp is about to scale below -- not eagerly from
    * begin_user_volume_ramp() on the main thread (see volume_ramp_pending_start's
    * declaration comment for the cross-thread race this closes). */
-  if (volume_ramp_pending_start) {
+  if (volume_ramp_active && volume_ramp_pending_start) {
     volume_ramp_pending_start = FALSE;
     if (user_volume_element) g_object_set(G_OBJECT(user_volume_element), "volume", 1.0, NULL);
   }
 
-  /* Compute the gain at both the first and last frame of THIS buffer, so the
-   * interpolation inside apply_sample_ramp is accurate to the buffer's own
-   * span rather than treating the whole buffer as one instant in time. */
   const gint bpf = GST_AUDIO_INFO_BPF(&ramp_audio_info);
   const gint rate = GST_AUDIO_INFO_RATE(&ramp_audio_info);
   const gsize buf_size = gst_buffer_get_size(buffer);
   const guint total_frames = (bpf > 0) ? (guint)(buf_size / (gsize)bpf) : 0;
-  const gint64 buf_duration_us = (rate > 0 && total_frames > 0)
-    ? (gint64)(((gdouble)total_frames / (gdouble)rate) * 1000000.0) : 0;
-  const gint64 buf_end_us = buf_start_us + buf_duration_us;
 
   gboolean finishing = FALSE;
-  gdouble start_gain, end_gain;
-  if (buf_start_us >= VOLUME_RAMP_DURATION_US) {
-    start_gain = end_gain = volume_ramp_target;
-    finishing = TRUE;
-  } else {
-    const gdouble start_fraction = CLAMP((gdouble)buf_start_us / (gdouble)VOLUME_RAMP_DURATION_US, 0.0, 1.0);
-    start_gain = volume_ramp_start + (volume_ramp_target - volume_ramp_start) * start_fraction;
-    if (buf_end_us >= VOLUME_RAMP_DURATION_US) {
-      end_gain = volume_ramp_target;
+  gboolean ramping = volume_ramp_active;
+  /* User-volume gains for this buffer. Without an active ramp the element's
+   * own "volume" property applies the user volume after this probe, so the
+   * samples here only need the transport fade (user factor 1.0). */
+  gdouble start_gain = 1.0, end_gain = 1.0;
+  gdouble fade_start = 1.0, fade_end = 1.0;
+  g_mutex_lock(&volume_ramp_lock);
+  if (ramping) {
+    const guint64 ramp_frames = rate > 0 ? MAX((guint64)1, (guint64)rate * VOLUME_RAMP_DURATION_US / 1000000) : 1;
+    const guint64 done = volume_ramp_elapsed_frames;
+    const guint64 after = done + total_frames;
+    volume_ramp_elapsed_frames = after;
+    if (done >= ramp_frames) {
+      start_gain = end_gain = volume_ramp_target;
       finishing = TRUE;
     } else {
-      const gdouble end_fraction = CLAMP((gdouble)buf_end_us / (gdouble)VOLUME_RAMP_DURATION_US, 0.0, 1.0);
-      end_gain = volume_ramp_start + (volume_ramp_target - volume_ramp_start) * end_fraction;
+      start_gain = volume_ramp_start + (volume_ramp_target - volume_ramp_start) * ((gdouble)done / (gdouble)ramp_frames);
+      if (after >= ramp_frames) {
+        /* Reaching the target partway through this buffer: the linear
+         * in-buffer interpolation below spreads the remainder across the whole
+         * buffer, which is at most one buffer (~26 ms) slower -- never a jump. */
+        end_gain = volume_ramp_target;
+        finishing = TRUE;
+      } else {
+        end_gain = volume_ramp_start + (volume_ramp_target - volume_ramp_start) * ((gdouble)after / (gdouble)ramp_frames);
+      }
     }
+    /* Publish the gain the last frame of this buffer will carry before
+     * releasing the lock, so a retarget arriving now starts from it. */
+    user_volume = end_gain;
   }
+  if (transport_fade_active) {
+    const guint64 fade_frames = rate > 0 ? MAX((guint64)1, (guint64)rate * (guint64)transport_fade_duration_us / 1000000) : 1;
+    const guint64 done = transport_fade_elapsed_frames;
+    const guint64 after = done + total_frames;
+    transport_fade_elapsed_frames = after;
+    const gdouble span = transport_fade_target - transport_fade_from;
+    fade_start = done >= fade_frames ? transport_fade_target : transport_fade_from + span * ((gdouble)done / (gdouble)fade_frames);
+    fade_end = after >= fade_frames ? transport_fade_target : transport_fade_from + span * ((gdouble)after / (gdouble)fade_frames);
+    transport_fade_gain = fade_end;
+    if (after >= fade_frames) {
+      transport_fade_active = FALSE;
+      if (transport_fade_target <= 0.0) {
+        transport_fade_silent = TRUE;
+        /* Silence starts after this buffer; handle_pending_load waits until
+         * the pipeline's playback position passes this point. */
+        const GstClockTime pts = GST_BUFFER_PTS(buffer);
+        const GstClockTime dur = GST_BUFFER_DURATION(buffer);
+        transport_fade_silent_pts = GST_CLOCK_TIME_IS_VALID(pts) ? pts + (GST_CLOCK_TIME_IS_VALID(dur) ? dur : 0) : GST_CLOCK_TIME_NONE;
+      }
+    }
+  } else {
+    fade_start = fade_end = transport_fade_gain;
+  }
+  g_mutex_unlock(&volume_ramp_lock);
+
+  if (!ramping && fade_start >= 1.0 && fade_end >= 1.0) return GST_PAD_PROBE_OK;
 
   buffer = gst_buffer_make_writable(buffer);
   GST_PAD_PROBE_INFO_DATA(info) = buffer; /* make_writable may return a new buffer instance */
-  if (apply_sample_ramp(buffer, &ramp_audio_info, start_gain, end_gain)) {
-    user_volume = end_gain; /* keep the C-side value in sync for continuity/introspection */
-  } else {
+  if (apply_sample_ramp(buffer, &ramp_audio_info, start_gain * fade_start, end_gain * fade_end)) {
+    if (ramping) user_volume = end_gain; /* keep the C-side value in sync for continuity/introspection */
+  } else if (ramping) {
     /* Mapping failed (e.g. a non-writable/foreign-memory buffer) -- fall
      * back to the property step for just this buffer rather than leaving
      * the element at its forced 1.0 pass-through with nothing correcting it. */
@@ -328,19 +417,9 @@ static GstPadProbeReturn volume_ramp_probe_cb(GstPad *pad, GstPadProbeInfo *info
 
   if (finishing) {
     volume_ramp_active = FALSE;
-    /* Real bug, confirmed live: restoring the element's property HERE used
-     * to double-apply gain. This pad probe runs BEFORE the element's own
-     * chain function processes THIS SAME buffer -- so setting the property
-     * back to volume_ramp_target now meant the element then ALSO multiplied
-     * the samples apply_sample_ramp had just manually scaled to that exact
-     * target, on this same buffer. For a low target (e.g. dragging from
-     * 100% down to 14%), that squares the gain (0.14 x 0.14 =~ 0.02) for
-     * one buffer -- a real, audible near-silence blip at the exact moment
-     * every ramp finishes, worse the further the target is from 1.0.
-     * Deferring the restore to the START of the NEXT probe call (a
-     * different, not-yet-processed buffer) fixes this: the element stays
-     * at 1.0 for the buffer we just finished scaling, and only applies
-     * volume_ramp_target starting with the buffer after it. */
+    /* Restoring the element's property here would double-apply gain to this
+     * already-scaled buffer (the probe runs before the element's chain); the
+     * restore is deferred to the next buffer -- see volume_ramp_pending_restore. */
     volume_ramp_pending_restore = TRUE;
   }
   return GST_PAD_PROBE_OK;
@@ -388,10 +467,15 @@ static GstPadProbeReturn volume_ramp_probe_cb(GstPad *pad, GstPadProbeInfo *info
  * sink/audio server handles a property write. */
 static void begin_user_volume_ramp(gdouble target) {
   target = CLAMP(target, 0.0, 1.0);
+  g_mutex_lock(&volume_ramp_lock);
+  /* user_volume is the gain the probe applied to the last frame it scaled, so
+   * a retarget mid-ramp continues from exactly where the audio currently is. */
   volume_ramp_start = user_volume;
   volume_ramp_target = target;
   volume_ramp_started_at = g_get_monotonic_time();
+  volume_ramp_elapsed_frames = 0;
   volume_ramp_active = TRUE;
+  g_mutex_unlock(&volume_ramp_lock);
   /* A retarget arriving between a ramp finishing and its deferred property
    * restore landing (see volume_ramp_pending_restore) must not let that
    * stale restore fire later and clobber THIS new ramp's forced 1.0. */
@@ -407,6 +491,7 @@ static void begin_user_volume_ramp(gdouble target) {
 
 static void apply_track_gain(gdouble value) {
   if (!track_gain_element) return;
+  if (bit_perfect) value = 1.0; /* ReplayGain would alter the samples */
   g_object_set(track_gain_element, "volume", CLAMP(value, 0.0, 8.0), NULL);
 }
 
@@ -630,6 +715,62 @@ static gboolean position_tick(gpointer unused) {
   return G_SOURCE_CONTINUE;
 }
 
+/* ---- Deferred LOAD (see the transport fade state near the top) ---- */
+static gboolean load_pending = FALSE;
+static gchar *pending_load_b64 = NULL;
+static gdouble pending_load_offset = 0.0, pending_load_start = 0.0, pending_load_end = 0.0;
+static gint64 pending_load_since = 0;
+static gboolean command_tick(gpointer unused);
+
+static void begin_transport_fade(gdouble target, gint64 duration_us, gboolean from_silence) {
+  g_mutex_lock(&volume_ramp_lock);
+  if (from_silence) transport_fade_gain = 0.0;
+  transport_fade_from = transport_fade_gain;
+  transport_fade_target = target;
+  transport_fade_duration_us = duration_us;
+  transport_fade_elapsed_frames = 0;
+  transport_fade_active = TRUE;
+  transport_fade_silent = FALSE;
+  transport_fade_silent_pts = GST_CLOCK_TIME_NONE;
+  g_mutex_unlock(&volume_ramp_lock);
+}
+
+static void run_pending_load(void) {
+  gchar *b64 = pending_load_b64;
+  pending_load_b64 = NULL;
+  load_pending = FALSE;
+  if (b64) handle_load(b64, pending_load_offset, pending_load_start, pending_load_end);
+  g_free(b64);
+  /* The new track starts from silence and fades in, so starting mid-song
+   * (a remembered position) doesn't click either. */
+  begin_transport_fade(1.0, TRANSPORT_FADE_IN_US, TRUE);
+  /* Commands that arrived after the LOAD (normally its PLAY) were held back
+   * so they apply to the new track, in order. */
+  command_tick(NULL);
+}
+
+/* Polls until the faded-out point is actually being heard -- the sink and
+ * audio server hold already-processed audio, so flushing right after the fade
+ * would still cut unfaded audio. Capped so a LOAD can never hang. */
+static gboolean pending_load_tick(gpointer unused) {
+  (void)unused;
+  if (!load_pending) return G_SOURCE_REMOVE;
+  g_mutex_lock(&volume_ramp_lock);
+  const gboolean silent = transport_fade_silent;
+  const GstClockTime silent_pts = transport_fade_silent_pts;
+  g_mutex_unlock(&volume_ramp_lock);
+  gboolean ready = g_get_monotonic_time() - pending_load_since >= TRANSPORT_FADE_MAX_WAIT_US;
+  if (!ready && silent) {
+    gint64 position = 0;
+    ready = !GST_CLOCK_TIME_IS_VALID(silent_pts)
+      || (gst_element_query_position(player, GST_FORMAT_TIME, &position) && position >= (gint64)silent_pts);
+  }
+  if (!ready) return G_SOURCE_CONTINUE;
+  if (trace_enabled) { char detail[96]; snprintf(detail, sizeof(detail), "waited_ms=%.1f silent=%d", (g_get_monotonic_time() - pending_load_since) / 1000.0, silent); trace_line("LOAD_AFTER_FADE", detail); }
+  run_pending_load();
+  return G_SOURCE_REMOVE;
+}
+
 static gboolean command_tick(gpointer unused) {
   /* This callback is scheduled by the stdin reader whenever a command arrives.
    * It is deliberately event-driven rather than polled every 5 ms: slider
@@ -637,23 +778,44 @@ static gboolean command_tick(gpointer unused) {
    * process boundary, without adding a periodic control latency or building a
    * backlog of stale slider positions. */
   g_atomic_int_set(&command_dispatch_pending, 0);
+  /* While a LOAD is fading out, hold every later command in the queue;
+   * run_pending_load() drains them afterwards, in order. */
+  if (load_pending) return G_SOURCE_REMOVE;
+  gboolean stop_draining = FALSE;
   gboolean pending_volume = FALSE;
   gdouble latest_volume = user_volume;
   gchar *line;
   while ((line = g_async_queue_try_pop(commands)) != NULL) {
     gchar **parts = g_strsplit(line, "\t", 0);
+    /* Optional LOAD fields are read by index below; bound them by the real
+     * field count so a short command can't read past the NULL terminator. */
+    const guint nparts = g_strv_length(parts);
+    const gchar *arg2 = nparts > 2 ? parts[2] : NULL, *arg3 = nparts > 3 ? parts[3] : NULL, *arg4 = nparts > 4 ? parts[4] : NULL;
     if (parts[0]) {
       if (trace_enabled) {
         if (!g_strcmp0(parts[0], "LOAD") && parts[1]) {
-          gsize n=0; guchar *d=g_base64_decode(parts[1], &n); gchar *path=(d&&n)?g_strndup((const gchar*)d,n):g_strdup("<invalid>"); gchar *uri=path_to_uri(path); gchar *detail=g_strdup_printf("LOAD path=%s offset=%s start=%s end=%s", uri?uri:path, parts[2]?parts[2]:"0", parts[3]?parts[3]:"0", parts[4]?parts[4]:"0"); trace_line("COMMAND",detail); g_free(detail); g_free(uri); g_free(path); g_free(d);
+          gsize n=0; guchar *d=g_base64_decode(parts[1], &n); gchar *path=(d&&n)?g_strndup((const gchar*)d,n):g_strdup("<invalid>"); gchar *uri=path_to_uri(path); gchar *detail=g_strdup_printf("LOAD path=%s offset=%s start=%s end=%s", uri?uri:path, arg2?arg2:"0", arg3?arg3:"0", arg4?arg4:"0"); trace_line("COMMAND",detail); g_free(detail); g_free(uri); g_free(path); g_free(d);
         } else if (!g_strcmp0(parts[0], "NEXT") && parts[1]) trace_line("COMMAND", "NEXT");
         else if (parts[1]) { gchar *detail=g_strdup_printf("%s arg=%s",parts[0],parts[1]); trace_line("COMMAND",detail); g_free(detail); }
         else trace_line("COMMAND",parts[0]);
       }
       if (!g_strcmp0(parts[0], "LOAD") && parts[1]) {
-        handle_load(parts[1], parts[2] ? g_ascii_strtod(parts[2], NULL) : 0.0,
-          parts[3] ? g_ascii_strtod(parts[3], NULL) : 0.0,
-          parts[4] ? g_ascii_strtod(parts[4], NULL) : 0.0);
+        const gdouble load_offset = arg2 ? g_ascii_strtod(arg2, NULL) : 0.0;
+        const gdouble load_start = arg3 ? g_ascii_strtod(arg3, NULL) : 0.0;
+        const gdouble load_end = arg4 ? g_ascii_strtod(arg4, NULL) : 0.0;
+        if (playing_state && stream_started && user_volume_element && !bit_perfect) {
+          /* Audio is playing: fade out first instead of cutting it (the pop). */
+          g_free(pending_load_b64);
+          pending_load_b64 = g_strdup(parts[1]);
+          pending_load_offset = load_offset; pending_load_start = load_start; pending_load_end = load_end;
+          pending_load_since = g_get_monotonic_time();
+          load_pending = TRUE;
+          begin_transport_fade(0.0, TRANSPORT_FADE_OUT_US, FALSE);
+          g_timeout_add(4, pending_load_tick, NULL);
+          stop_draining = TRUE;
+        } else {
+          handle_load(parts[1], load_offset, load_start, load_end);
+        }
       } else if (!g_strcmp0(parts[0], "NEXT") && parts[1]) {
         gsize len = 0; guchar *d = g_base64_decode(parts[1], &len);
         if (d && len) { gchar *path = g_strndup((const gchar*)d, len); set_next_path(path); g_free(path); }
@@ -710,6 +872,7 @@ static gboolean command_tick(gpointer unused) {
     }
     g_strfreev(parts);
     g_free(line);
+    if (stop_draining) break;
   }
 
   if (pending_volume) {
@@ -731,7 +894,11 @@ static gboolean command_tick(gpointer unused) {
     else { cancel_user_volume_ramp(); user_volume = requested_volume; }
     if (trace_enabled) { char detail[160]; snprintf(detail, sizeof(detail), "value=%.6f muted=%d stream_volume=hive-user-volume ramp=50ms", user_volume, user_muted); trace_line("VOLUME_STATE", detail); }
   }
-  return G_SOURCE_CONTINUE;
+  /* One-shot: the stdin thread schedules a new tick for every new burst of
+   * commands. This used to return G_SOURCE_CONTINUE, which kept the idle
+   * callback firing forever -- the helper pinned a whole CPU core (measured
+   * ~98%) for as long as it ran. */
+  return G_SOURCE_REMOVE;
 }
 
 static void *stdin_thread(void *unused) {
@@ -750,6 +917,16 @@ static void *stdin_thread(void *unused) {
     }
   }
   free(line);
+  /* stdin reaching EOF means Hive itself is gone (closed, crashed or killed)
+   * without sending QUIT. Exit instead of lingering as an orphan that keeps
+   * the audio device open -- in bit-perfect mode that held the DAC away from
+   * the rest of the system after Hive had closed. */
+  if (!shutting_down) {
+    g_async_queue_push(commands, g_strdup("QUIT"));
+    if (g_atomic_int_compare_and_exchange(&command_dispatch_pending, 0, 1)) {
+      g_main_context_invoke(NULL, command_tick, NULL);
+    }
+  }
   return NULL;
 }
 
@@ -768,6 +945,19 @@ int main(int argc, char **argv) {
   const gchar *requested_output = g_getenv("HIVE_AUDIO_OUTPUT_DEVICE");
   GstElement *sink = NULL;
   gboolean sink_is_pulse = FALSE;
+  if (requested_output && g_str_has_prefix(requested_output, "alsa:")) {
+    GstElement *alsa_sink = gst_element_factory_make("alsasink", "audio-output");
+    if (alsa_sink) {
+      g_object_set(alsa_sink, "device", requested_output + 5, NULL);
+      sink = alsa_sink;
+      bit_perfect = TRUE;
+      event_line("OUTPUT_DEVICE", requested_output);
+      event_line("BIT_PERFECT", requested_output + 5);
+    } else {
+      event_line("OUTPUT_DEVICE_FALLBACK", "alsasink unavailable; bit-perfect output disabled, using system default");
+    }
+    requested_output = NULL;
+  }
   if (requested_output && *requested_output) {
     GstElement *pulse_sink = gst_element_factory_make("pulsesink", "audio-output");
     if (pulse_sink) {
@@ -820,12 +1010,17 @@ int main(int argc, char **argv) {
    * (constant per track, not something the user drags in real time) and the
    * spectrum analyzer stay upstream in "audio-filter" where queue latency
    * does not matter. */
-  GstElement *sink_bin = gst_bin_new("hive-audio-sink");
-  user_volume_element = gst_element_factory_make("volume", "hive-user-volume");
-  if (sink_bin && user_volume_element) {
+  GstElement *sink_bin = bit_perfect ? NULL : gst_bin_new("hive-audio-sink");
+  user_volume_element = bit_perfect ? NULL : gst_element_factory_make("volume", "hive-user-volume");
+  if (bit_perfect) {
+    /* No user-volume element: set_user_volume() and the ramp become no-ops,
+     * and playbin only inserts format conversion the hardware actually needs
+     * (e.g. 16-bit into a 32-bit-only DAC, which is lossless padding). */
+    g_object_set(player, "audio-sink", sink, NULL);
+  } else if (sink_bin && user_volume_element) {
     gst_bin_add_many(GST_BIN(sink_bin), user_volume_element, sink, NULL);
     if (gst_element_link(user_volume_element, sink)) {
-      g_object_set(G_OBJECT(user_volume_element), "volume", user_volume, NULL);
+      g_object_set(G_OBJECT(user_volume_element), "volume", MAX(user_volume, USER_VOLUME_ELEMENT_FLOOR), NULL);
       GstPad *sink_pad = gst_element_get_static_pad(user_volume_element, "sink");
       /* Drives the ramp: see volume_ramp_probe_cb's comment above for why a
        * per-buffer probe on this exact pad replaces an external timer. */

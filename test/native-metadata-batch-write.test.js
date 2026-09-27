@@ -273,3 +273,122 @@ print(json.dumps(results))
     fs.rmSync(tempDir, { recursive: true, force: true });
   }
 });
+
+test('clearing a rating removes Hive rating fields instead of writing an explicit zero-star value', () => {
+  const tempDir = fs.mkdtempSync(path.join(os.tmpdir(), 'hive-rating-clear-'));
+  const mp3 = path.join(tempDir, 'track.mp3');
+  const script = String.raw`
+import json, sys
+from pathlib import Path
+sys.path.insert(0, '..')
+from mutagen.id3 import ID3
+import tag_helper
+p = Path(sys.argv[1])
+ID3().save(p, v2_version=4, v1=0)
+tag_helper.write_love(str(p), True)
+tag_helper.write_rating(str(p), 4)
+rated = ID3(p)
+tag_helper.write_rating(str(p), 0)
+cleared = ID3(p)
+print(json.dumps({
+  'ratedPopm': [f.rating for f in rated.getall('POPM') if f.email == 'musicbee'],
+  'clearedPopm': [f.rating for f in cleared.getall('POPM')],
+  'clearedFmps': [str(f.desc) for f in cleared.getall('TXXX') if str(f.desc).upper() == 'FMPS_RATING'],
+  'loved': tag_helper.read_love(str(p))
+}))
+`;
+  try {
+    const result = spawnSync('python3', ['-c', script, mp3], { cwd: path.resolve(__dirname, '..', 'resources', 'python'), encoding: 'utf8' });
+    assert.equal(result.status, 0, result.stderr || result.stdout);
+    const out = JSON.parse(result.stdout.trim().split('\n').pop());
+    assert.deepEqual(out.ratedPopm, [204]);
+    assert.deepEqual(out.clearedPopm, []);
+    assert.deepEqual(out.clearedFmps, []);
+    assert.equal(out.loved, true);
+  } finally {
+    fs.rmSync(tempDir, { recursive: true, force: true });
+  }
+});
+
+// Regression: the scanner only read FMPS_Rating inside its MP4 branch, so a
+// FLAC rated 5 stars in Hive saved correctly but scanned back as 0 stars.
+test('a FLAC rating written by Hive survives a library scan', async () => {
+  const { fork } = require('node:child_process');
+  const tempDir = fs.mkdtempSync(path.join(os.tmpdir(), 'hive-flac-rating-'));
+  const flac = path.join(tempDir, 'track.flac');
+  try {
+    const ffmpeg = spawnSync('ffmpeg', ['-y', '-f', 'lavfi', '-i', 'anullsrc=r=8000:cl=mono', '-t', '0.1', flac], { encoding: 'utf8' });
+    assert.equal(ffmpeg.status, 0, ffmpeg.stderr);
+    const write = spawnSync('python3', ['-c', 'import sys; sys.path.insert(0, ".."); import tag_helper; tag_helper.write_rating(sys.argv[1], 5)', flac], { cwd: path.resolve(__dirname, '..', 'resources', 'python'), encoding: 'utf8' });
+    assert.equal(write.status, 0, write.stderr);
+    const child = fork(path.resolve(__dirname, '..', 'app', 'workers', 'scanner-worker.js'), [], { stdio: ['ignore', 'ignore', 'ignore', 'ipc'] });
+    const msg = await new Promise((resolve, reject) => {
+      child.once('message', resolve);
+      child.once('error', reject);
+      child.send({ type: 'scan', id: 0, filePath: flac, coversDir: tempDir });
+    });
+    child.kill();
+    assert.equal(msg.type, 'result', msg.error);
+    assert.equal(msg.track.rating, 5);
+  } finally {
+    fs.rmSync(tempDir, { recursive: true, force: true });
+  }
+});
+
+// Tag-editor audit (2026-09): fields the editor offers must land in the
+// standard tag every reader uses, and track/disc totals must stay coherent.
+test('tag editor fields round-trip through standard tags (ID3 frames, FLAC totals, MP4 lyrics)', () => {
+  const tempDir = fs.mkdtempSync(path.join(os.tmpdir(), 'hive-tag-audit-'));
+  const mp3 = path.join(tempDir, 'track.mp3');
+  const flac = path.join(tempDir, 'track.flac');
+  const m4a = path.join(tempDir, 'track.m4a');
+  try {
+    for (const [file, args] of [[flac, []], [m4a, ['-c:a', 'aac']]]) {
+      const r = spawnSync('ffmpeg', ['-y', '-f', 'lavfi', '-i', 'anullsrc=r=8000:cl=mono', '-t', '0.1', ...args, file], { encoding: 'utf8' });
+      assert.equal(r.status, 0, r.stderr);
+    }
+    const script = String.raw`
+import json, sys
+sys.path.insert(0, '..')
+from mutagen.id3 import ID3, COMM
+from mutagen.flac import FLAC
+from mutagen.mp4 import MP4
+import tag_helper
+mp3, flac, m4a = sys.argv[1:4]
+ID3().save(mp3, v2_version=4, v1=0)
+t = ID3(mp3); t.add(COMM(encoding=3, lang='eng', desc='ID3v1 Comment', text=['old'])); t.save(v2_version=4, v1=0)
+f = FLAC(flac); f['TRACKTOTAL'] = '8'; f.save()
+fields = {'originalartist': 'Orig', 'lyricist': 'Writer', 'language': 'eng', 'comment': 'new', 'track': '3/12', 'disk': '1/'}
+tag_helper.write_metadata(mp3, fields, None)
+tag_helper.write_metadata(flac, fields, None)
+tag_helper.write_metadata(m4a, {'lyrics': 'la la', 'track': '3/12'}, None)
+id3 = ID3(mp3); fl = FLAC(flac); mp4 = MP4(m4a)
+print(json.dumps({
+  'TOPE': str(id3.get('TOPE')), 'TEXT': str(id3.get('TEXT')), 'TLAN': str(id3.get('TLAN')),
+  'txxx_left': [f.desc for f in id3.getall('TXXX')],
+  'comments': [(c.desc, str(c.text[0])) for c in id3.getall('COMM')],
+  'TRCK': str(id3.get('TRCK')), 'TPOS': str(id3.get('TPOS')),
+  'flac_track': fl.get('TRACKNUMBER'), 'flac_total': fl.get('TRACKTOTAL'), 'flac_disc_total': fl.get('DISCTOTAL'),
+  'mp4_lyr': mp4.tags.get('\xa9lyr'), 'mp4_freeform_lyrics': '----:com.apple.iTunes:lyrics' in mp4.tags, 'mp4_trkn': mp4.tags.get('trkn')
+}))
+`;
+    const result = spawnSync('python3', ['-c', script, mp3, flac, m4a], { cwd: path.resolve(__dirname, '..', 'resources', 'python'), encoding: 'utf8' });
+    assert.equal(result.status, 0, result.stderr || result.stdout);
+    const out = JSON.parse(result.stdout.trim().split('\n').pop());
+    assert.equal(out.TOPE, 'Orig');
+    assert.equal(out.TEXT, 'Writer');
+    assert.equal(out.TLAN, 'eng');
+    assert.deepEqual(out.txxx_left, [], 'no TXXX copies of fields that have real frames');
+    assert.deepEqual(out.comments, [['', 'new']], 'the legacy ID3v1 mirror comment is replaced, not concatenated');
+    assert.equal(out.TRCK, '3/12');
+    assert.equal(out.TPOS, '1', '"1/" clears the disc total');
+    assert.deepEqual(out.flac_track, ['3']);
+    assert.deepEqual(out.flac_total, ['12'], 'a stale TRACKTOTAL=8 must be replaced');
+    assert.equal(out.flac_disc_total, null);
+    assert.deepEqual(out.mp4_lyr, ['la la']);
+    assert.equal(out.mp4_freeform_lyrics, false);
+    assert.deepEqual(out.mp4_trkn, [[3, 12]]);
+  } finally {
+    fs.rmSync(tempDir, { recursive: true, force: true });
+  }
+});

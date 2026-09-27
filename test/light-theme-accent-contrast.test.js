@@ -65,7 +65,7 @@ async function extractForFlatColor(rgb, opts) {
 
 test('colorExtract.js defines a hard light-theme luminance ceiling applied to every color it produces', () => {
   const source = fs.readFileSync(MODULE_PATH, 'utf8');
-  assert.match(source, /const LIGHT_THEME_MAX_LUMINANCE = 0\.70;/);
+  assert.match(source, /const LIGHT_THEME_MAX_LUMINANCE = 0\.84;/);
   assert.match(source, /function capLuminance\(rgbTriple, maxLuminance\)/);
   // Every color key the light branches resolve must run through the cap,
   // not just the primary accent -- accentSoft's own "+30 brightness" boost
@@ -81,7 +81,7 @@ test('a near-white cover never produces a light-theme accent that exceeds the lu
     const rgb = parseRgba(palette[key]);
     assert.ok(rgb, `${key} should be an rgba() color, got ${palette[key]}`);
     const lum = relativeLuminance(...rgb);
-    assert.ok(lum <= 0.72, `${key} luminance ${lum.toFixed(3)} exceeds the light-theme ceiling (color: ${palette[key]})`);
+    assert.ok(lum <= 0.86, `${key} luminance ${lum.toFixed(3)} exceeds the light-theme ceiling (color: ${palette[key]})`);
   }
 });
 
@@ -95,7 +95,7 @@ test('a saturated colorful cover also stays under the light-theme luminance ceil
     const rgb = parseRgba(palette[key]);
     if (!rgb) continue;
     const lum = relativeLuminance(...rgb);
-    assert.ok(lum <= 0.72, `${key} luminance ${lum.toFixed(3)} exceeds the light-theme ceiling (color: ${palette[key]})`);
+    assert.ok(lum <= 0.86, `${key} luminance ${lum.toFixed(3)} exceeds the light-theme ceiling (color: ${palette[key]})`);
   }
 });
 
@@ -111,4 +111,27 @@ test('dark theme is unaffected by the light-theme luminance cap', async () => {
   // mechanism than the light-theme cap this file is about. Just confirm it
   // isn't being pulled up anywhere near the light-theme ceiling.
   assert.ok(lum < 0.6, `dark theme accent for a white cover should stay well under the light-theme ceiling, got luminance ${lum.toFixed(3)}`);
+});
+
+test('light theme accent reads brighter than dark theme accent for the same saturated cover', async () => {
+  // Real bug (1.0.3): LIGHT_THEME_MAX_LUMINANCE was set low enough (0.70)
+  // that ordinary saturated hues (green/cyan covers routinely land near
+  // 0.79-0.87 pre-cap) got clamped to LESS luminance than dark theme's own
+  // accent for that same hue -- backwards, since light theme's tuning
+  // exists specifically to read brighter than dark. Also, the old cap
+  // scaled the RGB triple toward black to reduce luminance, which
+  // desaturates a color faster than it dims it once lightness is above
+  // 50% (exactly where light theme's palette lives) -- the actual source
+  // of the "muddy" look. capLuminance now trims HSL lightness only, so hue
+  // and saturation survive the cap.
+  for (const rgb of [[40, 200, 90], [40, 200, 200], [200, 40, 200]]) {
+    const lightPalette = await extractForFlatColor(rgb, { light: true });
+    const darkPalette = await extractForFlatColor(rgb, { light: false });
+    const lightLum = relativeLuminance(...parseRgba(lightPalette.accent));
+    const darkLum = relativeLuminance(...parseRgba(darkPalette.accent));
+    assert.ok(
+      lightLum >= darkLum,
+      `cover [${rgb}]: light accent luminance ${lightLum.toFixed(3)} should be >= dark accent luminance ${darkLum.toFixed(3)}`
+    );
+  }
 });

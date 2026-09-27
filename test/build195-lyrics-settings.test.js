@@ -23,7 +23,7 @@ test('Build 195 prioritizes synced lyrics and can automatically embed searched l
   assert.match(renderer, /EMBED_LYRICS_AUTOMATICALLY_KEY/);
   assert.match(renderer, /Embedding searched lyrics/);
   assert.match(renderer, /window\.beehive\.writeTags\(t\.path, \{ lyrics \}\)/);
-  assert.match(html, /Embed songs with lyrics automatically/);
+  assert.match(html, /Save found lyrics/);
 });
 
 test('Build 195 adds per-track lyrics offset and applies it to highlighted timing', () => {
@@ -34,9 +34,16 @@ test('Build 195 adds per-track lyrics offset and applies it to highlighted timin
 });
 
 test('Build 195 documents precise start/end time entry format', () => {
-  assert.match(html, /placeholder="00:00\.00"/);
-  assert.match(html, /Start at this position\. Example: 00:12\.50/);
-  assert.match(html, /Optional\. Leave blank to play to the end/);
+  // 2026-09: the single "00:00.00" text box was ambiguous (hours:minutes or
+  // minutes:seconds?). Start/end are now separate hour / minute / second boxes.
+  for (const target of ['tag-start-time', 'tag-end-time']) {
+    const row = html.match(new RegExp(`data-time-target="${target}"[\\s\\S]*?id="${target}"`))?.[0] || '';
+    assert.match(row, /data-part="h"/);
+    assert.match(row, /data-part="m"/);
+    assert.match(row, /data-part="s"/);
+  }
+  assert.match(html, /Leave empty to play to the end/);
+  assert.doesNotMatch(html, /placeholder="00:00\.00"/);
 });
 
 // The embedded lyrics tag is always plain text (tag_helper.py's

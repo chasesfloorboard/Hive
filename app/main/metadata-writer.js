@@ -264,6 +264,24 @@ function createMetadataWriter(deps) {
     });
   }
 
+  // Album artwork arrangement ({action:'arrange', order:[{hash,type}]}):
+  // every requested image is in the file with the requested type, in the
+  // requested order. MP4 covr has no types, so there only the order is
+  // checked. (MP3/WAV keep their order because tag_helper.py patches mutagen's
+  // size-sorted ID3 frame writer.)
+  function artworkArrangementMatches(pictures, order, filePath) {
+    const list = Array.isArray(pictures) ? pictures : [];
+    const wanted = Array.isArray(order) ? order : [];
+    const ext = path.extname(String(filePath || '')).toLowerCase();
+    const isMp4 = ['.m4a', '.m4b', '.mp4'].includes(ext);
+    for (let i = 0; i < wanted.length; i++) {
+      const at = list[i];
+      if (!at || String(at.sha256 || '').toLowerCase() !== String(wanted[i]?.hash || '').toLowerCase()) return false;
+      if (!isMp4 && normalizePictureType(at.type || 'Other') !== normalizePictureType(wanted[i]?.type || 'Other')) return false;
+    }
+    return true;
+  }
+
   async function performWriteMetadata(trackPath, tags = {}, artwork = null, options = {}) {
     if (!trackPath || !fs.existsSync(trackPath)) throw new Error('Track file not found.');
     // This is the tag editor's general Save path (title/artist/rating-adjacent
@@ -274,7 +292,7 @@ function createMetadataWriter(deps) {
     return withMusicBeeWriteLock(trackPath, async () => {
       const temp = await createMetadataTempPath(trackPath, 'metadata');
       const artworkAction = String(artwork?.action || '').toLowerCase();
-      const artworkWasIntentionallyChanged = ['add','write','replace','replace_slot','remove_all','remove_front'].includes(artworkAction);
+      const artworkWasIntentionallyChanged = ['add','write','replace','replace_slot','remove_all','remove_front','arrange'].includes(artworkAction);
       const artworkBefore = artworkWasIntentionallyChanged ? null : (await runTagHelper({ __background: !!options.background, op: 'artwork_fingerprint', path: trackPath })).fingerprint;
       try {
         await copyMetadataFile(trackPath, temp, !!options.background);
@@ -321,6 +339,9 @@ function createMetadataWriter(deps) {
             const wanted = crypto.createHash('sha256').update(await fsp.readFile(artwork.imagePath)).digest('hex');
             const verify = await runTagHelper({ __background: !!options.background, op: 'artwork_contains_hash', path: temp, sha256: wanted });
             if (verify?.match !== true) throw new Error('The new artwork could not be verified in the file after the save completed.');
+          } else if (action === 'arrange') {
+            const result = await runTagHelper({ __background: !!options.background, op: 'read_artwork_metadata', path: temp });
+            if (!artworkArrangementMatches(result?.pictures, artwork.order, temp)) throw new Error('The artwork arrangement could not be verified in the file after the save completed.');
           } else if (action === 'remove_all' || action === 'remove_front') {
             const result = await runTagHelper({ __background: !!options.background, op: 'read_artwork_metadata', path: temp });
             const pictures = Array.isArray(result?.pictures) ? result.pictures : [];
@@ -360,6 +381,7 @@ function createMetadataWriter(deps) {
     performRemoveArtwork,
     performWriteMetadata,
     performWriteTags,
+    artworkArrangementMatches,
   };
 }
 

@@ -56,7 +56,7 @@ test('formatFileSizeShort renders a compact lowercase unit, decimal only when no
   assert.equal(formatFileSizeShort(-100), '0b');
 });
 
-test('updateSelectionStatus sets a combined duration + size tooltip on the selection-status element', () => {
+test('updateSelectionStatus sets a duration tooltip with the size as a separate, dimmer secondary part', () => {
   const start = renderer.indexOf('function updateSelectionStatus()');
   const end = renderer.indexOf('\n  function clearAlbumSelection', start);
   assert.ok(start >= 0 && end > start, 'updateSelectionStatus must exist');
@@ -64,6 +64,11 @@ test('updateSelectionStatus sets a combined duration + size tooltip on the selec
   assert.match(block, /const tracks = selectedTracksForStatus\(\);/);
   assert.match(block, /totalSeconds \+= |reduce\(\(sum, t\) => sum \+ \(Number\(t\?\.duration\)/);
   assert.match(block, /reduce\(\(sum, t\) => sum \+ \(Number\(t\?\.fileSize\)/);
-  assert.match(block, /node\.dataset\.tooltip = `\$\{formatDurationLong\(totalSeconds\)\} · \$\{formatFileSizeShort\(totalBytes\)\}`;/);
+  // Length and size used to share one flat string ("44m 45s · 41.1mb") and
+  // were hard to tell apart; the size is now rendered as a dimmer second part.
+  assert.match(block, /node\.dataset\.tooltip = formatDurationLong\(totalSeconds\);/);
+  assert.match(block, /node\.dataset\.tooltipSecondary = formatFileSizeShort\(totalBytes\);/);
   assert.match(block, /delete node\.dataset\.tooltip;/);
+  assert.match(block, /delete node\.dataset\.tooltipSecondary;/);
+  assert.match(renderer, /sub\.className='tooltip-secondary'/);
 });

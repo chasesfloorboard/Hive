@@ -8,7 +8,7 @@ const source = fs.readFileSync(path.join(root, 'app', 'renderer', 'renderer.js')
 
 test('GStreamer queue jumps do not block LOAD on ReplayGain tag reads', () => {
   assert.match(source, /const gainPromise = resolveReplayGainForTrack\(t\);/);
-  assert.match(source, /const gstLoaded = await gstLoadCurrent\(desired, requestGeneration\);[\s\S]*await gainPromise;/);
+  assert.match(source, /const gstLoaded = await gstLoadCurrent\(desired, requestGeneration(?:, \{ startPaused \})?\);[\s\S]*await gainPromise;/);
 });
 
 test('GStreamer queue jumps avoid the redundant STOP and renderer delay', () => {

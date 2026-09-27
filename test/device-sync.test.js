@@ -194,7 +194,8 @@ test('Android sync has a native IPC path and settings UI', () => {
   assert.match(main, /ipcMain\.handle\('devices:sendTracks'/);
   assert.match(preload, /listDevices: \(\) => ipcRenderer\.invoke\('devices:list'\)/);
   assert.match(preload, /sendTracksToDevice: \(device, tracks\) => ipcRenderer\.invoke\('devices:sendTracks'/);
-  assert.match(html, /data-settings-tab="devices">Devices/);
+  assert.match(html, /data-settings-tab="connections">Connections/);
+  assert.match(html, /id="settings-panel-connections"[\s\S]*Android devices/);
   assert.match(html, /id="device-refresh-btn"/);
   assert.match(renderer, /Send to/);
   assert.match(renderer, /setDeviceDestination/);

@@ -16,7 +16,7 @@ test('Build 161 keeps glass controls out of the bottom player and exposes real s
   assert.match(html, /data-glass-area="main"/);
   assert.doesNotMatch(html, /data-glass-area="toolbar"/);
   assert.match(renderer, /glassAreaDefaults/);
-  assert.match(html, /Frosted Glass/);
+  assert.match(html, /Frosted glass/);
 });
 
 test('Build 161 makes the themed Electron title bar an explicit optional window mode', () => {

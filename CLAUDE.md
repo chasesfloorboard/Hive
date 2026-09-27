@@ -361,6 +361,15 @@ volume popping (see "Volume architecture" below) shipped as a known,
 explicitly-accepted-for-1.0 issue, not silently unresolved - don't
 "rediscover" it as a surprise regression.
 
+## 1.0.3 released, 2026-09-27
+
+Linux build only (`Hive-1.0.3-Linux.tar.gz`, a `git archive` of the tag,
+same as 1.0.2's Linux asset). The 1.0.2 Windows zip was built outside this
+tree (its asar has `gstreamer-bridge.js.BEFORE-WINDOWS-MERGE` etc. and a
+prebuilt `beehive-gstreamer-player.exe`); this checkout's
+`gstreamer-bridge.js` has no win32 support and there's no MinGW here, so a
+Windows 1.0.3 needs that Windows branch merged first. See CHANGELOG 1.0.3.
+
 ## Post-1.0: Visualizer plugin (the user's actual answer to "make a
 plugin")
 
@@ -592,6 +601,38 @@ the property/sample-scaling relationship - the next thing to suspect is
 something outside this file's control entirely (e.g. PipeWire's own
 resampler/graph quantum boundaries), not a third variant of the same
 same-buffer-ordering bug.
+
+## Volume popping: RESOLVED and confirmed by the user, 2026-09-26
+
+The "something else remains" popping above was two more real bugs, both
+found by recording the helper's actual output (steady tone into a PipeWire
+null sink, then reading the envelope), not by listening or reading code:
+
+1. **GstVolume at exactly 0.0.** It switches to GAP-flagged silence, and while
+   in that mode about 1.4 s of audio piled up downstream. Raising the slider
+   from 0 left the output frozen at the first step for about 1.4 s, then it
+   jumped to the target: the pop, and the slider "fighting" the user.
+   Dragging to 0.001 instead rose smoothly. Fix: `set_user_volume()` never
+   writes below `USER_VOLUME_ELEMENT_FLOOR` (1e-6, -120 dB, still digital
+   silence at 16/24-bit).
+2. **The ramp was timed by wall clock** (`g_get_monotonic_time()` when the
+   probe ran), but buffers arrive in bursts ahead of playback, so consecutive
+   buffers got overlapping or skipped slices of the ramp. It is now timed in
+   processed audio frames (`volume_ramp_elapsed_frames`), with the ramp state
+   under `volume_ramp_lock`.
+
+The user confirmed by ear that popping is fixed. Don't reopen this without a
+new, specific report. Test-harness caveat: every null sink you create makes
+apps like Discord pop up an "audio device added" prompt, so use ALSA's
+`null` device (`HIVE_AUDIO_OUTPUT_DEVICE=alsa:null`) for no-sound path
+checks, and ask before creating sinks.
+
+**Bit-perfect output** (same date): selecting an `alsa:hw:...` output in
+Settings → General → Audio output makes the helper use `alsasink` directly,
+with no user-volume element and ReplayGain forced to 1.0. The renderer pins
+the slider at 100% (`bit-perfect-output` body class), and the speaker icon
+mutes via playbin. The device must be free: PipeWire releases it when idle,
+and other apps can't use it while Hive holds it.
 
 ## Ground rules
 

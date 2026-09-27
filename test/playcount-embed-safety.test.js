@@ -250,16 +250,22 @@ test('the Import Wrapped data flow explains itself, then offers to overwrite bot
 // Embedding is now on by default; only an explicit prior opt-out (a saved
 // `false`) should keep it off. A profile that never touched the setting must
 // read as enabled.
-test('embed-play-counts defaults to enabled unless explicitly turned off', () => {
+// 2026-09: the user asked for play counts to never be written into files by
+// default. Embedding is opt-in; an untouched profile (undefined) reads as off,
+// and the Settings switch starts unchecked.
+test('embed-play-counts is off unless the user explicitly turns it on', () => {
   const getterMatch = MAIN_JS.match(/ipcMain\.handle\('stats:getEmbedPlayCounts'[\s\S]*?\n\}\);/);
   assert.ok(getterMatch, 'expected the stats:getEmbedPlayCounts handler');
-  assert.match(getterMatch[0], /config\.embedPlayCounts !== false/);
-  assert.doesNotMatch(getterMatch[0], /!!config\.embedPlayCounts/, 'must not use a truthiness check, which would default to off');
+  assert.match(getterMatch[0], /config\.embedPlayCounts === true/);
+  assert.doesNotMatch(getterMatch[0], /!== false/);
 
   const recordPlayStart = MAIN_JS.indexOf("ipcMain.handle('track:recordPlay'");
   const recordPlayEnd = MAIN_JS.indexOf('\n});', recordPlayStart);
   const recordPlayBlock = MAIN_JS.slice(recordPlayStart, recordPlayEnd);
-  assert.match(recordPlayBlock, /config\.embedPlayCounts !== false/);
+  assert.match(recordPlayBlock, /config\.embedPlayCounts === true/);
+
+  const html = require('fs').readFileSync(require('path').join(__dirname, '..', 'app', 'renderer', 'index.html'), 'utf8');
+  assert.match(html, /<input type="checkbox" id="setting-embed-play-counts" \/>/);
 });
 
 // Clear Play Counts used to only reset stats.json/the library cache, a

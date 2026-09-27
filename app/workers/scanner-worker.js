@@ -9,6 +9,7 @@ const crypto = require('crypto');
 const { readWavMusicBeeTags: readSharedWavMusicBeeTags } = require('../main/wav-id3');
 const { readMp3MusicBeeLove: readSharedMp3MusicBeeLove } = require('../main/musicbee-love');
 const { readLovedFromNativeTags } = require('../main/hive-love');
+const { readMp4MoovBytes } = require('../main/mp4-atoms');
 
 let mm;
 let metadataLib;
@@ -337,7 +338,8 @@ function readMp4LoveFromBuffer(input) {
 
 async function readMp4Love(filePath) {
   try {
-    return readMp4LoveFromBuffer(await fsp.readFile(filePath));
+    const moov = await readMp4MoovBytes(filePath);
+    if (moov) return readMp4LoveFromBuffer(moov);
   } catch {}
   return false;
 }
@@ -521,7 +523,7 @@ async function parseWavTrack(filePath, coversDir) {
       track:common.track?.no || null, trackCount:common.track?.of || null, disk:common.disk?.no || null, discCount:common.disk?.of || null,
       duration, sampleRate:fmt?.sampleRate || null, bitrate:fmt?.byteRate ? fmt.byteRate * 8 : null, channels:fmt?.channels || null, codec,
       cover:covers.length ? covers[0].file : null, covers, loved:!!id3Result.loved, lyrics:normalizeMetadataText(id3Result.lyrics) || null,
-      rating:Number(id3Result.rating)||0, ratingRaw:Number(id3Result.rating)||0, ratingHydrated:true, startTime:'', endTime:'', customTags:id3Result.customTags || {}, nativeTags:Object.fromEntries(Object.entries(id3Result.customTags || {}).map(([k,v]) => [`TXXX:${k}`, v]))
+      rating:Number(id3Result.rating)||0, ratingRaw:Number(id3Result.rating)||0, ratingHydrated:true, startTime:String(id3Result.customTags?.START_TIME || ''), endTime:String(id3Result.customTags?.END_TIME || ''), customTags:id3Result.customTags || {}, nativeTags:Object.fromEntries(Object.entries(id3Result.customTags || {}).map(([k,v]) => [`TXXX:${k}`, v]))
     };
   } finally { await fd.close(); }
 }
@@ -541,11 +543,46 @@ async function parseTrack(filePath, coversDir) {
     mm = await import(pathToFileURL(metadataEntry).href);
     metadataLib = mm;
   }
+  // music-metadata picks its parser from the extension, and content sniffing
+  // can't see past a large ID3v2 block. A FLAC stream saved as ".mp3" (with an
+  // ID3 tag on the front) was therefore parsed as MPEG/AAC garbage with no
+  // duration: it showed as 0:00 and could not be seeked, though GStreamer
+  // played it fine. When the real container differs from the extension, parse
+  // it as what it actually is.
+  const actual = sniffContainerMime(filePath);
   const parse = (options, timeoutMs) => new Promise(async (resolve,reject) => {
     let timer = setTimeout(()=>reject(new Error(`metadata parse timeout after ${timeoutMs}ms`)),timeoutMs);
-    try { resolve(await metadataLib.parseFile(filePath,options)); }
+    let stream = null;
+    try {
+      if (actual?.mime === 'audio/mp4') {
+        // The MP4 parser can't skip a leading ID3 block, and fragmented (DASH)
+        // MP4 only parses with random access. Take the tags from the normal
+        // parse (they live in that ID3 block) and the real audio format and
+        // duration from the MP4 data parsed in memory.
+        const tagged = await metadataLib.parseFile(filePath, options);
+        const size = fs.statSync(filePath).size;
+        if (size - actual.offset <= 256 * 1024 * 1024) {
+          try {
+            const mp4 = await metadataLib.parseBuffer(fs.readFileSync(filePath).subarray(actual.offset), { mimeType: 'audio/mp4' }, options);
+            tagged.format = { ...tagged.format, ...mp4.format, tagTypes: tagged.format?.tagTypes };
+          } catch {}
+        }
+        resolve(tagged);
+      } else if (actual) {
+        // FLAC/Ogg/WAV parsers skip a leading ID3 block themselves and keep
+        // its tags, so hand them the whole file with the real type.
+        stream = fs.createReadStream(filePath);
+        try {
+          resolve(await metadataLib.parseStream(stream, { mimeType: actual.mime, size: fs.statSync(filePath).size, path: filePath }, options));
+        } catch {
+          resolve(await metadataLib.parseFile(filePath,options));
+        }
+      } else {
+        resolve(await metadataLib.parseFile(filePath,options));
+      }
+    }
     catch (e) { reject(e); }
-    finally { clearTimeout(timer); }
+    finally { clearTimeout(timer); try { stream?.destroy(); } catch {} }
   });
 
   let meta;
@@ -590,11 +627,21 @@ async function parseTrack(filePath, coversDir) {
           const values = Array.isArray(rawValue) ? rawValue : [rawValue];
           if (values.some(value => isFavoriteLoveValue(value))) loved = true;
         }
-        // For non-MP3 formats Beehive writes Strawberry-compatible FMPS only.
-        // Use idTail (see above): MP4 freeform atoms come back from
-        // music-metadata namespaced as "----:com.apple.iTunes:FMPS_Rating",
-        // so matching the bare id here always missed and every M4A rating
-        // scanned back as 0 even right after a successful write.
+      }
+    }
+  }
+  // For every format except MP3/WAV (MusicBee POPM above), Hive writes
+  // Strawberry-compatible FMPS_Rating only. This used to run inside the MP4
+  // branch alone, so FLAC/Ogg/Opus/WMA ratings were written correctly but read
+  // back as 0 by every scan -- a 5-star FLAC lost its stars on the next rescan.
+  // Use idTail: MP4 freeform atoms come back from music-metadata namespaced as
+  // "----:com.apple.iTunes:FMPS_Rating", so matching the bare id always missed.
+  if (ext !== '.mp3' && ext !== '.wav') {
+    for (const tagList of Object.values(native)) {
+      for (const tag of (Array.isArray(tagList) ? tagList : [])) {
+        const id = String(tag?.id||'').trim().toUpperCase();
+        const desc = String(tag?.value?.description||'').trim().toUpperCase();
+        const idTail = id.includes(':') ? id.slice(id.lastIndexOf(':') + 1).trim() : id;
         if (idTail === 'FMPS_RATING' || desc === 'FMPS_RATING' || idTail === 'FMPS/RATING' || desc === 'FMPS/RATING') {
           const raw = tag?.value?.text ?? tag?.value?.value ?? tag?.value;
           rating = Math.max(rating, normalizeRating(raw, false, true));
@@ -643,9 +690,12 @@ async function parseTrack(filePath, coversDir) {
     artist:common.artist || common.albumartist || 'Unknown Artist', album:common.album || 'Unknown Album',
     albumArtist:common.albumartist || common.artist || 'Unknown Artist', year:common.year || null,
     genre:(common.genre&&common.genre[0])||null, composer:(common.composer&&common.composer[0])||null,
-    publisher:common.label || common.publisher || null, conductor:common.conductor || null,
+    // Fall back to the raw tags for fields music-metadata only maps for some
+    // formats (see the matching fallbacks in the tag editor's editorTextValue).
+    publisher:common.label || common.publisher || readCustomText('PUBLISHER') || readCustomText('©PUB') || null, conductor:common.conductor || null,
     comment:normalizeMetadataText(common.comment) || null, grouping:common.grouping||null, copyright:common.copyright||null,
-    originalArtist:common.originalartist||null, originalAlbum:common.originalalbum||null, originalYear:common.originalyear||null,
+    originalArtist:common.originalartist||readCustomText('ORIGINALARTIST')||null, originalAlbum:common.originalalbum||readCustomText('ORIGINALALBUM')||null,
+    originalYear:common.originalyear||(parseInt(String(common.originaldate||''),10)||null)||(parseInt(String(readCustomText('ORIGINALYEAR')||''),10)||null),
     language:common.language||null, mood:common.mood||null, occasion:common.occasion||null, keywords:common.keywords||null,
     quality:common.quality||null, tempo:common.tempo||null, isrc:common.isrc||null, barcode:common.barcode||null,
     track:(common.track&&common.track.no)||null, trackCount:(common.track&&common.track.of)||null,
@@ -654,6 +704,44 @@ async function parseTrack(filePath, coversDir) {
     channels:format.numberOfChannels||null, codec:format.codec || path.extname(filePath).replace('.','').toUpperCase(),
     cover:covers.length?covers[0].file:null, covers, loved, lyrics, rating, ratingRaw, ratingHydrated:true, startTime,endTime,customTags,nativeTags
   };
+}
+
+// Returns { mime, offset } for the real container when it contradicts the
+// file's extension (e.g. FLAC audio in a ".mp3"), otherwise null. offset is
+// where the container starts after any ID3v2 tags. Skips any ID3v2
+// tags at the front, since those can hide the container header entirely.
+const EXTENSION_CONTAINER = {
+  '.mp3': 'mpeg', '.mp2': 'mpeg', '.flac': 'flac', '.ogg': 'ogg', '.oga': 'ogg', '.opus': 'ogg', '.spx': 'ogg',
+  '.wav': 'wav', '.m4a': 'mp4', '.m4b': 'mp4', '.mp4': 'mp4', '.aiff': 'aiff', '.aif': 'aiff'
+};
+const CONTAINER_MIME = { flac: 'audio/flac', ogg: 'audio/ogg', wav: 'audio/wav', mp4: 'audio/mp4', aiff: 'audio/aiff' };
+function sniffContainerMime(filePath) {
+  const expected = EXTENSION_CONTAINER[path.extname(filePath).toLowerCase()];
+  if (!expected) return null;
+  let fd;
+  try {
+    fd = fs.openSync(filePath, 'r');
+    const head = Buffer.alloc(12);
+    let offset = 0;
+    for (let i = 0; i < 4; i++) {
+      if (fs.readSync(fd, head, 0, 12, offset) < 12) return null;
+      if (head.toString('latin1', 0, 3) !== 'ID3') break;
+      const size = ((head[6] & 0x7f) << 21) | ((head[7] & 0x7f) << 14) | ((head[8] & 0x7f) << 7) | (head[9] & 0x7f);
+      offset += 10 + size + ((head[5] & 0x10) ? 10 : 0);
+    }
+    const tag4 = head.toString('latin1', 0, 4);
+    let actual = null;
+    if (tag4 === 'fLaC') actual = 'flac';
+    else if (tag4 === 'OggS') actual = 'ogg';
+    else if (tag4 === 'RIFF' && head.toString('latin1', 8, 12) === 'WAVE') actual = 'wav';
+    else if (tag4 === 'FORM') actual = 'aiff';
+    else if (head.toString('latin1', 4, 8) === 'ftyp') actual = 'mp4';
+    return actual && actual !== expected ? { mime: CONTAINER_MIME[actual], offset } : null;
+  } catch {
+    return null;
+  } finally {
+    if (fd !== undefined) try { fs.closeSync(fd); } catch {}
+  }
 }
 
 process.on('message', async msg => {

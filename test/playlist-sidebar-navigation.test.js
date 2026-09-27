@@ -387,3 +387,62 @@ test('opening a favorited podcast show does not destroy the current search resul
   assert.match(block, /results\.querySelector\(`\.podcast-card\[data-podcast-feed=/);
   assert.match(block, /results\.prepend\(target\)/);
 });
+
+// A Love write finished on the next launch (or any rating/play-count write)
+// changes the file, so the startup scan reports the track as changed. That
+// used to rebuild and re-render the whole albums view; it must only happen
+// when an album-visible field changed or tracks were added/removed.
+test('incremental scans only re-render the album views when an album-visible field changed', () => {
+  const renderer = require('fs').readFileSync(require('path').join(__dirname, '..', 'app', 'renderer', 'renderer.js'), 'utf8');
+  const start = renderer.indexOf('const albumViewSignature = t => JSON.stringify([');
+  const end = renderer.indexOf('await applyLibraryProgressive(lib, { status: false });', start);
+  assert.ok(start > 0 && end > start);
+  const block = renderer.slice(start, end);
+  for (const field of ['album', 'albumArtist', 'artist', 'year', 'cover', 'covers', 'title', 'track', 'disk']) assert.match(block, new RegExp(`t\\?\\.${field}\\b`));
+  assert.doesNotMatch(block.slice(0, block.indexOf('])')), /loved|rating|playCount/, 'Love/rating/plays must not count as album-visible');
+  assert.match(block, /if \(albumViewsAffected\) \{\s*\n\s*albums = buildAlbums\(library\.tracks\);[\s\S]*?applyTabView\(/);
+  assert.match(block, /syncLoveStateForPath\(track\.path, !!track\.loved\)/);
+});
+
+// Scan results for a song already in the library must update it, never add it
+// a second time (an if/else slip once pushed every updated track again, so two
+// copies of the same song showed and could play at once).
+test('scan updates never add a song that is already in the library', () => {
+  const renderer = require('fs').readFileSync(require('path').join(__dirname, '..', 'app', 'renderer', 'renderer.js'), 'utf8');
+  const start = renderer.indexOf('function addLibraryTrackOnce(track) {');
+  const end = renderer.indexOf('\n  }\n', start) + 4;
+  assert.ok(start > 0 && end > start);
+  const make = new Function('library', 'libraryTrackByPath', `${renderer.slice(start, end)}; return addLibraryTrackOnce;`);
+  const original = { path: '/m/a.mp3', title: 'A' };
+  const library = { tracks: [original] };
+  const index = new Map(); // index not rebuilt yet, as during a progressive load
+  const add = make(library, index);
+  assert.equal(add({ path: '/m/a.mp3', title: 'A2' }), original);
+  assert.equal(library.tracks.length, 1);
+  assert.equal(original.title, 'A2');
+  assert.equal(index.get('/m/a.mp3'), original);
+  const fresh = { path: '/m/b.mp3', title: 'B' };
+  assert.equal(add(fresh), fresh);
+  assert.equal(add({ ...fresh }), fresh);
+  assert.equal(library.tracks.length, 2);
+  // The scan paths go through it; the only other push is Love's own guarded add.
+  assert.equal((renderer.match(/library\.tracks\.push\(/g) || []).length, 2);
+  const scan = renderer.slice(renderer.indexOf("if (!existing && !('title' in track)) continue;"));
+  assert.match(scan.slice(0, 1200), /if \(existing\) \{[\s\S]*?\} else \{[\s\S]*?addLibraryTrackOnce\(track\);/);
+});
+
+// With the tag editor open, clicking another song (or album, for an album
+// edit) reloads the editor with it and keeps the current tab; unsaved edits
+// prompt instead of being discarded.
+test('the tag editor follows the selection, keeps its tab, and guards unsaved edits', () => {
+  const renderer = require('fs').readFileSync(require('path').join(__dirname, '..', 'app', 'renderer', 'renderer.js'), 'utf8');
+  assert.match(renderer, /async function openTagEditor\(t, tracksOverride=null, \{ keepTab = false \} = \{\}\)/);
+  assert.match(renderer, /setTagEditorTab\(keepTab \? previousTab : 'tags'\)/);
+  const follow = renderer.slice(renderer.indexOf('async function followTagEditorSelection()'), renderer.indexOf('function clearAlbumSelection()'));
+  assert.match(follow, /tagEditorHasUnsavedChanges\(\)/);
+  assert.match(follow, /themedConfirm\(/);
+  assert.match(follow, /openTagEditor\(target\.track, target\.list, \{ keepTab: true \}\)/);
+  const status = renderer.slice(renderer.indexOf('function updateSelectionStatus()'), renderer.indexOf('function clearAlbumSelection()'));
+  assert.match(status, /scheduleTagEditorFollowSelection\(\)/);
+  assert.match(renderer, /if \(event\.isTrusted\) tagEditorDirty = true;/);
+});

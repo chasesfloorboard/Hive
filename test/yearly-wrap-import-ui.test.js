@@ -43,7 +43,7 @@ test('MusicBee imports retain provenance and year metadata', () => {
 // internal steps of the Import flow -- see playcount-embed-safety.test.js
 // for that flow and for verifying the removed actions are gone, not hidden.
 test('Settings exposes the redesigned four-action History panel: embed toggle, Import/Export Wrapped data, Clear', () => {
-  assert.match(index, /History &amp; Play Counts/);
+  assert.match(index, /Listening history/);
   assert.match(index, /id="setting-embed-play-counts"/);
   assert.match(index, /id="import-musicbee-wrapped-btn"/);
   assert.match(index, /id="export-hive-wrapped-btn"/);
