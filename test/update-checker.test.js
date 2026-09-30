@@ -120,29 +120,25 @@ test('package.json declares a GitHub publish target for electron-updater, pointe
   assert.equal(typeof packageJson.dependencies?.['electron-updater'], 'string');
 });
 
-test('main.js wires the update checker to IPC and never auto-checks in an unpacked dev build', () => {
+test('main.js wires the update checker to IPC, using the portable updater unless this is an installer build', () => {
   assert.match(main, /const \{ autoUpdater \} = require\('electron-updater'\);/);
-  assert.match(main, /const updateChecker = createUpdateChecker\(\{ autoUpdater \}\);/);
+  assert.match(main, /autoUpdater: hasInstallerUpdateMetadata \? autoUpdater : createPortableUpdater\(\{/);
   assert.match(main, /ipcMain\.handle\('updates:check', async \(\) => updateChecker\.check\(\)\);/);
   assert.match(main, /ipcMain\.handle\('updates:download', async \(\) => updateChecker\.download\(\)\);/);
   assert.match(main, /ipcMain\.handle\('updates:install', async \(\) => \{ updateChecker\.quitAndInstall\(\); return true; \}\);/);
   assert.match(main, /ipcMain\.handle\('updates:status', async \(\) => updateChecker\.getStatus\(\)\);/);
-  // The passive startup check must be gated on actually being packaged,
-  // immediately adjacent to the actual check() call -- an unpacked dev
-  // checkout has no app-update.yml and would otherwise log a meaningless
-  // error every launch. Real bug, confirmed live: bare app.isPackaged alone
-  // is not reliable here -- Hive's stable portable-runtime binary is
-  // intentionally renamed (see hive-launcher.sh, for Discord's local game
-  // detection), and Electron treats a renamed executable as a signal that
-  // it must be a packaged/branded app. HIVE_PORTABLE_ROOT (set by the
-  // launcher whenever this is actually a portable/dev checkout) must be
-  // checked first, same as getPortableApplicationRoot() already does.
+  // electron-updater is only for installer builds (they carry app-update.yml).
+  // Real bug, confirmed live: bare app.isPackaged is not reliable -- the Linux
+  // launcher's stable binary is renamed (see hive-launcher.sh), and Electron
+  // treats a renamed executable as packaged -- so HIVE_PORTABLE_ROOT is
+  // checked first.
+  assert.match(main, /const hasInstallerUpdateMetadata = !process\.env\.HIVE_PORTABLE_ROOT && app\.isPackaged && fs\.existsSync\(path\.join\(process\.resourcesPath \|\| '', 'app-update\.yml'\)\);/);
+  // The passive startup check runs for portable builds (the Windows zip, the
+  // Linux tarball) but never in a git checkout, which cannot self-update.
   const checkCallIndex = main.indexOf('setTimeout(() => { void updateChecker.check(); }, 5000);');
   assert.ok(checkCallIndex >= 0, 'the deferred startup check must exist');
-  const guardWindow = main.slice(Math.max(0, checkCallIndex - 400), checkCallIndex);
-  // Also requires app-update.yml, which only installer builds carry (the
-  // Windows zip has none).
-  assert.match(guardWindow, /if \(!process\.env\.HIVE_PORTABLE_ROOT && app\.isPackaged && fs\.existsSync\(path\.join\(process\.resourcesPath \|\| '', 'app-update\.yml'\)\)\) \{/);
+  const guardWindow = main.slice(Math.max(0, checkCallIndex - 300), checkCallIndex);
+  assert.match(guardWindow, /if \(hasInstallerUpdateMetadata \|\| !fs\.existsSync\(path\.join\(PORTABLE_ROOT\(\), '\.git'\)\)\) \{/);
 });
 
 test('preload exposes the update IPC channels to the renderer', () => {

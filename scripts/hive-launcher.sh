@@ -34,9 +34,17 @@ prepare_stable_runtime() {
     name="$(basename "$item")"
     if [[ "$name" == "electron" ]]; then
       target="$STABLE_ELECTRON"
-      rm -rf -- "$target"
-      if ! ln "$item" "$target" 2>/dev/null; then
-        cp -f -- "$item" "$target"
+      # The hard link fails whenever the build lives on another filesystem
+      # (e.g. a portable USB drive), and the fallback copy of this ~190 MB
+      # binary used to run on every launch. Keep an up-to-date copy instead.
+      if [[ -f "$target" && ! -L "$target" ]] && { [[ "$item" -ef "$target" ]] ||
+         { [[ "$(stat -c %s -- "$item")" == "$(stat -c %s -- "$target")" ]] && ! [[ "$item" -nt "$target" ]]; }; }; then
+        :
+      else
+        rm -rf -- "$target"
+        if ! ln "$item" "$target" 2>/dev/null; then
+          cp -fp -- "$item" "$target"
+        fi
       fi
       chmod +x "$target" 2>/dev/null || true
     else

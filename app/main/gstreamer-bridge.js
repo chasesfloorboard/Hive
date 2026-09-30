@@ -28,6 +28,7 @@ function createGstreamerBridge(deps) {
     startupDebugEnabled = false,
     gstreamerTraceEnabled = false,
     getAudioOutputDevice = () => '',
+    readyTimeoutMs,
   } = deps;
 
   const path = require('path');
@@ -47,6 +48,13 @@ function createGstreamerBridge(deps) {
 
   function gstreamerHelperSource() { return runtimeResourcePath(path.join('app', 'native', 'gstreamer-player.c')); }
   const isWindows = process.platform === 'win32';
+  // How long the helper may take to report READY before it is treated as hung.
+  // gst_init() builds GStreamer's plugin registry on a helper's first run by
+  // loading every plugin through gst-plugin-scanner. On Windows, with Defender
+  // scanning each bundled DLL, that took far longer than the old 1.5 s: the
+  // helper was killed mid-scan, the registry was never saved, and playback
+  // stayed off for the session until a relaunch happened to finish in time.
+  const gstreamerReadyTimeoutMs = readyTimeoutMs ?? 60000;
   function gstreamerHelperBinary() {
     if (isWindows) return path.join(process.resourcesPath || '', 'native', 'beehive-gstreamer-player.exe');
     return path.join(userDataDir(), 'beehive-gstreamer-player');
@@ -220,10 +228,10 @@ function createGstreamerBridge(deps) {
           gstreamerProcess = null;
           gstreamerRuntimeReady = false;
           try { failedProcess.kill(); } catch {}
-          crashDebug('GSTREAMER READY TIMEOUT', { timeoutMs: 1500 });
+          crashDebug('GSTREAMER READY TIMEOUT', { timeoutMs: gstreamerReadyTimeoutMs });
         }
         resolve(!!gstreamerRuntimeReady);
-      }, 1500);
+      }, gstreamerReadyTimeoutMs);
     });
   }
 

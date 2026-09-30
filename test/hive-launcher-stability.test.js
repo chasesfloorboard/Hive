@@ -17,7 +17,11 @@ test('Hive launcher uses one stable executable identity for Discord detection', 
   assert.match(launcher, /STABLE_ROOT=.*hive\/runtime/);
   assert.match(launcher, /STABLE_ELECTRON=.*STABLE_ROOT/);
   assert.match(launcher, /ln \"\$item\" \"\$target\"/);
-  assert.match(launcher, /cp -f -- \"\$item\" \"\$target\"/);
+  // -p keeps the source mtime so an unchanged binary is not re-copied from a
+  // slow portable drive on every launch (see the up-to-date check before it).
+  assert.match(launcher, /cp -fp -- \"\$item\" \"\$target\"/);
+  assert.match(launcher, /\[\[ "\$item" -ef "\$target" \]\]/);
+  assert.match(launcher, /! \[\[ "\$item" -nt "\$target" \]\]/);
   assert.match(launcher, /exec \"\$STABLE_ELECTRON\"/);
 });
 
@@ -75,8 +79,8 @@ test('runtimeResourcePath/workerForkOptions trust HIVE_PORTABLE_ROOT over bare a
   assert.match(workerOptsBlock, /cwd: runningFromPortableCheckout\(\) \? \(options\.cwd \|\| __dirname\) : unpackedRoot/);
 });
 
-test('the passive update-check startup gate also trusts HIVE_PORTABLE_ROOT over bare app.isPackaged', () => {
-  assert.match(main, /if \(!process\.env\.HIVE_PORTABLE_ROOT && app\.isPackaged && fs\.existsSync\(path\.join\(process\.resourcesPath \|\| '', 'app-update\.yml'\)\)\) \{/);
+test('choosing electron-updater also trusts HIVE_PORTABLE_ROOT over bare app.isPackaged', () => {
+  assert.match(main, /const hasInstallerUpdateMetadata = !process\.env\.HIVE_PORTABLE_ROOT && app\.isPackaged && fs\.existsSync\(path\.join\(process\.resourcesPath \|\| '', 'app-update\.yml'\)\);/);
 });
 
 test('Hive launcher cleans stale Hive build processes before starting', () => {
