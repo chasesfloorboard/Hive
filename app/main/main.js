@@ -49,7 +49,26 @@ const { readMusicBeeWrappedArchive, musicBeeImportPlayId } = require('./musicbee
 const { selectPreferredLyrics } = require('./lyrics-provider');
 const { autoUpdater } = require('electron-updater');
 const { createUpdateChecker } = require('./update-checker');
-const updateChecker = createUpdateChecker({ autoUpdater });
+const { createDirectoryTreeWatcher } = require('./directory-tree-watcher');
+const { createPortableUpdater } = require('./portable-updater');
+// electron-updater only works for installer builds, which carry an
+// app-update.yml. Hive ships portable builds (the Windows zip, the Linux
+// tarball), which update through portable-updater.js instead. PORTABLE_ROOT
+// is defined further down, so the install root is resolved when used.
+// HIVE_PORTABLE_ROOT first: the Linux launcher's renamed Electron binary makes
+// bare app.isPackaged unreliable.
+const hasInstallerUpdateMetadata = !process.env.HIVE_PORTABLE_ROOT && app.isPackaged && fs.existsSync(path.join(process.resourcesPath || '', 'app-update.yml'));
+const updateChecker = createUpdateChecker({
+  autoUpdater: hasInstallerUpdateMetadata ? autoUpdater : createPortableUpdater({
+    currentVersion: app.getVersion(),
+    installRoot: () => PORTABLE_ROOT(),
+    owner: require('../../package.json').build?.publish?.owner,
+    repo: require('../../package.json').build?.publish?.repo,
+    // Test hook: point the check at a local release JSON instead of GitHub.
+    feedUrl: process.env.HIVE_UPDATE_FEED_URL || '',
+    quit: () => app.quit(),
+  }),
+});
 const { storeRoot: musicBeeStoreRoot, yearDir: musicBeeYearDir, writeYearStore: writeMusicBeeYearStore, metadataFor: musicBeeMetadataFor, readStoredYear: readMusicBeeStoredYear, mergeImportedYear: mergeMusicBeeImportedYear, exportArchive: exportMusicBeeArchive, appendHiveEvent: appendMusicBeeHiveEvent, trackKey: musicBeeTrackKey } = require('./musicbee-wrapped-store');
 
 // Optional startup profiler. It is completely inert unless Beehive is launched
@@ -1417,6 +1436,19 @@ updateChecker.onStatus(status => {
   registerWindowsMediaKeys();
   createWindow();
   startupDebug('WINDOW REQUESTED');
+  // Windows only, so play feels the same as on Linux: a fresh Windows install
+  // has no GStreamer plugin registry yet, and building it (every bundled
+  // plugin DLL, scanned by Defender) takes tens of seconds. Start the helper
+  // now so that happens while the user browses, not after they press play.
+  // Linux uses the system GStreamer's existing registry, and starting early
+  // there could claim an exclusive bit-perfect ALSA device before any play.
+  if (process.platform === 'win32') {
+    setTimeout(() => {
+      gstreamerStatus()
+        .then(ready => startupDebug('GSTREAMER WARM-UP', { ready }))
+        .catch(err => startupDebug('GSTREAMER WARM-UP FAILED', { message: err?.message || String(err) }));
+    }, 1000);
+  }
   // The artwork proxy improves Music Presence compatibility but must never make
   // MPRIS unavailable if its optional localhost listener cannot bind. MPRIS can
   // still publish file:// artwork as a bounded fallback.
@@ -1448,30 +1480,22 @@ updateChecker.onStatus(status => {
     }
   }, 90000);
   startupDebug('LIBRARY WATCHERS START');
-  // Do not await this. fs.watch(folder, {recursive:true}) is emulated on
-  // Linux by walking and stat-ing the whole watched tree to register a
-  // per-directory inotify watch -- on a ~30k-file library this has been
-  // measured taking 40+ seconds, and since it ran inside this awaited
-  // startup chain, it blocked the ENTIRE main process for that whole window
-  // (freezing IPC, which is why the renderer itself reported unresponsive).
-  // File-change watching can start a few seconds late without harm; the
-  // window becoming interactive must not wait on it, the same way
-  // artworkProxy/mpris/discordPresence above already don't.
+  // Do not await this. File-change watching can start a few seconds late
+  // without harm; the window becoming interactive must not wait on it, the
+  // same way artworkProxy/mpris/discordPresence above already don't. Note
+  // that not awaiting only helps because the watcher's directory walk is
+  // async: the old fs.watch(folder, {recursive:true}) walked the tree
+  // synchronously on Linux and still froze the main process for ~36 s on a
+  // cold 30k-track library (see directory-tree-watcher.js).
   startLibraryWatchers()
     .then(() => startupDebug('LIBRARY WATCHERS COMPLETE', { count:libraryWatchers.size }))
     .catch(err => startupDebug('LIBRARY WATCHERS FAILED', { message:err?.message || String(err) }));
   // A silent, passive check -- this only ever updates the status IPC
   // consumers can read (see Settings > About), never shows a popup or
-  // downloads anything on its own. Gated on the same reliable "actually
-  // packaged" signal runtimeResourcePath() uses (see session-log.js) rather
-  // than bare app.isPackaged, which a renamed portable-runtime binary (see
-  // hive-launcher.sh) makes unreliable; electron-updater expects a real
-  // packaged build's app-update.yml, and running this against an unpacked
-  // dev checkout would just log noisy, meaningless errors every launch.
-  // electron-updater needs the app-update.yml an installer build carries; the
-  // Windows zip has none (it is updated by downloading the new zip), so
-  // checking there only logged an ENOENT error on every launch.
-  if (!process.env.HIVE_PORTABLE_ROOT && app.isPackaged && fs.existsSync(path.join(process.resourcesPath || '', 'app-update.yml'))) {
+  // downloads anything on its own.
+  // Portable builds check too (portable-updater.js); a git checkout reports
+  // itself as not updatable, so skip the check there to keep the log quiet.
+  if (hasInstallerUpdateMetadata || !fs.existsSync(path.join(PORTABLE_ROOT(), '.git'))) {
     setTimeout(() => { void updateChecker.check(); }, 5000);
   }
   if (Array.isArray(recoveredMetadataJobs) && recoveredMetadataJobs.length) {
@@ -1568,17 +1592,24 @@ function notifyLibraryFilesystemChange(reason = 'filesystem', changedPath = '') 
   }, 900);
 }
 function stopLibraryWatchers() {
+  libraryWatchGeneration++;
   for (const watcher of libraryWatchers.values()) { try { watcher.close(); } catch {} }
   libraryWatchers.clear();
 }
+// Library folders are watched per directory, not with fs.watch's recursive
+// mode -- see directory-tree-watcher.js for why.
+let libraryWatchGeneration = 0;
 async function startLibraryWatchers() {
   stopLibraryWatchers();
+  const generation = ++libraryWatchGeneration;
+  const isCurrent = () => generation === libraryWatchGeneration;
   const config = await readJsonSafe(CONFIG_PATH(), { folders: [] });
   for (const folder of resolveConfigFolders(config)) {
+    if (!isCurrent()) return;
     if (!folder) continue;
     try { await fsp.access(folder, fs.constants.R_OK); } catch { continue; }
     try {
-      const watcher = fs.watch(folder, { recursive: true }, (_eventType, filename) => {
+      const watcher = createDirectoryTreeWatcher(folder, (_eventType, filename) => {
         // A bulk Love operation may touch thousands of files and can outlive
         // the normal 10-second per-file self-write suppression. Never turn
         // those intentional writes into automatic rescans.
@@ -1612,9 +1643,9 @@ async function startLibraryWatchers() {
         }
         if (!AUDIO_EXTS.has(path.extname(name).toLowerCase())) return;
         notifyLibraryFilesystemChange('audio-file', changedPath);
-      });
-      watcher.on('error', () => {});
+      }, isCurrent);
       libraryWatchers.set(folder, watcher);
+      await watcher.ready;
     } catch {}
   }
 }

@@ -386,6 +386,25 @@ check the files independently from Linux with tag_helper/mutagen. Wine inflates
 timings (first play ~2 s, then ~0.7 s); judge latency on real Windows.
 `test/windows-port.test.js` covers the Windows code paths.
 
+## Updates and releases (1.0.4+)
+
+Settings → About → Check for updates uses `app/main/portable-updater.js` on
+every build Hive ships (electron-updater is only wired for installer builds
+with `app-update.yml`, which Hive doesn't produce). It reads GitHub's latest
+release for `package.json` `build.publish`, so **a release must carry assets
+named `Hive-<version>-Win-x64.zip` and `Hive-<version>-Linux.tar.gz`**, and
+the tag must be `v<version>` matching `package.json`. The Windows zip's top
+folder is `Hive/`; the Linux tarball is `git archive --prefix=hive-<version>/`.
+The updater verifies the unpacked package's version before installing.
+
+Installing swaps only the package's top-level entries and never touches
+`PROTECTED_NAMES` (user data). Test hooks: `HIVE_UPDATE_FEED_URL` points the
+check at a local release JSON; `HIVE_TEST_PWSH=<pwsh>` runs the PowerShell
+installer test on Linux (portable pwsh from github.com/PowerShell/PowerShell
+works). Release steps: bump `package.json`/`package-lock.json`, changelog,
+commit, tag, `scripts/build-windows.sh`, `git archive` the tag, then
+`gh release create` with both assets.
+
 ## Post-1.0: Visualizer plugin (the user's actual answer to "make a
 plugin")
 

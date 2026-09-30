@@ -565,6 +565,12 @@ touch "$INSTALL_MARKER"
 say "Beehive is installed and ready."
 printf '\nProject: %s\nElectron: %s\n\n' "$PROJECT_DIR" "$ELECTRON_VERSION"
 
+# The in-app updater (app/main/portable-updater.js) reruns this script only to
+# refresh dependencies, then relaunches Hive itself.
+if [ "${HIVE_INSTALL_NO_LAUNCH:-}" = "1" ]; then
+  exit 0
+fi
+
 # Installing Beehive also launches it. Keep --launch accepted for backwards compatibility.
 say "Launching Beehive with live scan logging"
 LOG_DIR="$PROJECT_DIR/logs"

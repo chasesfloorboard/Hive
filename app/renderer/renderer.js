@@ -10776,7 +10776,10 @@
       return false;
     }
     if (!gstAvailabilityKnown && !gstAvailabilityPromise && window.beehive.gstreamerStatus) {
-      gstAvailabilityPromise = window.beehive.gstreamerStatus().then(v => { gstAvailable = !!v; gstAvailabilityKnown = true; return gstAvailable; }).catch(() => { gstAvailable = false; gstAvailabilityKnown = true; return false; });
+      // Only cache success. A helper that was slow to start (e.g. the Windows
+      // first-run plugin registry build) must not leave local playback
+      // disabled for the rest of the session; the next play asks again.
+      gstAvailabilityPromise = window.beehive.gstreamerStatus().then(v => { gstAvailable = !!v; gstAvailabilityKnown = gstAvailable; if (!gstAvailable) gstAvailabilityPromise = null; return gstAvailable; }).catch(() => { gstAvailable = false; gstAvailabilityPromise = null; return false; });
     }
     if (gstAvailabilityPromise) await gstAvailabilityPromise;
     if (requestGeneration !== playbackLoadRequestGeneration) return false;

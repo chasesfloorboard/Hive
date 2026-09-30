@@ -71,6 +71,83 @@ test('on Windows the bridge runs the bundled helper with the bundled GStreamer r
   }
 });
 
+function fakeWindowsBridge(resources, deps = {}) {
+  fs.mkdirSync(path.join(resources, 'native'), { recursive: true });
+  fs.writeFileSync(path.join(resources, 'native', 'beehive-gstreamer-player.exe'), '');
+  const spawned = [];
+  const bridge = withPlatform('win32', resources, () => {
+    delete require.cache[require.resolve('../app/main/gstreamer-bridge')];
+    const { createGstreamerBridge } = require('../app/main/gstreamer-bridge');
+    return createGstreamerBridge({
+      runtimeResourcePath: rel => path.join(root, rel),
+      userDataDir: () => path.join(resources, 'data'),
+      spawnTracked: () => {
+        const child = new EventEmitter();
+        child.stdout = new EventEmitter();
+        child.stderr = new EventEmitter();
+        child.stdio = [null, child.stdout, child.stderr];
+        child.stdin = { writable: true, write() { return true; }, end() {} };
+        child.killed = false;
+        child.kill = () => { child.killed = true; };
+        spawned.push(child);
+        return child;
+      },
+      crashDebug() {}, writeSession() {},
+      getMainWindow: () => null,
+      ...deps,
+    });
+  });
+  // Spawning resolves the helper from process.resourcesPath, so calls run in scope.
+  const status = () => withPlatform('win32', resources, () => bridge.gstreamerStatus());
+  return { status, spawned };
+}
+
+// Real bug, reported from a real Windows machine: tracks queued but never
+// played until Hive had been relaunched ~5 times. The helper's first gst_init()
+// builds the plugin registry (every bundled plugin DLL, scanned by Defender),
+// which blew through a 1.5 s READY timeout; the helper was killed mid-scan so
+// the registry was never saved, and playback stayed off for that session.
+test('a helper that is slow to report READY is waited for, not killed', async (t) => {
+  const resources = fs.mkdtempSync(path.join(os.tmpdir(), 'hive-win-resources-'));
+  t.after(() => { delete require.cache[require.resolve('../app/main/gstreamer-bridge')]; fs.rmSync(resources, { recursive: true, force: true }); });
+  t.mock.timers.enable({ apis: ['setTimeout'] });
+  const { status: gstreamerStatus, spawned } = fakeWindowsBridge(resources);
+  let result;
+  const status = gstreamerStatus().then(v => { result = v; });
+  t.mock.timers.tick(20000);
+  await Promise.resolve();
+  assert.equal(result, undefined, 'still waiting for the registry build');
+  assert.equal(spawned[0].killed, false);
+  spawned[0].stdout.emit('data', Buffer.from('READY\r\n'));
+  await status;
+  assert.equal(result, true);
+  assert.equal(spawned.length, 1);
+});
+
+test('a helper that really never becomes READY is replaced on the next status check', async (t) => {
+  const resources = fs.mkdtempSync(path.join(os.tmpdir(), 'hive-win-resources-'));
+  t.after(() => { delete require.cache[require.resolve('../app/main/gstreamer-bridge')]; fs.rmSync(resources, { recursive: true, force: true }); });
+  t.mock.timers.enable({ apis: ['setTimeout'] });
+  const { status: gstreamerStatus, spawned } = fakeWindowsBridge(resources, { readyTimeoutMs: 100 });
+  const first = gstreamerStatus();
+  t.mock.timers.tick(100);
+  assert.equal(await first, false);
+  assert.equal(spawned[0].killed, true);
+  const second = gstreamerStatus();
+  assert.equal(spawned.length, 2, 'a fresh helper is started instead of staying failed');
+  spawned[1].stdout.emit('data', Buffer.from('READY\r\n'));
+  assert.equal(await second, true);
+});
+
+test('a failed GStreamer availability check is not cached for the whole session', () => {
+  const renderer = fs.readFileSync(path.join(root, 'app', 'renderer', 'renderer.js'), 'utf8');
+  const line = renderer.split('\n').find(l => l.includes('gstAvailabilityPromise = window.beehive.gstreamerStatus()'));
+  assert.ok(line, 'expected the renderer availability check');
+  assert.match(line, /gstAvailabilityKnown = gstAvailable;/);
+  assert.match(line, /if \(!gstAvailable\) gstAvailabilityPromise = null;/);
+  assert.doesNotMatch(line, /\.catch\([^)]*\) => \{[^}]*gstAvailabilityKnown = true/);
+});
+
 test('on Windows main.js points every Python caller at the bundled embeddable Python', () => {
   const main = fs.readFileSync(path.join(root, 'app', 'main', 'main.js'), 'utf8');
   assert.match(main, /process\.platform === 'win32' && !process\.env\.BEEHIVE_PYTHON[\s\S]{0,200}path\.join\(process\.resourcesPath \|\| '', 'python-runtime', 'python\.exe'\)/);
