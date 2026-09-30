@@ -17191,7 +17191,7 @@
         break;
       }
       case 'downloaded':
-        btn.textContent = 'Restart && install';
+        btn.textContent = 'Restart & install';
         btn.dataset.updateAction = 'install';
         el.aboutUpdateStatus.textContent = `Update ready: version ${status.info?.version || '?'}. Restart Hive to install.`;
         break;
