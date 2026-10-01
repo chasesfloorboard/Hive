@@ -37,7 +37,7 @@ function visibleBounds(bounds, workAreas, minVisible = MIN_VISIBLE_PX) {
   return onScreen ? b : null;
 }
 
-function createWindowStateTracker({ fs, path, filePath, setTimeout: setTimer = setTimeout, clearTimeout: clearTimer = clearTimeout }) {
+function createWindowStateTracker({ fs, path, filePath, platform = process.platform, setTimeout: setTimer = setTimeout, clearTimeout: clearTimer = clearTimeout }) {
   let state = { bounds: null, maximized: false, fullScreen: false };
   let settleTimer = null;
 
@@ -73,13 +73,27 @@ function createWindowStateTracker({ fs, path, filePath, setTimeout: setTimer = s
   }
 
   function saveSync() {
+    let tmp = null;
     try {
       const target = filePath();
       fs.mkdirSync(path.dirname(target), { recursive: true });
-      const tmp = `${target}.tmp`;
+      tmp = `${target}.tmp`;
       fs.writeFileSync(tmp, JSON.stringify(snapshot(), null, 2), 'utf8');
-      fs.renameSync(tmp, target);
-    } catch {}
+      try {
+        fs.renameSync(tmp, target);
+      } catch (err) {
+        // Windows can refuse to rename over a file the Search indexer or an
+        // antivirus scan briefly has open (same fallback as main.js's
+        // writeJsonSafe). The new file is complete, so drop the old one.
+        if (platform !== 'win32' || !['EEXIST', 'EPERM', 'EBUSY', 'EACCES'].includes(err?.code)) throw err;
+        fs.rmSync(target, { force: true });
+        fs.renameSync(tmp, target);
+      }
+      tmp = null;
+    } catch {
+    } finally {
+      if (tmp) { try { fs.unlinkSync(tmp); } catch {} }
+    }
   }
 
   function attach(win) {
