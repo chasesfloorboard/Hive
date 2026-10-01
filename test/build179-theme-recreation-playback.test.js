@@ -8,7 +8,9 @@ const main = fs.readFileSync(path.join(root, 'app/main/main.js'), 'utf8');
 const renderer = fs.readFileSync(path.join(root, 'app/renderer/renderer.js'), 'utf8');
 
 test('theme window recreation explicitly tells the new renderer to preserve the live transport', () => {
-  assert.match(main, /createWindow\(\{\s*bounds,\s*maximized,\s*preservePlayback:\s*true\s*\}\)/);
+  // Size/position/maximized/fullscreen now come from the window-state tracker
+  // (test/window-state.test.js); the transport hand-off flag must still be passed.
+  assert.match(main, /createWindow\(\{\s*preservePlayback:\s*true\s*\}\)/);
   assert.match(main, /query:\s*preservePlayback\s*\?\s*\{\s*preservePlayback:\s*'1'\s*\}\s*:\s*undefined/);
 });
 
