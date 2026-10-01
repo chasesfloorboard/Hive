@@ -1,4 +1,4 @@
-const { app, BrowserWindow, protocol, net, ipcMain, dialog, clipboard, nativeImage, shell, nativeTheme, Tray, Menu, crashReporter, globalShortcut } = require('electron');
+const { app, BrowserWindow, protocol, net, ipcMain, dialog, clipboard, nativeImage, shell, nativeTheme, Tray, Menu, crashReporter, globalShortcut, screen } = require('electron');
 const path = require('path');
 const fs = require('fs');
 const { replaceFile } = require('./replace-file');
@@ -448,9 +448,6 @@ function readThemeWindowBarPreferenceSync() {
     return DEFAULT_THEME_WINDOW_BAR;
   } catch { return DEFAULT_THEME_WINDOW_BAR; }
 }
-function windowBoundsSnapshot(window) {
-  try { return window.getBounds(); } catch { return { x:undefined, y:undefined, width:1440, height:860 }; }
-}
 const CUSTOM_CSS_PATH = () => path.join(USER_DATA(), 'custom-theme.css');
 const THEME_META_PATH = () => path.join(USER_DATA(), 'custom-theme.json');
 const PLUGINS_DIR = () => path.join(USER_DATA(), 'plugins');
@@ -486,6 +483,7 @@ try {
 // Linux desktop tray integration. Electron uses StatusNotifierItem on Linux when
 // available, which is the native path used by GNOME-compatible tray hosts.
 const { createTrayController } = require('./tray');
+const { createWindowStateTracker, visibleBounds } = require('./window-state');
 const { createHiveTray, updateHiveTrayState, hiveLogoPath } = createTrayController({
   Tray,
   Menu,
@@ -643,6 +641,9 @@ const SCAN_LOG_PATH = () => path.join(beehiveLogDir(), 'scan-live.log');
 // Small renderer-owned session snapshot. This is intentionally separate from
 // library metadata/play statistics so playback recovery can be updated often.
 const PLAYBACK_STATE_PATH = () => path.join(USER_DATA(), 'playback-state.json');
+const WINDOW_STATE_PATH = () => path.join(USER_DATA(), 'window-state.json');
+const windowState = createWindowStateTracker({ fs, path, filePath: WINDOW_STATE_PATH });
+let windowStateLoaded = false;
 // One-time migration: discard only Hive's derived library cache/database records
 // so beta.6 can perform a genuinely cold first library scan. User configuration,
 // playlists, playback state, and the music files themselves are never removed.
@@ -1053,22 +1054,27 @@ ipcMain.handle('window:theme-bar:set', async (_evt, enabled) => {
   }
   if (windowRecreateInProgress) return { changed:true, enabled:next, recreating:true };
   const oldWindow = mainWindow;
-  const bounds = windowBoundsSnapshot(oldWindow);
-  const maximized = oldWindow.isMaximized();
   windowRecreateInProgress = true;
+  // The window-state tracker captures size/position/maximized/fullscreen on
+  // 'close', and createWindow() reapplies it to the new window.
   oldWindow.once('closed', () => {
     windowRecreateInProgress = false;
-    createWindow({ bounds, maximized, preservePlayback: true });
+    createWindow({ preservePlayback: true });
   });
   oldWindow.close();
   return { changed:true, enabled:next, recreating:true };
 });
 
-function createWindow({ bounds = null, maximized = false, preservePlayback = false } = {}) {
+function createWindow({ preservePlayback = false } = {}) {
   themeWindowBarEnabled = readThemeWindowBarPreferenceSync();
   startupDebug('WINDOW CREATE START');
+  if (!windowStateLoaded) { windowState.load(); windowStateLoaded = true; }
+  const savedWindow = windowState.snapshot();
+  let workAreas = [];
+  try { workAreas = screen.getAllDisplays().map(d => d.workArea); } catch {}
+  const bounds = visibleBounds(savedWindow.bounds, workAreas);
   mainWindow = new BrowserWindow({
-    ...(bounds && Number.isFinite(bounds.width) ? { x:bounds.x, y:bounds.y, width:bounds.width, height:bounds.height } : { width:1440, height:860 }),
+    ...(bounds ? { x:bounds.x, y:bounds.y, width:bounds.width, height:bounds.height } : { width:1440, height:860 }),
     minWidth: 1024,
     minHeight: 640,
     backgroundColor: '#0b0c0f',
@@ -1084,9 +1090,16 @@ function createWindow({ bounds = null, maximized = false, preservePlayback = fal
     }
   });
   mainWindow.setMenuBarVisibility(false);
-  if (maximized) {
+  // Reapply maximize/fullscreen on top of the windowed bounds above, so leaving
+  // either mode returns to the size and place the user last had the window.
+  // Fullscreen is only restored when the windowed bounds were, so it opens on
+  // the same monitor rather than wherever the window manager drops it.
+  if (savedWindow.fullScreen && bounds) {
+    mainWindow.once('ready-to-show', () => { try { mainWindow.setFullScreen(true); } catch {} });
+  } else if (savedWindow.maximized) {
     mainWindow.once('ready-to-show', () => { try { mainWindow.maximize(); } catch {} });
   }
+  windowState.attach(mainWindow);
   const emitWindowMaximized = () => { try { mainWindow.webContents.send('window:maximized-changed', mainWindow.isMaximized()); } catch {} };
   mainWindow.on('maximize', emitWindowMaximized);
   mainWindow.on('unmaximize', emitWindowMaximized);
@@ -1685,7 +1698,9 @@ ipcMain.on('playback-state:saveSync', (_evt, state = {}) => {
       selectedQueueIndex: Number.isInteger(state.selectedQueueIndex) ? state.selectedQueueIndex : -1,
       selectedIndices: Array.isArray(state.selectedIndices) ? state.selectedIndices.filter(Number.isInteger) : [],
       wasPlaying: !!state.wasPlaying,
-      savedAt: Date.now()
+      savedAt: Date.now(),
+      // Only queue saves set this; transport merges keep it via ...existing.
+      queueSavedAt: Number.isFinite(Number(state.queueSavedAt)) ? Number(state.queueSavedAt) : Date.now()
     };
     const target = PLAYBACK_STATE_PATH();
     writePlaybackStateDurableSync(target, payload);
