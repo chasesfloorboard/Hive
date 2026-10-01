@@ -53,6 +53,6 @@ test('Shuffle and Repeat restore independently of whether a queue exists', () =>
   const end = renderer.indexOf('async function', start + 1);
   const block = renderer.slice(start, end > start ? end : start + 12000);
   assert.match(block, /const modeCandidates = \[backendPlaybackState, localQueueState, localPlaybackState\]/);
-  assert.match(block, /if \(!candidates.length\) return true;/);
+  assert.match(block, /if \(!queueState\) return true;/);
   assert.match(block, /if \(modeState\)/);
 });

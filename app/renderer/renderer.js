@@ -4124,12 +4124,49 @@
     return { path:String(t.path), source:String(t.source||'local'), spotifyUri:String(t.spotifyUri||''), spotifyId:String(t.spotifyId||''), spotifyContextUri:String(t.spotifyContextUri||t.contextUri||''), contextUri:String(t.contextUri||t.spotifyContextUri||''), streamUrl:String(t.streamUrl||''), title:String(t.title||''), artist:String(t.artist||''), album:String(t.album||''), albumUri:String(t.albumUri||''), albumArtist:String(t.albumArtist||''), duration:Number(t.duration)||0, cover:String(t.cover||''), artworkUrl:String(t.artworkUrl||''), spotifyArtworkCacheFile:String(t.spotifyArtworkCacheFile||''), year:String(t.year||''), podcastId:String(t.podcastId||''), podcastFeedUrl:String(t.podcastFeedUrl||''), podcastDescription:String(t.podcastDescription||''), pubDate:String(t.pubDate||''), loved:!!t.loved, rating:Number(t.rating)||0, ratingRaw:Number(t.ratingRaw)||0 };
   }
   function restoreQueueItems(items, paths, byPath, allowSerializedLocal = false) {
-    if (!Array.isArray(items) || !items.length) return (paths||[]).map(p => byPath.get(String(p))).filter(Boolean);
+    if (!Array.isArray(items) || !items.length) {
+      // A paths-only snapshot (the backend playback-state.json) is normally
+      // restored before the library has loaded, so byPath is empty. Keep a
+      // minimal local entry instead of dropping the track; queue rows re-resolve
+      // against the library object once it arrives (populateQueueVirtualRow).
+      return (paths||[]).map(p => {
+        const key = String(p || '');
+        if (!key) return null;
+        return byPath.get(key) || (allowSerializedLocal ? { path:key, source:'local', title:key.split(/[\\/]/).pop().replace(/\.[^.]+$/, '') } : null);
+      }).filter(Boolean);
+    }
     return items.map(item => {
       if (item && (item.source === 'spotify' || item.source === 'podcast')) return {...item};
       const pathKey = String(item?.path || item || '');
       return byPath.get(pathKey) || (allowSerializedLocal && item && item.path ? {...item} : null);
     }).filter(Boolean);
+  }
+
+  // Picks the queue snapshot to restore. Ordered by queueSavedAt, which only
+  // queue saves write: the backend file's savedAt is bumped by every transport
+  // (position) save, including the one on shutdown right after the queue save,
+  // so comparing savedAt made the paths-only backend copy win almost every
+  // time. On a tie the snapshot with serialized queueItems wins, and a
+  // paths-only winner borrows queueItems from a snapshot of the same queue.
+  function pickQueueSnapshot(snapshots) {
+    const usable = (snapshots || []).filter(s => Array.isArray(s?.paths) && s.paths.length);
+    if (!usable.length) return null;
+    const queueTime = s => Number(s.queueSavedAt ?? s.savedAt) || 0;
+    const hasItems = s => Array.isArray(s.queueItems) && s.queueItems.length > 0;
+    const best = usable.reduce((a, b) => {
+      if (queueTime(b) !== queueTime(a)) return queueTime(b) > queueTime(a) ? b : a;
+      return hasItems(b) && !hasItems(a) ? b : a;
+    });
+    if (hasItems(best)) return best;
+    const samePaths = s => s.paths.length === best.paths.length && s.paths.every((p, i) => String(p) === String(best.paths[i]));
+    const donor = usable.find(s => s !== best && hasItems(s) && samePaths(s));
+    // The backend file never stores the pre-shuffle order either.
+    return donor ? {
+      ...best,
+      queueItems: donor.queueItems,
+      shuffleBasePaths: best.shuffleBasePaths?.length ? best.shuffleBasePaths : donor.shuffleBasePaths,
+      shuffleBaseItems: best.shuffleBaseItems?.length ? best.shuffleBaseItems : donor.shuffleBaseItems
+    } : best;
   }
 
   function saveQueueSession() {
@@ -4151,7 +4188,8 @@
       repeat: Number.isInteger(repeat) ? repeat : 0,
       volume: Math.max(0, Math.min(1, Number(audio.volume) || 0)),
       wasPlaying: !!(currentQueue[currentIndex]?.path && !audio.paused && !audio.ended),
-      savedAt
+      savedAt,
+      queueSavedAt: savedAt
     };
     try {
       localStorage.setItem(QUEUE_SESSION_KEY, JSON.stringify(currentState));
@@ -4182,7 +4220,8 @@
         selectedQueueIndex: currentState.selectedQueueIndex,
         selectedIndices: currentState.selectedIndices,
         wasPlaying: currentState.wasPlaying,
-        savedAt
+        savedAt,
+        queueSavedAt: savedAt
       });
     } catch {}
   }
@@ -4333,10 +4372,8 @@
     // Prefer the newest non-empty queue snapshot. The backend file is the
     // primary persistence store, while localStorage remains useful for older
     // sessions and for recovering from an interrupted backend write.
-    const candidates = [backendPlaybackState, localQueueState].filter(s => Array.isArray(s?.paths) && s.paths.length);
-    if (!candidates.length) return true;
-    const queueState = candidates.reduce((best, item) =>
-      !best || Number(item.savedAt || 0) >= Number(best.savedAt || 0) ? item : best, null);
+    const queueState = pickQueueSnapshot([backendPlaybackState, localQueueState]);
+    if (!queueState) return true;
 
     // Restore transport mode from the same atomic session snapshot as the queue.
     // This happens before rendering so the controls reflect exactly what the user
