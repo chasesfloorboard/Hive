@@ -147,3 +147,30 @@ test('saved bounds on a disconnected monitor are not reused', () => {
   assert.equal(visibleBounds({ x: -5000, y: -5000, width: 800, height: 600 }, displays), null);
   assert.equal(visibleBounds(null, displays), null);
 });
+
+test('on Windows a locked state file is replaced instead of silently not saving', () => {
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'hive-window-state-'));
+  const file = path.join(dir, 'window-state.json');
+  fs.writeFileSync(file, JSON.stringify({ bounds: { x: 1, y: 1, width: 500, height: 500 } }));
+  let attempts = 0;
+  // fs whose first rename-over-existing fails the way Windows does while the
+  // indexer or antivirus holds the target open.
+  const lockedFs = {
+    ...fs,
+    renameSync(from, to) {
+      if (++attempts === 1 && fs.existsSync(to)) throw Object.assign(new Error('EPERM'), { code: 'EPERM' });
+      return fs.renameSync(from, to);
+    }
+  };
+  const timers = manualTimers();
+  const t = createWindowStateTracker({ fs: lockedFs, path, filePath: () => file, platform: 'win32', ...timers });
+  t.load();
+  const win = fakeWindow({ bounds: { x: 40, y: 50, width: 1300, height: 900 } });
+  t.attach(win);
+  win.emit('move');
+  timers.flush();
+
+  assert.equal(attempts, 2, 'first rename refused, retried after removing the old file');
+  assert.deepEqual(JSON.parse(fs.readFileSync(file, 'utf8')).bounds, { x: 40, y: 50, width: 1300, height: 900 });
+  assert.deepEqual(fs.readdirSync(dir), ['window-state.json'], 'no temp file left behind');
+});
