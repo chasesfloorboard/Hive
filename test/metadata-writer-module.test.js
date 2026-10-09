@@ -233,3 +233,28 @@ test('createMetadataTempPath falls back to the injected OS temp dir when the sib
     fs.rmSync(fallbackDir, { recursive: true, force: true });
   }
 });
+
+test('writing synced (LRC) lyrics stores them plain and passes verification', async () => {
+  const tempDir = fs.mkdtempSync(path.join(os.tmpdir(), 'hive-metadata-writer-'));
+  const mp3 = path.join(tempDir, 'track.mp3');
+  const initScript = `
+import sys
+sys.path.insert(0, ${JSON.stringify(resourcesDir)})
+from mutagen.id3 import ID3
+ID3().save(sys.argv[1], v2_version=3, v1=0)
+`;
+  const init = spawnSync(PYTHON, ['-c', initScript, mp3], { encoding: 'utf8' });
+  assert.equal(init.status, 0, init.stderr || init.stdout);
+  const worker = startTagHelperWorker();
+  const writer = makeStubWriter({ runTagHelper: worker.runTagHelper });
+  try {
+    // Real case that used to fail: provider LRC with a trailing bare timestamp.
+    const lrc = "[00:02.93] (I don't like punk-rock music)\n[00:23.02] Don't be afraid to look inside\n[03:19.00]";
+    await writer.performWriteTags(mp3, { lyrics: lrc });
+    const read = await worker.runTagHelper({ op: 'read_metadata_fields', path: mp3, fields: ['lyrics'] });
+    assert.equal(read.fields.lyrics.trim(), "(I don't like punk-rock music)\nDon't be afraid to look inside");
+  } finally {
+    worker.stop();
+    fs.rmSync(tempDir, { recursive: true, force: true });
+  }
+});

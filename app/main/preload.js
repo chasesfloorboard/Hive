@@ -11,6 +11,8 @@ contextBridge.exposeInMainWorld('beehive', {
   getPlaybackState: () => ipcRenderer.invoke('playback-state:get'),
   savePlaybackStateSync: (state) => ipcRenderer.sendSync('playback-state:saveSync', state),
   updatePlaybackTransportSync: (state) => ipcRenderer.sendSync('playback-state:updateTransportSync', state),
+  // Same handler without blocking the renderer; used for periodic saves.
+  updatePlaybackTransport: (state) => ipcRenderer.send('playback-state:updateTransportSync', state),
   setPlaybackProtectedPath: (trackPath) => ipcRenderer.send('playback:protectPath', trackPath || ''),
   getConfig: () => ipcRenderer.invoke('config:get'),
   saveUiState: (state) => ipcRenderer.invoke('config:saveUiState', state || {}),
@@ -66,6 +68,8 @@ contextBridge.exposeInMainWorld('beehive', {
 
   getCachedLibrary: (options) => ipcRenderer.invoke('library:getCached', options || {}),
   clearLibraryCacheNow: () => ipcRenderer.invoke('library:clearCacheNow'),
+  // Startup: did anything change in the library folders while Hive was closed?
+  libraryStartupCheck: () => ipcRenderer.invoke('library:startupCheck'),
   scanLibrary: (options) => ipcRenderer.invoke('library:scan', options),
   scanChangedLibrary: (paths) => ipcRenderer.invoke('library:scanChanged', paths),
   cancelLibraryScan: () => ipcRenderer.invoke('library:cancelScan'),
@@ -109,6 +113,7 @@ contextBridge.exposeInMainWorld('beehive', {
 
   toggleLove: (trackPath, value) => ipcRenderer.invoke('track:toggleLove', trackPath, value),
   setLove: (trackPaths, loved) => ipcRenderer.invoke('tracks:setLove', trackPaths, loved),
+  artistImage: (artist) => ipcRenderer.invoke('artwork:artistImage', artist),
   readLove: (trackPath) => ipcRenderer.invoke('track:readLove', trackPath),
   readLoves: (paths) => ipcRenderer.invoke('tracks:readLove', paths),
   recordPlay: (trackPath, meta) => ipcRenderer.invoke('track:recordPlay', trackPath, meta),

@@ -1,0 +1,62 @@
+{
+  "format": "hive-plugin",
+  "apiVersion": 2,
+  "id": "hive.monstercat-visualizer",
+  "name": "Monstercat Visualizer",
+  "version": "2.1.2",
+  "author": "Hive (look based on marcopixel/monstercat-visualizer, MIT)",
+  "description": "A Visualizer page in the sidebar: Monstercat-style spectrum bars with the playing track's cover art, artist and title, in Hive's theme.",
+  "icon": "≈",
+  "permissions": [
+    "player.read",
+    "spectrum.read",
+    "ui.view",
+    "settings"
+  ],
+  "settings": [
+    {
+      "id": "barCount",
+      "type": "number",
+      "label": "Bars",
+      "description": "Monstercat uses 63.",
+      "default": 63,
+      "min": 16,
+      "max": 128,
+      "step": 1
+    },
+    {
+      "id": "sensitivity",
+      "type": "number",
+      "label": "Sensitivity (dB)",
+      "description": "Dynamic range shown by the bars. Lower makes quiet parts taller.",
+      "default": 35,
+      "min": 15,
+      "max": 70,
+      "step": 1
+    },
+    {
+      "id": "decayMs",
+      "type": "number",
+      "label": "Fall time (ms)",
+      "description": "How quickly bars drop.",
+      "default": 90,
+      "min": 20,
+      "max": 400,
+      "step": 5
+    },
+    {
+      "id": "monstercatSmoothing",
+      "type": "boolean",
+      "label": "Monstercat smoothing",
+      "description": "Spreads each peak to its neighbours for the classic look.",
+      "default": true
+    },
+    {
+      "id": "accentColor",
+      "type": "boolean",
+      "label": "Use Hive's accent color",
+      "description": "Off uses the theme's text color.",
+      "default": true
+    }
+  ]
+}

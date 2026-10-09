@@ -46,7 +46,7 @@ const { ScrobblingService } = require('./scrobbling');
 const { refreshDevices, sendTracksToDevice } = require('./device-manager');
 const { listAudioOutputs, effectiveOutputDevice } = require('./audio-output-manager');
 const { readMusicBeeWrappedArchive, musicBeeImportPlayId } = require('./musicbee-wrapped-import');
-const { selectPreferredLyrics } = require('./lyrics-provider');
+const { selectPreferredLyrics, lyricsSearchTitle } = require('./lyrics-provider');
 const { autoUpdater } = require('electron-updater');
 const { createUpdateChecker } = require('./update-checker');
 const { createDirectoryTreeWatcher } = require('./directory-tree-watcher');
@@ -474,6 +474,17 @@ function registerWindowsMediaKeys() {
   }
 }
 app.on('will-quit', () => { try { globalShortcut.unregisterAll(); } catch {} });
+// A library cache edit can still be in memory (writes are coalesced). Hold the
+// quit until it is on disk; app.exit() then finishes without re-running the
+// before-quit/will-quit shutdown handlers.
+let libraryCacheQuitFlushStarted = false;
+app.on('will-quit', (event) => {
+  if (libraryCacheQuitFlushStarted || !libraryCacheStore.needsFlush()) return;
+  libraryCacheQuitFlushStarted = true;
+  event.preventDefault();
+  const timeout = new Promise(resolve => setTimeout(resolve, 15000));
+  Promise.race([libraryCacheStore.flush().catch(() => {}), timeout]).finally(() => app.exit(0));
+});
 
 try {
   const desktopEntry = path.join(process.env.XDG_DATA_HOME || path.join(process.env.HOME || '', '.local', 'share'), 'applications', 'hive.desktop');
@@ -484,6 +495,9 @@ try {
 // available, which is the native path used by GNOME-compatible tray hosts.
 const { createTrayController } = require('./tray');
 const { createWindowStateTracker, visibleBounds } = require('./window-state');
+const { createLibraryCacheStore } = require('./library-cache-store');
+const { createArtistImageProvider } = require('./artist-images');
+const { libraryChangeReason } = require('./library-change-check');
 const { createHiveTray, updateHiveTrayState, hiveLogoPath } = createTrayController({
   Tray,
   Menu,
@@ -559,7 +573,7 @@ const inAppDiagnostics = createDiagnosticsController({
   build: (() => { try { return fs.readFileSync(path.join(HIVE_PROJECT_ROOT, 'BUILD'), 'utf8').trim() || 'unknown'; } catch { return 'unknown'; } })(),
   getRuntime: async () => {
     const cfg = await readJsonSafe(CONFIG_PATH(), { folders: [] });
-    const cached = await readJsonSafe(LIBRARY_CACHE_PATH(), { tracks: [] });
+    const cached = (await libraryCacheStore.get()) || { tracks: [] };
     let dbHealth = null;
     try { dbHealth = await databaseRequest('health_check'); } catch (err) { dbHealth = { ok:false, error:err?.message || String(err) }; }
     return {
@@ -643,6 +657,12 @@ const SCAN_LOG_PATH = () => path.join(beehiveLogDir(), 'scan-live.log');
 const PLAYBACK_STATE_PATH = () => path.join(USER_DATA(), 'playback-state.json');
 const WINDOW_STATE_PATH = () => path.join(USER_DATA(), 'window-state.json');
 const windowState = createWindowStateTracker({ fs, path, filePath: WINDOW_STATE_PATH });
+// Every library.json read/write goes through this store; see library-cache-store.js.
+const libraryCacheStore = createLibraryCacheStore({
+  read: () => readJsonSafe(LIBRARY_CACHE_PATH(), null),
+  write: (data) => writeJsonSafe(LIBRARY_CACHE_PATH(), data),
+  onError: (err) => crashDebug('LIBRARY CACHE WRITE FAILED', { message: err?.message || String(err) })
+});
 let windowStateLoaded = false;
 // One-time migration: discard only Hive's derived library cache/database records
 // so beta.6 can perform a genuinely cold first library scan. User configuration,
@@ -695,6 +715,7 @@ function databaseRequest(cmd, payload = {}) {
 }
 async function clearLibraryCacheData({ clearCovers = true } = {}) {
   const removed = [];
+  await libraryCacheStore.clear();
   for (const target of [LIBRARY_CACHE_PATH(), LIBRARY_CACHE_GZIP_PATH()]) {
     try { await fsp.rm(target, { force: true }); removed.push(target); } catch (err) {
       throw new Error(`Could not clear library cache ${target}: ${err.message}`);
@@ -808,6 +829,24 @@ async function writeFileDurable(file, data) {
   }
 }
 
+// writeJsonSafe's temp files are named <file>.beehive-write-<pid>-<random>.tmp.
+// A crash or kill mid-write leaves them behind (a library cache temp is tens of
+// MB), so remove any left by a process that is no longer running.
+async function removeStaleWriteTemps(dir) {
+  let names = [];
+  try { names = await fsp.readdir(dir); } catch { return 0; }
+  let removed = 0;
+  for (const name of names) {
+    const m = /\.beehive-write-(\d+)-[0-9a-f]+\.tmp$/.exec(name);
+    if (!m) continue;
+    const pid = Number(m[1]);
+    if (pid === process.pid) continue;
+    try { process.kill(pid, 0); continue; } catch (err) { if (err?.code === 'EPERM') continue; }
+    try { await fsp.unlink(path.join(dir, name)); removed++; } catch {}
+  }
+  return removed;
+}
+
 async function writeJsonSafe(p, data) {
   await fsp.mkdir(path.dirname(p), { recursive: true });
   const isLibraryCache = p === LIBRARY_CACHE_PATH();
@@ -828,9 +867,9 @@ async function writeJsonSafe(p, data) {
   // The library cache is flushed to disk before it replaces the old one: on a
   // portable exFAT data drive an abrupt exit could otherwise leave the renamed
   // file truncated, and a truncated cache made Hive open on an empty library.
-  if (isLibraryCache) await writeFileDurable(temp, payload);
-  else await fsp.writeFile(temp, payload, 'utf8');
   try {
+    if (isLibraryCache) await writeFileDurable(temp, payload);
+    else await fsp.writeFile(temp, payload, 'utf8');
     await fsp.rename(temp, p);
     try { await fsp.chmod(p, 0o600); } catch {}
   } catch (err) {
@@ -879,15 +918,17 @@ async function writeJsonSafe(p, data) {
       });
       const gzipPath = LIBRARY_CACHE_GZIP_PATH();
       const gzipTemp = `${gzipPath}.beehive-write-${process.pid}-${crypto.randomBytes(6).toString('hex')}.tmp`;
-      await writeFileDurable(gzipTemp, compressed);
-      try { await fsp.rename(gzipTemp, gzipPath); }
-      catch (err) {
+      try {
+        await writeFileDurable(gzipTemp, compressed);
+        await fsp.rename(gzipTemp, gzipPath);
+      } catch (err) {
         if (process.platform === 'win32' && (err?.code === 'EEXIST' || err?.code === 'EPERM')) {
           await fsp.rm(gzipPath, { force: true });
           await fsp.rename(gzipTemp, gzipPath);
         } else throw err;
+      } finally {
+        try { await fsp.unlink(gzipTemp); } catch {}
       }
-      try { await fsp.unlink(gzipTemp); } catch {}
       if (isLibraryCache) scanLog('LIBRARY CACHE GZIP WRITTEN', { ms: Date.now() - cacheWriteStartedAt, compressedBytes: compressed.length });
     } catch (err) {
       crashDebug('COMPRESSED LIBRARY CACHE WRITE FAILED', { message: err?.message || String(err) });
@@ -1139,20 +1180,10 @@ function createWindow({ preservePlayback = false } = {}) {
   mainWindow.webContents.on('unresponsive', () => { crashDebug('RENDERER unresponsive'); startupDebug('RENDERER UNRESPONSIVE'); });
   mainWindow.webContents.on('responsive', () => { crashDebug('RENDERER responsive'); startupDebug('RENDERER RESPONSIVE'); });
 
-  // When Beehive is open but not the foreground app, don't let an otherwise
-  // idle Electron renderer consume the same compositor/GPU budget that apps
-  // such as Steam need for smooth scrolling. Audio playback is independent of
-  // the renderer frame rate, so this does not affect music playback. Restore
-  // the normal frame rate as soon as Beehive regains focus.
-  try {
-    mainWindow.webContents.setFrameRate(30);
-    mainWindow.on('focus', () => {
-      try { mainWindow.webContents.setFrameRate(60); } catch {}
-    });
-    mainWindow.on('blur', () => {
-      try { mainWindow.webContents.setFrameRate(30); } catch {}
-    });
-  } catch {}
+  // Idle GPU use is handled in the renderer, which steps decorative rich-label
+  // animations at a low rate and stops them on blur (see stepRichLabels).
+  // webContents.setFrameRate() only affects offscreen rendering, so it never
+  // throttled this window.
 
   mainWindow.webContents.on('console-message', (_event, level, message, line, sourceId) => {
     const levelName = Number(level) >= 3 ? 'ERROR' : Number(level) === 2 ? 'WARN' : Number(level) === 1 ? 'INFO' : 'DEBUG';
@@ -1434,6 +1465,8 @@ updateChecker.onStatus(status => {
     try {
       const name = decodePath(request.url, 'mbcover://');
       const filePath = path.join(COVERS_DIR(), name);
+      // Only files inside the covers folder; "../" must not reach anything else.
+      if (!isPathInsideFolder(filePath, COVERS_DIR())) return new Response('Not found', { status: 404 });
       const fileUrl = pathToFileURL(filePath).toString();
       return net.fetch(fileUrl);
     } catch (err) {
@@ -1479,6 +1512,9 @@ updateChecker.onStatus(status => {
     await initializeDatabase();
     startupDebug('DATABASE INITIALIZATION COMPLETE', { ready:databaseReady });
   }
+  removeStaleWriteTemps(USER_DATA())
+    .then(removed => { if (removed) scanLog('STALE WRITE TEMPS REMOVED', { removed }); })
+    .catch(() => {});
   // Reclaim free space in the library database once startup has settled.
   // Holding the scan lock keeps it from overlapping a scan's batch writes.
   setTimeout(async () => {
@@ -1578,6 +1614,9 @@ function markLibraryInternalWrite(trackPath) {
   // containing directory for this short self-write window so Beehive never
   // rescans its own tag edits.
   libraryInternalWriteDirs.set(path.dirname(p), until);
+  // Hive's own write changed this folder's time; don't treat it as a change
+  // made while Hive was closed (see findLibraryChangeSinceLastScan).
+  queueOwnWriteSnapshotRefresh(path.dirname(p));
 }
 function isLibraryInternalWrite(trackPath) {
   const p = path.resolve(String(trackPath || ''));
@@ -2071,16 +2110,42 @@ async function pluginStatePath(id) {
   return path.join(PLUGIN_STATE_DIR(), `${safe}.json`);
 }
 
+// First-party plugins in resources/hive-plugins are copied into the user's
+// plugin folder (so "Open plugins folder" is a real copy that can be shared).
+// A copy Hive placed carries a .hive-bundled marker and is replaced when Hive
+// ships a new version. A copy without the marker is the user's own and is left
+// alone, and a bundled plugin the user deleted is not put back.
+const BUNDLED_PLUGINS_RECORD_PATH = () => path.join(USER_DATA(), 'bundled-plugins.json');
+async function seedBundledPlugins(dir) {
+  const bundledRoot = runtimeResourcePath(path.join('resources','hive-plugins'));
+  let entries = [];
+  try { entries = await fsp.readdir(bundledRoot, { withFileTypes: true }); } catch { return; }
+  const record = await readJsonSafe(BUNDLED_PLUGINS_RECORD_PATH(), {});
+  let changed = false;
+  for (const entry of entries) {
+    if (!entry.isDirectory()) continue;
+    const source = path.join(bundledRoot, entry.name);
+    let manifest = null;
+    try { manifest = JSON.parse(await fsp.readFile(path.join(source, 'manifest.json'), 'utf8')); } catch { continue; }
+    const id = String(manifest?.id || '');
+    if (!/^[a-zA-Z0-9._-]{1,80}$/.test(id)) continue;
+    const version = String(manifest.version || '');
+    const target = path.join(dir, id);
+    const present = fs.existsSync(target);
+    if (!present && Object.prototype.hasOwnProperty.call(record, id)) continue;
+    if (present && (!fs.existsSync(path.join(target, '.hive-bundled')) || record[id] === version)) continue;
+    await fsp.rm(target, { recursive: true, force: true });
+    await fsp.cp(source, target, { recursive: true });
+    await fsp.writeFile(path.join(target, '.hive-bundled'), `${version}\n`, 'utf8');
+    record[id] = version;
+    changed = true;
+  }
+  if (changed) await writeJsonSafe(BUNDLED_PLUGINS_RECORD_PATH(), record);
+}
+
 ipcMain.handle('plugins:list', async () => {
   const dir=PLUGINS_DIR(); await fsp.mkdir(dir,{recursive:true,mode:0o700});
-  // The first-party Monstercat Visualizer plugin (previously auto-seeded here
-  // from resources/hive-plugins/monstercat-visualizer) was removed -- it never
-  // worked under this app's CSP (see plugins:run below: it executes plugin
-  // code via `new Function(...)`, which requires 'unsafe-eval', and the CSP
-  // does not grant that). It will be rebuilt; when it returns, seed it the
-  // same way: copy the bundled folder into the user plugin directory here if
-  // not already present, so "Open plugins folder" remains a genuine sharing
-  // surface a user can copy to another install.
+  try { await seedBundledPlugins(dir); } catch (err) { console.warn('[Plugins] Could not install bundled plugins:', err?.message || err); }
   const entries=await fsp.readdir(dir,{withFileTypes:true}); const out=[]; const seen=new Set();
   const readPlugin = async (root, bundled=false) => {
     try {
@@ -2097,7 +2162,6 @@ ipcMain.handle('plugins:list', async () => {
     } catch (err) { console.warn('[Plugins] Could not load',path.basename(root),err?.message||err); }
   };
   for (const entry of entries) { if (entry.isDirectory()) await readPlugin(path.join(dir,entry.name), false); }
-  // First-party Monstercat is seeded into the same user plugin directory as community plugins.
   return {dir,plugins:out};
 });
 
@@ -2222,7 +2286,7 @@ ipcMain.handle('config:removeFolder', async (_evt, folder) => {
   const releaseLibraryScan = await acquireLibraryScanLock();
   let removedPaths = [];
   try {
-    const cache = await readJsonSafe(LIBRARY_CACHE_PATH(), { tracks: [] });
+    const cache = (await libraryCacheStore.get()) || { tracks: [] };
     const tracks = Array.isArray(cache.tracks) ? cache.tracks : [];
     // A track stays if another configured library still contains it (nested
     // or overlapping library folders).
@@ -2243,7 +2307,7 @@ ipcMain.handle('config:removeFolder', async (_evt, folder) => {
       }
     } catch (err) { crashDebug('DATABASE library read for folder removal failed', { message: err?.message || String(err) }); }
     if (removedPaths.length) {
-      await writeJsonSafe(LIBRARY_CACHE_PATH(), { ...cache, tracks: kept, scannedAt: Date.now() });
+      libraryCacheStore.set({ ...cache, tracks: kept, scannedAt: Date.now() });
       try { await databaseRequest('remove_tracks', { paths: removedPaths }); }
       catch (err) { crashDebug('DATABASE folder-removal cleanup failed', { message: err?.message || String(err) }); }
     }
@@ -2377,6 +2441,8 @@ ipcMain.handle('library:getCached', async (_evt, options = {}) => {
   const fastStartAt = process.hrtime.bigint();
   // skipGzip: the renderer could not decode the compressed sidecar (e.g. it
   // was truncated); fall through to the plain JSON cache / SQLite instead.
+  // A cache edit may still be waiting in memory; get it onto disk first.
+  try { await libraryCacheStore.flush(); } catch {}
   if (!options?.skipGzip) try {
     const compressed = await fsp.readFile(LIBRARY_CACHE_GZIP_PATH());
     if (compressed.length) {
@@ -2393,7 +2459,7 @@ ipcMain.handle('library:getCached', async (_evt, options = {}) => {
     }
   } catch {}
 
-  const cached = await readJsonSafe(LIBRARY_CACHE_PATH(), null);
+  const cached = await libraryCacheStore.get();
   if (cached && Array.isArray(cached.tracks) && cached.tracks.length) {
     startupDebug('FAST LIBRARY CACHE READY', {
       tracks: cached.tracks.length,
@@ -3707,6 +3773,114 @@ async function acquireLibraryScanLock() {
 
 // Favorites/Love state is read as part of the scanner's existing metadata pass.
 // Do not perform a second full-library Love scan after the library scan completes.
+// ---- Startup change check ----
+// Each full scan records every library folder's modification time. Adding,
+// removing or renaming a file changes its folder's time, so at startup Hive
+// can tell whether anything changed while it was closed by checking folders
+// and known files directly: no folder listing, no scan, no progress bar when
+// nothing changed. While Hive runs, the folder watcher handles changes live.
+const LIBRARY_FOLDER_SNAPSHOT_PATH = () => path.join(USER_DATA(), 'library-folder-snapshot.json');
+let libraryFolderSnapshot = null;
+let libraryFolderSnapshotSaveTimer = null;
+async function loadLibraryFolderSnapshot() {
+  if (!libraryFolderSnapshot) libraryFolderSnapshot = await readJsonSafe(LIBRARY_FOLDER_SNAPSHOT_PATH(), null);
+  return libraryFolderSnapshot;
+}
+function saveLibraryFolderSnapshotSoon() {
+  if (libraryFolderSnapshotSaveTimer) clearTimeout(libraryFolderSnapshotSaveTimer);
+  libraryFolderSnapshotSaveTimer = setTimeout(() => {
+    libraryFolderSnapshotSaveTimer = null;
+    if (libraryFolderSnapshot) writeJsonSafe(LIBRARY_FOLDER_SNAPSHOT_PATH(), libraryFolderSnapshot).catch(() => {});
+  }, 2000);
+  libraryFolderSnapshotSaveTimer.unref?.();
+}
+async function statDirectoryMtimes(dirs) {
+  const directories = {};
+  const list = [...new Set(dirs.map(d => path.resolve(d)))];
+  let cursor = 0;
+  await Promise.all(Array.from({ length: Math.min(16, list.length) }, async () => {
+    while (cursor < list.length) {
+      const dir = list[cursor++];
+      try { directories[dir] = Number((await fsp.stat(dir)).mtimeMs || 0); } catch {}
+    }
+  }));
+  return directories;
+}
+function sortedLibraryRoots(roots) {
+  return [...new Set((roots || []).map(r => path.resolve(String(r))))].sort();
+}
+async function saveLibraryFolderSnapshot(roots, directories) {
+  libraryFolderSnapshot = { roots: sortedLibraryRoots(roots), directories, takenAt: Date.now() };
+  if (libraryFolderSnapshotSaveTimer) { clearTimeout(libraryFolderSnapshotSaveTimer); libraryFolderSnapshotSaveTimer = null; }
+  await writeJsonSafe(LIBRARY_FOLDER_SNAPSHOT_PATH(), libraryFolderSnapshot);
+}
+// Re-reads the given folders (plus their parents up to the library root) after
+// a change Hive already knows about, so it doesn't count as "changed while
+// closed" next launch.
+async function refreshLibraryFolderSnapshot(paths) {
+  const snapshot = await loadLibraryFolderSnapshot();
+  if (!snapshot?.directories || !Array.isArray(snapshot.roots)) return;
+  const dirs = new Set();
+  for (const p of paths) {
+    let dir = path.resolve(String(p || ''));
+    const root = snapshot.roots.find(r => isPathInsideFolder(dir, r));
+    if (!root) continue;
+    for (let i = 0; i < 64; i++) {
+      dirs.add(dir);
+      if (dir === root) break;
+      const parent = path.dirname(dir);
+      if (parent === dir) break;
+      dir = parent;
+    }
+  }
+  for (const dir of dirs) {
+    try {
+      const st = await fsp.stat(dir);
+      if (st.isDirectory()) snapshot.directories[dir] = Number(st.mtimeMs || 0);
+    } catch { delete snapshot.directories[dir]; }
+  }
+  saveLibraryFolderSnapshotSoon();
+}
+const pendingOwnWriteSnapshotDirs = new Set();
+let ownWriteSnapshotTimer = null;
+function queueOwnWriteSnapshotRefresh(dir) {
+  pendingOwnWriteSnapshotDirs.add(dir);
+  if (ownWriteSnapshotTimer) clearTimeout(ownWriteSnapshotTimer);
+  // After the write's temp-file rename has settled.
+  ownWriteSnapshotTimer = setTimeout(() => {
+    ownWriteSnapshotTimer = null;
+    const dirs = [...pendingOwnWriteSnapshotDirs];
+    pendingOwnWriteSnapshotDirs.clear();
+    void refreshLibraryFolderSnapshot(dirs);
+  }, 11000);
+  ownWriteSnapshotTimer.unref?.();
+}
+// The reason a startup scan is needed, or null when nothing changed (see
+// library-change-check.js).
+async function findLibraryChangeSinceLastScan() {
+  const config = await readJsonSafe(CONFIG_PATH(), { folders: [] });
+  const cache = await libraryCacheStore.get();
+  return libraryChangeReason({
+    roots: sortedLibraryRoots(resolveConfigFolders(config)),
+    snapshot: await loadLibraryFolderSnapshot(),
+    tracks: (Array.isArray(cache?.tracks) ? cache.tracks : []).filter(t => t?.path && path.isAbsolute(String(t.path))),
+    stat: p => fsp.stat(p),
+    metadataScanVersion: METADATA_SCAN_VERSION,
+    artworkScanVersion: ARTWORK_SCAN_VERSION
+  });
+}
+ipcMain.handle('library:startupCheck', async () => {
+  const startedAt = Date.now();
+  try {
+    const reason = await findLibraryChangeSinceLastScan();
+    scanLog('STARTUP CHANGE CHECK', { changed: !!reason, reason, ms: Date.now() - startedAt });
+    return { changed: !!reason, reason };
+  } catch (err) {
+    scanLog('STARTUP CHANGE CHECK FAILED', { error: err?.message || String(err) });
+    return { changed: true, reason: 'check failed' };
+  }
+});
+
 ipcMain.handle('library:scanChanged', async (evt, changedPaths = []) => {
   const releaseLibraryScan = await acquireLibraryScanLock();
   try {
@@ -3721,7 +3895,7 @@ ipcMain.handle('library:scanChanged', async (evt, changedPaths = []) => {
   const noChanges = () => ({ incremental: true, changed: [], removedPaths: [], scannedAt: Date.now() });
   if (!requested.length) return noChanges();
 
-  const previous = await readJsonSafe(LIBRARY_CACHE_PATH(), { tracks: [] });
+  const previous = (await libraryCacheStore.get()) || { tracks: [] };
   const oldTracks = Array.isArray(previous.tracks) ? previous.tracks : [];
   const oldByPath = new Map(oldTracks.map(t => [path.resolve(String(t?.path || '')), t]));
   const stats = await readJsonSafe(STATS_PATH(), {});
@@ -3846,7 +4020,8 @@ ipcMain.handle('library:scanChanged', async (evt, changedPaths = []) => {
 
   const scannedAt = Date.now();
   const result = { tracks: ordered, scannedAt };
-  await writeJsonSafe(LIBRARY_CACHE_PATH(), result);
+  libraryCacheStore.set(result);
+  void refreshLibraryFolderSnapshot(requested.map(p => path.dirname(p)));
   // Keep SQLite authoritative for the next startup too. Incremental watcher
   // scans used to update only library.json, which meant the new SQLite backend
   // could immediately resurrect stale metadata after a restart.
@@ -3885,11 +4060,13 @@ ipcMain.handle('library:scan', async (evt, options = {}) => {
   const files = [];
   const folders = resolveConfigFolders(config);
   const walkState = { directories: 0, isCancelled: () => scanToken.cancelled };
+  const walkedDirectories = [];
   for (const folder of folders) {
     throwIfCancelled();
     const before = files.length;
     scanLog('WALK START', { folder });
     await walk(folder, files, (count, currentDir) => {
+      walkedDirectories.push(currentDir);
       if (count % 100 === 0 || files.length % 250 === 0) {
         scanLog('WALK PROGRESS', { folder, filesFound: files.length, directories: count, currentDir });
         try {
@@ -3904,6 +4081,10 @@ ipcMain.handle('library:scan', async (evt, options = {}) => {
   }
   throwIfCancelled();
   scanLog('FILE ENUMERATION DONE', { total: files.length });
+  // Folder times as of this walk (see findLibraryChangeSinceLastScan). Taken
+  // now rather than at the end, so anything added during the scan still
+  // registers as a change next launch.
+  const folderSnapshotPromise = statDirectoryMtimes(walkedDirectories).catch(() => null);
   try {
     evt.sender.send('library:scanProgress', {
       done: 0, total: files.length, tracksFound: 0, skipped: 0, current: '',
@@ -3911,7 +4092,7 @@ ipcMain.handle('library:scan', async (evt, options = {}) => {
     });
   } catch {}
 
-  let previous = await readJsonSafe(LIBRARY_CACHE_PATH(), { tracks: [] });
+  let previous = (await libraryCacheStore.get()) || { tracks: [] };
   const oldTracks = Array.isArray(previous.tracks) ? previous.tracks.map(rendererTrackPayload) : [];
   const oldByPath = new Map(oldTracks.map(t => [path.resolve(String(t?.path || '')), t]));
   const stats = await readJsonSafe(STATS_PATH(), {});
@@ -4337,7 +4518,7 @@ ipcMain.handle('library:scan', async (evt, options = {}) => {
   const result = { tracks: ordered, scannedAt };
   if (cacheNeedsRewrite) {
     const cacheWriteStartedAt = Date.now();
-    await writeJsonSafe(LIBRARY_CACHE_PATH(), result);
+    libraryCacheStore.set(result);
     scanLog('SCAN LIBRARY CACHE WRITE DONE', { ms: Date.now() - cacheWriteStartedAt, finalizationMs: Date.now() - finalizationStartedAt });
   } else {
     // A clean incremental startup scan is deliberately cache-read-only. Rewriting
@@ -4350,6 +4531,10 @@ ipcMain.handle('library:scan', async (evt, options = {}) => {
   // replace the database from this compact renderer/cache view: that would
   // recreate a whole-library serialization pass and discard nativeTags from
   // the lossless records stored by the scanner batches.
+  try {
+    const directories = await folderSnapshotPromise;
+    if (directories) await saveLibraryFolderSnapshot(folders, directories);
+  } catch (err) { scanLog('FOLDER SNAPSHOT SAVE FAILED', { error: err?.message || String(err) }); }
   // fullPayload: the renderer has no library in memory (its cache failed to
   // load), so a changes-only answer would leave it empty. Send everything.
   if (!forceFull && !options?.fullPayload) {
@@ -4545,7 +4730,7 @@ async function getMusicBeeImportedPlayCounts() {
 ipcMain.handle('yearly-wrap:replacePlayCounts', async () => withStatsMutation(async () => {
   const stats = await readJsonSafe(STATS_PATH(), {});
   const { counts, archiveMatchedKeys } = await getMusicBeeImportedPlayCounts();
-  const libraryCache = await readJsonSafe(LIBRARY_CACHE_PATH(), { tracks: [] });
+  const libraryCache = (await libraryCacheStore.get()) || { tracks: [] };
   const tracks = Array.isArray(libraryCache.tracks) ? libraryCache.tracks : [];
   const exact = new Map(), pair = new Map();
   const add = (map, key, track) => { if (!key) return; const arr = map.get(key) || []; arr.push(track); map.set(key, arr); };
@@ -4591,7 +4776,7 @@ ipcMain.handle('yearly-wrap:replacePlayCounts', async () => withStatsMutation(as
       updatedPlayCounts[track.path] = playCount;
       return { ...track, playCount };
     });
-    await writeJsonSafe(LIBRARY_CACHE_PATH(), libraryCache);
+    libraryCacheStore.set(libraryCache);
   }
   // The renderer's in-memory library.tracks is a separate copy from this disk
   // cache and is never reloaded on its own after this call, so without handing
@@ -4795,8 +4980,13 @@ ipcMain.handle('track:recordPlay', async (_evt, trackPath, meta = {}) => withSta
   // JSON stringify + gzip on every track transition.
 
   const history = await readJsonSafe(HISTORY_PATH(), []);
-  const snapshot = { title: meta.title || '', artist: meta.artist || '', album: meta.album || '', cover: meta.cover || null, artworkUrl: meta.artworkUrl || null, source: meta.source || '', spotifyUri: meta.spotifyUri || '' };
-  const next = [{ path: trackPath, playedAt: entry.lastPlayedAt, ...snapshot }, ...history.filter(h => h.path !== trackPath)];
+  // A data: URL cover is a whole base64 image (several MB each for automatic
+  // artwork) and was rewritten with history on every play. Library tracks get
+  // their cover from the library when History renders, so keep only small
+  // references (cached cover filenames, remote URLs).
+  const historyCover = (cover) => (/^data:/i.test(String(cover || '')) ? null : cover || null);
+  const snapshot = { title: meta.title || '', artist: meta.artist || '', album: meta.album || '', cover: historyCover(meta.cover), artworkUrl: meta.artworkUrl || null, source: meta.source || '', spotifyUri: meta.spotifyUri || '' };
+  const next = [{ path: trackPath, playedAt: entry.lastPlayedAt, ...snapshot }, ...history.filter(h => h.path !== trackPath).map(h => (/^data:/i.test(String(h?.cover || '')) ? { ...h, cover: null } : h))];
   await writeJsonSafe(HISTORY_PATH(), next.slice(0, 500));
   return { ...entry, pCountEmbedding };
 }));
@@ -4806,7 +4996,7 @@ ipcMain.handle('yearly-wrap:getData', async (_evt, requestedYear) => {
   const year = Number.isInteger(Number(requestedYear)) ? Number(requestedYear) : new Date().getFullYear();
   const events = await readJsonSafe(LISTENING_EVENTS_PATH(), []);
   const history = await readJsonSafe(HISTORY_PATH(), []);
-  let library = await readJsonSafe(LIBRARY_CACHE_PATH(), { tracks: [] });
+  let library = (await libraryCacheStore.get()) || { tracks: [] };
   const tracks = Array.isArray(library?.tracks) ? library.tracks : [];
   const byPath = new Map(tracks.map(t => [String(t?.path || ''), t]));
   const normalizeLegacy = value => String(value || '').trim().toLowerCase().replace(/\\/g, '/').replace(/\s+/g, ' ');
@@ -4910,7 +5100,7 @@ ipcMain.handle('yearly-wrap:getData', async (_evt, requestedYear) => {
 });
 
 async function readLibraryTracksForPlayCountSync() {
-  const libraryCache = await readJsonSafe(LIBRARY_CACHE_PATH(), { tracks: [] });
+  const libraryCache = (await libraryCacheStore.get()) || { tracks: [] };
   return {
     libraryCache,
     tracks: Array.isArray(libraryCache?.tracks) ? libraryCache.tracks : []
@@ -4982,7 +5172,7 @@ ipcMain.handle('stats:forceEmbedPlayCounts', async (_evt, paths) => withStatsMut
       const entry = stats[track.path];
       return entry ? { ...track, playCount: Number(entry.playCount || 0) } : track;
     });
-    await writeJsonSafe(LIBRARY_CACHE_PATH(), libraryCache);
+    libraryCacheStore.set(libraryCache);
   }
   return results;
 }));
@@ -5006,10 +5196,10 @@ ipcMain.handle('stats:clearPlayCounts', async () => withStatsMutation(async () =
 
   // Keep the cached library in sync so the UI and the next startup both show
   // zero Beehive play counts without rescanning or touching any music files.
-  const libraryCache = await readJsonSafe(LIBRARY_CACHE_PATH(), { tracks: [] });
+  const libraryCache = (await libraryCacheStore.get()) || { tracks: [] };
   if (Array.isArray(libraryCache.tracks)) {
     libraryCache.tracks = libraryCache.tracks.map(track => ({ ...track, playCount: 0 }));
-    await writeJsonSafe(LIBRARY_CACHE_PATH(), libraryCache);
+    libraryCacheStore.set(libraryCache);
   }
 
   // stats.json/library cache are just a display cache -- the actual source
@@ -5137,7 +5327,7 @@ ipcMain.handle('tracks:readLove', async (_evt, paths = []) => {
 });
 
 ipcMain.handle('library:needsLovedRefresh', async () => {
-  const cache = await readJsonSafe(LIBRARY_CACHE_PATH(), { tracks: [] });
+  const cache = (await libraryCacheStore.get()) || { tracks: [] };
   const tracks = Array.isArray(cache.tracks) ? cache.tracks : [];
   // Only request the one-time migration refresh when we have tracks that have
   // never had their embedded Love state successfully checked. Normal scans
@@ -5147,7 +5337,7 @@ ipcMain.handle('library:needsLovedRefresh', async () => {
 });
 
 ipcMain.handle('library:refreshLoved', async (evt) => {
-  const cache = await readJsonSafe(LIBRARY_CACHE_PATH(), { tracks: [] });
+  const cache = (await libraryCacheStore.get()) || { tracks: [] };
   const tracks = Array.isArray(cache.tracks) ? cache.tracks : [];
   const total = tracks.length;
   let done = 0, loved = 0, failed = 0;
@@ -5190,7 +5380,7 @@ ipcMain.handle('library:refreshLoved', async (evt) => {
     });
     await Promise.all(workers);
     cache.tracks = tracks;
-    await writeJsonSafe(LIBRARY_CACHE_PATH(), cache);
+    libraryCacheStore.set(cache);
     await persistLibraryDatabase(tracks);
     scanLog('Favorites Love reconciliation finished', { total, loved, failed });
     return { tracks, total, loved, failed };
@@ -5231,7 +5421,7 @@ ipcMain.handle('tracks:readRatings', async (_evt, paths = []) => {
 });
 
 ipcMain.handle('tracks:updateCachedLoves', async (_evt, loves = {}) => {
-  const cache = await readJsonSafe(LIBRARY_CACHE_PATH(), { tracks: [] });
+  const cache = (await libraryCacheStore.get()) || { tracks: [] };
   const values = loves && typeof loves === 'object' ? loves : {};
   let changed = false;
   for (const t of (cache.tracks || [])) {
@@ -5242,12 +5432,12 @@ ipcMain.handle('tracks:updateCachedLoves', async (_evt, loves = {}) => {
     t.loveHydrated = true;
     t.loveScanVersion = LOVE_SCAN_VERSION;
   }
-  if (changed) await writeJsonSafe(LIBRARY_CACHE_PATH(), cache);
+  if (changed) libraryCacheStore.set(cache);
   return true;
 });
 
 ipcMain.handle('tracks:updateCachedRatings', async (_evt, ratings = {}) => {
-  const cache = await readJsonSafe(LIBRARY_CACHE_PATH(), { tracks: [] });
+  const cache = (await libraryCacheStore.get()) || { tracks: [] };
   const values = ratings && typeof ratings === 'object' ? ratings : {};
   for (const t of (cache.tracks || [])) {
     if (!t?.path || !Object.prototype.hasOwnProperty.call(values, t.path)) continue;
@@ -5255,7 +5445,7 @@ ipcMain.handle('tracks:updateCachedRatings', async (_evt, ratings = {}) => {
     t.ratingRaw = t.rating >= 5 ? 255 : 0;
     t.ratingHydrated = true;
   }
-  await writeJsonSafe(LIBRARY_CACHE_PATH(), cache);
+  libraryCacheStore.set(cache);
   return true;
 });
 
@@ -5348,7 +5538,8 @@ function normalizeLyricMatch(value) {
   return String(value || '').toLowerCase().normalize('NFKD').replace(/[\u0300-\u036f]/g, '').replace(/[^a-z0-9]+/g, ' ').trim();
 }
 
-async function searchGeniusLyrics(artist, title) {
+async function searchGeniusLyrics(artist, rawTitle) {
+  const title = lyricsSearchTitle(rawTitle);
   const query = `${artist} ${title}`.trim();
   const headers = {
     'User-Agent': 'Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 Chrome/131 Safari/537.36',
@@ -5456,7 +5647,16 @@ async function searchGeniusLyrics(artist, title) {
   return null;
 }
 
+// LRCLIB's /api/get needs an exact title. Try the tagged title first, then
+// the title without credit brackets ("(Prod. By …)", "(Feat. …)").
 async function searchLrcLibLyrics(artist, title, album, duration) {
+  const found = await searchLrcLibLyricsExact(artist, title, album, duration);
+  if (found) return found;
+  const cleaned = lyricsSearchTitle(title);
+  return cleaned && cleaned !== title ? searchLrcLibLyricsExact(artist, cleaned, album, duration) : null;
+}
+
+async function searchLrcLibLyricsExact(artist, title, album, duration) {
   const params = new URLSearchParams({ track_name: title, artist_name: artist });
   if (album) params.set('album_name', album);
   if (Number.isFinite(duration) && duration > 0) params.set('duration', String(Math.round(duration)));
@@ -5812,7 +6012,7 @@ ipcMain.handle('library:searchDatabase', async (_evt, query = {}) => {
 ipcMain.handle('library:taskStatus', async () => taskManager.status());
 ipcMain.handle('beta:securityAudit', async () => runSecurityAudit(HIVE_PROJECT_ROOT));
 ipcMain.handle('beta:libraryHealth', async () => {
-  const cached = await readJsonSafe(LIBRARY_CACHE_PATH(), { tracks: [] });
+  const cached = (await libraryCacheStore.get()) || { tracks: [] };
   return runLibraryHealth(Array.isArray(cached?.tracks) ? cached.tracks : []);
 });
 ipcMain.handle('beta:environmentAudit', async () => {
@@ -5888,6 +6088,11 @@ ipcMain.handle('diagnostics:getLogs', async () => {
 });
 ipcMain.handle('beta:databaseHealth', async () => databaseRequest('health_check'));
 ipcMain.handle('artwork:providers', async () => artworkProviders);
+const artistImages = createArtistImageProvider({ fetch, fsp, path, crypto, dir: COVERS_DIR, userAgent: `Hive/${app.getVersion()} (artist images)` });
+ipcMain.handle('artwork:artistImage', async (_evt, artist) => {
+  const file = await artistImages.lookup(String(artist || '').slice(0, 300));
+  return file ? `mbcover://${encodeURIComponent(path.basename(file))}` : null;
+});
 
 async function fetchJson(url, headers = {}) {
   const response = await fetch(url, { headers: { 'User-Agent': 'Hive/0.9.0-beta.2 (BeehiveMusicBrainz) (cover search)', 'Accept': 'application/json', ...headers } });
@@ -6864,7 +7069,7 @@ function sendTagProgress(evt, payload) {
 }
 
 async function updateCachedLoved(paths, loved) {
-  const cache = await readJsonSafe(LIBRARY_CACHE_PATH(), { tracks: [] });
+  const cache = (await libraryCacheStore.get()) || { tracks: [] };
   const wanted = new Set((Array.isArray(paths) ? paths : [paths])
     .filter(Boolean)
     .map(p => path.resolve(String(p))));
@@ -6877,7 +7082,7 @@ async function updateCachedLoved(paths, loved) {
       changed = true;
     }
   }
-  if (changed) await writeJsonSafe(LIBRARY_CACHE_PATH(), cache);
+  if (changed) libraryCacheStore.set(cache);
   try {
     const values = {};
     for (const trackPath of wanted) values[trackPath] = !!loved;
@@ -7089,7 +7294,7 @@ ipcMain.handle('tracks:setLove', async (evt, trackPaths = [], loved) => {
   // favorites. The cache mirrors Beehive's authoritative Love tag state, so
   // this removes thousands of needless metadata rewrites from a "Love all"
   // operation while keeping the main process out of the file loop.
-  let cache = await readJsonSafe(LIBRARY_CACHE_PATH(), { tracks: [] });
+  let cache = (await libraryCacheStore.get()) || { tracks: [] };
   if (!cache || !Array.isArray(cache.tracks)) cache = { tracks: [] };
   const cacheByPath = new Map(cache.tracks.map(t => [String(t.path || ''), t]));
   let paths = requestedPaths;
@@ -7168,7 +7373,7 @@ ipcMain.handle('tracks:setLove', async (evt, trackPaths = [], loved) => {
   const flushCache = async (force = false) => {
     if (!cacheDirty) return;
     if (!force && completed % 250 !== 0 && Date.now() - lastCacheFlush < 5000) return;
-    await writeJsonSafe(LIBRARY_CACHE_PATH(), cache);
+    libraryCacheStore.set(cache);
     cacheDirty = false;
     lastCacheFlush = Date.now();
   };
@@ -7205,6 +7410,8 @@ ipcMain.handle('tracks:setLove', async (evt, trackPaths = [], loved) => {
       await deleteMetadataJob(recoveryJobs.get(path.resolve(String(job.path)))?.id);
       const track = cacheByPath.get(job.path);
       if (track) { track.loved = value; track.loveHydrated = true; cacheDirty = true; }
+      // This write changed the album folder's time; it isn't an outside change.
+      queueOwnWriteSnapshotRefresh(path.dirname(path.resolve(String(job.path))));
       try { await databaseRequest('set_loved', { values: { [path.resolve(String(job.path))]: value } }); }
       catch (err) { scanLog('DATABASE Love projection update failed', { path: job.path, error: err?.message || String(err) }); }
     } else {
