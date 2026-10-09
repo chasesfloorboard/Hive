@@ -102,7 +102,7 @@ test('Lyrics glass bubble has no extra black outer box and active timed lyrics a
 // coincidence. That API also used an invalid per_page=10 (Genius caps it at
 // 5, confirmed live: per_page=10 returns HTTP 422).
 test('Genius search tries the real JSON search API first, with a valid per_page, before the non-functional HTML scrape', () => {
-  const start = main.indexOf('async function searchGeniusLyrics(artist, title) {');
+  const start = main.indexOf('async function searchGeniusLyrics(');
   const end = main.indexOf('\nasync function searchLrcLibLyrics', start);
   assert.ok(start >= 0 && end > start, 'expected to find searchGeniusLyrics()');
   const block = main.slice(start, end);
