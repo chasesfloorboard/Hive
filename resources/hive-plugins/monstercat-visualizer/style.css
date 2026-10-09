@@ -1,0 +1,61 @@
+/* Monstercat Visualizer page. Everything is scoped to .mcv. */
+.mcv {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  /* Sits on Hive's own content panel, so it follows the active theme. */
+  background: transparent;
+  color: var(--text, inherit);
+  font-family: inherit;
+}
+.mcv-stage {
+  /* The skin's 1255px stage at its default 0.8 scale, but fluid. */
+  width: min(92%, 1100px);
+  display: flex;
+  flex-direction: column;
+  gap: clamp(12px, 2.4vh, 26px);
+}
+.mcv-bars {
+  display: block;
+  width: 100%;
+  height: clamp(120px, 34vh, 330px);
+}
+.mcv-info {
+  display: flex;
+  align-items: center;
+  gap: clamp(14px, 2.2vw, 28px);
+  min-width: 0;
+}
+.mcv-art {
+  flex: none;
+  width: clamp(84px, 16vh, 160px);
+  aspect-ratio: 1;
+  overflow: hidden;
+  border-radius: 6px;
+  background: var(--control-bg, rgba(127, 127, 127, 0.12));
+  box-shadow: 0 8px 24px rgba(0, 0, 0, 0.18);
+}
+.mcv-art img { width: 100%; height: 100%; object-fit: cover; display: block; }
+.mcv-no-art .mcv-art { display: none; }
+.mcv-text { min-width: 0; display: flex; flex-direction: column; gap: 4px; }
+.mcv-artist {
+  font-family: inherit;
+  font-weight: 700;
+  font-size: clamp(26px, 6vh, 64px);
+  line-height: 1.02;
+  text-transform: uppercase;
+  letter-spacing: 0.01em;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+.mcv-title {
+  font-family: inherit;
+  font-weight: 300;
+  font-size: clamp(16px, 3.4vh, 36px);
+  line-height: 1.15;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  color: var(--text-dim, inherit);
+}

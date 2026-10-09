@@ -36,6 +36,16 @@ const crypto = require('crypto');
 const os = require('os');
 const { replaceFile } = require('./replace-file');
 
+// JS twin of tag_helper.py's plain_from_lrc(): drop [mm:ss.xx] / <mm:ss.xx>
+// timestamps, collapse repeated whitespace, and drop lines left empty.
+function plainLyrics(value) {
+  const stamp = /[\[<](?:\d+:)?\d{1,3}:\d{2}(?:[.,:]\d{1,3})?[\]>]/g;
+  return String(value ?? '').replace(/\r\n?/g, '\n').split('\n')
+    .map(line => line.replace(stamp, '').replace(/\s{2,}/g, ' ').trim())
+    .filter(Boolean)
+    .join('\n');
+}
+
 function createMetadataWriter(deps) {
   const {
     runTagHelper,
@@ -310,8 +320,12 @@ function createMetadataWriter(deps) {
             const nativeVerify = await runTagHelper({ __background: !!options.background, op: 'read_metadata_fields', path: temp, fields });
             const got = nativeVerify?.fields || {};
             const norm = value => String(value ?? '').trim();
+            // Lyrics are stored plain: tag_helper.py strips LRC timestamps
+            // (plain_from_lrc) and keeps timing only in an MP3 SYLT frame, so
+            // synced input is compared in the form that is actually stored.
+            const expectedValue = key => (key === 'lyrics' ? plainLyrics(tags[key]) : tags[key]);
             for (const key of fields) {
-              if (norm(tags[key]) !== norm(got[key])) throw new Error(`Tag write verification failed for ${key}: expected ${JSON.stringify(tags[key])}, read back ${JSON.stringify(got[key])}`);
+              if (norm(expectedValue(key)) !== norm(got[key])) throw new Error(`Tag write verification failed for ${key}: expected ${JSON.stringify(expectedValue(key))}, read back ${JSON.stringify(got[key])}`);
             }
           }
           if (Object.prototype.hasOwnProperty.call(tags || {}, 'compilation')) {

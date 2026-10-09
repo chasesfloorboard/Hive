@@ -181,7 +181,7 @@ test('Pinned playlist tabs are normalized to their playlist browser before activ
 test('User-added sidebar playlists can be pinned to the top bar and persist', () => {
   const navigation = block(renderer, 'function syncPinnedTabs()', 'function syncMpris(');
   assert.match(navigation, /sidebarEntry\(id\)/);
-  assert.match(renderer, /saved\.pinned\.filter\(id => validIds\.includes\(id\)\)/);
+  assert.match(renderer, /saved\.pinned\.filter\(id => validIds\.includes\(id\)/);
   assert.match(renderer, /pinnedTabId\(nav\)/);
   const editors = block(renderer, 'function renderNavigationEditors()', '// ---------------- settings modal tabs ----------------');
   assert.match(editors, /d\.type===['"]playlist['"]/);

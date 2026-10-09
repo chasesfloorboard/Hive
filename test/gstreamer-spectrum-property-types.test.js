@@ -8,6 +8,7 @@ const source = fs.readFileSync(path.join(__dirname, '..', 'app', 'native', 'gstr
 test('GStreamer spectrum threshold is passed with the gint type required by the property', () => {
   const spectrumSet = source.match(/g_object_set\(spectrum,[\s\S]*?NULL\);/);
   assert.ok(spectrumSet, 'spectrum properties must be configured');
-  assert.match(spectrumSet[0], /"threshold",\s*-80\s*,/);
-  assert.doesNotMatch(spectrumSet[0], /"threshold",\s*-80\.0/);
+  // An integer property: passing a double through the varargs is undefined behavior.
+  assert.match(spectrumSet[0], /"threshold",\s*\(gint\)\s*SPECTRUM_FLOOR_DB\s*,/);
+  assert.match(source, /#define SPECTRUM_FLOOR_DB -80\.0/);
 });
