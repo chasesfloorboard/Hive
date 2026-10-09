@@ -36,6 +36,8 @@ static gdouble trim_end = 0.0;
 static gboolean trim_end_emitted = FALSE;
 static gboolean stream_started = FALSE;
 static gboolean playing_state = FALSE;
+/* Last POSITION sent while not playing; see position_tick(). */
+static char idle_position_sent[64] = "";
 static gboolean user_muted = FALSE;
 static gboolean trace_enabled = FALSE;
 static gdouble track_gain = 1.0; /* optional ReplayGain multiplier for the current track */
@@ -509,24 +511,87 @@ static void trace_line(const char *kind, const char *detail) {
   fflush(event_fp);
 }
 
+/* The analyzer produces SPECTRUM_FFT_BINS linear bins (0 Hz .. Nyquist); a
+ * visualizer wants bars spaced logarithmically like hearing, so the bins are
+ * grouped into SPECTRUM_OUTPUT_BANDS bands from SPECTRUM_MIN_HZ to
+ * SPECTRUM_MAX_HZ (the Monstercat visualizer's 20 Hz - 16 kHz range). With
+ * linear bands, all of the bass ended up in the first bar. */
+#define SPECTRUM_FFT_BINS 2048
+#define SPECTRUM_OUTPUT_BANDS 64
+#define SPECTRUM_MIN_HZ 20.0
+#define SPECTRUM_MAX_HZ 16000.0
+#define SPECTRUM_FLOOR_DB -80.0
+
+static gint spectrum_sample_rate(void) {
+  gint rate = 0;
+  if (!spectrum) return 0;
+  GstPad *pad = gst_element_get_static_pad(spectrum, "sink");
+  if (!pad) return 0;
+  GstCaps *caps = gst_pad_get_current_caps(pad);
+  if (caps) {
+    const GstStructure *cs = gst_caps_get_structure(caps, 0);
+    if (cs) gst_structure_get_int(cs, "rate", &rate);
+    gst_caps_unref(caps);
+  }
+  gst_object_unref(pad);
+  return rate;
+}
+
+static gdouble spectrum_bin_db(const GValue *mag, guint i) {
+  const GValue *v = gst_value_list_get_value(mag, i);
+  return G_VALUE_HOLDS_DOUBLE(v) ? g_value_get_double(v) :
+    (G_VALUE_HOLDS_FLOAT(v) ? g_value_get_float(v) : SPECTRUM_FLOOR_DB);
+}
+
 static void emit_spectrum_message(GstMessage *msg) {
   const GstStructure *st = gst_message_get_structure(msg);
   if (!st || !gst_structure_has_name(st, "spectrum")) return;
   const GValue *mag = gst_structure_get_value(st, "magnitude");
   if (!mag || !GST_VALUE_HOLDS_LIST(mag)) return;
   const guint n = gst_value_list_get_size(mag);
-  if (!n) return;
-  /* Keep IPC deliberately tiny: 64 logarithmic FFT bands, normalized from
-   * GStreamer's dB magnitude range. This is actual audio analysis from the
-   * native playback pipeline, not an animation synthesized from time. */
-  GString *out = g_string_sized_new(n * 5);
-  const guint limit = MIN(n, 64u);
-  for (guint i = 0; i < limit; ++i) {
-    const GValue *v = gst_value_list_get_value(mag, i);
-    const gdouble db = G_VALUE_HOLDS_DOUBLE(v) ? g_value_get_double(v) :
-      (G_VALUE_HOLDS_FLOAT(v) ? g_value_get_float(v) : -80.0);
-    const gdouble level = CLAMP((db + 80.0) / 80.0, 0.0, 1.0);
-    if (i) g_string_append_c(out, ',');
+  const gint rate = spectrum_sample_rate();
+  if (!n || rate <= 0) return;
+  const gdouble bin_hz = (rate / 2.0) / n;
+  const gdouble ratio = SPECTRUM_MAX_HZ / SPECTRUM_MIN_HZ;
+
+  /* The analyzer sits upstream of playbin's ~1 s queue, so this message
+   * arrives well before the audio it describes is heard. Tag it with its
+   * position in the track (same clock as POSITION, trim-relative) so the
+   * renderer can show it when that audio actually plays. */
+  GstClockTime stream_time = GST_CLOCK_TIME_NONE, duration = 0;
+  gst_structure_get_clock_time(st, "stream-time", &stream_time);
+  gst_structure_get_clock_time(st, "duration", &duration);
+  gdouble at = -1.0;
+  if (GST_CLOCK_TIME_IS_VALID(stream_time))
+    at = MAX(0.0, ((gdouble)stream_time + (gdouble)duration / 2.0) / GST_SECOND - trim_start);
+
+  /* Values are levels from 0 to 1 (SPECTRUM_FLOOR_DB .. 0 dB), as before. */
+  GString *out = g_string_sized_new(SPECTRUM_OUTPUT_BANDS * 6 + 16);
+  if (at >= 0.0) g_string_append_printf(out, "%.3f\t", at);
+  for (guint b = 0; b < SPECTRUM_OUTPUT_BANDS; ++b) {
+    const gdouble lo = SPECTRUM_MIN_HZ * pow(ratio, (gdouble)b / SPECTRUM_OUTPUT_BANDS);
+    const gdouble hi = SPECTRUM_MIN_HZ * pow(ratio, (gdouble)(b + 1) / SPECTRUM_OUTPUT_BANDS);
+    /* A band's level is the total power of the bins whose centers fall in
+     * [lo, hi). Bins at the analyzer's floor count as silence, so wide treble
+     * bands don't sum floor noise into a fake signal. Low bands narrower than
+     * one bin take the bin under their center. */
+    gdouble power = 0.0;
+    gboolean any = FALSE;
+    for (guint i = (guint)MAX(0.0, floor(lo / bin_hz - 0.5)); i < n; ++i) {
+      const gdouble center = (i + 0.5) * bin_hz;
+      if (center >= hi) break;
+      if (center < lo) continue;
+      any = TRUE;
+      const gdouble bin_db = spectrum_bin_db(mag, i);
+      if (bin_db > SPECTRUM_FLOOR_DB) power += pow(10.0, bin_db / 10.0);
+    }
+    if (!any) {
+      const gdouble bin_db = spectrum_bin_db(mag, MIN(n - 1, (guint)(sqrt(lo * hi) / bin_hz)));
+      if (bin_db > SPECTRUM_FLOOR_DB) power = pow(10.0, bin_db / 10.0);
+    }
+    const gdouble db = 10.0 * log10(MAX(power, 1e-12));
+    const gdouble level = CLAMP((db - SPECTRUM_FLOOR_DB) / -SPECTRUM_FLOOR_DB, 0.0, 1.0);
+    if (b) g_string_append_c(out, ',');
     g_string_append_printf(out, "%.3f", level);
   }
   event_line("SPECTRUM", out->str);
@@ -697,6 +762,7 @@ static void handle_load(const gchar *b64, gdouble offset, gdouble start, gdouble
       trace_line("SEEK", "start seek deferred until preroll completes");
     }
   }
+  idle_position_sent[0] = '\0';
   event_line("LOADED", path);
   g_free(uri);
   g_free(path);
@@ -714,6 +780,7 @@ static void handle_seek(gdouble offset) {
     event_line("ERROR", "seek failed");
   else
     event_line("SEEKED", NULL);
+  idle_position_sent[0] = '\0';
 }
 
 static gboolean position_tick(gpointer unused) {
@@ -732,6 +799,15 @@ static gboolean position_tick(gpointer unused) {
     }
     const gdouble relative = MAX(0.0, absolute - trim_start);
     char b[64]; snprintf(b, sizeof(b), "%.6f", relative);
+    /* While paused/stopped the position only changes on a seek. Repeating it
+     * ten times a second made the renderer fire timeupdate, plugin playback
+     * events and MPRIS re-syncs for nothing. */
+    if (!playing_state) {
+      if (strcmp(b, idle_position_sent) == 0) return G_SOURCE_CONTINUE;
+      g_strlcpy(idle_position_sent, b, sizeof(idle_position_sent));
+    } else {
+      idle_position_sent[0] = '\0';
+    }
     event_line("POSITION", b);
   }
   return G_SOURCE_CONTINUE;
@@ -1085,8 +1161,9 @@ int main(int argc, char **argv) {
   track_gain_element = gst_element_factory_make("volume", "hive-track-gain");
   spectrum = gst_element_factory_make("spectrum", "hive-spectrum");
   if (audio_filter_bin && track_gain_element && spectrum) {
-    g_object_set(spectrum, "bands", 64, "interval", (gint64)50000000,
-      "threshold", -80, "post-messages", TRUE, NULL);
+    /* ~30 frames per second; the visualizer interpolates between them. */
+    g_object_set(spectrum, "bands", SPECTRUM_FFT_BINS, "interval", (gint64)33000000,
+      "threshold", (gint)SPECTRUM_FLOOR_DB, "post-messages", TRUE, NULL);
     gst_bin_add_many(GST_BIN(audio_filter_bin), track_gain_element, spectrum, NULL);
     if (gst_element_link(track_gain_element, spectrum)) {
       GstPad *sink_pad = gst_element_get_static_pad(track_gain_element, "sink");
@@ -1136,13 +1213,14 @@ int main(int argc, char **argv) {
   g_clear_pointer(&next_uri, g_free);
   g_async_queue_unref(commands);
   g_main_loop_unref(loop);
-  if (audio_filter_bin) {
-    g_object_set(player, "audio-filter", NULL, NULL);
-    g_clear_object(&audio_filter_bin);
-    spectrum = NULL;
-    track_gain_element = NULL;
-    user_volume_element = NULL;
-  }
+  /* playbin owns the audio-filter and audio-sink bins (it took their floating
+   * references), so releasing playbin releases them too. Clearing
+   * "audio-filter" and then unreffing audio_filter_bin as well freed that bin
+   * twice: the GLib-CRITICAL g_object_unref warning on every quit. */
+  audio_filter_bin = NULL;
+  spectrum = NULL;
+  track_gain_element = NULL;
+  user_volume_element = NULL;
   g_object_unref(player);
   if (event_fp) fclose(event_fp);
   return 0;

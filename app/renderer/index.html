@@ -329,6 +329,26 @@
               <span class="settings-row-text"><span class="settings-row-label">Base theme</span><span id="builtin-theme-description" class="settings-hint theme-description"></span></span>
               <select id="builtin-theme-select" class="settings-select" aria-label="Theme"></select>
             </label>
+            <label class="settings-row">
+              <span class="settings-row-text"><span class="settings-row-label">Scheduled theme</span><span class="settings-hint">Switch between a day theme and a night theme at set times. While on, it picks the theme instead of Base theme.</span></span>
+              <input type="checkbox" id="setting-theme-schedule" />
+            </label>
+            <div id="theme-schedule-rows" class="theme-schedule-rows" hidden>
+              <div class="settings-row">
+                <span class="settings-row-text"><span class="settings-row-label">Day</span><span class="settings-hint">From this time until night starts.</span></span>
+                <span class="settings-row-control theme-schedule-control">
+                  <select id="theme-schedule-day-theme" class="settings-select settings-select-compact" aria-label="Day theme"></select>
+                  <input type="time" id="theme-schedule-day-start" class="settings-input theme-schedule-time" value="06:00" aria-label="Day starts at" />
+                </span>
+              </div>
+              <div class="settings-row">
+                <span class="settings-row-text"><span class="settings-row-label">Night</span><span class="settings-hint">From this time until day starts.</span></span>
+                <span class="settings-row-control theme-schedule-control">
+                  <select id="theme-schedule-night-theme" class="settings-select settings-select-compact" aria-label="Night theme"></select>
+                  <input type="time" id="theme-schedule-night-start" class="settings-input theme-schedule-time" value="17:30" aria-label="Night starts at" />
+                </span>
+              </div>
+            </div>
             <div class="settings-row">
               <span class="settings-row-text"><span class="settings-row-label">Theme files</span><span class="settings-hint">Drop a <code>.hive-theme</code> file into the themes folder and it appears in the list.</span></span>
               <span class="settings-row-control">
@@ -1026,6 +1046,7 @@
   <audio id="audio" preload="metadata"></audio>
 
   <script src="icons.js"></script>
+  <script src="theme-schedule.js"></script>
   <script src="colorExtract.js"></script>
   <script src="renderer.js"></script>
 </body>

@@ -2143,7 +2143,6 @@ input[type="range"]::-moz-range-thumb {
 .inline-track-num,.inline-track-dur { color: var(--text-dim); font-size: 10px; font-variant-numeric: tabular-nums; }
 .inline-track-num { text-align: right; padding-right: 0; }
 .inline-track-title { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-size: 11px; }
-.inline-track-featured { display: inline-flex; align-items: baseline; gap: 2px; margin-left: 6px; color: var(--text-dim); font-size: 10px; font-weight: 500; }
 
 /* The artist browser uses the same crisp, non-transforming album expansion. */
 .artist-card:hover { transform: none; }
@@ -2690,6 +2689,11 @@ body.legacy-art-scaling .album-year-grid > .inline-album-dropdown {
 
 .sidebar-nav-icon { display:inline-flex; align-items:center; justify-content:center; min-width:16px; margin-right:8px; flex:0 0 16px; line-height:1; }
 .sidebar-folder-icon { font-size:12px; opacity:.85; }
+.sidebar-folder-icon svg { width:15px; height:15px; display:block; }
+/* Library rows: folder icon and name centered on one line. */
+.sidebar-item.sidebar-folder-item { display:flex; align-items:center; }
+.sidebar-folder-item .sidebar-folder-icon { align-self:center; }
+.sidebar-folder-label { min-width:0; overflow:hidden; text-overflow:ellipsis; white-space:nowrap; line-height:1.2; }
 .sidebar-library-add { border-style:solid; margin-top:6px; text-align:left; }
 .playlist-info-switch-row { display:flex !important; align-items:center; justify-content:space-between; gap:14px; padding:9px 11px; border:1px solid var(--border); border-radius:9px; background:var(--control-bg); }
 .playlist-info-switch-row span { display:flex; flex-direction:column; gap:3px; }
@@ -4750,6 +4754,12 @@ body.sandbox-mode .tab-content-host { width:100%; padding:0; overflow:hidden; }
 .hive-plugin-sandbox-panels { flex:1 1 auto; min-height:0; width:100%; overflow:hidden; }
 .hive-plugin-sandbox-panels .hive-plugin-panel { width:100%; height:100%; min-height:0; }
 .hive-plugin-sandbox-panels .hive-spectrum-full { min-height:0; height:100%; border-radius:16px; }
+/* Plugin sidebar views (Hive.ui.registerView) get the whole content area. */
+body.plugin-view-mode .tab-content-host { overflow:hidden; }
+body.plugin-view-mode #content-tools { width:100%; height:100%; margin:0; }
+.hive-plugin-view { position:relative; width:100%; height:100%; min-height:0; box-sizing:border-box; overflow:hidden; }
+.hive-plugin-view-missing { display:flex; flex-direction:column; gap:6px; padding:34px; color:var(--text-dim); font-size:12px; }
+.hive-plugin-view-missing strong { color:var(--text); font-size:15px; }
 @media(max-width:720px){ .sandbox-launcher{padding:20px 14px 24px}.sandbox-app-grid{grid-template-columns:repeat(2,minmax(0,1fr));gap:10px}.sandbox-app-card{min-height:155px;padding:15px}.sandbox-app-icon{width:58px;height:58px}.sandbox-plugin-view{padding:12px}.sandbox-plugin-head{grid-template-columns:1fr;gap:8px}.sandbox-plugin-head h1{font-size:23px} }
 
 
@@ -5266,3 +5276,17 @@ html[data-hive-theme="light"] .modal-overlay .modal :is(.modal-action.danger, .s
 .artwork-arrange-intro span { font-size: 12px; line-height: 1.5; color: var(--text-dim); }
 .artwork-arrange-intro .artwork-arrange-warning { color: #e3a008; }
 .artwork-arrange-card .artwork-library-actions button:disabled { opacity: .45; cursor: default; }
+
+/* Settings → Appearance → Scheduled theme */
+.theme-schedule-control { display:flex; align-items:center; gap:8px; }
+.theme-schedule-time { width:110px; box-sizing:border-box; }
+.theme-schedule-rows[hidden] { display:none; }
+
+/* Expanded album track list: one grid shared by every row, so the track-artist
+   column starts after the album's longest title (capped, longer titles get an
+   ellipsis) and all artist names line up, with room to breathe. */
+.inline-track-list { display:grid; grid-template-columns: 24px 25px fit-content(60%) minmax(0,1fr) 48px; align-content:start; row-gap:1px; column-gap:0; }
+.inline-track-list > .inline-track-row { grid-column: 1 / -1; grid-template-columns: subgrid; }
+.inline-track-artist { min-width:0; overflow:hidden; text-overflow:ellipsis; white-space:nowrap; padding-left:32px; color:var(--text-dim); font-size:10.5px; }
+.inline-track-row.selected .inline-track-artist { color: var(--text); }
+html[data-hive-theme="light"] .inline-track-row.selected .inline-track-artist { color:#252a31 !important; }

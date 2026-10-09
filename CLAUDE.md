@@ -169,15 +169,16 @@ test file. Repeat.
   behavior) - do not bump it as a side effect of an unrelated change.
 - **GitHub Releases/`electron-updater`** are wired up (`app/main/update-checker.js`).
   **Done, 2026-09-21:** the real GitHub repo now exists
-  (github.com/MADVlLLIAN/hive, public), `package.json`'s
-  `build.publish.owner` placeholder is replaced with `MADVlLLIAN`, and this
+  (github.com/chasesfloorboard/Hive, public; the account was previously
+  named MADVlLLIAN, and old links redirect), `package.json`'s
+  `build.publish.owner` is `chasesfloorboard`, and this
   session's pending work is committed and pushed to `main`. Auto-update can
   now actually resolve a release once one is published there.
 
 ## Status as of 2026-09-20 - read this to pick up where the last session left off
 
 **Update, 2026-09-21: a git repo now exists and is pushed to
-github.com/MADVlLLIAN/hive (public, `main` branch).** The note below about
+github.com/chasesfloorboard/Hive (public, `main` branch).** The note below about
 "no git repo yet" is stale -- see the GitHub Releases/`electron-updater`
 scope-decision entry above for what changed. Full test suite: 698/698
 passing (`node --test test/*.test.js`) as of the same date.
@@ -353,7 +354,7 @@ future session's notes contradict this list, trust the more recent note.
 
 ## 1.0 shipped, 2026-09-22
 
-`v1.0.0` is tagged, released on GitHub (github.com/MADVlLLIAN/Hive), with a
+`v1.0.0` is tagged, released on GitHub (github.com/chasesfloorboard/Hive), with a
 verified downloadable source archive (portable-mode/external-drive install
 confirmed end-to-end, security fix included, README rewritten as the
 project's public landing page). Full test suite: 701/701. The remaining
@@ -436,6 +437,38 @@ for being broken, with a note to rewrite from scratch rather than patch
 them (see "What's next"/completed-punch-list history above) - this
 Monstercat-visualizer pull is that promised rewrite, using a real
 upstream project as the base this time instead of starting from nothing.
+
+**Done, 2026-10-08.** The plugin is `resources/hive-plugins/monstercat-visualizer`
+(seeded into the user's plugin folder by `seedBundledPlugins` in `main.js`;
+bump its manifest `version` to push an update). It shows the playing track's
+cover art (the user asked for cover art instead of an artist photo) in Hive's
+theme. Plugin views use `Hive.ui.registerView` (see `docs/PLUGIN_API.md`
+and `showPluginView` in `renderer.js`). The native helper's SPECTRUM events are
+64 log-spaced bands (20 Hz-16 kHz) with a leading track-position timestamp;
+the renderer holds each frame until playback reaches it (the analyzer runs
+~1.1 s ahead of the speakers). Its auto-gain is capped so silence stays flat
+(`MIN_REF_DB`/`SILENCE_DB` in plugin.js) - don't remove the cap.
+
+## Subsystems added 2026-10-08 (read before touching scans or the library cache)
+
+- `app/main/library-cache-store.js`: the only path to `library.json`. Reads
+  share one in-memory object; writes are coalesced and flushed before
+  `library:getCached` reads the files and before quit. Don't add direct
+  `readJsonSafe/writeJsonSafe(LIBRARY_CACHE_PATH())` calls.
+- Startup scan is skipped when nothing changed: `library-folder-snapshot.json`
+  (folder mtimes from the last full scan) + `app/main/library-change-check.js`.
+  Any Hive write to a library file must end up calling
+  `queueOwnWriteSnapshotRefresh` (via `markLibraryInternalWrite`, or directly
+  as the bulk Love path does), or the next launch rescans for nothing.
+- Scheduled theme: `app/renderer/theme-schedule.js` (pure time logic, tested
+  by `test/theme-schedule.test.js`).
+
+**Data-safety rule (real incident, 2026-10-08):** never `rm -rf` a scratch
+folder used as XDG_RUNTIME_DIR for a test app. A private `dbus-run-session`
+starts `xdg-document-portal`, which mounts the user's real files inside it;
+a cleanup deleted the user's ~/Downloads through that mount. For isolated test
+instances, point `DBUS_SESSION_BUS_ADDRESS` at nothing instead, check
+`findmnt` before deleting, and use `rm -r --one-file-system`.
 
 ## Volume architecture as of 2026-09-21 - the whack-a-mole saga continues, read before touching this again
 

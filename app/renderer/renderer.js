@@ -81,6 +81,19 @@
   // AudioBuffers scheduled ahead of time. The HTMLMediaElement remains only as
   // a hidden compatibility shell; it is not the audio transport.
   const audioEngine = new EventTarget();
+  // Sidebar destinations added by plugins (Hive.ui.registerView), keyed by
+  // "plugin-view:<pluginId>:<viewId>". They act like built-in entries. Their
+  // ids stay in the saved navigation prefs while the plugin isn't loaded, so
+  // the user's placement, label, hiding and pinning survive restarts.
+  const PLUGIN_VIEW_NAV_PREFIX = 'plugin-view:';
+  const pluginViewEntries = new Map();
+  function isPluginViewNav(id) { return String(id || '').startsWith(PLUGIN_VIEW_NAV_PREFIX); }
+  // Mounted plugin views by tab id. A tab keeps its DOM while another tab is
+  // shown, so a view stays mounted and is told when it is hidden or shown.
+  const mountedPluginViews = new Map();
+  // True while loadHiveExtensions re-runs plugins; sidebar refreshes wait for
+  // it so a reload doesn't briefly drop (and leave) an active plugin view.
+  let pluginExtensionsLoading = false;
   let audioCtx = null;
   let masterGain = null;
   let activeSource = null;
@@ -1244,10 +1257,7 @@
       return;
     }
     if (name === 'SPECTRUM') {
-      const parts = String(ev.value || '').split(',');
-      nowPlayingSpectrum = parts.map(Number).filter(Number.isFinite).slice(0, 64);
-      pluginEmit('spectrum', nowPlayingSpectrum.slice());
-      scheduleNowPlayingSpectrumDraw();
+      queueSpectrumFrame(ev.value);
       return;
     }
     if (name === 'POSITION') {
@@ -2903,8 +2913,9 @@
     const config=await window.beehive.getConfig(); el.folderList.innerHTML='';
     for(const folder of (config.folders||[])){
       const div=document.createElement('div'); div.className='sidebar-item sidebar-folder-item'; div.dataset.folder=folder;
-      const icon=document.createElement('span'); icon.className='sidebar-nav-icon sidebar-folder-icon'; icon.textContent=sidebarNavigation?.meta?.[folderNavKey(folder)]?.icon||FOLDER_ICON;
-      const label=document.createElement('span'); label.textContent=folder.split(/[\\/]/).filter(Boolean).pop()||folder; div.append(icon,label);
+      // A library uses the outline folder icon unless the user picked their own.
+      const icon=document.createElement('span'); icon.className='sidebar-nav-icon sidebar-folder-icon'; const customIcon=sidebarNavigation?.meta?.[folderNavKey(folder)]?.icon; if(customIcon) icon.textContent=customIcon; else if(window.BeehiveIcons?.folder) icon.innerHTML=window.BeehiveIcons.folder; else icon.textContent=FOLDER_ICON;
+      const label=document.createElement('span'); label.className='sidebar-folder-label'; label.textContent=folder.split(/[\\/]/).filter(Boolean).pop()||folder; div.append(icon,label);
       div.addEventListener('mouseenter',e=>showSidebarFolderTooltip(div,folder,e)); div.addEventListener('mouseleave',hideSidebarFolderTooltip); div.addEventListener('mousemove',e=>moveSidebarFolderTooltip(e));
       div.addEventListener('click',e=>{if(e.button!==undefined&&e.button!==0)return;rememberMusicBrowserState();activeFolderPath=folder;specialView='folder';artistSearchTerm='';searchTerm='';el.search.value='';el.main.classList.remove('searching');openAlbumKey=null;el.sidebarItems.forEach(i=>i.classList.remove('active'));el.folderList.querySelectorAll('.sidebar-item').forEach(i=>i.classList.remove('active'));div.classList.add('active');viewMode='songs';el.viewBtns.forEach(b=>b.classList.toggle('active',b.dataset.mode==='songs'));applySidebarAutoShuffle(folderNavKey(folder));renderMusicViewer(folder.split(/[\\/]/).filter(Boolean).pop()||folder,tracksForFolder(folder),'folder');saveActiveTabState();updateActiveTabLabel();});
       div.addEventListener('contextmenu',e=>{
@@ -2985,7 +2996,7 @@
     await refreshFolders();
   }
 
-  function hideContentViews(){ stopNowPlayingSpectrum(); document.body.classList.remove('sandbox-mode'); [el.emptyState,el.tabPlaceholder,el.albumsToolbar,el.albumsGrid,el.songsTable,el.artistsGrid,el.contentTools].forEach(x=>x.classList.add('hidden')); }
+  function hideContentViews(){ unmountPluginView(activeTabId); stopNowPlayingSpectrum(); document.body.classList.remove('sandbox-mode', 'plugin-view-mode'); [el.emptyState,el.tabPlaceholder,el.albumsToolbar,el.albumsGrid,el.songsTable,el.artistsGrid,el.contentTools].forEach(x=>x.classList.add('hidden')); }
   function ratingStars(t, interactive = true) {
     // MusicBee MP3 ratings are stored in POPM. Treat the raw 255 value as the
     // authoritative 5-star state so older cached library entries cannot hide it.
@@ -4285,9 +4296,14 @@
   }
 
   let lastTransportBackendSaveAt = 0;
+  let lastSavedTransportSignature = '';
   function savePlaybackSession(forceSync = false) {
     if (!playbackPersistenceReady || playbackRestorePending) return;
     const state = buildTransportPlaybackState();
+    // This runs every 500ms. While paused nothing changes, so don't keep
+    // rewriting localStorage and playback-state.json (plus its backup copy).
+    const signature = JSON.stringify(state);
+    if (!forceSync && signature === lastSavedTransportSignature) return;
     const rememberedTrack = currentQueue[currentIndex];
     if (rememberedTrack) {
       const rememberedPosition = gstActive ? Number(gstPosition) : Number(state.position);
@@ -4319,8 +4335,10 @@
         // queue changes. Even on shutdown, only the small transport snapshot
         // needs to be forced synchronously; rebuilding/stringifying a large
         // queue here can block the BrowserWindow close path.
-        window.beehive.updatePlaybackTransportSync(state);
+        if (forceSync) window.beehive.updatePlaybackTransportSync(state);
+        else window.beehive.updatePlaybackTransport(state);
         lastTransportBackendSaveAt = now;
+        lastSavedTransportSignature = signature;
       } catch {}
     }
   }
@@ -4786,6 +4804,7 @@
       : specialView === 'top' ? 'pl-top'
       : specialView === 'history' ? 'history'
       : specialView === 'sandbox' ? 'sandbox'
+      : specialView === 'plugin-view' ? (active?.navId || null)
       : specialView === 'podcasts' ? 'podcasts'
       : specialView === 'playlist' ? sidebarNavIdForPlaylistId(activePlaylistId)
       : specialView === 'folder' && activeFolderPath ? null
@@ -6080,6 +6099,81 @@
     return true;
   }
 
+  function setPluginViewVisible(mounted, visible) {
+    if (!mounted || mounted.visible === visible) return;
+    mounted.visible = visible;
+    for (const fn of [...mounted.visibilityListeners]) { try { fn(visible); } catch (err) { console.warn('[Hive Plugin] visibility', err); } }
+  }
+  function unmountPluginView(tabId) {
+    const mounted = mountedPluginViews.get(tabId);
+    if (!mounted) return;
+    mountedPluginViews.delete(tabId);
+    setPluginViewVisible(mounted, false);
+    try { mounted.view.unmount?.(mounted.host); } catch (err) { console.warn('[Hive Plugin] unmount', err); }
+    mounted.host.remove();
+  }
+  function showPluginView(tab = getActiveTab()) {
+    if (!tab || getActiveTab()?.id !== tab.id) return false;
+    const contentTools = tab.dom?.contentTools;
+    if (!contentTools) return false;
+    const view = pluginViewEntries.get(tab.navId) || null;
+    specialView = 'plugin-view';
+    activePlaylistId = null;
+    activeFolderPath = '';
+    const mounted = mountedPluginViews.get(tab.id);
+    if (!(mounted && view && mounted.view === view && mounted.host.isConnected)) {
+      hideContentViews();
+      contentTools.innerHTML = '';
+      if (!view) {
+        contentTools.innerHTML = `<section class="hive-plugin-view-missing"><strong>${escapeHtml(sidebarLabel(tab.navId) || 'Plugin')} isn't available</strong><span>Its plugin is disabled or not installed. Turn it back on in Settings → Plugins.</span></section>`;
+      } else {
+        const host = document.createElement('section');
+        host.className = 'hive-plugin-view';
+        host.dataset.pluginId = view.pluginId;
+        host.dataset.viewId = view.viewId;
+        contentTools.appendChild(host);
+        const entry = { view, host, visible: true, visibilityListeners: [] };
+        mountedPluginViews.set(tab.id, entry);
+        const context = {
+          isVisible: () => entry.visible,
+          onVisibilityChange: fn => {
+            if (typeof fn !== 'function') return () => {};
+            entry.visibilityListeners.push(fn);
+            return () => { const i = entry.visibilityListeners.indexOf(fn); if (i >= 0) entry.visibilityListeners.splice(i, 1); };
+          }
+        };
+        try { view.mount(host, context); } catch (err) { host.textContent = err?.message || 'This plugin view failed to load.'; }
+      }
+    }
+    contentTools.classList.remove('hidden');
+    document.body.classList.add('plugin-view-mode');
+    syncSidebarSelectionForContext();
+    updateActiveTabLabel();
+    return true;
+  }
+  // Called after plugins (re)register views: create tabs for new entries and
+  // redraw the sidebar. A view seen for the first time is appended to the
+  // user's sidebar order; after that its placement is the user's.
+  let pluginViewNavigationQueued = false;
+  function refreshPluginViewNavigation() {
+    if (pluginExtensionsLoading || pluginViewNavigationQueued) return;
+    pluginViewNavigationQueued = true;
+    queueMicrotask(() => {
+      pluginViewNavigationQueued = false;
+      let changed = false;
+      for (const nav of pluginViewEntries.keys()) {
+        if (!sidebarNavigation.order.includes(nav)) { sidebarNavigation.order.push(nav); changed = true; }
+      }
+      if (changed) saveNavigationPrefs();
+      syncCanonicalNavigationTabs();
+      renderSidebarNavigation();
+      renderTabs();
+      try { renderNavigationEditors(); } catch {}
+      const active = getActiveTab();
+      if (active && isPluginViewNav(active.navId) && specialView === 'plugin-view') showPluginView(active);
+    });
+  }
+
   function showSandboxView(tab = getActiveTab()) {
     return showSandboxLauncher(tab);
   }
@@ -6227,6 +6321,12 @@
     applySidebarAutoShuffle(nav);
     el.sidebarItems?.forEach(i => i.classList.toggle('active', i.dataset.nav === nav));
     el.folderList?.querySelectorAll('.sidebar-item').forEach(i => i.classList.remove('active'));
+
+    if (isPluginViewNav(nav)) {
+      showPluginView(tab);
+      renderTabs();
+      return true;
+    }
 
     if (tab.kind === 'music') {
       const entry = sidebarEntry(nav);
@@ -9084,7 +9184,7 @@
       const isCurrentQueueTrack = !!currentQueue[currentIndex]?.path && String(currentQueue[currentIndex].path) === String(t.path || '');
       row.classList.toggle('playing', isCurrentQueueTrack);
       const featuredArtists = inlineTrackFeaturedArtists(t, album.artist);
-      row.innerHTML = `<span class="inline-track-num">${escapeHtml(t.track || i+1)}</span><span class="inline-track-playing" aria-hidden="true"></span><span class="inline-track-title">${escapeHtml(t.title || 'Untitled')}${featuredArtists ? `<span class="inline-track-featured" aria-label="${escapeHtml(featuredArtists)}"><span class="inline-track-featured-paren">(</span><span class="inline-track-featured-name">${escapeHtml(featuredArtists)}</span><span class="inline-track-featured-paren">)</span></span>` : ''}</span><span class="inline-track-dur">${fmtTime(t.duration)}</span>`;
+      row.innerHTML = `<span class="inline-track-num">${escapeHtml(t.track || i+1)}</span><span class="inline-track-playing" aria-hidden="true"></span><span class="inline-track-title">${escapeHtml(t.title || 'Untitled')}</span><span class="inline-track-artist"${featuredArtists ? ` title="${escapeHtml(featuredArtists)}"` : ''}>${escapeHtml(featuredArtists)}</span><span class="inline-track-dur">${fmtTime(t.duration)}</span>`;
       row.draggable = true;
       row.classList.toggle('selected', selectedSongPaths.has(String(t.path || '')));
       row.addEventListener('click', e => {
@@ -9824,7 +9924,7 @@
       // Years stays visible for an artist search too -- it's still the
       // Albums tab, just filtered by artist -- but only for Albums; Tracks
       // and Artists must never show it, artist search or not.
-      const yearsVisible = mode === 'albums' && specialView !== 'yearly-wrap' && specialView !== 'podcasts' && specialView !== 'sandbox';
+      const yearsVisible = mode === 'albums' && specialView !== 'yearly-wrap' && specialView !== 'podcasts' && specialView !== 'sandbox' && specialView !== 'plugin-view';
       el.yearsToggle.classList.toggle('hidden', !yearsVisible);
     }
     el.viewBtns.forEach(b => b.classList.toggle('active', b.dataset.mode === mode));
@@ -11035,6 +11135,41 @@
   // Native GStreamer delivers new FFT data at 20 Hz. Render only when data
   // changes instead of running a perpetual 60 Hz canvas loop.
   let nowPlayingSpectrum = [];
+  // The native analyzer sits upstream of playbin's ~1 s queue, so a SPECTRUM
+  // frame arrives about a second before its audio is heard. Frames carry their
+  // track position ("<seconds>\t<levels>"); hold each until playback reaches it.
+  const SPECTRUM_MAX_LEAD_S = 2.5;
+  let spectrumFrames = [];
+  let spectrumReleaseTimer = 0;
+  function publishSpectrum(levels) {
+    nowPlayingSpectrum = levels;
+    pluginEmit('spectrum', levels.slice());
+    scheduleNowPlayingSpectrumDraw();
+  }
+  function queueSpectrumFrame(value) {
+    const text = String(value || '');
+    const tab = text.indexOf('\t');
+    const levels = (tab >= 0 ? text.slice(tab + 1) : text).split(',').map(Number).filter(Number.isFinite).slice(0, 64);
+    const at = tab >= 0 ? Number(text.slice(0, tab)) : NaN;
+    if (!Number.isFinite(at)) { publishSpectrum(levels); return; }
+    spectrumFrames.push({ at, levels });
+    if (spectrumFrames.length > 240) spectrumFrames.splice(0, spectrumFrames.length - 240);
+    releaseDueSpectrum();
+  }
+  function releaseDueSpectrum() {
+    if (spectrumReleaseTimer) { clearTimeout(spectrumReleaseTimer); spectrumReleaseTimer = 0; }
+    if (!gstActive) { spectrumFrames = []; return; }
+    const position = Number(audioEngine.currentTime) || 0;
+    // Frames far ahead of playback are left over from before a seek or track change.
+    spectrumFrames = spectrumFrames.filter(f => f.at <= position + SPECTRUM_MAX_LEAD_S);
+    let due = null;
+    while (spectrumFrames.length && spectrumFrames[0].at <= position) due = spectrumFrames.shift();
+    if (due) publishSpectrum(due.levels);
+    if (spectrumFrames.length && !audioEngine.paused) {
+      const waitMs = Math.max(4, Math.min(250, (spectrumFrames[0].at - position) * 1000));
+      spectrumReleaseTimer = setTimeout(releaseDueSpectrum, waitMs);
+    }
+  }
   let nowPlayingSpectrumRaf = 0;
   let nowPlayingSpectrumVisible = false;
   let nowPlayingSpectrumResizeObserver = null;
@@ -12556,8 +12691,20 @@
       const startupScanDelay = cached?.tracks?.length ? 2500 : 900;
       console.info('[Beehive] INITIAL RECONCILIATION SCHEDULED', { delayMs: startupScanDelay, cachedTracks: cached?.tracks?.length || 0 });
       startupMark('INITIAL RECONCILIATION SCHEDULED', { delayMs:startupScanDelay, cachedTracks:cached?.tracks?.length || 0 });
-      setTimeout(() => {
-        console.info('[Beehive] INITIAL RECONCILIATION STARTED');
+      setTimeout(async () => {
+        // Skip the scan entirely when nothing in the library folders changed
+        // while Hive was closed. Changes made while it runs are picked up by
+        // the folder watcher.
+        let check = null;
+        try { check = await window.beehive.libraryStartupCheck?.(); } catch {}
+        if (check && check.changed === false) {
+          console.info('[Beehive] INITIAL RECONCILIATION SKIPPED: no library changes');
+          startupMark('INITIAL RECONCILIATION SKIPPED', { elapsedMs:Number((performance.now()-startupPerfStart).toFixed(1)) });
+          startupStatusUpdate('Startup complete', false);
+          setTimeout(() => startupStatusUpdate('', true), 700);
+          return;
+        }
+        console.info('[Beehive] INITIAL RECONCILIATION STARTED', { reason: check?.reason || 'unknown' });
         startupStatusUpdate('Checking library in background…');
         startupMark('INITIAL RECONCILIATION STARTED');
         runScan(false)
@@ -13025,6 +13172,7 @@
       if(specialView==='playlist' && activePlaylistId){const pl=playlists.find(p=>String(p.id)===String(activePlaylistId));if(pl)return setView(viewMode);}
       if(specialView==='history')return window.beehive.getHistory().then(h=>{const t=historyTracks(h||[]);return viewMode==='albums'?renderSpecialAlbums(t):renderSpecialSongs(t);});
       if(specialView==='sandbox') return showSandboxView();
+      if(specialView==='plugin-view') return showPluginView();
       if(specialView==='yearly-wrap') return renderYearlyWrap();
     }
     setView(viewMode);
@@ -13209,12 +13357,12 @@
       }
       const validIds = [...defaults, ...custom.map(x => x.id)];
       if (Array.isArray(saved?.order)) {
-        order = saved.order.filter(id => validIds.includes(id));
+        order = saved.order.filter(id => validIds.includes(id) || isPluginViewNav(id));
         [...defaults, ...custom.map(x => x.id)].forEach(id => { if (!order.includes(id)) order.push(id); });
       } else {
         order = [...defaults, ...custom.map(x => x.id)];
       }
-      if (Array.isArray(saved?.hidden)) hidden = new Set(saved.hidden.filter(id => defaults.includes(id)));
+      if (Array.isArray(saved?.hidden)) hidden = new Set(saved.hidden.filter(id => defaults.includes(id) || isPluginViewNav(id)));
       if (saved?.meta && typeof saved.meta === 'object') {
         for (const [key,value] of Object.entries(saved.meta)) {
           if (!value || typeof value !== 'object') continue;
@@ -13224,8 +13372,8 @@
           if (icon || shuffleOnEnter || displayView) meta[key] = { icon, shuffleOnEnter, ...(displayView ? { displayView } : {}) };
         }
       }
-      if (Array.isArray(saved?.pinned)) pinned = new Set(saved.pinned.filter(id => validIds.includes(id)));
-      if (Array.isArray(saved?.pinnedOrder)) pinnedOrder = saved.pinnedOrder.filter(id => validIds.includes(id));
+      if (Array.isArray(saved?.pinned)) pinned = new Set(saved.pinned.filter(id => validIds.includes(id) || isPluginViewNav(id)));
+      if (Array.isArray(saved?.pinnedOrder)) pinnedOrder = saved.pinnedOrder.filter(id => validIds.includes(id) || isPluginViewNav(id));
       else pinnedOrder = [...pinned];
       for (const id of [...pinned]) if (!pinnedOrder.includes(id)) pinnedOrder.push(id);
       pinnedOrder = pinnedOrder.filter(id => pinned.has(id));
@@ -13233,6 +13381,7 @@
       pinned.add('music');
       if (saved?.labels && typeof saved.labels === 'object') {
         for (const id of defaults) if (typeof saved.labels[id] === 'string' && saved.labels[id].trim()) labels[id] = saved.labels[id].trim();
+        for (const [id, value] of Object.entries(saved.labels)) if (isPluginViewNav(id) && typeof value === 'string' && value.trim()) labels[id] = value.trim();
       }
     } catch {}
 
@@ -13535,7 +13684,7 @@
       renderSidebarNavigation();renderTabs();const active=getActiveTab();if(active)restoreTabState(active);
     } catch {}
   }
-  function sidebarDef(id) { return SIDEBAR_NAV_DEFS.find(d => d.id === id) || null; }
+  function sidebarDef(id) { return SIDEBAR_NAV_DEFS.find(d => d.id === id) || pluginViewEntries.get(id) || null; }
   function sidebarCustom(id) { return sidebarNavigation.custom.find(x => x.id === id) || null; }
   function sidebarEntry(id) { return sidebarDef(id) || sidebarCustom(id); }
   function sidebarPlaylistForEntry(id) {
@@ -13677,6 +13826,18 @@
           ]);
           return;
         }
+        // Plugin pages get their own menu: the normal one (play, queue, ...)
+        // has nothing to act on there.
+        if(isPluginViewNav(nav)) {
+          e.preventDefault();
+          const plugin = hivePluginState.plugins.get(sidebarEntry(nav)?.pluginId);
+          if (!plugin) { showAppNotice('This plugin is not loaded. Turn it on in Settings → Plugins.', 'Plugin'); return; }
+          showContextMenu(e.clientX,e.clientY,[
+            {label:'Plugin info',action:()=>showPluginInfo(plugin)},
+            {label:'Plugin settings',action:()=>openPluginSettings(plugin)}
+          ]);
+          return;
+        }
         const sidebarNames={
           music:'Music',
           explorer:'Music Explorer',
@@ -13781,6 +13942,7 @@
     if (nav === 'pl-top') return 'top';
     if (nav === 'pl-favorites') return 'playlist';
     if (nav === 'sandbox') return 'sandbox';
+    if (isPluginViewNav(nav)) return 'plugin-view';
     if (nav === 'yearly-wrap') return 'yearly-wrap';
     if (nav === 'podcasts') return 'podcasts';
     return null;
@@ -14228,6 +14390,7 @@
     for (const other of tabs) {
       if (other.dom?.host) other.dom.host.style.display = other.id === tab.id ? 'block' : 'none';
     }
+    for (const [tabId, mounted] of mountedPluginViews) setPluginViewVisible(mounted, tabId === tab.id);
     ensureTabHost(tab);
     bindActiveTabDom(tab);
     const host = tab.dom?.host;
@@ -14303,7 +14466,7 @@
       // Same reasoning as setView's copy of this check: Years stays visible
       // during an artist search (still the Albums tab), just never for
       // Tracks/Artists.
-      const yearsVisible = viewMode === 'albums' && specialView !== 'yearly-wrap' && specialView !== 'podcasts' && specialView !== 'sandbox';
+      const yearsVisible = viewMode === 'albums' && specialView !== 'yearly-wrap' && specialView !== 'podcasts' && specialView !== 'sandbox' && specialView !== 'plugin-view';
       el.yearsToggle.classList.toggle('hidden', !yearsVisible);
       el.yearsToggle.textContent = `Years: ${albumYearDividers ? 'ON' : 'OFF'}`;
       el.yearsToggle.setAttribute('aria-pressed', String(!!albumYearDividers));
@@ -14325,6 +14488,7 @@
     if (specialView === 'top') return 'Top 25 Most Played';
     if (specialView === 'history') return 'History';
     if (specialView === 'sandbox') return 'Sandbox';
+    if (specialView === 'plugin-view') return sidebarLabel(getActiveTab()?.navId) || 'Plugin';
     if (viewMode === 'songs') return 'Tracks';
     if (viewMode === 'artists') return 'Artists';
     if (viewMode === 'albums') return 'Albums';
@@ -14631,6 +14795,7 @@
       setView(viewMode);
       return;
     }
+    if (kind === 'navigation' && isPluginViewNav(tab?.navId)) { showPluginView(tab); return; }
     const [title, body] = tabPlaceholderCopy(kind);
     el.tabPlaceholderTitle.textContent = title;
     el.tabPlaceholderBody.textContent = body;
@@ -16313,7 +16478,63 @@
       applyBuiltinTheme(saved,false);
     }
   }
-  renderBuiltinThemes();
+  // Scheduled theme: a day theme and a night theme, each from a set time.
+  // Rechecked every minute (and right at each switch) so sleep/resume or a
+  // clock change is picked up; only applies a theme when it actually differs.
+  const THEME_SCHEDULE_KEY='beehive:theme-schedule';
+  let themeScheduleTimer=0;
+  function loadThemeSchedule(){ const defaults=window.HiveThemeSchedule?.DEFAULTS||{}; try{return {...defaults,...JSON.parse(localStorage.getItem(THEME_SCHEDULE_KEY)||'{}')}}catch{return {...defaults}} }
+  function saveThemeSchedule(schedule){ try{localStorage.setItem(THEME_SCHEDULE_KEY,JSON.stringify(schedule))}catch{} }
+  function scheduleThemeFile(schedule, period){
+    const wanted=period==='day'?schedule.dayTheme:schedule.nightTheme;
+    if(wanted && themeFolderThemes.some(t=>t.file===wanted)) return wanted;
+    const fallbackName=period==='day'?'Light':'Dark';
+    return themeFolderThemes.find(t=>t.name===fallbackName)?.file || themeFolderThemes[0]?.file || '';
+  }
+  async function applyThemeSchedule(){
+    clearTimeout(themeScheduleTimer); themeScheduleTimer=0;
+    const lib=window.HiveThemeSchedule; if(!lib) return;
+    const schedule=loadThemeSchedule();
+    const baseSelect=document.getElementById('builtin-theme-select');
+    if(baseSelect){ baseSelect.disabled=!!schedule.enabled; baseSelect.title=schedule.enabled?'Scheduled theme is on':''; }
+    if(!schedule.enabled) return;
+    const dayStart=lib.minutesOf(schedule.dayStart) ?? lib.minutesOf(lib.DEFAULTS.dayStart);
+    const nightStart=lib.minutesOf(schedule.nightStart) ?? lib.minutesOf(lib.DEFAULTS.nightStart);
+    const now=new Date();
+    const file=scheduleThemeFile(schedule, lib.periodAt(now.getHours()*60+now.getMinutes(), dayStart, nightStart));
+    const theme=themeFolderThemes.find(t=>t.file===file);
+    if(theme && theme.css!==customCssRawSource) await applyFolderTheme(file,true);
+    if(theme && baseSelect) baseSelect.value=`folder:${file}`;
+    themeScheduleTimer=setTimeout(applyThemeSchedule, Math.min(60000, lib.msUntilNextSwitch(now, dayStart, nightStart)+500));
+  }
+  function initThemeScheduleControls(){
+    const toggle=document.getElementById('setting-theme-schedule');
+    const rows=document.getElementById('theme-schedule-rows');
+    const daySelect=document.getElementById('theme-schedule-day-theme');
+    const nightSelect=document.getElementById('theme-schedule-night-theme');
+    const dayStart=document.getElementById('theme-schedule-day-start');
+    const nightStart=document.getElementById('theme-schedule-night-start');
+    if(!toggle||!rows||!daySelect||!nightSelect||!dayStart||!nightStart) return;
+    const options=themeFolderThemes.map(t=>`<option value="${escapeHtml(t.file)}">${escapeHtml(t.name)}</option>`).join('');
+    daySelect.innerHTML=options; nightSelect.innerHTML=options;
+    const schedule=loadThemeSchedule();
+    toggle.checked=!!schedule.enabled;
+    rows.hidden=!schedule.enabled;
+    daySelect.value=scheduleThemeFile(schedule,'day');
+    nightSelect.value=scheduleThemeFile(schedule,'night');
+    dayStart.value=schedule.dayStart; nightStart.value=schedule.nightStart;
+    const save=()=>{
+      const next={ enabled:toggle.checked, dayTheme:daySelect.value, nightTheme:nightSelect.value,
+        dayStart:window.HiveThemeSchedule.minutesOf(dayStart.value)!=null?dayStart.value:schedule.dayStart,
+        nightStart:window.HiveThemeSchedule.minutesOf(nightStart.value)!=null?nightStart.value:schedule.nightStart };
+      rows.hidden=!next.enabled;
+      saveThemeSchedule(next);
+      void applyThemeSchedule();
+    };
+    [toggle,daySelect,nightSelect,dayStart,nightStart].forEach(input=>input.addEventListener('change',save));
+    void applyThemeSchedule();
+  }
+  renderBuiltinThemes().then(initThemeScheduleControls).catch(()=>{});
   document.getElementById('theme-open-folder-btn')?.addEventListener('click',async()=>{ try { await seedStockThemesIntoFolder(); await window.beehive.openThemeFolder?.(); } catch(err){ themedAlert?.(err?.message||'Could not open themes folder.','Themes'); } });
 
   // Electron window bar theme is a real BrowserWindow mode switch. Electron
@@ -16688,6 +16909,8 @@
       player:{
         getCurrent:()=>{ requirePermission('player.read'); return currentQueue[currentIndex]||null; },
         getState:()=>{ requirePermission('player.read'); const t=currentQueue[currentIndex]||null; return {track:t,position:Number(audioEngine.currentTime)||0,duration:Number(audioEngine.duration)||Number(t?.duration)||0,paused:!!audioEngine.paused}; },
+        // An image URL for the track's artwork (the current track by default).
+        getCoverUrl:(track)=>{ requirePermission('player.read'); const t=track||currentQueue[currentIndex]; const visual=t?visualCoverForTrack(t):null; return visual?coverSrc(visual):null; },
         play:track=>{ requirePermission('player.control'); return playQueue([track],0,false); },
         next:()=>{ requirePermission('player.control'); return goNext(); }, previous:()=>{ requirePermission('player.control'); return goPrev(); }
       },
@@ -16698,6 +16921,10 @@
         getSpectrum:()=>{ requirePermission('spectrum.read'); return nowPlayingSpectrum.slice(); },
         onSpectrum:fn=>{ requirePermission('spectrum.read'); if(typeof fn!=='function') return ()=>{}; const list=hivePluginState.listeners.get('spectrum')||[]; list.push(fn); hivePluginState.listeners.set('spectrum',list); return ()=>{const i=list.indexOf(fn);if(i>=0)list.splice(i,1);}; }
       },
+      media:{
+        // A photo of the artist (looked up online once, then cached), or null.
+        getArtistImage:async(artist)=>{ requirePermission('media.artwork'); try { return await window.beehive.artistImage?.(String(artist||'')) || null; } catch { return null; } }
+      },
       settings:{
         load:async()=>{ requirePermission('settings'); return await window.beehive.getPluginSettings(id); },
         save:async(next)=>{ requirePermission('settings'); const value=await window.beehive.setPluginSettings(id,next||{}); pluginEmit(`settings:${id}`,value); return value; },
@@ -16706,6 +16933,18 @@
       ui:{
         toast:(message,title='Hive')=>themedAlert?.(String(message),String(title)),
         addStyle:css=>{const st=document.createElement('style');st.dataset.hivePlugin=id;st.textContent=String(css||'');document.head.appendChild(st);return()=>st.remove();},
+        // A left-sidebar destination with its own page: mount(host, context)
+        // fills it, unmount(host) cleans up, context.onVisibilityChange(fn)
+        // reports when its tab is hidden or shown.
+        registerView:definition=>{
+          requirePermission('ui.view');
+          const viewId=String(definition?.id||'');
+          if(!/^[a-zA-Z0-9._-]{1,60}$/.test(viewId) || typeof definition.mount!=='function') throw new Error('registerView requires an id (letters, numbers, . _ -) and mount(host).');
+          const nav=`${PLUGIN_VIEW_NAV_PREFIX}${id}:${viewId}`;
+          pluginViewEntries.set(nav,{ id:nav, label:String(definition.title||plugin.name||viewId), description:String(definition.description||plugin.description||''), icon:String(definition.icon||''), pluginId:id, viewId, mount:definition.mount, unmount:definition.unmount });
+          refreshPluginViewNavigation();
+          return ()=>{ for(const [tabId,mounted] of mountedPluginViews) if(mounted.view.id===nav) unmountPluginView(tabId); pluginViewEntries.delete(nav); refreshPluginViewNavigation(); };
+        },
         registerSandboxPanel:definition=>{ requirePermission('ui.sandbox'); if(!definition?.id || typeof definition.mount!=='function') throw new Error('registerSandboxPanel requires id and mount(host).'); const panel={...definition,pluginId:id}; hivePluginState.panels.set(`${id}:${definition.id}`,panel); renderHivePluginPanels(); return ()=>{hivePluginState.panels.delete(`${id}:${definition.id}`);renderHivePluginPanels();}; }
       },
       lifecycle:{ onUnload:fn=>{ if(typeof fn==='function') plugin._unload.push(fn); return ()=>{const i=plugin._unload.indexOf(fn);if(i>=0)plugin._unload.splice(i,1);}; } }
@@ -16722,6 +16961,33 @@
     const modal=document.getElementById('hive-plugin-settings-modal');
     if(modal) closeModal(modal);
   }
+  const PLUGIN_PERMISSION_LABELS = {
+    'library.read':'Read your library',
+    'player.read':'See what is playing',
+    'player.control':'Control playback',
+    'spectrum.read':'Read the audio spectrum',
+    'media.artwork':'Look up artist photos online',
+    'ui.view':'Add a sidebar page',
+    'ui.sandbox':'Add a Sandbox panel',
+    'settings':'Save its own settings'
+  };
+  function showPluginInfo(plugin) {
+    if (!plugin) return;
+    const permissions = (plugin.permissions || []).map(p => `  • ${PLUGIN_PERMISSION_LABELS[p] || p}`);
+    const lines = [
+      `${plugin.name} ${plugin.version ? `v${plugin.version}` : ''}`.trim(),
+      plugin.author ? `By ${plugin.author}` : '',
+      '',
+      plugin.description || '',
+      '',
+      'Permissions:',
+      ...(permissions.length ? permissions : ['  • None']),
+      '',
+      `Installed in: ${plugin.dir || 'unknown'}`
+    ];
+    showAppNotice(lines.join('\n').replace(/\n{3,}/g, '\n\n').trim(), 'Plugin info');
+  }
+
   async function openPluginSettings(plugin) {
     if(!plugin) return;
     let modal=document.getElementById('hive-plugin-settings-modal');
@@ -16744,7 +17010,10 @@
       let input;
       if(def.type==='boolean'){ input=document.createElement('input'); input.type='checkbox'; input.checked=!!draft[def.id]; }
       else { input=document.createElement('input'); input.type='number'; input.step=String(def.step??1); if(def.min!=null) input.min=String(def.min); if(def.max!=null) input.max=String(def.max); input.value=String(draft[def.id]); }
-      input.dataset.settingId=def.id; input.addEventListener('change',()=>{draft[def.id]=def.type==='boolean'?input.checked:Number(input.value);});
+      // Number fields keep to the plugin's declared min/max; a typo like 9999
+      // bars used to be saved as-is.
+      const clampSetting=value=>{ let n=Number(value); if(!Number.isFinite(n)) n=Number(def.default)||0; if(def.min!=null) n=Math.max(Number(def.min),n); if(def.max!=null) n=Math.min(Number(def.max),n); return n; };
+      input.dataset.settingId=def.id; input.addEventListener('change',()=>{ if(def.type==='boolean'){ draft[def.id]=input.checked; return; } draft[def.id]=clampSetting(input.value); input.value=String(draft[def.id]); });
       row.append(span,input); body.appendChild(row);
     }
     const actions=document.createElement('div'); actions.className='settings-actions';
@@ -16780,8 +17049,10 @@
   async function loadHiveExtensions() {
     const host=document.getElementById('plugin-list'); if(!window.beehive.listPlugins) return;
     try {
+      pluginExtensionsLoading=true;
+      for(const tabId of [...mountedPluginViews.keys()]) unmountPluginView(tabId);
       for(const plugin of hivePluginState.plugins.values()) { for(const fn of plugin._unload||[]) { try { await fn(); } catch {} } }
-      hivePluginState.plugins.clear(); hivePluginState.panels.clear(); hivePluginState.listeners.clear();
+      hivePluginState.plugins.clear(); hivePluginState.panels.clear(); hivePluginState.listeners.clear(); pluginViewEntries.clear();
       document.querySelectorAll('style[data-hive-plugin]').forEach(el=>el.remove());
       const result=await window.beehive.listPlugins(); const plugins=Array.isArray(result?.plugins)?result.plugins:[];
       renderInstalledPlugins(plugins);
@@ -16798,6 +17069,7 @@
       }
       renderHivePluginPanels();
     } catch(err){ if(host) host.textContent=err?.message||'Could not load extensions.'; }
+    finally { pluginExtensionsLoading=false; refreshPluginViewNavigation(); }
   }
   document.getElementById('plugin-import-btn')?.addEventListener('click',async()=>{ try { await window.beehive.installPluginFolder(); await loadHiveExtensions(); } catch(err){ themedAlert?.(err?.message||'Could not install extension.','Extension'); } });
   document.getElementById('plugin-open-btn')?.addEventListener('click',()=>window.beehive.openPluginsFolder?.());
@@ -18031,6 +18303,33 @@ Open Yearly Wrap to browse the imported years.`, 'Yearly Wrap');
   initialLoad();
   document.addEventListener('keydown', handleSelectionKeyboard, true);
   window.addEventListener('keydown', handleTrackTypeaheadKeydown);
+
+  // Rich-label effects (Pulse/Glow/Rainbow) are decoration, but any running CSS
+  // animation makes Chromium draw every frame at the display refresh rate
+  // (~30% of a core in the GPU process on a 240 Hz monitor). Keep them paused
+  // and step them ~15 times a second instead, and not at all while Hive isn't
+  // the foreground window.
+  const RICH_LABEL_ANIMATIONS = new Set(['hiveRichPulse', 'hiveRichGlow', 'hiveRichRainbow']);
+  let richLabelTimer = null;
+  const stepRichLabels = () => {
+    const anims = document.getAnimations().filter(a => RICH_LABEL_ANIMATIONS.has(a.animationName));
+    anims.forEach(a => a.pause());
+    if (!anims.length || !document.hasFocus()) {
+      clearInterval(richLabelTimer);
+      richLabelTimer = null;
+      return;
+    }
+    const now = performance.now();
+    anims.forEach(a => { a.currentTime = now; });
+  };
+  const startRichLabels = () => {
+    if (!richLabelTimer && document.hasFocus()) richLabelTimer = setInterval(stepRichLabels, 1000 / 15);
+    stepRichLabels();
+  };
+  document.addEventListener('animationstart', (e) => { if (RICH_LABEL_ANIMATIONS.has(e.animationName)) startRichLabels(); });
+  window.addEventListener('focus', startRichLabels);
+  window.addEventListener('blur', stepRichLabels);
+  startRichLabels();
 
 
 })();
