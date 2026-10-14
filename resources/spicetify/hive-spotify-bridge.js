@@ -38,11 +38,18 @@
   let initialized = false;
 
   async function post(path, body) {
+    // Every request has a deadline. When Hive quits mid-request the socket
+    // can stay half-open forever; without a timeout that froze the command
+    // loop and Hive lost control of Spotify until Spotify was restarted.
+    const controller = new AbortController();
+    const timer = setTimeout(() => controller.abort(), path === '/playlist' ? 60000 : BRIDGE_HEALTH_TIMEOUT_MS);
     try {
       const response = await fetch(`${BRIDGE}${path}`, {
         method: 'POST',
         headers: BRIDGE_HEADERS,
-        body: JSON.stringify(body || {})
+        body: JSON.stringify(body || {}),
+        cache: 'no-store',
+        signal: controller.signal
       });
       if (!response.ok) throw new Error(`HTTP ${response.status}`);
       return true;
@@ -53,6 +60,8 @@
         console.warn('[Hive Spotify Bridge] Hive loopback bridge unavailable:', err?.message || String(err));
       }
       return false;
+    } finally {
+      clearTimeout(timer);
     }
   }
 
@@ -259,9 +268,12 @@
     return null;
   }
 
+  let busySince = 0;
   async function poll() {
-    if (busy) return;
-    busy = true;
+    // Watchdog: a command that never settles (e.g. a Spotify API promise)
+    // must not stop the loop for good.
+    if (busy && Date.now() - busySince < 90000) return;
+    busy = true; busySince = Date.now();
     try {
       const controller = new AbortController();
       const timer = setTimeout(() => controller.abort(), BRIDGE_HEALTH_TIMEOUT_MS);
@@ -293,18 +305,33 @@
     }, 300);
   }
 
+  // Spotify runs hidden for Hive. Chromium throttles a hidden, silent
+  // page's timers to about once a minute, so after a pause Hive's commands
+  // would wait up to a minute. A dedicated worker's timer isn't throttled
+  // that way; fall back to a page timer if workers are unavailable.
+  function unthrottledInterval(fn, ms) {
+    try {
+      const src = `setInterval(() => postMessage(0), ${Number(ms) || 1000});`;
+      const worker = new Worker(URL.createObjectURL(new Blob([src], { type: 'text/javascript' })));
+      worker.onmessage = () => fn();
+      return worker;
+    } catch {
+      return setInterval(fn, ms);
+    }
+  }
+
   function startPolling() {
     if (pollTimer) return;
     // Run once immediately so a command does not have to wait for the first
     // interval tick after Spotify finishes exposing its APIs.
     poll();
-    pollTimer = setInterval(poll, 250);
+    pollTimer = unthrottledInterval(poll, 250);
   }
 
   function startStateUpdates() {
     if (stateTimer) return;
     sendState();
-    stateTimer = setInterval(sendState, 1000);
+    stateTimer = unthrottledInterval(sendState, 1000);
   }
 
   function registerPlayerEvents() {

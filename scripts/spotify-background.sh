@@ -255,9 +255,12 @@ fi
 
 log "Launching Spotify executable: $spotify_exec"
 status 'launching-spotify' "Launching $spotify_exec on $DISPLAY_NUM."
+# Spotify runs hidden, so Chromium would throttle the Hive bridge add-on's
+# timers to about once a minute whenever playback is paused (pause and
+# track changes then lag up to a minute). Keep its timers running.
 env -u WAYLAND_DISPLAY -u WAYLAND_SOCKET -u WAYLAND_DEBUG \
   HIVE_SPOTIFY_OWNER=1 HIVE_SPOTIFY_INSTANCE_ID="$spotify_instance_id" \
-  "$spotify_exec" --ozone-platform=x11 --disable-features=UseOzonePlatform >>"$log_file" 2>&1 &
+  "$spotify_exec" --ozone-platform=x11 --disable-features=UseOzonePlatform,IntensiveWakeUpThrottling,CalculateNativeWinOcclusion --disable-background-timer-throttling --disable-renderer-backgrounding --disable-backgrounding-occluded-windows >>"$log_file" 2>&1 &
 SPOTIFY_PID=$!
 log "Spotify launch PID: $SPOTIFY_PID (instance $spotify_instance_id)"
 OWNER_INSTANCE_ID="$spotify_instance_id" OWNER_DISPLAY="$DISPLAY_NUM" OWNER_XVFB_PID="$XVFB_PID" OWNER_SPOTIFY_PID="$SPOTIFY_PID" OWNER_EXEC="$spotify_exec" OWNER_FILE="$owner_file" python3 - <<'PY'
