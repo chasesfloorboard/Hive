@@ -198,7 +198,8 @@ function create({ userDataDir, net }) {
       saveMatchesSoon();
       return {
         streamUrl: info.url, videoId, expires: streams.get(videoId)?.expires || 0,
-        youtube: { title: info.track || info.title, artist: info.artist || '', album: info.album || '', year: String(info.release_year || ''), duration: Number(info.duration) || 0 }
+        youtube: { title: info.track || info.title, artist: info.artist || '', album: info.album || '', year: String(info.release_year || ''), duration: Number(info.duration) || 0,
+          thumbnail: /^https:\/\//.test(String(info.thumbnail || '')) ? String(info.thumbnail) : '' }
       };
     })();
     inflight.set(key, job);

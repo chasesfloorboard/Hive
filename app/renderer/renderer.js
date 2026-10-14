@@ -468,6 +468,10 @@
       if (token !== youtubeLoadToken) return false;
       t.streamUrl = r.streamUrl; t.ytVideoId = r.videoId; t.ytStreamExpires = r.expires;
       if (!Number(t.duration) && r.youtube?.duration) t.duration = r.youtube.duration;
+      if (!t.artworkUrl && !t.cover && r.youtube?.thumbnail) {
+        t.artworkUrl = r.youtube.thumbnail;
+        void cacheStreamedTrackArtwork([t]).then(() => { if (currentQueue[currentIndex] === t) updateNowPlayingUI(t); });
+      }
       return true;
     } catch (err) {
       if (token !== youtubeLoadToken) return false;
@@ -686,7 +690,7 @@
     'hotkeys': null,
     'playerbar.love': true, 'playerbar.shuffle': true, 'playerbar.repeat': true, 'playerbar.eq': true, 'playerbar.mini': true, 'playerbar.volume': true,
     'layout.swap': false, 'layout.playerTop': false, 'layout.lyricsSide': 'left', 'layout.density': 'comfortable', 'layout.rowArt': true, 'layout.zoom': 100,
-    'player.resumeMinutes': 0, 'theater.artistInfo': true, 'radio.stations': [], 'playerbar.theater': true,
+    'player.resumeMinutes': 0, 'theater.artistInfo': true, 'radio.stations': [], 'spotify.playVia': 'youtube', 'playerbar.theater': true,
     'player.fadePauseMs': 0, 'player.tempoPitch': false, 'player.tempo': 1, 'player.pitch': 0,
     'crossfade.ms': 0, 'crossfade.excludeAlbums': true, 'crossfade.onSkip': false,
     'convert.format': 'mp3', 'convert.quality': 'v0', 'convert.destination': '', 'convert.useTemplate': false, 'convert.embedArtwork': true,
@@ -1630,7 +1634,7 @@
   }
   function youtubeTrackFromApple(at) {
     return { path: `ytm:apple:${at.appleId}`, source: 'youtube', streamUrl: '', title: at.title, artist: at.artist, album: at.album,
-      albumArtist: '', year: at.year || '', genre: at.genre || '', duration: Number(at.duration) || 0, cover: '', artworkUrl: at.artwork || '',
+      albumArtist: '', year: at.year || '', genre: at.genre || '', duration: Number(at.duration) || 0, cover: at.cachedCover || '', artworkUrl: at.artwork || '',
       appleMusicUrl: at.url || '' };
   }
   function appleTracksForPlayback(collection) {
@@ -1638,6 +1642,39 @@
     return collection.tracks.map(at => appleLocalMatch(index, at)
       || (youtubeMusicReady ? youtubeTrackFromApple(at) : (at.previewUrl ? applePreviewTrack(at, collection) : null))).filter(Boolean);
   }
+  // Download streamed tracks' covers into Hive's covers cache so they show
+  // instantly and offline. track.cover becomes the cached file; artworkUrl
+  // stays as the remote fallback. Returns how many were cached.
+  async function cacheStreamedTrackArtwork(tracks) {
+    const want = (tracks || []).filter(t => t && /^https:\/\//i.test(String(t.artworkUrl || '')) && !(t.cover && !/^https?:/i.test(String(t.cover))));
+    let cached = 0;
+    for (let i = 0; i < want.length; i += 200) {
+      const chunk = want.slice(i, i + 200);
+      try {
+        const files = await window.beehive.spotifyCacheArtwork?.([...new Set(chunk.map(t => String(t.artworkUrl)))]) || {};
+        for (const t of chunk) { const f = files[String(t.artworkUrl)]; if (f) { t.cover = f; cached++; } }
+      } catch (err) { console.warn('[Artwork] cover cache failed:', err?.message || String(err)); }
+    }
+    return cached;
+  }
+  // Older imports (and covers that failed while offline): cache any streamed
+  // track cover still pointing at the internet, once per session.
+  async function backfillStreamedPlaylistArtwork() {
+    try {
+      const lists = await window.beehive.getPlaylists();
+      for (const pl of lists || []) {
+        const eps = Object.values(pl?.podcastEpisodes || {}).filter(t => t && (isYoutubeMusicTrack(t) || isAppleMusicPreview(t)));
+        if (!eps.length) continue;
+        if (!(await cacheStreamedTrackArtwork(eps))) continue;
+        const snap = { ...(pl.podcastEpisodes || {}) };
+        for (const t of eps) snap[t.path] = t;
+        await window.beehive.savePlaylist({ ...pl, podcastEpisodes: snap });
+      }
+      playlists = await window.beehive.getPlaylists();
+    } catch (err) { console.warn('[Artwork] backfill failed:', err?.message || String(err)); }
+  }
+  setTimeout(() => { void backfillStreamedPlaylistArtwork(); }, 8000);
+
   // Fill tags for streamed tracks from MusicBrainz (one lookup a second);
   // returns how many tracks got tags. Only empty fields are filled, apart
   // from the album artist and numbering, which sources rarely provide.
@@ -1714,6 +1751,9 @@
           ${ytNote}<div class="apple-tracks">${rows}</div>
           ${current.more?.length ? `<h4 class="radio-heading">More like this</h4><div class="apple-grid">${current.more.map(appleCardHtml).join('')}</div>` : ''}`;
         status.textContent = ''; back.classList.toggle('hidden', !lastResultsHtml);
+        void window.beehive.spotifyCacheArtwork?.([...new Set(current.tracks.map(at => at.artwork).filter(Boolean))]).then(files => {
+          for (const at of current.tracks) if (files?.[at.artwork]) at.cachedCover = files[at.artwork];
+        }).catch(() => {});
         view.scrollTop = 0; m.querySelector('.modal-body').scrollTop = 0;
       };
       m.querySelector('#apple-search-form').addEventListener('submit', e => {
@@ -1748,6 +1788,8 @@
           if (!all.length) { status.textContent = 'Nothing in this playlist can be played in Hive.'; return; }
           const snapshots = {};
           for (const t of all) if (!isLocalPlaybackTrack(t)) snapshots[t.path] = t;
+          status.textContent = 'Saving covers…';
+          await cacheStreamedTrackArtwork(Object.values(snapshots));
           const playlistFields = { name: current.name || 'Apple Music playlist', tracks: all.map(t => t.path), smart: false,
             description: `From Apple Music${current.curator ? ` (${current.curator})` : ''}: ${current.url}` };
           let created = await window.beehive.savePlaylist({ ...playlistFields, podcastEpisodes: snapshots });
@@ -5959,7 +6001,7 @@
 
   function tracksForPlaylist(pl){
     if(pl?.smart) return evaluateSmartPlaylist(pl);
-    if (pl?.source === 'spotify' && Array.isArray(pl?.spotifyTracks)) return pl.spotifyTracks.map(normalizeSpotifyTrackRecord);
+    if (pl?.source === 'spotify' && Array.isArray(pl?.spotifyTracks)) return pl.spotifyTracks.map(normalizeSpotifyTrackRecord).map(youtubeTrackForSpotify);
     const source = Array.isArray(pl?.tracks) ? pl.tracks : [];
     const podcastEpisodes = pl?.podcastEpisodes && typeof pl.podcastEpisodes === 'object' ? pl.podcastEpisodes : null;
     const out = [];
@@ -6640,6 +6682,25 @@
     }
   }
 
+  // Settings → Connections → "Play Spotify songs through". With YouTube
+  // Music (the default once yt-dlp is installed), a Spotify track plays from
+  // the library when it's there, otherwise as a YouTube Music stream inside
+  // Hive; the Spotify app is only used when chosen.
+  function spotifyPlaysViaYoutube() { return youtubeMusicReady === true && hbPref('spotify.playVia') !== 'spotify'; }
+  let spotifyLibraryIndexCache = null, spotifyLibraryIndexFor = null;
+  function youtubeTrackForSpotify(st) {
+    if (!isSpotifyTrack(st) || !spotifyPlaysViaYoutube()) return st;
+    if (spotifyLibraryIndexFor !== library.tracks) { spotifyLibraryIndexCache = appleLibraryIndex(); spotifyLibraryIndexFor = library.tracks; }
+    const local = appleLocalMatch(spotifyLibraryIndexCache, st);
+    if (local) return local;
+    const art = normalizeSpotifyArtworkSource(st.artworkUrl || st.cover || '');
+    return { path: `ytm:spotify:${st.spotifyId || String(st.spotifyUri || '').split(':').pop()}`, source: 'youtube', streamUrl: '',
+      title: st.title, artist: st.artist, album: st.album || '', albumArtist: st.albumArtist && st.albumArtist !== st.artist ? st.albumArtist : '',
+      year: st.year || '', duration: Number(st.duration) || 0, track: st.track || 0,
+      cover: st.spotifyArtworkCacheFile || '', artworkUrl: /^https?:\/\//i.test(art) ? art : '', spotifyUri: st.spotifyUri };
+  }
+  void youtubeMusicAvailable();
+
   // Spotify supplies the track list and tags; songs in the library play
   // from disk, the rest stream from YouTube Music inside Hive.
   async function importSpotifyPlaylistAsYoutube(data, spotifyTracks) {
@@ -6651,6 +6712,7 @@
     });
     const snapshots = {};
     for (const t of all) if (isYoutubeMusicTrack(t)) snapshots[t.path] = t;
+    await cacheStreamedTrackArtwork(Object.values(snapshots));
     const cover = normalizeSpotifyArtworkSource(data.cover || data.artworkUrl || '');
     let created = await window.beehive.savePlaylist({ name: data.name, tracks: all.map(t => t.path), podcastEpisodes: snapshots, smart: false,
       description: `From Spotify: ${data.sourceUrl}`, cover: /^https?:\/\//i.test(cover) ? cover : '', artworkUrl: /^https?:\/\//i.test(cover) ? cover : '' });
@@ -11759,6 +11821,7 @@
     queueUndoStack.length = 0;
     queueRedoStack.length = 0;
     let queue = tracks.slice();
+    if (spotifyPlaysViaYoutube()) queue = queue.map(youtubeTrackForSpotify);
     let index = Math.max(0, Math.min(Number(startIndex)||0, queue.length - 1));
     if (respectShuffle && shuffle) {
       shuffleRestoreQueue = queue.slice();
@@ -12550,6 +12613,10 @@
   async function loadAndPlayCurrent(requestGeneration = playbackLoadRequestGeneration, freshPlayback = false, { startPaused = false } = {}) {
     const t = currentQueue[currentIndex];
     if (!t?.path && !isSpotifyTrack(t)) return;
+    if (isSpotifyTrack(t) && spotifyPlaysViaYoutube()) {
+      const converted = youtubeTrackForSpotify(t);
+      if (converted !== t) { currentQueue[currentIndex] = converted; renderQueue(); return loadAndPlayCurrent(requestGeneration, freshPlayback, { startPaused }); }
+    }
     if (isSpotifyTrack(t)) { await spotifyPlayCurrent(); return true; }
     if (isPodcastTrack(t)) { return podcastLoad(t, Number(pendingRestoredOffset)||0, true); }
     if (podcastActive) { audioElement.pause(); audioElement.removeAttribute('src'); podcastActive=false; }
@@ -19195,6 +19262,8 @@
     layoutPanel.append(section('Player bar', 'Choose the buttons on the right of the player bar (also by right-clicking that area).',
       PLAYERBAR_BUTTONS.map(([key, label]) => row(label, '', `<input type="checkbox" data-hivebee-pref="playerbar.${key}">`)).join('')));
     move(layoutPanel, ['Right-click menu', 'Column browser', 'Layout']);
+    document.getElementById('settings-panel-connections')?.prepend(section('Spotify playback', 'Spotify playlists give Hive the songs and their tags. Choose where the audio comes from.',
+      row('Play Spotify songs through', 'YouTube Music plays full songs inside Hive (songs you own play from your library). The Spotify app needs Spicetify.', '<select class="settings-select" data-hivebee-pref="spotify.playVia"><option value="youtube">YouTube Music (in Hive)</option><option value="spotify">Spotify app</option></select>')));
     const hotkeys = makePanel('hotkeys', 'Hotkeys', 'layout');
     hotkeys.append(section('Keyboard shortcuts', 'Click a shortcut and press the new keys. They work while Hive is focused, but not while you type in a text box.', '<div id="hotkey-settings"></div><div class="settings-row settings-row-actions-only"><span class="settings-row-control"><button type="button" class="sidebar-add" id="hotkeys-reset-btn">Restore defaults</button></span></div>'));
     hotkeys.querySelector('#hotkeys-reset-btn').addEventListener('click', () => { setHbPref('hotkeys', null); renderHotkeySettings(); });

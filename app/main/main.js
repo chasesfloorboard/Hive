@@ -1489,7 +1489,10 @@ updateChecker.onStatus(status => {
     const results = {};
     const root = COVERS_DIR();
     await fsp.mkdir(root, { recursive: true, mode: 0o700 });
-    const safeHost = host => host === 'i.scdn.co' || host.endsWith('.scdn.co') || host.endsWith('.spotifycdn.com');
+    // Spotify, Apple Music (mzstatic) and YouTube (ytimg) artwork for
+    // streamed tracks; other hosts are never fetched from here.
+    const safeHost = host => host === 'i.scdn.co' || host.endsWith('.scdn.co') || host.endsWith('.spotifycdn.com')
+      || host.endsWith('.mzstatic.com') || host === 'i.ytimg.com' || host === 'lh3.googleusercontent.com';
     let cursor = 0;
     const worker = async () => {
       while (cursor < list.length) {
