@@ -1489,7 +1489,7 @@ updateChecker.onStatus(status => {
     const results = {};
     const root = COVERS_DIR();
     await fsp.mkdir(root, { recursive: true, mode: 0o700 });
-    const safeHost = host => host === 'i.scdn.co' || host.endsWith('.scdn.co');
+    const safeHost = host => host === 'i.scdn.co' || host.endsWith('.scdn.co') || host.endsWith('.spotifycdn.com');
     let cursor = 0;
     const worker = async () => {
       while (cursor < list.length) {
@@ -7045,8 +7045,11 @@ async function readHttpJson(req, maxBytes = 2 * 1024 * 1024) {
   }
   return body ? JSON.parse(body) : {};
 }
+let spotifyBridgeRetryTimer = null;
 function startSpotifyBridge() {
   if (spotifyBridgeServer) return;
+  // Headless test copies must not take the real Hive's bridge port.
+  if (process.env.HIVE_DISABLE_SPOTIFY_BRIDGE === '1') return;
   if (!ensureSpotifyBridgeToken()) return;
   spotifyBridgeServer = http.createServer(async (req, res) => {
     try {
@@ -7099,6 +7102,10 @@ function startSpotifyBridge() {
     try { spotifyBridgeServer?.close(); } catch {}
     spotifyBridgeServer = null;
     spotifyBridgeState = { connected: false, updatedAt: Date.now(), player: null };
+    // The port can be briefly held by another Hive (an old instance still
+    // shutting down). Keep trying so Spotify control comes back by itself.
+    clearTimeout(spotifyBridgeRetryTimer);
+    spotifyBridgeRetryTimer = setTimeout(() => { try { startSpotifyBridge(); } catch {} }, 5000);
   });
   spotifyBridgeServer.listen(SPOTIFY_BRIDGE_PORT, SPOTIFY_BRIDGE_HOST, () => {
     console.info(`[Hive] Spotify bridge listening on http://${SPOTIFY_BRIDGE_HOST}:${SPOTIFY_BRIDGE_PORT}`);
@@ -7471,6 +7478,7 @@ function findSpotifyTrackList(value) {
   return null;
 }
 
+const spotifyOembedArtCache = new Map();
 ipcMain.handle('playlists:importSpotify', async (_evt, input) => {
   const id = spotifyPlaylistId(input);
   if (!id) throw new Error('Enter a valid Spotify playlist URL.');
@@ -7528,6 +7536,26 @@ ipcMain.handle('playlists:importSpotify', async (_evt, input) => {
     return { title: String(title).trim(), artist: artists.join(', '), spotifyUri: uri, spotifyId: String(uri).split(':').pop(), album: String(row?.album || '').trim(), duration, cover, artworkUrl: cover };
   }).filter(t => t.title && t.spotifyId);
   const name = String(data?.props?.pageProps?.state?.data?.entity?.name || data?.props?.pageProps?.data?.entity?.name || 'Spotify Playlist').trim();
+  // The embed lists no per-track artwork. Spotify's public oEmbed endpoint
+  // gives each track's album cover (no login or token involved).
+  const needArt = tracks.filter(t => !t.cover && /^[A-Za-z0-9]{22}$/.test(t.spotifyId));
+  let artCursor = 0;
+  const artWorker = async () => {
+    while (artCursor < needArt.length) {
+      const t = needArt[artCursor++];
+      try {
+        if (!spotifyOembedArtCache.has(t.spotifyId)) {
+          const res = await net.fetch(`https://open.spotify.com/oembed?url=${encodeURIComponent(`https://open.spotify.com/track/${t.spotifyId}`)}`, { headers: { 'User-Agent': 'Hive/2.0 (music player)' } });
+          const info = res.ok ? await res.json() : null;
+          const thumb = String(info?.thumbnail_url || '');
+          spotifyOembedArtCache.set(t.spotifyId, /^https:\/\//i.test(thumb) ? thumb : '');
+        }
+        const art = spotifyOembedArtCache.get(t.spotifyId);
+        if (art) { t.cover = art; t.artworkUrl = art; }
+      } catch { /* artwork is optional */ }
+    }
+  };
+  await Promise.all(Array.from({ length: Math.min(8, needArt.length) }, artWorker));
   const entity = data?.props?.pageProps?.state?.data?.entity || data?.props?.pageProps?.data?.entity || {};
   const entitySources = Array.isArray(entity?.coverArt?.sources) ? entity.coverArt.sources : [];
   const largest = entitySources.slice().sort((a, b) => (Number(b?.width) || 0) - (Number(a?.width) || 0))[0]?.url || '';

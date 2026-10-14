@@ -18,7 +18,7 @@ worker. Launch Electron directly instead.
 Headless recipe (no sound, no window, no Discord/MPRIS):
 
 ```
-HIVEBEE_IMPORT_DRY_FILE_WRITES=1 HIVE_DISABLE_UPDATES=1 HIVE_DATA_ROOT=<copy of data> \
+HIVEBEE_IMPORT_DRY_FILE_WRITES=1 HIVE_DISABLE_UPDATES=1 HIVE_DISABLE_SPOTIFY_BRIDGE=1 HIVE_DATA_ROOT=<copy of data> \
 HIVE_PORTABLE_ROOT=$PWD DBUS_SESSION_BUS_ADDRESS=unix:path=/nonexistent xvfb-run -a \
   node_modules/electron/dist/electron . --remote-debugging-port=9333
 ```

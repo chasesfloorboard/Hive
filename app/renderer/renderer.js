@@ -310,8 +310,15 @@
   function spotifyApplyState(state) {
     const current = currentQueue[currentIndex];
     if (!current || !isSpotifyTrack(current) || !state) return;
-    const stateUri = typeof state?.uri === 'string' ? state.uri.trim() : String(state?.uri?.uri || state?.uri?.value || '').trim();
+    let stateUri = typeof state?.uri === 'string' ? state.uri.trim() : String(state?.uri?.uri || state?.uri?.value || '').trim();
     if (!stateUri || !current.spotifyUri) return;
+    // Spotify can play a relinked copy of a song (another track id for the
+    // same recording in your country). Treat it as the requested track when
+    // the title matches, or every state update would be ignored and the
+    // pause button / progress would stop following Spotify.
+    const titleKey = v => String(v || '').toLowerCase().replace(/[^a-z0-9]+/g, '');
+    const expectedUri = spotifyPendingUri || current.spotifyUri;
+    if (stateUri !== expectedUri && state?.title && titleKey(state.title) === titleKey((currentQueue.find(x => x?.spotifyUri === expectedUri) || current).title)) stateUri = expectedUri;
     if (spotifyPendingUri && stateUri !== spotifyPendingUri) {
       console.info('[Spotify Playback] ignored stale provider state', { stateUri, pendingUri:spotifyPendingUri });
       return;
