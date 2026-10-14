@@ -5,7 +5,7 @@
 <h1 align="center">Hive</h1>
 
 <p align="center">
-  <strong>An offline-first Linux music library manager and player.</strong>
+  <strong>An offline music library manager and player.</strong>
 </p>
 
 <p align="center">
