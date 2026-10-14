@@ -16,9 +16,9 @@ ok('no-glass main keeps a real accent-tinted outline', /#main\.player-glass-tran
 // is border-bottom-only). #topbar now has its own no-glass rule: a real
 // accent-tinted line on the bottom only, `border:none` otherwise.
 ok('no-glass topbar keeps only a bottom accent-tinted line, not a full outline', /#topbar\.player-glass-transparent\s*\{[\s\S]*?border:none !important;[\s\S]*?border-bottom:1px solid color-mix\(in srgb,var\(--accent\) 24%,var\(--border\)\) !important/.test(css));
-ok('track Rating has a star icon', /\{label:'Rating',icon:'star',submenu:\[/.test(js));
-ok('track delete action has a trash icon', /Delete files from disk.*?icon:'trash'/.test(js));
-ok('album delete action has a trash icon', /Delete files from disk.*?icon:'trash'.*?deleteTracksFromDisk\(albumTracks\)/.test(js));
+ok('track Rating has a star icon', /\{label:'Rating',icon:'star',menuKey:'rating',submenu:\[/.test(js));
+ok('track delete action has a trash icon', /Delete from disk…\$\{count\}`,icon:'trash'/.test(js));
+ok('album delete action has a trash icon', /Delete from disk… \(\$\{albumTracks\.length\} tracks\)`, icon:'trash'.*?deleteTracksFromDisk\(albumTracks\)/.test(js));
 ok('lyrics menu uses the same icon system', /Show highlighted lyric', icon:'lyrics'/.test(js) && /Alignment', icon:'align'/.test(js));
 ok('star, trash, lyrics, and alignment SVG icons exist', /star:\s*`<svg/.test(icons) && /trash:\s*`<svg/.test(icons) && /lyrics:\s*`<svg/.test(icons) && /align:\s*`<svg/.test(icons));
 ok('light theme forces dark duration text across track surfaces', /html\[data-hive-theme="light"\] \.song-row \.s-length,[\s\S]*?color:#252a31 !important/.test(css));

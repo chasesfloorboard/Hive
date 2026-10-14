@@ -509,7 +509,7 @@
     return btoa(bin);
   }
   function replayGainMode() {
-    try { const v = localStorage.getItem(REPLAYGAIN_MODE_KEY); return ['off','track','album'].includes(v) ? v : 'off'; } catch { return 'off'; }
+    try { const v = localStorage.getItem(REPLAYGAIN_MODE_KEY); return ['off','track','album','smart'].includes(v) ? v : 'off'; } catch { return 'off'; }
   }
   function replayGainClippingGuard() {
     try { const v = localStorage.getItem(REPLAYGAIN_CLIPPING_KEY); return v === null ? true : v === 'true'; } catch { return true; }
@@ -522,9 +522,21 @@
     const n = Number.parseFloat(String(value ?? '').trim());
     return Number.isFinite(n) && n > 0 ? n : 0;
   }
+  // MusicBee's "Smart" ReplayGain: album gain while an album is playing in
+  // order (the neighbouring queue entry is from the same album and shuffle
+  // is off), track gain otherwise.
+  function smartReplayGainUsesAlbum(track) {
+    if (shuffle) return false;
+    const key = t => `${normalizeMetadataText(t?.album || '').toLowerCase()}\u0000${normalizeMetadataText(t?.albumArtist || t?.artist || '').toLowerCase()}`;
+    const own = key(track);
+    if (!normalizeMetadataText(track?.album || '')) return false;
+    const i = currentQueue.indexOf(track);
+    return i >= 0 && [currentQueue[i - 1], currentQueue[i + 1]].some(n => n && key(n) === own);
+  }
   async function resolveReplayGainForTrack(track) {
     engineTrackGain = 1;
-    const mode = replayGainMode();
+    const chosen = replayGainMode();
+    const mode = chosen === 'smart' ? (smartReplayGainUsesAlbum(track) ? 'album' : 'track') : chosen;
     if (mode === 'off' || !track?.path || isSpotifyTrack(track)) return;
     try {
       const data = await window.beehive.readTags(track.path);
@@ -595,7 +607,381 @@
     if (masterGain && !engineMuted) masterGain.gain.value = Math.min(8, engineVolume * effective);
   }
   function gstSend(command) { try { diagnosticMark('GSTREAMER COMMAND', String(command || '').split('\t')[0]); window.beehive.gstreamerCommand(command); return true; } catch { return false; } }
+  // ---------------------------------------------------------------------
+  // Hive: MusicBee-style DSP -- equaliser (presets in MusicBee's .sde
+  // format, Manual, Auto-Select by Genre, 10/15 bands, preamp) and stereo
+  // balance. State lives in config.hivebee; presets in <data>/Equaliser.
+  // ---------------------------------------------------------------------
+  const HB_EQ = window.HiveEqualiser;
+  const HIVEBEE_DSP_DEFAULTS = { equaliser: { enabled: false, mode: 'Flat', fallback: 'Flat', manual: null }, balance: 0 };
+  let hivebeeDsp = JSON.parse(JSON.stringify(HIVEBEE_DSP_DEFAULTS));
+  let equaliserPresets = [];
+  let hivebeeDspSaveTimer = 0;
+  // Flat MusicBee-style preferences ("popup.enabled", "shuffle.by", ...).
+  // Any Settings control with data-hivebee-pref="<key>" binds itself.
+  const HIVEBEE_PREF_DEFAULTS = {
+    'popup.enabled': false, 'popup.inactiveOnly': true, 'popup.seconds': 4,
+    'shuffle.by': 'track', 'shuffle.sameArtistBias': 0,
+    'browser.enabled': false, 'browser.columns': ['genre', 'albumArtist', 'album'],
+    'browser.column1': 'genre', 'browser.column2': 'albumArtist', 'browser.column3': 'album', 'browser.column4': '',
+    'virtual.virtual1.name': '', 'virtual.virtual1.formula': '', 'virtual.virtual2.name': '', 'virtual.virtual2.formula': '', 'virtual.virtual3.name': '', 'virtual.virtual3.formula': '',
+    'autodj.source': 'library', 'autodj.upcoming': 5, 'autodj.artistGap': 0, 'autodj.similar': true,
+    'autodj.skipPlayedDays': 0, 'autodj.minRating': 0,
+    'menu.hidden': [],
+    'layout.sidebar': true, 'layout.lyrics': true, 'layout.rightPanel': true, 'layout.queueList': true, 'layout.nowPlaying': true,
+    'layout.swap': false, 'layout.playerTop': false, 'layout.lyricsSide': 'left', 'layout.density': 'comfortable', 'layout.rowArt': true, 'layout.zoom': 100,
+    'player.fadePauseMs': 0, 'player.tempoPitch': false, 'player.tempo': 1, 'player.pitch': 0,
+    'crossfade.ms': 0, 'crossfade.excludeAlbums': true, 'crossfade.onSkip': false,
+    'convert.format': 'mp3', 'convert.quality': 'v0', 'convert.destination': '', 'convert.useTemplate': false, 'convert.embedArtwork': true,
+    'organise.template': '<Album Artist>\\<Album>\\<Track#> - <Title>', 'organise.removeEmptyFolders': true
+  };
+  let hivebeePrefs = {};
+  function hbPref(key) { return Object.prototype.hasOwnProperty.call(hivebeePrefs, key) ? hivebeePrefs[key] : HIVEBEE_PREF_DEFAULTS[key]; }
+  // MusicBee-style panel arrangement, applied as classes on <html>.
+  let hivebeeLyricsHome = null;
+  function applyHiveBeeLayout() {
+    const root = document.documentElement;
+    root.classList.toggle('hb-no-sidebar', !hbPref('layout.sidebar'));
+    root.classList.toggle('hb-no-lyrics', !hbPref('layout.lyrics'));
+    root.classList.toggle('hb-no-right-panel', !hbPref('layout.rightPanel'));
+    root.classList.toggle('hb-no-queue-list', !hbPref('layout.queueList'));
+    root.classList.toggle('hb-no-now-playing', !hbPref('layout.nowPlaying'));
+    root.classList.toggle('hb-swap-panels', !!hbPref('layout.swap'));
+    root.classList.toggle('hb-player-top', !!hbPref('layout.playerTop'));
+    // Lyrics can sit in the left panel (Hive's default) or the right one.
+    const lyricsSection = document.getElementById('lyrics-section');
+    const lyricsResize = document.getElementById('lyrics-resize');
+    const queuePanel = document.getElementById('queue-panel');
+    if (lyricsSection && lyricsResize && queuePanel) {
+      if (!hivebeeLyricsHome) hivebeeLyricsHome = { parent: lyricsSection.parentNode, next: lyricsSection.nextSibling, resizeParent: lyricsResize.parentNode, resizeNext: lyricsResize.nextSibling };
+      const right = hbPref('layout.lyricsSide') === 'right';
+      if (right && lyricsSection.parentNode !== queuePanel) queuePanel.append(lyricsResize, lyricsSection);
+      else if (!right && lyricsSection.parentNode === queuePanel) {
+        hivebeeLyricsHome.resizeParent.insertBefore(lyricsResize, hivebeeLyricsHome.resizeNext);
+        hivebeeLyricsHome.parent.insertBefore(lyricsSection, hivebeeLyricsHome.next);
+      }
+      root.classList.toggle('hb-lyrics-right', right);
+    }
+    const density = ['compact', 'tight'].includes(hbPref('layout.density')) ? hbPref('layout.density') : 'comfortable';
+    root.classList.toggle('hb-density-compact', density === 'compact');
+    root.classList.toggle('hb-density-tight', density === 'tight');
+    root.classList.toggle('hb-no-row-art', !hbPref('layout.rowArt'));
+    // The virtual list positions rows by this height; keep it equal to the CSS.
+    const rowHeight = { comfortable: 46, compact: 36, tight: 30 }[density];
+    if (songVirtualState.rowHeight !== rowHeight) { songVirtualState.rowHeight = rowHeight; songVirtualState.lastStart = -1; if (typeof updateVirtualSongRows === 'function') updateVirtualSongRows(true); }
+    const zoom = Math.max(70, Math.min(150, Number(hbPref('layout.zoom')) || 100));
+    window.beehive.setUiZoom?.(zoom / 100);
+  }
+  function setHbPref(key, value) {
+    hivebeePrefs = { ...hivebeePrefs, [key]: value };
+    if (String(key).startsWith('layout.')) applyHiveBeeLayout();
+    window.beehive.saveHiveBeeSettings?.({ prefs: { [key]: value } }).catch?.(() => {});
+  }
+  function refreshAutoDjSourceOptions() {
+    const select = document.querySelector('[data-hivebee-pref="autodj.source"]');
+    if (!select) return;
+    const options = [['library', 'Whole library'], ...playlists.filter(p => p?.id).map(p => [`playlist:${p.id}`, `Playlist: ${p.name}`])];
+    select.innerHTML = options.map(([v, l]) => `<option value="${escapeHtml(v)}">${escapeHtml(l)}</option>`).join('');
+    select.value = String(hbPref('autodj.source') || 'library');
+    if (select.value !== String(hbPref('autodj.source'))) select.value = 'library';
+  }
+  // Hive virtual tags: virtual1..3 computed from a formula when one is
+  // set; otherwise the file's own VIRTUAL1..3 tag (Hive's existing meaning).
+  function hivebeeVirtualValue(track, key) {
+    const formula = String(hbPref(`virtual.${key}.formula`) || '').trim();
+    if (formula && window.HiveTemplates?.evaluate) { try { return window.HiveTemplates.evaluate(formula, track || {}).trim(); } catch { return ''; } }
+    return normalizeMetadataText(track?.customTags?.[key.toUpperCase()] || '');
+  }
+  function hivebeeVirtualLabel(key) { return String(hbPref(`virtual.${key}.name`) || '').trim() || `Virtual ${key.slice(-1)}`; }
+  function renderContextMenuSectionSettings() {
+    const host = document.getElementById('context-menu-sections');
+    if (!host) return;
+    const hidden = hiddenContextMenuSections();
+    host.innerHTML = CONTEXT_MENU_SECTIONS.map(([key, label]) => `<label class="settings-row"><span class="settings-row-text"><span class="settings-row-label">${escapeHtml(label)}</span></span><input type="checkbox" data-menu-section="${key}"${hidden.has(key) ? '' : ' checked'}></label>`).join('');
+    host.querySelectorAll('[data-menu-section]').forEach(box => box.addEventListener('change', () => {
+      const next = hiddenContextMenuSections();
+      if (box.checked) next.delete(box.dataset.menuSection); else next.add(box.dataset.menuSection);
+      setHbPref('menu.hidden', [...next]);
+    }));
+  }
+  function bindHiveBeePrefControls(root = document) {
+    refreshAutoDjSourceOptions();
+    renderContextMenuSectionSettings();
+    root.querySelectorAll('.column-browser-settings select').forEach(sel => sel.querySelectorAll('option[value^="virtual"]').forEach(o => { o.textContent = hivebeeVirtualLabel(o.value); }));
+    root.querySelectorAll('[data-hivebee-pref]').forEach(input => {
+      const key = input.dataset.hivebeePref;
+      const value = hbPref(key);
+      if (input.type === 'checkbox') input.checked = !!value;
+      else input.value = String(value ?? '');
+      if (input.dataset.hivebeeBound) return;
+      input.dataset.hivebeeBound = '1';
+      input.addEventListener('change', () => {
+        const v = input.type === 'checkbox' ? input.checked : (input.type === 'number' || input.type === 'range' || /^-?\d+(\.\d+)?$/.test(input.value)) ? Number(input.value) : input.value;
+        setHbPref(key, v);
+      });
+    });
+  }
+  async function loadHiveBeeDsp() {
+    try {
+      const saved = await window.beehive.getHiveBeeSettings?.();
+      hivebeePrefs = saved?.prefs && typeof saved.prefs === 'object' ? saved.prefs : {};
+      applyHiveBeeLayout();
+      bindHiveBeePrefControls();
+      hivebeeDsp = {
+        ...HIVEBEE_DSP_DEFAULTS, ...(saved?.dsp || {}),
+        equaliser: { ...HIVEBEE_DSP_DEFAULTS.equaliser, ...(saved?.dsp?.equaliser || {}) }
+      };
+      equaliserPresets = (await window.beehive.listEqualiserPresets?.()) || [];
+    } catch (err) { console.warn('[Hive] DSP settings unavailable:', err); }
+    hivebeeApplyDsp();
+  }
+  function saveHiveBeeDspSoon() {
+    clearTimeout(hivebeeDspSaveTimer);
+    hivebeeDspSaveTimer = setTimeout(() => { window.beehive.saveHiveBeeSettings?.({ dsp: hivebeeDsp }).catch?.(() => {}); }, 300);
+  }
+  // Settings mapped from MusicBee3Settings.ini by the MusicBee import.
+  function applyMusicBeeSettings(settings) {
+    for (const [key, value] of Object.entries(settings?.prefs || {})) setHbPref(key, value);
+    if (settings?.dsp?.equaliser) hivebeeDsp.equaliser = { ...hivebeeDsp.equaliser, ...settings.dsp.equaliser };
+    if (settings?.dsp && Object.prototype.hasOwnProperty.call(settings.dsp, 'balance')) hivebeeDsp.balance = settings.dsp.balance;
+    if (settings?.replayGainMode) {
+      try { localStorage.setItem(REPLAYGAIN_MODE_KEY, settings.replayGainMode); } catch {}
+      const select = document.getElementById('setting-replaygain-mode'); if (select) select.value = settings.replayGainMode;
+    }
+    bindHiveBeePrefControls();
+    hivebeeDspChanged();
+  }
+  function hivebeeManualPreset() {
+    return HB_EQ ? HB_EQ.normalisePreset(hivebeeDsp.equaliser.manual || HB_EQ.flatPreset(HB_EQ.MANUAL, 10)) : null;
+  }
+  function hivebeeNamedPreset(name) {
+    return equaliserPresets.find(p => p.name.toLowerCase() === String(name || '').toLowerCase()) || null;
+  }
+  function hivebeeActiveEqPreset(track) {
+    if (!HB_EQ) return null;
+    const eq = hivebeeDsp.equaliser;
+    if (eq.mode === HB_EQ.MANUAL) return hivebeeManualPreset();
+    if (eq.mode === HB_EQ.AUTO_GENRE) {
+      const fallback = eq.fallback === HB_EQ.MANUAL ? hivebeeManualPreset() : (hivebeeNamedPreset(eq.fallback) || HB_EQ.flatPreset('Flat'));
+      return HB_EQ.presetForGenre(equaliserPresets, track?.genre, fallback);
+    }
+    return hivebeeNamedPreset(eq.mode) || hivebeeManualPreset();
+  }
+  // Tempo/pitch (SoundTouch). The helper reports and takes positions in
+  // output time (song time / tempo); the renderer converts both ways.
+  function hivebeeTempoFactor() {
+    if (!hbPref('player.tempoPitch') || document.body.classList.contains('bit-perfect-output')) return 1;
+    const t = Number(hbPref('player.tempo')) || 1;
+    return Math.max(0.5, Math.min(2, t));
+  }
+  async function hivebeeRestartAudioEngine() {
+    const t = currentQueue[currentIndex];
+    const hadTrack = !!t?.path && gstActive && activePlaybackProvider === 'local';
+    const wasPlaying = hadTrack && !audioEngine.paused;
+    const position = hadTrack ? Math.max(0, Number(audioEngine.currentTime) || 0) : 0;
+    if (window.beehive.gstreamerRestart && !(await recoverFromGstFatalError())) return false;
+    if (hadTrack) {
+      pendingRestoredOffset = position;
+      await loadAndPlayCurrent(++playbackLoadRequestGeneration, false, { startPaused: !wasPlaying });
+    }
+    return true;
+  }
+  function hivebeeApplyDsp(track = currentQueue[currentIndex]) {
+    if (!HB_EQ || !gstAvailable) return;
+    if (hbPref('player.tempoPitch')) {
+      gstSend('TEMPO\t' + String(hivebeeTempoFactor()));
+      gstSend('PITCH\t' + String(Math.max(-12, Math.min(12, Number(hbPref('player.pitch')) || 0))));
+    }
+    gstSend(HB_EQ.eqCommand(hivebeeActiveEqPreset(track), !!hivebeeDsp.equaliser.enabled));
+    gstSend('BALANCE\t' + String(Math.max(-1, Math.min(1, Number(hivebeeDsp.balance) || 0))));
+  }
+
+  let equaliserModal = null;
+  function openEqualiserModal() {
+    if (!HB_EQ) return;
+    if (!equaliserModal || !document.body.contains(equaliserModal)) {
+      equaliserModal = document.createElement('div');
+      equaliserModal.className = 'modal-overlay hidden';
+      equaliserModal.id = 'equaliser-modal';
+      equaliserModal.innerHTML = `<div class="modal glass equaliser-modal" role="dialog" aria-modal="true" aria-labelledby="equaliser-title">
+        <div class="modal-header"><div><h3 id="equaliser-title">Equaliser</h3><div class="modal-subtitle">MusicBee-compatible presets (.sde). Changes apply as you move the sliders.</div></div><button class="modal-close" data-close type="button" aria-label="Close">✕</button></div>
+        <div class="modal-body equaliser-body">
+          <div class="equaliser-toolbar">
+            <label class="equaliser-switch"><input type="checkbox" id="eq-enabled"><span>Equaliser on</span></label>
+            <label class="equaliser-select">Preset<select id="eq-preset"></select></label>
+            <label class="equaliser-select hidden" id="eq-fallback-wrap">When no genre matches<select id="eq-fallback"></select></label>
+            <div class="equaliser-bands-toggle" role="group" aria-label="Band count"><button type="button" data-bands="10">10 bands</button><button type="button" data-bands="15">15 bands</button></div>
+          </div>
+          <div class="equaliser-sliders" id="eq-sliders"></div>
+          <div class="equaliser-balance"><span>Balance</span><span class="equaliser-balance-end">L</span><input type="range" id="eq-balance" min="-100" max="100" step="1" aria-label="Stereo balance"><span class="equaliser-balance-end">R</span><output id="eq-balance-value"></output></div>
+          <div class="equaliser-tempo"><label class="equaliser-switch"><input type="checkbox" id="eq-tempo-on"><span>Tempo &amp; pitch</span></label>
+            <label>Tempo<input type="range" id="eq-tempo" min="50" max="200" step="5"><output id="eq-tempo-value"></output></label>
+            <label>Pitch<input type="range" id="eq-pitch" min="-12" max="12" step="1"><output id="eq-pitch-value"></output></label></div>
+        </div>
+        <div class="equaliser-footer">
+          <button type="button" class="sidebar-add" id="eq-import">Import .sde…</button>
+          <button type="button" class="sidebar-add" id="eq-save">Save as preset…</button>
+          <button type="button" class="sidebar-add" id="eq-delete">Delete preset</button>
+          <span class="equaliser-footer-gap"></span>
+          <button type="button" class="sidebar-add" id="eq-reset">Reset</button>
+          <button type="button" class="sidebar-add settings-save-primary" data-close>Done</button>
+        </div></div>`;
+      document.body.appendChild(equaliserModal);
+      const m = equaliserModal;
+      m.addEventListener('click', e => { if (e.target === m) closeModal(m); });
+      m.querySelectorAll('[data-close]').forEach(b => b.addEventListener('click', () => closeModal(m)));
+      m.querySelector('#eq-enabled').addEventListener('change', e => { hivebeeDsp.equaliser.enabled = e.target.checked; hivebeeDspChanged(); });
+      m.querySelector('#eq-preset').addEventListener('change', e => { hivebeeDsp.equaliser.mode = e.target.value; hivebeeDspChanged(); renderEqualiserModal(); });
+      m.querySelector('#eq-fallback').addEventListener('change', e => { hivebeeDsp.equaliser.fallback = e.target.value; hivebeeDspChanged(); });
+      m.querySelectorAll('[data-bands]').forEach(b => b.addEventListener('click', () => {
+        const current = hivebeeActiveEqPreset(currentQueue[currentIndex]) || hivebeeManualPreset();
+        hivebeeDsp.equaliser.manual = HB_EQ.resample(current, Number(b.dataset.bands));
+        hivebeeDsp.equaliser.mode = HB_EQ.MANUAL;
+        hivebeeDspChanged(); renderEqualiserModal();
+      }));
+      m.querySelector('#eq-tempo-on').addEventListener('change', async e => {
+        // The helper reads this at spawn, so save it before restarting.
+        hivebeePrefs = { ...hivebeePrefs, 'player.tempoPitch': e.target.checked };
+        renderEqualiserModal();
+        try { await window.beehive.saveHiveBeeSettings?.({ prefs: { 'player.tempoPitch': e.target.checked } }); } catch {}
+        await hivebeeRestartAudioEngine();
+      });
+      m.querySelector('#eq-tempo').addEventListener('input', e => { setHbPref('player.tempo', Number(e.target.value) / 100); renderEqualiserModal(); hivebeeApplyDsp(); });
+      m.querySelector('#eq-pitch').addEventListener('input', e => { setHbPref('player.pitch', Number(e.target.value)); renderEqualiserModal(); hivebeeApplyDsp(); });
+      m.querySelector('#eq-balance').addEventListener('input', e => { hivebeeDsp.balance = Number(e.target.value) / 100; m.querySelector('#eq-balance-value').textContent = formatBalance(hivebeeDsp.balance); hivebeeDspChanged(); });
+      m.querySelector('#eq-reset').addEventListener('click', () => {
+        const bands = hivebeeEditablePreset().bands;
+        hivebeeDsp.equaliser.manual = HB_EQ.flatPreset(HB_EQ.MANUAL, bands);
+        hivebeeDsp.equaliser.mode = HB_EQ.MANUAL; hivebeeDsp.balance = 0;
+        hivebeeDspChanged(); renderEqualiserModal();
+      });
+      m.querySelector('#eq-save').addEventListener('click', async () => {
+        const name = await themedDialog({ title: 'Save equaliser preset', mode: 'prompt', value: hivebeeDsp.equaliser.mode === HB_EQ.MANUAL ? '' : hivebeeDsp.equaliser.mode, placeholder: 'Preset name' });
+        if (!name || !String(name).trim()) return;
+        try {
+          equaliserPresets = await window.beehive.saveEqualiserPreset({ ...hivebeeEditablePreset(), name: String(name).trim() });
+          hivebeeDsp.equaliser.mode = String(name).trim();
+          hivebeeDspChanged(); renderEqualiserModal();
+        } catch (err) { showAppNotice(`Could not save the preset: ${err?.message || err}`); }
+      });
+      m.querySelector('#eq-delete').addEventListener('click', async () => {
+        const name = hivebeeDsp.equaliser.mode;
+        if (!hivebeeNamedPreset(name)) return;
+        if (!await themedDialog({ title: 'Delete preset', mode: 'confirm', message: `Delete the “${name}” preset?` })) return;
+        equaliserPresets = await window.beehive.deleteEqualiserPreset(name);
+        hivebeeDsp.equaliser.manual = HB_EQ.normalisePreset({ ...hivebeeEditablePreset(), name: HB_EQ.MANUAL });
+        hivebeeDsp.equaliser.mode = HB_EQ.MANUAL;
+        hivebeeDspChanged(); renderEqualiserModal();
+      });
+      m.querySelector('#eq-import').addEventListener('click', async () => {
+        const result = await window.beehive.importEqualiserPresets();
+        equaliserPresets = result?.presets || equaliserPresets;
+        renderEqualiserModal();
+        if (result?.imported) showAppNotice(`Imported ${result.imported} preset${result.imported === 1 ? '' : 's'}.`);
+      });
+    }
+    renderEqualiserModal();
+    openModal(equaliserModal);
+  }
+  function formatBalance(v) { const n = Math.round(Math.abs(v) * 100); return n === 0 ? 'Centre' : `${n}% ${v < 0 ? 'L' : 'R'}`; }
+  function formatDb(v) { const n = Math.round(Number(v) * 10) / 10; return `${n > 0 ? '+' : ''}${n.toFixed(1)} dB`; }
+  function formatFreq(f) { return f >= 1000 ? `${Math.round(f / 100) / 10}k` : `${Math.round(f)}`; }
+  // What the sliders show: auto-genre shows the preset for the playing track.
+  function hivebeeEditablePreset() { return hivebeeActiveEqPreset(currentQueue[currentIndex]) || hivebeeManualPreset(); }
+  function hivebeeDspChanged() { hivebeeApplyDsp(); saveHiveBeeDspSoon(); }
+  function renderEqualiserModal() {
+    const m = equaliserModal; if (!m) return;
+    const eq = hivebeeDsp.equaliser;
+    m.querySelector('#eq-enabled').checked = !!eq.enabled;
+    const options = [HB_EQ.MANUAL, HB_EQ.AUTO_GENRE, ...equaliserPresets.map(p => p.name)];
+    const select = m.querySelector('#eq-preset');
+    select.innerHTML = options.map(n => `<option value="${escapeHtml(n)}">${escapeHtml(n)}</option>`).join('');
+    select.value = options.includes(eq.mode) ? eq.mode : HB_EQ.MANUAL;
+    const isAuto = eq.mode === HB_EQ.AUTO_GENRE;
+    m.querySelector('#eq-fallback-wrap').classList.toggle('hidden', !isAuto);
+    const fb = m.querySelector('#eq-fallback');
+    fb.innerHTML = [HB_EQ.MANUAL, ...equaliserPresets.map(p => p.name)].map(n => `<option value="${escapeHtml(n)}">${escapeHtml(n)}</option>`).join('');
+    fb.value = eq.fallback || 'Flat';
+    m.querySelector('#eq-delete').disabled = !hivebeeNamedPreset(eq.mode);
+    const preset = hivebeeEditablePreset();
+    m.querySelectorAll('[data-bands]').forEach(b => b.classList.toggle('active', Number(b.dataset.bands) === preset.bands));
+    const freqs = HB_EQ.FREQUENCIES[preset.bands];
+    const slider = (id, label, value) => `<div class="equaliser-band${id === 'pre' ? ' equaliser-preamp' : ''}"><output>${formatDb(value)}</output><input type="range" min="${HB_EQ.MIN_DB}" max="${HB_EQ.MAX_DB}" step="0.5" value="${value}" data-band="${id}" aria-label="${label} gain"><span>${label}</span></div>`;
+    const sliders = m.querySelector('#eq-sliders');
+    sliders.innerHTML = slider('pre', 'Preamp', preset.preamp) + '<div class="equaliser-divider"></div>' + freqs.map((f, i) => slider(i, formatFreq(f), preset.gains[i])).join('');
+    sliders.title = isAuto ? `Showing the preset for the playing track (${currentQueue[currentIndex]?.genre || 'no genre'}). Moving a slider switches to Manual.` : '';
+    sliders.querySelectorAll('input[type=range]').forEach(input => input.addEventListener('input', () => {
+      // Editing a named preset (or auto) forks it into Manual, like MusicBee.
+      const base = HB_EQ.normalisePreset({ ...hivebeeEditablePreset(), name: HB_EQ.MANUAL });
+      const value = Number(input.value);
+      if (input.dataset.band === 'pre') base.preamp = value; else base.gains[Number(input.dataset.band)] = value;
+      hivebeeDsp.equaliser.manual = base;
+      if (eq.mode !== HB_EQ.MANUAL) { eq.mode = HB_EQ.MANUAL; select.value = HB_EQ.MANUAL; m.querySelector('#eq-fallback-wrap').classList.add('hidden'); m.querySelector('#eq-delete').disabled = true; }
+      input.parentElement.querySelector('output').textContent = formatDb(value);
+      if (!eq.enabled) { eq.enabled = true; m.querySelector('#eq-enabled').checked = true; }
+      hivebeeDspChanged();
+    }));
+    const tempoOn = !!hbPref('player.tempoPitch');
+    m.querySelector('#eq-tempo-on').checked = tempoOn;
+    m.querySelector('#eq-tempo').disabled = m.querySelector('#eq-pitch').disabled = !tempoOn;
+    m.querySelector('#eq-tempo').value = String(Math.round((Number(hbPref('player.tempo')) || 1) * 100));
+    m.querySelector('#eq-tempo-value').textContent = `${(Number(hbPref('player.tempo')) || 1).toFixed(2)}×`;
+    const st = Number(hbPref('player.pitch')) || 0;
+    m.querySelector('#eq-pitch').value = String(st);
+    m.querySelector('#eq-pitch-value').textContent = st ? `${st > 0 ? '+' : ''}${st} st` : '0';
+    m.querySelector('#eq-balance').value = String(Math.round((Number(hivebeeDsp.balance) || 0) * 100));
+    m.querySelector('#eq-balance-value').textContent = formatBalance(Number(hivebeeDsp.balance) || 0);
+  }
+
+  const EQ_ICON = '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round"><path d="M6 4v9M6 17v3M12 4v3M12 11v9M18 4v11M18 19v1"/><circle cx="6" cy="15" r="2"/><circle cx="12" cy="9" r="2"/><circle cx="18" cy="17" r="2"/></svg>';
+  function initEqualiserButton() {
+    const btn = el.btnEqualiser; if (!btn || btn.dataset.ready) return;
+    btn.dataset.ready = '1'; btn.innerHTML = EQ_ICON; btn.title = 'Equaliser';
+    btn.addEventListener('click', () => openEqualiserModal());
+  }
+  setTimeout(initEqualiserButton, 0);
+  setTimeout(() => document.getElementById('open-equaliser-btn')?.addEventListener('click', () => openEqualiserModal()), 0);
+  // ---------------------------------------------------------------------
+  // Hive: MusicBee-style crossfade. Near the end of a track the helper's
+  // companion pipeline keeps playing the outgoing song and fades it out while
+  // the main pipeline loads the next one with a matching fade-in.
+  // ---------------------------------------------------------------------
+  let hivebeeNextLoadFadeInMs = 0;
+  let hivebeeCrossfadedKey = '';
+  function hivebeeCrossfadeMs() { return Math.max(0, Math.min(15000, Number(hbPref('crossfade.ms')) || 0)); }
+  function hivebeeCrossfadeAllowed(cur, next) {
+    if (!cur || !next || document.body.classList.contains('bit-perfect-output')) return false;
+    if (!gstCompatibleTrack(next) || gstTrimmedTrack(cur) || gstTrimmedTrack(next)) return false;
+    // The tag editor's per-track "Do not crossfade" (BEEHIVE_DO_NOT_CROSSFADE).
+    if (playbackSettingEnabled(cur, 'BEEHIVE_DO_NOT_CROSSFADE') || playbackSettingEnabled(next, 'BEEHIVE_DO_NOT_CROSSFADE')) return false;
+    if (hbPref('crossfade.excludeAlbums')) {
+      const album = t => `${String(t?.album || '').trim().toLowerCase()}\u0000${String(t?.albumArtist || t?.artist || '').trim().toLowerCase()}`;
+      if (String(cur.album || '').trim() && album(cur) === album(next)) return false;
+    }
+    return true;
+  }
+  function hivebeeStartCrossfade(position) {
+    const ms = hivebeeCrossfadeMs();
+    const ni = getNextPlaybackIndex();
+    const cur = currentQueue[currentIndex], next = ni >= 0 && ni !== currentIndex ? currentQueue[ni] : null;
+    if (!ms || !gstActive || enginePaused || !hivebeeCrossfadeAllowed(cur, next)) return false;
+    gstSend(`XFADE\t${gstB64(cur.path)}\t${Math.max(0, Number(position) || 0)}\t${ms}`);
+    hivebeeNextLoadFadeInMs = ms;
+    goNext();
+    return true;
+  }
+  function hivebeeMaybeCrossfade(position) {
+    const ms = hivebeeCrossfadeMs();
+    if (!ms || !gstActive || enginePaused || hivebeeStopsAtTrackEnd() || repeat === 2 || hivebeeTempoFactor() !== 1) return;
+    const duration = Number(gstDuration) || 0;
+    if (duration < (ms / 1000) * 2 + 1 || position < duration - ms / 1000) return;
+    const key = `${currentIndex}\u0000${currentQueue[currentIndex]?.path || ''}`;
+    if (hivebeeCrossfadedKey === key) return;
+    hivebeeCrossfadedKey = key;
+    hivebeeStartCrossfade(position);
+  }
   function gstSendNext() {
+    if (hivebeeStopsAtTrackEnd()) { gstSend('NEXT_CLEAR'); return; }
     diagnosticMark('QUEUE NEXT REQUEST');
     const ni = getNextPlaybackIndex();
     if (ni < 0 || ni === currentIndex) return;
@@ -642,7 +1028,10 @@
     // Ordinary user volume is coalesced here and slewed natively by GStreamer.
     gstSend('GAIN\t' + String(Math.max(0, Math.min(8, Number(engineTrackGain) || 1))));
     setNativeVolumeImmediate(engineVolume);
-    gstSend(`LOAD\t${gstB64(t.path)}\t${gstPosition}\t${trimStart}\t${trimEnd}`);
+    hivebeeApplyDsp(t);
+    // A crossfade asks for this LOAD to fade in over the crossfade period.
+    const fadeInMs = hivebeeNextLoadFadeInMs; hivebeeNextLoadFadeInMs = 0;
+    gstSend(`LOAD\t${gstB64(t.path)}\t${gstPosition / hivebeeTempoFactor()}\t${trimStart}\t${trimEnd}${fadeInMs ? `\t${fadeInMs}` : ''}`);
     gstSendNext();
     // A newer user command may have arrived while LOAD/NEXT were being queued.
     // Do not issue PLAY for this stale request; the newer request will own the
@@ -798,8 +1187,51 @@
     mprisHeartbeatTimer = null;
   }
 
+  // ---------------------------------------------------------------------
+  // Hive mini player: publish now-playing state to it (it interpolates
+  // the position itself) and run its button presses as normal clicks.
+  // ---------------------------------------------------------------------
+  let miniPushTimer = 0, miniLastPush = 0;
+  function pushMiniPlayerState() {
+    miniLastPush = Date.now();
+    const t = currentQueue[currentIndex];
+    let cover = '';
+    try { cover = t?.cover ? coverSrc(t.cover) : (t?.artworkUrl || ''); } catch {}
+    window.beehive.pushMiniPlayerState?.(t ? {
+      title: t.title || '', artist: t.artist || '', album: t.album || '', cover,
+      playing: !audioEngine.paused, position: Number(audioEngine.currentTime) || 0,
+      duration: Number(audioEngine.duration) || Number(t.duration) || 0, loved: !!t.loved,
+      accent: getComputedStyle(document.documentElement).getPropertyValue('--accent').trim()
+    } : null);
+  }
+  function scheduleMiniPlayerPush(delay = 120) {
+    if (miniPushTimer) return;
+    miniPushTimer = setTimeout(() => { miniPushTimer = 0; pushMiniPlayerState(); }, delay);
+  }
+  function hivebeeMiniPlayerOnAudio(name) {
+    if (name === 'timeupdate') { if (Date.now() - miniLastPush > 5000) scheduleMiniPlayerPush(); return; }
+    if (['play', 'pause', 'ended', 'loadedmetadata', 'durationchange', 'seeked'].includes(name)) scheduleMiniPlayerPush();
+  }
+  setTimeout(() => {
+    window.beehive.onMiniPlayerCommand?.(cmd => {
+      const action = cmd?.action;
+      if (action === 'toggle') el.btnPlay?.click();
+      else if (action === 'prev') el.btnPrev?.click();
+      else if (action === 'next') el.btnNext?.click();
+      else if (action === 'love') el.btnLove?.click();
+      else if (action === 'seek' && Number.isFinite(Number(cmd.seconds))) { try { audioEngine.currentTime = Math.max(0, Number(cmd.seconds)); } catch {} }
+      scheduleMiniPlayerPush(350);
+    });
+    const btn = document.getElementById('btn-mini');
+    if (btn) {
+      btn.innerHTML = '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linejoin="round"><rect x="3" y="5" width="18" height="14" rx="2"/><rect x="11" y="11" width="8" height="6" rx="1" fill="currentColor"/></svg>';
+      btn.title = 'Mini player';
+      btn.addEventListener('click', async () => { await window.beehive.toggleMiniPlayer?.(); scheduleMiniPlayerPush(400); });
+    }
+  }, 0);
   function dispatchAudio(name) {
     try { audioEngine.dispatchEvent(new Event(name)); } catch {}
+    hivebeeMiniPlayerOnAudio(name);
     if (name === 'play' || name === 'pause' || name === 'ended' || name === 'timeupdate') pluginEmit('playback', {name, state:{track:currentQueue[currentIndex]||null, position:Number(audioEngine.currentTime)||0, duration:Number(audioEngine.duration)||0, paused:!!audioEngine.paused}});
     if (name === 'play') {
       startMprisHeartbeat();
@@ -881,6 +1313,7 @@
     }
   }
   async function armGaplessNext(generation) {
+    if (hivebeeStopsAtTrackEnd()) return;
     if (generation !== engineGeneration || !activeBuffer || !audioCtx || enginePaused) return;
     const nextIndex = getNextPlaybackIndex();
     if (nextIndex < 0 || nextIndex === currentIndex) return;
@@ -930,6 +1363,7 @@
           // so Music Presence sees the transition instead of retaining the previous
           // song until the user manually skips/selects something.
           syncMpris(next, false);
+          hivebeeApplyDsp(next);
           renderQueue();
           saveQueueSession();
           beginPlayCountSession(next);
@@ -1114,7 +1548,8 @@
     if (spotifyActive) { await spotifySend({ type:'play' }); return; }
     if (gstActive) {
       engineEnded = false;
-      gstSend('PLAY');
+      const fadeMs = Number(hbPref('player.fadePauseMs')) || 0;
+      gstSend(fadeMs > 0 ? `PLAY_FADE\t${fadeMs}` : 'PLAY');
       // GStreamer state notifications are authoritative for the transport UI.
       // Do not synthesize a PLAY event here; the native PAUSED/PLAYING messages
       // will update enginePaused and the button in the correct order.
@@ -1163,7 +1598,9 @@
     if (spotifyActive) { void spotifySend({ type:'pause' }); savePlaybackSession(); return; }
     if (gstActive) {
       if (enginePaused) return;
-      gstSend('PAUSE');
+      // MusicBee's "fade on pause": the helper fades out, then pauses.
+      const fadeMs = Number(hbPref('player.fadePauseMs')) || 0;
+      gstSend(fadeMs > 0 ? `PAUSE_FADE\t${fadeMs}` : 'PAUSE');
       // Wait for the native PAUSED event before changing the logical transport
       // state. This keeps renderer state synchronized with the persistent
       // GStreamer pipeline instead of racing an asynchronous state change.
@@ -1190,7 +1627,7 @@
       const target = Math.max(0, Math.min(gstDuration || Number.MAX_SAFE_INTEGER, Number(seconds) || 0));
       gstPosition = target;
       gstPositionUpdatedAt = performance.now();
-      gstSend((resumeAfterSeek ? 'SEEKPLAY\t' : 'SEEK\t') + String(target));
+      gstSend((resumeAfterSeek ? 'SEEKPLAY\t' : 'SEEK\t') + String(target / hivebeeTempoFactor()));
       if (resumeAfterSeek) gstResumeAfterSeek = true;
       dispatchAudio('timeupdate');
       scheduleMprisSync(true);
@@ -1212,7 +1649,7 @@
       gstPosition = target;
       gstPositionUpdatedAt = performance.now();
       window.beehive.setPlaybackProtectedPath?.(currentQueue[currentIndex].path);
-      gstSend('SEEKPLAY\t' + String(target));
+      gstSend('SEEKPLAY\t' + String(target / hivebeeTempoFactor()));
       gstResumeAfterSeek = true;
       dispatchAudio('timeupdate');
       scheduleMprisSync(true);
@@ -1262,7 +1699,7 @@
     }
     if (name === 'POSITION') {
       const p = Number(ev.value);
-      if (gstActive && gstPositionUpdatesEnabled && gstTrackIndex >= 0 && Number.isFinite(p)) { gstPosition = Math.max(0, Math.min(gstDuration || p, p)); gstPositionUpdatedAt = performance.now(); dispatchAudio('timeupdate'); }
+      if (gstActive && gstPositionUpdatesEnabled && gstTrackIndex >= 0 && Number.isFinite(p)) { gstPosition = Math.max(0, Math.min(gstDuration || p * hivebeeTempoFactor(), p * hivebeeTempoFactor())); gstPositionUpdatedAt = performance.now(); hivebeeMaybeCrossfade(gstPosition); dispatchAudio('timeupdate'); }
       return;
     }
     if (name === 'LOADED') {
@@ -1279,7 +1716,7 @@
     if (name === 'ABOUT_TO_FINISH') {
       const ni = getNextPlaybackIndex();
       const next = ni >= 0 ? currentQueue[ni] : null;
-      gstWaitingNextStream = !!next && gstCompatibleTrack(next) && !gstTrimmedTrack(currentQueue[currentIndex]) && !gstTrimmedTrack(next);
+      gstWaitingNextStream = !hivebeeStopsAtTrackEnd() && !!next && gstCompatibleTrack(next) && !gstTrimmedTrack(currentQueue[currentIndex]) && !gstTrimmedTrack(next);
       return;
     }
     if (name === 'STREAM_START') {
@@ -1592,6 +2029,7 @@
     btnNext: document.getElementById('btn-next'),
     btnLove: document.getElementById('btn-love'),
     btnShuffle: document.getElementById('btn-shuffle'),
+    btnEqualiser: document.getElementById('btn-eq'),
     btnRepeat: document.getElementById('btn-repeat'),
     pbSeek: document.getElementById('pb-seek'),
     pbElapsed: document.getElementById('pb-elapsed'),
@@ -1683,10 +2121,15 @@
     if (!btn) return;
     closeBrandDropdown();
     if (btn.dataset.action === 'settings') {
+      bindHiveBeePrefControls();
       openModal(el.settingsModal);
       document.querySelector('.settings-tab-btn[data-settings-tab="general"]')?.focus({ preventScroll: true });
     }
     if (btn.dataset.action === 'about') openModal(el.aboutModal);
+    if (btn.dataset.action === 'equaliser') openEqualiserModal();
+    if (btn.dataset.action === 'mini-player') { window.beehive.toggleMiniPlayer?.().then(() => scheduleMiniPlayerPush(400)); }
+    if (btn.dataset.action === 'find-duplicates') openDuplicatesDialog();
+    if (btn.dataset.action === 'import-musicbee') document.getElementById('import-musicbee-library-btn')?.click();
     // "check-updates" and any future items are placeholders for now.
   });
   document.addEventListener('click', (e) => {
@@ -1883,6 +2326,18 @@
     { key:'dateAdded', label:'Date Added', defaultWidth:115, minWidth:90, type:'number', get:t=>formatDateAdded(t), sortGet:t=>Number(t?.addedAt || 0) },
     { key:'filename', label:'Filename', defaultWidth:180, minWidth:110, type:'string', get:t=>String(t?.path || '').split(/[\\/]/).pop() || '', sortGet:t=>String(t?.path || '').split(/[\\/]/).pop() || '' },
     { key:'folder', label:'Folder', defaultWidth:220, minWidth:120, type:'string', get:t=>formatFolder(t), sortGet:t=>formatFolder(t) },
+    // Hive: more of MusicBee's track fields.
+    { key:'lastPlayed', label:'Last Played', defaultWidth:115, minWidth:90, type:'number', get:t=>{ const n = Number(t?.lastPlayedAt); if (!(n > 0)) return ''; try { return new Date(n).toLocaleDateString(); } catch { return ''; } }, sortGet:t=>Number(t?.lastPlayedAt || 0) },
+    { key:'skips', label:'Skips', defaultWidth:65, minWidth:50, type:'number', get:t=>Number(t?.skipCount) ? String(t.skipCount) : '', sortGet:t=>Number(t?.skipCount || 0) },
+    { key:'love', label:'Love', defaultWidth:55, minWidth:45, type:'number', get:t=>t?.loved ? '♥' : '', sortGet:t=>t?.loved ? 1 : 0 },
+    { key:'grouping', label:'Grouping', defaultWidth:140, minWidth:90, type:'string', get:t=>String(t?.grouping || ''), sortGet:t=>String(t?.grouping || '') },
+    { key:'mood', label:'Mood', defaultWidth:110, minWidth:80, type:'string', get:t=>String(t?.mood || ''), sortGet:t=>String(t?.mood || '') },
+    { key:'bpm', label:'BPM', defaultWidth:60, minWidth:50, type:'number', get:t=>String(t?.bpm || t?.tempo || ''), sortGet:t=>Number(t?.bpm || t?.tempo || 0) },
+    { key:'format', label:'Format', defaultWidth:85, minWidth:65, type:'string', get:t=>String(t?.codec || '').replace(/MPEG 1 Layer 3/i, 'MP3').replace(/MPEG-4\/AAC/i, 'AAC'), sortGet:t=>String(t?.codec || '') },
+    { key:'size', label:'File Size', defaultWidth:85, minWidth:65, type:'number', get:t=>Number(t?.fileSize) > 0 ? `${(Number(t.fileSize) / 1048576).toFixed(1)} MB` : '', sortGet:t=>Number(t?.fileSize || 0) },
+    { key:'virtual1', label:'Virtual 1', defaultWidth:140, minWidth:90, type:'string', get:t=>hivebeeVirtualValue(t, 'virtual1'), sortGet:t=>hivebeeVirtualValue(t, 'virtual1') },
+    { key:'virtual2', label:'Virtual 2', defaultWidth:140, minWidth:90, type:'string', get:t=>hivebeeVirtualValue(t, 'virtual2'), sortGet:t=>hivebeeVirtualValue(t, 'virtual2') },
+    { key:'virtual3', label:'Virtual 3', defaultWidth:140, minWidth:90, type:'string', get:t=>hivebeeVirtualValue(t, 'virtual3'), sortGet:t=>hivebeeVirtualValue(t, 'virtual3') },
   ];
   let songColumns = loadSongColumns();
   let songVirtualState = { tracks: [], rowHeight: 46, headerHeight: 32, lastStart: -1, lastEnd: -1, raf: 0 };
@@ -3515,7 +3970,7 @@
 
   function showSongColumnMenu(x, y) {
     const submenu = SONG_COLUMN_DEFS.map(def => ({
-      label: def.label,
+      label: def.key.startsWith('virtual') ? hivebeeVirtualLabel(def.key) : def.label,
       active: songColumns.keys.includes(def.key),
       action: () => {
         const next = songColumns.keys.includes(def.key)
@@ -3528,8 +3983,10 @@
       }
     }));
     showContextMenu(x, y, [
-      { label:'Columns', submenu },
-      { label:'Reset column widths', action:() => { resetSongColumnWidths(); renderCurrentView(); } }
+      { label:'Columns', icon:'tagTools', submenu },
+      { label:'Reset column widths', icon:'convert', action:() => { resetSongColumnWidths(); renderCurrentView(); } },
+      { label:'Row density', icon:'queueEnd', submenu:[['comfortable','Comfortable'],['compact','Compact'],['tight','Tight']].map(([v, l]) => ({ label:l, active:hbPref('layout.density') === v, action:() => setHbPref('layout.density', v) })) },
+      { label:hbPref('layout.rowArt') ? 'Hide cover thumbnails' : 'Show cover thumbnails', icon:'album', action:() => setHbPref('layout.rowArt', !hbPref('layout.rowArt')) }
     ]);
   }
 
@@ -3641,8 +4098,9 @@
 
   function songHeader() {
     const cells = songColumns.keys.map((key, index) => {
-      const def = songColumnDef(key);
-      if (!def) return '';
+      const base = songColumnDef(key);
+      if (!base) return '';
+      const def = key.startsWith('virtual') ? { ...base, label: hivebeeVirtualLabel(key) } : base;
       const isLast = index === songColumns.keys.length - 1;
       return `<div class="song-header-cell" data-column="${def.key}" draggable="true" title="Drag to reposition ${escapeHtml(def.label)}"><button type="button" draggable="false" class="song-header-btn ${songSort.key===key?'active':''}" data-sort="${def.key}" title="Sort by ${escapeHtml(def.label)}">${escapeHtml(def.label)}${songSort.key===key?(songSort.dir===1?' ↑':' ↓'):''}</button>${isLast?'':`<span class="song-column-resizer" data-column-resize="${def.key}" title="Drag to resize column"></span>`}</div>`;
     }).join('');
@@ -5045,6 +5503,42 @@
     return pl?.shuffleOnEnter === true;
   }
 
+  // Hive: MusicBee's player shuffle options. "album" plays whole albums in
+  // track order with the albums themselves shuffled; "track" shuffles tracks
+  // and, with a same-artist bias, spreads one artist's songs apart.
+  function hivebeeShuffleQueue(tracks){
+    const by = hbPref('shuffle.by');
+    const groupKey = {
+      album: t => `${String(t?.album || '').toLowerCase()}\u0000${String(t?.albumArtist || t?.artist || '').toLowerCase()}`,
+      artist: t => String(t?.albumArtist || t?.artist || '').toLowerCase(),
+      grouping: t => String(t?.grouping || '').toLowerCase(),
+      work: t => String(t?.work || t?.customTags?.WORK || '').toLowerCase()
+    }[by];
+    if (groupKey) {
+      const groups = new Map();
+      for (const t of tracks) {
+        const key = groupKey(t);
+        if (!groups.has(key)) groups.set(key, []);
+        groups.get(key).push(t);
+      }
+      const ordered = [...groups.values()].map(list => list.slice().sort((a, b) =>
+        String(a?.album || '').localeCompare(String(b?.album || ''), undefined, { sensitivity: 'base' }) ||
+        (Number(a?.disk) || 1) - (Number(b?.disk) || 1) || (Number(a?.track) || 0) - (Number(b?.track) || 0)));
+      return shuffleForPlayback(ordered).flat();
+    }
+    const out = shuffleForPlayback(tracks);
+    if (Number(hbPref('shuffle.sameArtistBias')) > 0) {
+      // Greedy pass: whenever a track repeats the previous artist, swap in
+      // the nearest later track by someone else.
+      const artist = t => String(t?.artist || '').toLowerCase();
+      for (let i = 1; i < out.length; i++) {
+        if (!artist(out[i]) || artist(out[i]) !== artist(out[i - 1])) continue;
+        const j = out.findIndex((t, k) => k > i && artist(t) !== artist(out[i - 1]));
+        if (j > 0) [out[i], out[j]] = [out[j], out[i]];
+      }
+    }
+    return out;
+  }
   function shuffleForPlayback(tracks){
     const out=tracks.slice();
     for(let i=out.length-1;i>0;i--){
@@ -5314,16 +5808,29 @@
       path:text(t.path), codec:text(t.codec), fileType:text(t.codec), channels:n(t.channels),
       season:text(t.season), ticketed:text(t.ticketed), trackGain:text(t.trackGain), sortAlbum:text(t.sortAlbum || t.album),
       sortAlbumArtist:text(t.sortAlbumArtist || t.albumArtist), sortArtist:text(t.sortArtist || t.artist), sortComposer:text(t.sortComposer || t.composer), sortTitle:text(t.sortTitle || t.title),
-      videoKind:text(t.videoKind), virtual1:text(t.customTags?.VIRTUAL1), virtual2:text(t.customTags?.VIRTUAL2), virtual3:text(t.customTags?.VIRTUAL3),
+      videoKind:text(t.videoKind), virtual1:hivebeeVirtualValue(t,'virtual1'), virtual2:hivebeeVirtualValue(t,'virtual2'), virtual3:hivebeeVirtualValue(t,'virtual3'),
       lyrics:normalizeMetadataText(t.lyrics), albumRating:n(t.albumRating), quality:text(t.quality),
       ...Object.fromEntries(Object.entries(t.customTags || {}).map(([k,v])=>[k,v]))
     };
     return map[field] !== undefined ? map[field] : text(t[field]);
   }
+  function smartRelativeSpanMs(text){
+    const m=String(text||'').trim().toLowerCase().match(/^(\d+(?:\.\d+)?)\s*([hdwmy]?)$/);
+    if(!m)return 0;
+    const unit={h:3600e3,d:86400e3,w:7*86400e3,m:30.4375*86400e3,y:365.25*86400e3}[m[2]||'d'];
+    return Number(m[1])*unit;
+  }
   function smartCompare(t,rule){
     const value=smartFieldValue(t,rule.field), op=rule.op, target=rule.value ?? '';
     if(rule.field==='favorite') return op==='is' ? value === (target==='true') : value !== (target==='true');
     if(rule.field==='love') { const wanted=String(target).toLowerCase(); return op==='is' ? String(value).toLowerCase()===wanted : String(value).toLowerCase()!==wanted; }
+    // MusicBee-style relative dates: "in the last 30d / 2w / 6m / 1y / 12h"
+    // (a bare number means days), for date added and last played.
+    if(op==='inLast'||op==='notInLast'){
+      const span=smartRelativeSpanMs(target); if(!span)return false;
+      const when=Number(value)||0, inside=when>0 && when>=Date.now()-span;
+      return op==='inLast'?inside:!inside;
+    }
     const numericFields=['year','originalYear','plays','skipCount','rating','duration','sampleRate','bitrate','track','disc','trackCount','discCount','addedAt','lastPlayedAt','channels','tempo','quality'];
     if(numericFields.includes(rule.field)){
       const n=Number(target); if(!Number.isFinite(n))return false;
@@ -5331,7 +5838,7 @@
       return false;
     }
     const a=String(value).toLowerCase(), b=String(target).toLowerCase();
-    if(op==='contains')return a.includes(b); if(op==='is')return a===b; if(op==='not')return a!==b; if(op==='starts')return a.startsWith(b); if(op==='ends')return a.endsWith(b); if(op==='empty')return !a.trim(); if(op==='notempty')return !!a.trim();
+    if(op==='contains')return a.includes(b); if(op==='notcontains')return !a.includes(b); if(op==='is')return a===b; if(op==='not')return a!==b; if(op==='starts')return a.startsWith(b); if(op==='ends')return a.endsWith(b); if(op==='empty')return !a.trim(); if(op==='notempty')return !!a.trim();
     return false;
   }
   function smartSourceTracks(pl){
@@ -5846,19 +6353,22 @@
     el.smartPlaylistRules.appendChild(row);
     const field=row.querySelector('.smart-field'), op=row.querySelector('.smart-op'), value=row.querySelector('.smart-value');
     field.value=rule.field;
-    const textOps=[['contains','contains'],['is','is'],['not','is not'],['starts','starts with'],['ends','ends with'],['empty','is empty'],['notempty','is not empty']];
+    const textOps=[['contains','contains'],['notcontains','does not contain'],['is','is'],['not','is not'],['starts','starts with'],['ends','ends with'],['empty','is empty'],['notempty','is not empty']];
     const numOps=[['eq','is'],['gt','greater than'],['gte','at least'],['lt','less than'],['lte','at most']];
+    const dateOps=[['inLast','in the last'],['notInLast','not in the last'],...numOps];
+    const dateFields=['addedAt','lastPlayedAt'];
     const favOps=[['is','is'],['not','is not']];
     const numericFields=['year','originalYear','plays','skipCount','rating','duration','sampleRate','bitrate','track','disc','trackCount','discCount','addedAt','lastPlayedAt','channels','tempo','quality'];
     function refreshOps(){
-      const type=(field.value==='favorite'||field.value==='love')?'favorite':numericFields.includes(field.value)?'num':'text';
-      const ops=type==='favorite'?favOps:type==='num'?numOps:textOps;
+      const type=(field.value==='favorite'||field.value==='love')?'favorite':dateFields.includes(field.value)?'date':numericFields.includes(field.value)?'num':'text';
+      const ops=type==='favorite'?favOps:type==='date'?dateOps:type==='num'?numOps:textOps;
       op.innerHTML=ops.map(x=>`<option value="${x[0]}">${x[1]}</option>`).join('');
       op.value=rule.op && ops.some(x=>x[0]===rule.op)?rule.op:ops[0][0];
-      value.type=type==='num'?'number':'text';
-      value.placeholder=field.value==='favorite'?'true / false':field.value==='love'?'Loved / Not Loved':field.value==='duration'?'Seconds':field.value==='rating'?'0–5':field.value==='addedAt'||field.value==='lastPlayedAt'?'Unix timestamp or 0':'Value';
+      const relative=op.value==='inLast'||op.value==='notInLast';
+      value.type=type==='num'||(type==='date'&&!relative)?'number':'text';
+      value.placeholder=field.value==='favorite'?'true / false':field.value==='love'?'Loved / Not Loved':field.value==='duration'?'Seconds':field.value==='rating'?'0–5':relative?'e.g. 30d, 2w, 6m, 1y':type==='date'?'Unix timestamp or 0':'Value';
     }
-    field.addEventListener('change',refreshOps);row.querySelector('.smart-remove').onclick=()=>{row.remove();if(!el.smartPlaylistRules.children.length)addSmartRuleRow();};refreshOps();value.value=rule.value??'';
+    field.addEventListener('change',refreshOps);op.addEventListener('change',()=>{rule={...rule,op:op.value};refreshOps();});row.querySelector('.smart-remove').onclick=()=>{row.remove();if(!el.smartPlaylistRules.children.length)addSmartRuleRow();};refreshOps();value.value=rule.value??'';
   }
   function populateSmartSources(){
     const plSel=document.getElementById('smart-source-playlist'), folderSel=document.getElementById('smart-source-folder');
@@ -6443,7 +6953,14 @@
     document.getElementById('context-menu')?.classList.remove('visible');
     document.getElementById('context-menu-shield')?.classList.remove('visible');
   }
+  // Hive: sections can be hidden from Settings → Appearance → Right-click
+  // menu (MusicBee's menu customisation). Items carry a menuKey.
+  const CONTEXT_MENU_SECTIONS = [['play','Play'],['edit','Edit tags'],['rating','Rating'],['addTo','Add to'],['send','Send to'],['find','Find'],['tools','Tools'],['remove','Remove from playlist'],['delete','Delete from disk']];
+  function hiddenContextMenuSections() { const v = hbPref('menu.hidden'); return new Set(Array.isArray(v) ? v : []); }
   function showContextMenu(x,y,items){
+    const hidden = hiddenContextMenuSections();
+    if (hidden.size) items = items.filter(it => !it?.menuKey || !hidden.has(it.menuKey));
+    if (!items.length) return;
     const m=ensureContextMenu();
     const shield=document.getElementById('context-menu-shield');
     m.innerHTML='';
@@ -6529,7 +7046,7 @@
           }
         });
       } else {
-        const b=document.createElement('button'); b.className='context-item'+(it.danger?' danger':'')+(it.playlistRemove?' playlist-remove':'');
+        const b=document.createElement('button'); b.className='context-item'+(it.danger?' danger':'')+(it.playlistRemove?' playlist-remove':'')+(it.active?' active':'');
         const icon=document.createElement('span'); icon.className='context-item-icon';
         if (it.icon) icon.innerHTML=window.BeehiveIcons?.[it.icon] || '';
         b.appendChild(icon);
@@ -6844,6 +7361,334 @@
     return text.length > 15 ? `${text.slice(0,15)}…` : text;
   }
 
+  // ---------------------------------------------------------------------
+  // Hive: MusicBee's "Organise files" -- rename/move the selected tracks
+  // by a naming template inside their library folder. Main remaps stats,
+  // playlists, history and the database; an undo log is kept in the data
+  // folder (organise-logs).
+  // ---------------------------------------------------------------------
+  let organiseModal = null;
+  function openOrganiseDialog(tracks) {
+    const paths = (tracks || []).map(t => t?.path).filter(p => p && isLocalPlaybackTrack({ path: p }));
+    if (!paths.length) return;
+    if (!organiseModal || !document.body.contains(organiseModal)) {
+      organiseModal = document.createElement('div');
+      organiseModal.className = 'modal-overlay hidden';
+      organiseModal.innerHTML = `<div class="modal glass organise-modal" role="dialog" aria-modal="true" aria-labelledby="organise-title">
+        <div class="modal-header"><div><h3 id="organise-title">Organise files</h3><div class="modal-subtitle" id="organise-subtitle"></div></div><button class="modal-close" data-close type="button" aria-label="Close">✕</button></div>
+        <div class="modal-body organise-body">
+          <label class="organise-template">Naming template<input id="organise-template" autocomplete="off" spellcheck="false"></label>
+          <div class="organise-help">Fields: <code>&lt;Artist&gt;</code> <code>&lt;Album Artist&gt;</code> <code>&lt;Album&gt;</code> <code>&lt;Title&gt;</code> <code>&lt;Track#&gt;</code> <code>&lt;Disc#&gt;</code> <code>&lt;Year&gt;</code> <code>&lt;Genre&gt;</code> <code>&lt;Composer&gt;</code> <code>&lt;Filename&gt;</code>. Use <code>\\</code> for folders. Functions: <code>$If(a,b,c)</code> <code>$IsNull(&lt;Field&gt;,b,c)</code> <code>$Upper()</code> <code>$Lower()</code> <code>$Left(text,n)</code>.</div>
+          <label class="organise-check"><input type="checkbox" id="organise-remove-empty"> Remove folders left empty</label>
+          <div class="organise-status" id="organise-status"></div>
+          <div class="organise-preview" id="organise-preview"></div>
+        </div>
+        <div class="equaliser-footer"><span class="equaliser-footer-gap"></span><button type="button" class="sidebar-add" data-close>Cancel</button><button type="button" class="sidebar-add settings-save-primary" id="organise-apply">Move files</button></div>
+      </div>`;
+      document.body.appendChild(organiseModal);
+      organiseModal.addEventListener('click', e => { if (e.target === organiseModal) closeModal(organiseModal); });
+      organiseModal.querySelectorAll('[data-close]').forEach(b => b.addEventListener('click', () => closeModal(organiseModal)));
+    }
+    const m = organiseModal;
+    const input = m.querySelector('#organise-template');
+    const removeEmpty = m.querySelector('#organise-remove-empty');
+    const status = m.querySelector('#organise-status');
+    const preview = m.querySelector('#organise-preview');
+    const apply = m.querySelector('#organise-apply');
+    m.querySelector('#organise-subtitle').textContent = `${paths.length.toLocaleString()} track${paths.length === 1 ? '' : 's'} selected. Files are moved inside their own library folder.`;
+    input.value = String(hbPref('organise.template'));
+    removeEmpty.checked = !!hbPref('organise.removeEmptyFolders');
+    let lastPreview = null, previewTimer = 0, previewSeq = 0;
+    const shortPath = p => { const parts = String(p).split(/[\\/]/); return parts.slice(-3).join('/'); };
+    const runPreview = async () => {
+      const seq = ++previewSeq;
+      status.textContent = 'Working out new names…'; apply.disabled = true;
+      try {
+        const result = await window.beehive.previewOrganise({ paths, template: input.value });
+        if (seq !== previewSeq) return;
+        lastPreview = result;
+        const unchanged = paths.length - result.count - result.skipped.length;
+        status.textContent = `${result.count.toLocaleString()} to move · ${Math.max(0, unchanged).toLocaleString()} already named correctly${result.skipped.length ? ` · ${result.skipped.length.toLocaleString()} skipped` : ''}`;
+        preview.innerHTML = result.moves.slice(0, 60).map(mv => `<div class="organise-row"><span title="${escapeHtml(mv.from)}">${escapeHtml(shortPath(mv.from))}</span><b>→</b><span title="${escapeHtml(mv.to)}">${escapeHtml(shortPath(mv.to))}</span></div>`).join('')
+          + (result.count > 60 ? `<div class="organise-more">and ${(result.count - 60).toLocaleString()} more…</div>` : '');
+        apply.disabled = !result.count;
+      } catch (err) { if (seq === previewSeq) { status.textContent = `Template problem: ${err?.message || err}`; preview.innerHTML = ''; } }
+    };
+    input.oninput = () => { clearTimeout(previewTimer); previewTimer = setTimeout(runPreview, 250); };
+    removeEmpty.onchange = () => setHbPref('organise.removeEmptyFolders', removeEmpty.checked);
+    apply.onclick = async () => {
+      if (!lastPreview?.count) return;
+      if (!await themedDialog({ title: 'Move files', mode: 'confirm', message: `Move and rename ${lastPreview.count.toLocaleString()} file${lastPreview.count === 1 ? '' : 's'}? Play counts, ratings, playlists and history follow them. An undo log is saved in Hive's data folder.` })) return;
+      setHbPref('organise.template', input.value);
+      apply.disabled = true; status.textContent = 'Moving files…';
+      try {
+        const result = await window.beehive.applyOrganise({ paths, template: input.value, removeEmptyFolders: removeEmpty.checked });
+        const moved = new Map((result.moved || []).map(mv => [mv.from, mv.to]));
+        for (const t of library.tracks || []) if (moved.has(t.path)) t.path = moved.get(t.path);
+        for (const t of currentQueue) if (t?.path && moved.has(t.path)) t.path = moved.get(t.path);
+        albums = buildAlbums(library.tracks);
+        applyLibrary(library);
+        playlists = await window.beehive.getPlaylists();
+        renderCurrentView(); renderQueue();
+        closeModal(m);
+        showAppNotice(`Moved ${moved.size.toLocaleString()} file${moved.size === 1 ? '' : 's'}.${result.skipped?.length ? `\nSkipped: ${result.skipped.length} (${[...new Set(result.skipped.map(s => s.reason))].join(', ')})` : ''}${result.errors?.length ? `\nFailed: ${result.errors.length} — ${result.errors[0].error}` : ''}`);
+      } catch (err) { status.textContent = `Could not move files: ${err?.message || err}`; apply.disabled = false; }
+    };
+    openModal(m);
+    runPreview();
+  }
+
+  // ---------------------------------------------------------------------
+  // Hive: MusicBee's Tag Tools -- batch find & replace, case conversion,
+  // copy/swap fields. Previewed first; saved through the metadata queue.
+  // ---------------------------------------------------------------------
+  let tagToolsModal = null;
+  function openTagToolsDialog(tracks) {
+    const TT = window.HiveTagTools;
+    const list = (tracks || []).map(t => (t?.path ? libraryTrackByPath.get(String(t.path)) || t : null)).filter(t => t?.path && isLocalPlaybackTrack(t));
+    if (!TT || !list.length) return;
+    if (!tagToolsModal || !document.body.contains(tagToolsModal)) {
+      const fieldOptions = all => (all ? '<option value="*">All text fields</option>' : '') + TT.FIELDS.map(([k, l]) => `<option value="${k}">${l}</option>`).join('');
+      tagToolsModal = document.createElement('div');
+      tagToolsModal.className = 'modal-overlay hidden';
+      tagToolsModal.innerHTML = `<div class="modal glass organise-modal tag-tools-modal" role="dialog" aria-modal="true" aria-labelledby="tag-tools-title">
+        <div class="modal-header"><div><h3 id="tag-tools-title">Tag tools</h3><div class="modal-subtitle" id="tag-tools-subtitle"></div></div><button class="modal-close" data-close type="button" aria-label="Close">✕</button></div>
+        <div class="modal-body organise-body">
+          <div class="equaliser-bands-toggle tag-tools-tabs" role="tablist"><button type="button" data-tt="replace" class="active">Find &amp; replace</button><button type="button" data-tt="case">Change case</button><button type="button" data-tt="copy">Copy / swap fields</button></div>
+          <div class="tag-tools-pane" data-pane="replace">
+            <div class="tag-tools-grid"><label>Field<select id="tt-r-field">${fieldOptions(true)}</select></label><label>Find<input id="tt-r-find" autocomplete="off" spellcheck="false"></label><label>Replace with<input id="tt-r-replace" autocomplete="off" spellcheck="false"></label></div>
+            <div class="tag-tools-checks"><label class="organise-check"><input type="checkbox" id="tt-r-case"> Match case</label><label class="organise-check"><input type="checkbox" id="tt-r-word"> Whole words</label><label class="organise-check"><input type="checkbox" id="tt-r-regex"> Regular expression</label></div>
+          </div>
+          <div class="tag-tools-pane hidden" data-pane="case">
+            <div class="tag-tools-grid"><label>Field<select id="tt-c-field">${fieldOptions(true)}</select></label><label>Change to<select id="tt-c-mode"><option value="title">Title Case</option><option value="sentence">Sentence case</option><option value="upper">UPPER CASE</option><option value="lower">lower case</option></select></label></div>
+          </div>
+          <div class="tag-tools-pane hidden" data-pane="copy">
+            <div class="tag-tools-grid"><label>From<select id="tt-p-from">${fieldOptions(false)}</select></label><label>To<select id="tt-p-to">${fieldOptions(false)}</select></label></div>
+            <div class="tag-tools-checks"><label class="organise-check"><input type="checkbox" id="tt-p-swap"> Swap the two fields</label><label class="organise-check"><input type="checkbox" id="tt-p-empty"> Only where the target is empty</label></div>
+          </div>
+          <div class="organise-status" id="tt-status"></div>
+          <div class="organise-preview" id="tt-preview"></div>
+        </div>
+        <div class="equaliser-footer"><span class="equaliser-footer-gap"></span><button type="button" class="sidebar-add" data-close>Cancel</button><button type="button" class="sidebar-add settings-save-primary" id="tt-apply">Save changes</button></div>
+      </div>`;
+      document.body.appendChild(tagToolsModal);
+      const m = tagToolsModal;
+      m.addEventListener('click', e => { if (e.target === m) closeModal(m); });
+      m.querySelectorAll('[data-close]').forEach(b => b.addEventListener('click', () => closeModal(m)));
+      m.querySelector('#tt-p-to').value = 'albumArtist';
+      m.querySelector('#tt-p-from').value = 'artist';
+      m.querySelectorAll('[data-tt]').forEach(b => b.addEventListener('click', () => {
+        m.querySelectorAll('[data-tt]').forEach(x => x.classList.toggle('active', x === b));
+        m.querySelectorAll('[data-pane]').forEach(p => p.classList.toggle('hidden', p.dataset.pane !== b.dataset.tt));
+        m._ttRefresh?.();
+      }));
+      m.querySelectorAll('input,select').forEach(i => i.addEventListener(i.tagName === 'INPUT' && i.type !== 'checkbox' ? 'input' : 'change', () => m._ttRefresh?.()));
+    }
+    const m = tagToolsModal;
+    const status = m.querySelector('#tt-status'), preview = m.querySelector('#tt-preview'), apply = m.querySelector('#tt-apply');
+    m.querySelector('#tag-tools-subtitle').textContent = `${list.length.toLocaleString()} track${list.length === 1 ? '' : 's'} selected.`;
+    let plans = [];
+    const label = key => TT.FIELDS.find(f => f[0] === key)?.[1] || key;
+    const currentOp = () => {
+      const tab = m.querySelector('[data-tt].active')?.dataset.tt || 'replace';
+      if (tab === 'case') return { kind: 'case', field: m.querySelector('#tt-c-field').value, mode: m.querySelector('#tt-c-mode').value };
+      if (tab === 'copy') return { kind: 'copy', from: m.querySelector('#tt-p-from').value, to: m.querySelector('#tt-p-to').value, swap: m.querySelector('#tt-p-swap').checked, onlyEmpty: m.querySelector('#tt-p-empty').checked };
+      return { kind: 'replace', field: m.querySelector('#tt-r-field').value, find: m.querySelector('#tt-r-find').value, replace: m.querySelector('#tt-r-replace').value,
+        caseSensitive: m.querySelector('#tt-r-case').checked, wholeWord: m.querySelector('#tt-r-word').checked, regex: m.querySelector('#tt-r-regex').checked };
+    };
+    m._ttRefresh = () => {
+      try {
+        const op = currentOp();
+        if (op.kind === 'copy' && op.from === op.to) { plans = []; status.textContent = 'Choose two different fields.'; preview.innerHTML = ''; apply.disabled = true; return; }
+        plans = TT.planTagTool(list, op);
+        const changes = plans.reduce((n, p) => n + p.changes.length, 0);
+        status.textContent = `${plans.length.toLocaleString()} track${plans.length === 1 ? '' : 's'} will change (${changes.toLocaleString()} field${changes === 1 ? '' : 's'}).`;
+        preview.innerHTML = plans.slice(0, 80).flatMap(p => p.changes.map(([f, a, b]) => `<div class="organise-row tag-tools-row"><span title="${escapeHtml(a)}"><small>${escapeHtml(label(f))}</small> ${escapeHtml(a || '(empty)')}</span><b>→</b><span title="${escapeHtml(b)}">${escapeHtml(b || '(empty)')}</span></div>`)).join('')
+          + (plans.length > 80 ? `<div class="organise-more">and ${(plans.length - 80).toLocaleString()} more tracks…</div>` : '');
+        apply.disabled = !plans.length;
+      } catch (err) { plans = []; status.textContent = `Invalid pattern: ${err?.message || err}`; preview.innerHTML = ''; apply.disabled = true; }
+    };
+    apply.onclick = () => {
+      if (!plans.length) return;
+      window.beehive.queueMetadataSave(plans.map(p => ({ kind: 'metadata', path: p.path, tags: p.tags, operation: 'metadata', artwork: null })));
+      for (const p of plans) Object.assign(p.track, p.tags, { _searchText: '' });
+      albums = buildAlbums(library.tracks);
+      applyLibrary(library);
+      renderCurrentView();
+      closeModal(m);
+      showAppNotice(`Saving tag changes to ${plans.length.toLocaleString()} track${plans.length === 1 ? '' : 's'} in the background.`);
+    };
+    openModal(m);
+    m._ttRefresh();
+  }
+
+  // Hive: a small status pill for background tasks (volume analysis...).
+  function hivebeeTaskStatus(text) {
+    let pill = document.getElementById('hivebee-task-status');
+    if (!pill) { pill = document.createElement('div'); pill.id = 'hivebee-task-status'; pill.className = 'hivebee-task-status hidden'; pill.setAttribute('aria-live', 'polite'); document.body.appendChild(pill); }
+    pill.textContent = text || '';
+    pill.classList.toggle('hidden', !text);
+  }
+  async function analyseReplayGainFor(tracks) {
+    const paths = (tracks || []).map(t => t?.path).filter(p => p && isLocalPlaybackTrack({ path: p }));
+    if (!paths.length) return;
+    const off = window.beehive.onReplayGainProgress?.(({ done, total }) => hivebeeTaskStatus(`Analysing volume… ${done.toLocaleString()} / ${total.toLocaleString()}`));
+    try {
+      const result = await window.beehive.analyseReplayGain({ paths, album: true });
+      showAppNotice(`Volume analysed for ${result.analysed.toLocaleString()} track${result.analysed === 1 ? '' : 's'}${result.albums ? ` (${result.albums} album${result.albums === 1 ? '' : 's'})` : ''}. ReplayGain tags are being saved.${result.failed ? `\nCould not analyse ${result.failed}: ${result.errors[0]?.error || ''}` : ''}\n\nTurn on Settings → Playback → ReplayGain to use them.`);
+    } catch (err) {
+      showAppNotice(`Volume analysis failed: ${err?.message || err}`);
+    } finally {
+      off?.(); hivebeeTaskStatus('');
+    }
+  }
+
+  // ---------------------------------------------------------------------
+  // Hive: MusicBee's File Converter. Copies in another format; the
+  // originals are never touched.
+  // ---------------------------------------------------------------------
+  const CONVERT_FORMATS = {
+    mp3: ['MP3', [['v0', 'VBR V0 (~245 kbps)'], ['v2', 'VBR V2 (~190 kbps)'], ['320', '320 kbps'], ['192', '192 kbps']]],
+    aac: ['AAC (.m4a)', [['256', '256 kbps'], ['192', '192 kbps'], ['128', '128 kbps']]],
+    opus: ['Opus', [['192', '192 kbps'], ['160', '160 kbps'], ['128', '128 kbps'], ['96', '96 kbps']]],
+    vorbis: ['Ogg Vorbis', [['q8', 'Quality 8 (~256 kbps)'], ['q6', 'Quality 6 (~192 kbps)'], ['q4', 'Quality 4 (~128 kbps)']]],
+    flac: ['FLAC (lossless)', [['8', 'Smallest files'], ['5', 'Faster']]]
+  };
+  let convertModal = null;
+  function openConvertDialog(tracks) {
+    const paths = (tracks || []).map(t => t?.path).filter(p => p && isLocalPlaybackTrack({ path: p }));
+    if (!paths.length) return;
+    if (!convertModal || !document.body.contains(convertModal)) {
+      convertModal = document.createElement('div');
+      convertModal.className = 'modal-overlay hidden';
+      convertModal.innerHTML = `<div class="modal glass organise-modal" role="dialog" aria-modal="true" aria-labelledby="convert-title">
+        <div class="modal-header"><div><h3 id="convert-title">Convert</h3><div class="modal-subtitle" id="convert-subtitle"></div></div><button class="modal-close" data-close type="button" aria-label="Close">✕</button></div>
+        <div class="modal-body organise-body">
+          <div class="tag-tools-grid"><label>Format<select id="convert-format">${Object.entries(CONVERT_FORMATS).map(([k, [l]]) => `<option value="${k}">${l}</option>`).join('')}</select></label><label>Quality<select id="convert-quality"></select></label></div>
+          <div class="convert-destination"><span class="organise-status" id="convert-destination-label"></span><button type="button" class="sidebar-add" id="convert-choose">Choose folder…</button><button type="button" class="sidebar-add" id="convert-beside">Beside the originals</button></div>
+          <label class="organise-check"><input type="checkbox" id="convert-template"> Name and file the copies with the organise template</label>
+          <label class="organise-check"><input type="checkbox" id="convert-artwork"> Embed cover art</label>
+          <div class="organise-status" id="convert-status"></div>
+        </div>
+        <div class="equaliser-footer"><span class="equaliser-footer-gap"></span><button type="button" class="sidebar-add" data-close>Cancel</button><button type="button" class="sidebar-add settings-save-primary" id="convert-run">Convert</button></div>
+      </div>`;
+      document.body.appendChild(convertModal);
+      convertModal.addEventListener('click', e => { if (e.target === convertModal) closeModal(convertModal); });
+      convertModal.querySelectorAll('[data-close]').forEach(b => b.addEventListener('click', () => closeModal(convertModal)));
+    }
+    const m = convertModal;
+    const format = m.querySelector('#convert-format'), quality = m.querySelector('#convert-quality');
+    const destLabel = m.querySelector('#convert-destination-label');
+    let destination = String(hbPref('convert.destination') || '');
+    const renderDestination = () => { destLabel.textContent = destination ? `Save to: ${destination}` : 'Save beside the original files'; };
+    const renderQualities = () => {
+      const list = CONVERT_FORMATS[format.value]?.[1] || [];
+      quality.innerHTML = list.map(([k, l]) => `<option value="${k}">${l}</option>`).join('');
+      const saved = String(hbPref('convert.quality'));
+      quality.value = list.some(([k]) => k === saved) ? saved : list[0]?.[0];
+    };
+    m.querySelector('#convert-subtitle').textContent = `${paths.length.toLocaleString()} track${paths.length === 1 ? '' : 's'} selected. The originals are left as they are.`;
+    format.value = String(hbPref('convert.format'));
+    renderQualities(); renderDestination();
+    m.querySelector('#convert-template').checked = !!hbPref('convert.useTemplate');
+    m.querySelector('#convert-artwork').checked = !!hbPref('convert.embedArtwork');
+    m.querySelector('#convert-status').textContent = '';
+    format.onchange = () => { setHbPref('convert.format', format.value); renderQualities(); };
+    quality.onchange = () => setHbPref('convert.quality', quality.value);
+    m.querySelector('#convert-choose').onclick = async () => { const dir = await window.beehive.chooseConvertFolder(); if (dir) { destination = dir; setHbPref('convert.destination', dir); renderDestination(); } };
+    m.querySelector('#convert-beside').onclick = () => { destination = ''; setHbPref('convert.destination', ''); renderDestination(); };
+    m.querySelector('#convert-template').onchange = e => setHbPref('convert.useTemplate', e.target.checked);
+    m.querySelector('#convert-artwork').onchange = e => setHbPref('convert.embedArtwork', e.target.checked);
+    m.querySelector('#convert-run').onclick = async () => {
+      closeModal(m);
+      const off = window.beehive.onConvertProgress?.(({ done, total }) => hivebeeTaskStatus(`Converting… ${done.toLocaleString()} / ${total.toLocaleString()}`));
+      try {
+        const result = await window.beehive.convertTracks({ paths, format: format.value, quality: quality.value, destination,
+          useTemplate: m.querySelector('#convert-template').checked, template: hbPref('organise.template'), embedArtwork: m.querySelector('#convert-artwork').checked });
+        showAppNotice(`Converted ${result.converted.toLocaleString()} file${result.converted === 1 ? '' : 's'} to ${CONVERT_FORMATS[format.value][0]}.${destination ? `\nSaved in ${destination}` : ''}${result.failed ? `\nFailed: ${result.failed} — ${result.errors[0]?.error || ''}` : ''}`);
+      } catch (err) { showAppNotice(`Conversion failed: ${err?.message || err}`); }
+      finally { off?.(); hivebeeTaskStatus(''); }
+    };
+    openModal(m);
+  }
+
+  // ---------------------------------------------------------------------
+  // Hive: MusicBee's "Find duplicates". Groups likely copies, marks the
+  // best copy to keep, and either collects the others in a playlist for
+  // review or hands them to the normal Delete-from-disk flow (which confirms).
+  // ---------------------------------------------------------------------
+  let duplicatesModal = null;
+  function openDuplicatesDialog() {
+    const DUP = window.HiveDuplicates;
+    if (!DUP) return;
+    if (!duplicatesModal || !document.body.contains(duplicatesModal)) {
+      duplicatesModal = document.createElement('div');
+      duplicatesModal.className = 'modal-overlay hidden';
+      duplicatesModal.innerHTML = `<div class="modal glass organise-modal duplicates-modal" role="dialog" aria-modal="true" aria-labelledby="dup-title">
+        <div class="modal-header"><div><h3 id="dup-title">Find duplicates</h3><div class="modal-subtitle">Tracks with the same artist and title and about the same length. The best copy (lossless, then higher bitrate, then more plays) is kept.</div></div><button class="modal-close" data-close type="button" aria-label="Close">✕</button></div>
+        <div class="modal-body organise-body">
+          <div class="tag-tools-checks">
+            <label class="organise-check"><input type="checkbox" id="dup-album"> Album must match too</label>
+            <label class="organise-check"><input type="checkbox" id="dup-versions" checked> Ignore "(Remastered)", "[Deluxe]"…</label>
+            <label class="organise-check">Length within <select id="dup-tolerance"><option value="0">any</option><option value="2">2 s</option><option value="3" selected>3 s</option><option value="10">10 s</option></select></label>
+          </div>
+          <div class="organise-status" id="dup-status"></div>
+          <div class="organise-preview duplicates-list" id="dup-list"></div>
+        </div>
+        <div class="equaliser-footer"><button type="button" class="sidebar-add" id="dup-playlist">Put extra copies in a playlist</button><span class="equaliser-footer-gap"></span><button type="button" class="sidebar-add" data-close>Close</button><button type="button" class="sidebar-add settings-save-primary danger" id="dup-delete">Delete extra copies…</button></div>
+      </div>`;
+      document.body.appendChild(duplicatesModal);
+      duplicatesModal.addEventListener('click', e => { if (e.target === duplicatesModal) closeModal(duplicatesModal); });
+      duplicatesModal.querySelectorAll('[data-close]').forEach(b => b.addEventListener('click', () => closeModal(duplicatesModal)));
+    }
+    const m = duplicatesModal;
+    const status = m.querySelector('#dup-status'), list = m.querySelector('#dup-list');
+    let groups = [];
+    const keepIndex = new Map(); // group index -> kept track index
+    const fmt = t => {
+      const kbps = Number(t.bitrate) ? `${Math.round(Number(t.bitrate) / 1000)} kbps` : '';
+      const codec = String(t.codec || '').replace(/MPEG 1 Layer 3/i, 'MP3');
+      return [codec, kbps, Number(t.playCount) ? `${t.playCount} plays` : ''].filter(Boolean).join(' · ');
+    };
+    const extras = () => groups.flatMap((g, gi) => g.filter((_, ti) => ti !== (keepIndex.get(gi) ?? 0)));
+    const render = () => {
+      groups = DUP.findDuplicates(library.tracks.filter(isLocalPlaybackTrack), {
+        matchAlbum: m.querySelector('#dup-album').checked, ignoreVersions: m.querySelector('#dup-versions').checked, toleranceSeconds: Number(m.querySelector('#dup-tolerance').value)
+      });
+      keepIndex.clear();
+      const extra = groups.reduce((n, g) => n + g.length - 1, 0);
+      status.textContent = groups.length ? `${groups.length.toLocaleString()} groups · ${extra.toLocaleString()} extra copies. Click a copy to keep it instead.` : 'No duplicates found.';
+      list.innerHTML = groups.slice(0, 400).map((g, gi) => `<div class="duplicates-group" data-group="${gi}"><div class="duplicates-head">${escapeHtml(g[0].artist || 'Unknown artist')} — ${escapeHtml(g[0].title || '')}</div>`
+        + g.map((t, ti) => `<button type="button" class="duplicates-item${ti === 0 ? ' keep' : ''}" data-track="${ti}" title="${escapeHtml(t.path)}"><b>${ti === 0 ? 'Keep' : 'Extra'}</b><span>${escapeHtml(String(t.path).split(/[\\/]/).slice(-2).join('/'))}</span><small>${escapeHtml(fmt(t))}</small></button>`).join('')
+        + `</div>`).join('') + (groups.length > 400 ? `<div class="organise-more">Showing the first 400 groups.</div>` : '');
+      m.querySelector('#dup-delete').disabled = m.querySelector('#dup-playlist').disabled = !groups.length;
+    };
+    list.onclick = e => {
+      const item = e.target.closest('.duplicates-item'); if (!item) return;
+      const gi = Number(item.closest('.duplicates-group').dataset.group), ti = Number(item.dataset.track);
+      keepIndex.set(gi, ti);
+      item.closest('.duplicates-group').querySelectorAll('.duplicates-item').forEach((b, i) => { b.classList.toggle('keep', i === ti); b.querySelector('b').textContent = i === ti ? 'Keep' : 'Extra'; });
+    };
+    m.querySelectorAll('#dup-album,#dup-versions,#dup-tolerance').forEach(i => { i.onchange = render; });
+    m.querySelector('#dup-playlist').onclick = async () => {
+      const tracks = extras(); if (!tracks.length) return;
+      const name = 'Duplicates to review';
+      const existing = playlists.find(p => p.name === name && !p.smart);
+      await window.beehive.savePlaylist(existing ? { ...existing, tracks: tracks.map(t => t.path) } : { name, smart: false, tracks: tracks.map(t => t.path), description: 'Extra copies found by Find duplicates' });
+      playlists = await window.beehive.getPlaylists();
+      renderPlaylistManager(); renderNavigationEditors();
+      showAppNotice(`Put ${tracks.length.toLocaleString()} extra copies in “${name}”.`);
+    };
+    m.querySelector('#dup-delete').onclick = async () => {
+      const tracks = extras(); if (!tracks.length) return;
+      closeModal(m);
+      await deleteTracksFromDisk(tracks);
+    };
+    openModal(m);
+    status.textContent = 'Looking for duplicates…'; list.innerHTML = '';
+    setTimeout(render, 30);
+  }
+
   async function showTrackContextMenu(x,y,t){
     if(!t)return;
     // Real bug, confirmed: queue rows are right-clicked with whatever object
@@ -6934,17 +7779,27 @@
     const isLocal = isLocalPlaybackTrack(t);
     const queueNextLabel = bulk ? `Queue Next (${selected.length})` : 'Queue Next';
     const queueLastLabel = bulk ? `Queue Last (${selected.length})` : 'Queue Last';
+    // Hive: grouped like MusicBee's menu -- Play, edit/rate, Add/Send,
+    // Find, Tools -- with one themed icon per entry.
+    const count = bulk ? ` (${selected.length})` : '';
+    const autoTagAlbum = () => {
+      const key = albumKey(t);
+      const albumTracks = library.tracks.filter(track => albumKey(track) === key).sort(albumTrackCompare);
+      openAutoTagAlbum({ title: t.album, artist: t.albumArtist || t.artist, tracks: albumTracks });
+    };
     showContextMenu(x,y,[
-      {label:'Play Now',icon:'play',action:()=>playQueue([t],0)},
-      {label:queueNextLabel,icon:'queue',action:()=>addTracksToQueue(queueTracks, currentIndex + 1)},
-      {label:queueLastLabel,icon:'queue',action:()=>addTracksToQueue(queueTracks)},
-      ...(isLocal && !bulk && t.artist ? [{label:'Play More',icon:'play',submenu:[
-        {label:`Play artist: ${t.artist}`,icon:'play',action:()=>playArtistShuffled(t.artist)},
-        {label:`Play similar to: ${t.artist}`,icon:'play',action:()=>playSimilarArtist(t.artist)},
-        {label:autoDjEnabled() ? 'Turn off Auto-DJ' : 'Turn on Auto-DJ',icon:'play',active:autoDjEnabled(),tooltip:'When your queue runs out, Auto-DJ keeps playing instead of stopping -- it adds more tracks by artists similar to what you were just listening to (via Last.fm), or a random shuffle from your library if nothing similar is found.',action:()=>setAutoDjEnabled(!autoDjEnabled())}
-      ]}] : []),
-      ...(isLocal ? [{label:editLabel,icon:'edit',action:()=>openTagEditor(t, selected)}] : []),
-      ...(isLocal ? [{label:'Rating',icon:'star',submenu:[
+      {label:'Play',icon:'play',menuKey:'play',submenu:[
+        {label:bulk ? `Play ${selected.length} tracks now` : 'Play now',icon:'play',action:()=>playQueue(bulk ? queueTracks : [t],0)},
+        {label:`Play next${count}`,icon:'playNext',action:()=>addTracksToQueue(queueTracks, currentIndex + 1)},
+        {label:`Add to end of queue${count}`,icon:'queueEnd',action:()=>addTracksToQueue(queueTracks)},
+        ...(isLocal && !bulk && t.artist ? [
+          {label:`Play artist: ${t.artist}`,icon:'artist',action:()=>playArtistShuffled(t.artist)},
+          {label:`Play similar to ${t.artist}`,icon:'similar',action:()=>playSimilarArtist(t.artist)}
+        ] : []),
+        {label:autoDjEnabled() ? 'Auto-DJ is on' : 'Auto-DJ',icon:'radio',active:autoDjEnabled(),tooltip:'Keep playing when the queue runs out by adding related tracks (Settings → Playback → Auto-DJ)',action:()=>setAutoDjEnabled(!autoDjEnabled())}
+      ]},
+      ...(isLocal ? [{label:editLabel,icon:'edit',menuKey:'edit',action:()=>openTagEditor(t, selected)}] : []),
+      ...(isLocal ? [{label:'Rating',icon:'star',menuKey:'rating',submenu:[
         // Bulk selection gets one single action, not a toggle: it always
         // makes sure every selected track ends up Loved, leaving any track
         // that was already Loved untouched, never a Remove-Love pair.
@@ -6960,20 +7815,22 @@
         {label:'1 star', icon:'★☆☆☆☆', active:ratingIs(1), ratingSymbol:true, help:bulk ? `Set ${selected.length} selected tracks to 1 star` : 'Set rating to 1 star', action:()=>applyRating(1)},
         {label:'Clear', icon:'×', active:ratingIs(0), ratingSymbol:true, help:bulk ? `Clear ratings from ${selected.length} selected tracks` : 'Clear the star rating', action:()=>applyRating(0)}
       ]}] : []),
-      {label:'Add to',icon:'plus',submenu:buildAddToPlaylistSubmenu(queueTracks)},
-      ...(isLocal && androidDevices.length ? [{label:'Send to',icon:'plus',submenu:androidDevices.map(device => ({label:`${device.name || 'Android device'}${device.mounted ? '' : ' (not mounted)'}`,active:false,action:()=>sendTracksToAndroidDevice(device, queueTracks)}))}] : []),
-      {label:'Search',icon:'search',submenu:[
-        {label:`Search artist: ${t.artist || 'Unknown Artist'}`,icon:'search',action:()=>searchForArtist(t.artist, t)},
-        {label:`Search album: ${contextAlbumLabel(t.album)}`,icon:'search',action:()=>showAlbumFromTrack(t)},
-        ...(isLocal ? [{label:'Show file in browser',icon:'search',action:()=>showTrackFileInBrowser(t)}] : [])
+      {label:'Add to',icon:'plus',menuKey:'addTo',submenu:buildAddToPlaylistSubmenu(queueTracks)},
+      ...(isLocal && androidDevices.length ? [{label:'Send to',icon:'device',menuKey:'send',submenu:androidDevices.map(device => ({label:`${device.name || 'Android device'}${device.mounted ? '' : ' (not mounted)'}`,icon:'device',active:false,action:()=>sendTracksToAndroidDevice(device, queueTracks)}))}] : []),
+      {label:'Find',icon:'search',menuKey:'find',submenu:[
+        {label:`Artist: ${t.artist || 'Unknown Artist'}`,icon:'artist',action:()=>searchForArtist(t.artist, t)},
+        {label:`Album: ${contextAlbumLabel(t.album)}`,icon:'album',action:()=>showAlbumFromTrack(t)},
+        ...(isLocal ? [{label:'Show file in folder',icon:'folderOpen',action:()=>showTrackFileInBrowser(t)}] : [])
       ]},
-      ...(isLocal ? [{label:bulk ? `Delete files from disk… (${selected.length} selected)` : 'Delete file from disk…',icon:'trash',danger:true,action:()=>deleteTracksFromDisk(selected)}] : []),
-      ...(specialView === 'playlist' && activePlaylistId ? [{label:bulk ? `Remove tracks from playlist (${selected.length} selected)` : 'Remove tracks from playlist', playlistRemove:true, action:()=>removeTracksFromActivePlaylist(selected)}] : []),
-      ...(isLocal ? [{label:'Auto-tag album…', icon:'tag', action:()=>{
-        const key = albumKey(t);
-        const albumTracks = library.tracks.filter(track => albumKey(track) === key).sort(albumTrackCompare);
-        openAutoTagAlbum({ title: t.album, artist: t.albumArtist || t.artist, tracks: albumTracks });
-      }}] : [])
+      ...(isLocal ? [{label:`Tools${count}`,icon:'tools',menuKey:'tools',submenu:[
+        {label:'Auto-tag album…',icon:'autoTag',tooltip:'Look the album up on MusicBrainz and fill in tags and cover',action:autoTagAlbum},
+        {label:'Tag tools…',icon:'tagTools',tooltip:'Find & replace, change case, copy or swap fields',action:()=>openTagToolsDialog(selected)},
+        {label:'Analyse volume',icon:'gauge',tooltip:'Measure loudness and write ReplayGain track and album gain tags',action:()=>analyseReplayGainFor(selected)},
+        {label:'Convert…',icon:'convert',tooltip:'Make copies in another format (MP3, AAC, Opus, Ogg, FLAC)',action:()=>openConvertDialog(selected)},
+        {label:bulk ? 'Organise files…' : 'Organise file…',icon:'folderMove',tooltip:'Rename and move into folders by a naming template',action:()=>openOrganiseDialog(selected)}
+      ]}] : []),
+      ...(specialView === 'playlist' && activePlaylistId ? [{label:`Remove from playlist${count}`,icon:'minus',menuKey:'remove', playlistRemove:true, action:()=>removeTracksFromActivePlaylist(selected)}] : []),
+      ...(isLocal ? [{label:`Delete from disk…${count}`,icon:'trash',menuKey:'delete',danger:true,action:()=>deleteTracksFromDisk(selected)}] : [])
     ]);
   }
   function parseTimeValue(value) {
@@ -8616,11 +9473,12 @@
         <div class="auto-tag-status" id="auto-tag-status">Search for the correct release, then review the track mapping before writing tags.</div>
         <div id="auto-tag-results" class="auto-tag-results"></div>
         <div id="auto-tag-preview" class="auto-tag-preview hidden"></div>
-        <div class="tag-actions"><button class="sidebar-add" data-close type="button">Cancel</button><button id="auto-tag-apply" class="sidebar-add settings-save-primary" type="button" disabled>Apply tags</button></div>
-      </div></div>`;
+      </div>
+      <div class="auto-tag-footer"><button class="sidebar-add" data-close type="button">Cancel</button><button id="auto-tag-apply" class="sidebar-add settings-save-primary" type="button" disabled>Apply tags</button></div>
+      </div>`;
     document.body.appendChild(modal);
     modal.addEventListener('click', e => { if (e.target === modal) closeModal(modal); });
-    modal.querySelector('[data-close]')?.addEventListener('click', () => closeModal(modal));
+    modal.querySelectorAll('[data-close]').forEach(btn => btn.addEventListener('click', () => closeModal(modal)));
     modal.querySelector('#auto-tag-search')?.addEventListener('click', () => runAutoTagSearch(modal));
     modal.querySelector('#auto-tag-album')?.addEventListener('keydown', e => { if (e.key === 'Enter') runAutoTagSearch(modal); });
     modal.querySelector('#auto-tag-artist')?.addEventListener('keydown', e => { if (e.key === 'Enter') runAutoTagSearch(modal); });
@@ -8629,12 +9487,56 @@
     return modal;
   }
 
+  // Cover <img>s point at the Cover Art Archive, which 404s for releases with
+  // no art; swap a failed image for the plain placeholder tile instead of
+  // leaving a broken-image icon.
+  function autoTagCoverHtml(url, className) {
+    return url
+      ? `<span class="${className}"><img src="${escapeHtml(url)}" alt="" loading="lazy" data-auto-tag-cover></span>`
+      : `<span class="${className}"></span>`;
+  }
+
+  // The page CSP has no 'unsafe-inline', so the fallback is wired here rather
+  // than with an onerror attribute. onMissing lets the caller react too.
+  function wireAutoTagCovers(root, onMissing) {
+    root.querySelectorAll('img[data-auto-tag-cover]').forEach(img => {
+      const fail = () => { img.remove(); onMissing?.(img); };
+      if (img.complete && !img.naturalWidth) fail();
+      else img.addEventListener('error', fail, { once:true });
+    });
+  }
+
   function autoTagCandidateHtml(item, index) {
-    const score = Math.max(0, Math.round(Number(item.score || 0)));
+    // item.score is a ranking value with exact-match bonuses (up to 260);
+    // show MusicBrainz's own 0-100 relevance. Cached pre-v3 results lack it.
+    const match = Math.round(Number(item.matchPercent ?? Math.min(100, Number(item.score || 0))));
+    const meta = [item.releaseType, item.artistName || 'Unknown artist', item.releaseYear, item.releaseCountry, item.format,
+      item.trackCount ? `${item.trackCount} track${item.trackCount === 1 ? '' : 's'}` : ''].filter(Boolean);
     return `<button type="button" class="auto-tag-result" data-result-index="${index}">
-      <span class="auto-tag-result-main"><strong>${escapeHtml(item.collectionName || 'Unknown release')}</strong><small>${escapeHtml(item.artistName || 'Unknown artist')} · ${escapeHtml(item.releaseYear || 'Year unknown')} · ${escapeHtml(item.releaseCountry || 'Country unknown')}</small></span>
-      <span class="auto-tag-result-score">${score}%</span>
+      ${autoTagCoverHtml(item.thumbUrl, 'auto-tag-result-cover')}
+      <span class="auto-tag-result-main"><strong>${escapeHtml(item.collectionName || 'Unknown release')}</strong><small>${meta.map(escapeHtml).join(' · ')}</small></span>
+      <span class="auto-tag-result-score">${match}% match</span>
     </button>`;
+  }
+
+  // An album and its title single share a name ("Pump Up the Jam" the album
+  // vs. the single), so MusicBrainz scores them identically and the album's
+  // cover won. When the only local file is the title track itself, the user
+  // almost certainly has the single: rank Single releases first. Otherwise
+  // prefer releases whose track count is closest to the local file count.
+  function rankAutoTagReleases(results, localTracks) {
+    const wanted = localTracks.length;
+    const loneTitle = wanted === 1 ? normalizeForSearch(localTracks[0]?.title || autoTagFilenameStem(localTracks[0]) || '') : '';
+    const bonus = item => {
+      const type = String(item.releaseType || '').toLowerCase();
+      if (loneTitle && type === 'single' && loneTitle.includes(normalizeForSearch(item.collectionName || ''))) return 50;
+      if (!wanted || !item.trackCount) return 0;
+      return item.trackCount >= wanted ? Math.max(0, 20 - (item.trackCount - wanted)) : -40;
+    };
+    return results
+      .map((item, index) => ({ item, index, rank: Number(item.score || 0) + bonus(item) }))
+      .sort((a, b) => b.rank - a.rank || a.index - b.index)
+      .map(({ item }) => item);
   }
 
   async function runAutoTagSearch(modal, options = {}) {
@@ -8653,10 +9555,11 @@
     modal._autoTagRelease = null;
     try {
       const found = await window.beehive.musicBrainzSearchReleases({ album, artist, limit: 12 });
-      modal._autoTagResults = Array.isArray(found) ? found : [];
+      modal._autoTagResults = rankAutoTagReleases(Array.isArray(found) ? found : [], modal._autoTagAlbumTracks || []);
       if (!modal._autoTagResults.length) { status.textContent = 'No matching releases found. Try adjusting the album or artist name.'; return; }
       status.textContent = `${modal._autoTagResults.length} release${modal._autoTagResults.length === 1 ? '' : 's'} found. Choose the release that matches your files.`;
       results.innerHTML = modal._autoTagResults.map(autoTagCandidateHtml).join('');
+      wireAutoTagCovers(results);
       results.querySelectorAll('.auto-tag-result').forEach(btn => btn.addEventListener('click', () => selectAutoTagRelease(modal, Number(btn.dataset.resultIndex))));
       const best = modal._autoTagResults[0];
       const bestAlbum = normalizeForSearch(best?.collectionName || '') === normalizeForSearch(album);
@@ -8777,22 +9680,36 @@
       const mapping = buildAutoTagMapping(albumTracks, release.tracks);
       modal._autoTagMapping = mapping;
       const mappedByRemote = new Map(mapping.map(m => [m.remoteIndex, m]));
+      const plural = (n, word) => `${n} ${word}${n === 1 ? '' : 's'}`;
+      // Only rows that involve one of the user's files are worth a line each;
+      // a single local track auto-tagged against a 12-track release used to
+      // list 11 orange "No safe match" rows for songs that were never there.
       const rows = release.tracks.map((remote, i) => {
         const m = mappedByRemote.get(i);
-        const localTitle = String(m?.local?.title || '').trim();
-        const needs = !!m?.local && autoTagNeedsMetadata(m.local);
-        const state = !m ? 'warning' : needs ? 'match' : 'preserved';
-        const label = !m ? 'No safe match' : needs ? (m.byElimination ? '✓ Safe match' : '✓ Match') : 'Preserve';
-        const localText = m?.local ? ` · local: ${escapeHtml(localTitle || autoTagFilenameStem(m.local) || 'untitled')}` : '';
-        return `<div class="auto-tag-track-row ${state}"><span>${remote.disc}.${remote.position}</span><span>${escapeHtml(remote.title)}</span><small>${escapeHtml(remote.artist || release.artist || '')}${localText}</small><b>${label}</b></div>`;
+        if (!m?.local) return '';
+        const fields = Object.keys(autoTagChangedFields(m.local, remote, release));
+        const localTitle = String(m.local.title || '').trim() || autoTagFilenameStem(m.local) || 'untitled';
+        const state = fields.length ? 'match' : 'preserved';
+        const label = fields.length ? `${plural(fields.length, 'change')}` : 'Up to date';
+        return `<div class="auto-tag-track-row ${state}"><span class="auto-tag-track-pos">${remote.disc}.${remote.position}</span><span class="auto-tag-track-title">${escapeHtml(remote.title)}<small>${escapeHtml(remote.artist || release.artist || '')}</small></span><small class="auto-tag-track-local">Your file: ${escapeHtml(localTitle)}</small><b>${label}</b></div>`;
       }).join('');
       const mapped = mapping.filter(m => m.local?.path && m.remote);
       const changed = mapped.filter(m => Object.keys(autoTagChangedFields(m.local, m.remote, release)).length);
+      const unmatchedLocal = albumTracks.length - mapped.length;
+      const otherRemote = release.tracks.length - mapped.length;
       const coverUrl = String(release.artworkUrl || '').trim();
-      preview.innerHTML = `<div class="auto-tag-preview-head"><strong>${escapeHtml(release.artist)} — ${escapeHtml(release.title)}</strong><span>${mapped.length}/${albumTracks.length} tracks mapped · ${changed.length} tag changes · ${coverUrl ? 'shared cover ready' : 'no cover found'}</span></div>${coverUrl ? `<div class="auto-tag-cover-preview"><img src="${escapeHtml(coverUrl)}" alt=""><span>One front cover will be embedded in every mapped track.</span></div>` : ''}${rows}`;
+      const meta = [release.artist, release.year, release.country, release.label].filter(Boolean).map(escapeHtml).join(' · ');
+      const facts = [`${mapped.length}/${albumTracks.length} of your tracks matched`, plural(changed.length, 'tag change'), coverUrl ? 'Front cover will be embedded' : 'No cover art for this release'];
+      preview.innerHTML = `<div class="auto-tag-hero">${autoTagCoverHtml(coverUrl, 'auto-tag-hero-cover')}<div class="auto-tag-hero-text"><strong>${escapeHtml(release.title)}</strong><span>${meta}</span><ul>${facts.map(f => `<li data-fact>${escapeHtml(f)}</li>`).join('')}</ul></div></div>`
+        + `<div class="auto-tag-tracks">${rows}${unmatchedLocal ? `<div class="auto-tag-track-note warning">${unmatchedLocal} of your file${unmatchedLocal === 1 ? '' : 's'} could not be matched safely and will be left alone.</div>` : ''}${otherRemote > 0 ? `<div class="auto-tag-track-note">${plural(otherRemote, 'other track')} on this release ${otherRemote === 1 ? 'is' : 'are'} not in your library.</div>` : ''}</div>`;
+      // A release-group fallback can still 404; say so instead of promising a cover.
+      wireAutoTagCovers(preview, () => {
+        const fact = preview.querySelectorAll('[data-fact]')[2];
+        if (fact) fact.textContent = 'No cover art could be loaded';
+      });
       status.textContent = mapped.length === albumTracks.length
-        ? `${mapped.length} tracks mapped from filenames, existing tags, track numbers, and duration. Review the release, then apply tags + one shared cover.`
-        : `${mapped.length} of ${albumTracks.length} tracks mapped safely. Unmatched files will not be guessed.`;
+        ? `Matched by filename, existing tags, track number and duration. Check the release, then apply.`
+        : `${mapped.length} of ${albumTracks.length} tracks matched safely. Unmatched files will not be guessed.`;
       apply.disabled = mapped.length !== albumTracks.length || (!changed.length && !coverUrl);
     } catch (err) {
       preview.textContent = err?.message || 'Could not load release details.';
@@ -8948,17 +9865,20 @@
     // Same menu shape/order as showTrackContextMenu, with album-scoped
     // actions substituted in (see that function for the rationale behind the
     // ordering itself).
+    const albumCount = countLabel || '';
     showContextMenu(e.clientX, e.clientY, [
-      {label:'Play Now', icon:'play', action:()=>{ if (singleAlbum) playAlbum(album); else playQueue(albumTracks, 0, true); }},
-      {label:`Queue Next${countLabel}`, icon:'queue', action:()=>addTracksToQueue(albumTracks, currentIndex + 1)},
-      {label:`Queue Last${countLabel}`, icon:'queue', action:()=>addTracksToQueue(albumTracks)},
-      ...(singleAlbum && album.artist ? [{label:'Play More',icon:'play',submenu:[
-        {label:`Play artist: ${album.artist}`,icon:'play',action:()=>playArtistShuffled(album.artist)},
-        {label:`Play similar to: ${album.artist}`,icon:'play',action:()=>playSimilarArtist(album.artist)},
-        {label:autoDjEnabled() ? 'Turn off Auto-DJ' : 'Turn on Auto-DJ',icon:'play',active:autoDjEnabled(),tooltip:'When your queue runs out, Auto-DJ keeps playing instead of stopping -- it adds more tracks by artists similar to what you were just listening to (via Last.fm), or a random shuffle from your library if nothing similar is found.',action:()=>setAutoDjEnabled(!autoDjEnabled())}
-      ]}] : []),
-      {label:editLabel, icon:'edit', action:()=>openTagEditor(albumTracks[0], albumTracks)},
-      {label:'Rating',icon:'star',submenu:[
+      {label:'Play',icon:'play',menuKey:'play',submenu:[
+        {label:singleAlbum ? 'Play album' : `Play ${albums.length} albums`, icon:'play', action:()=>{ if (singleAlbum) playAlbum(album); else playQueue(albumTracks, 0, true); }},
+        {label:`Play next${albumCount}`, icon:'playNext', action:()=>addTracksToQueue(albumTracks, currentIndex + 1)},
+        {label:`Add to end of queue${albumCount}`, icon:'queueEnd', action:()=>addTracksToQueue(albumTracks)},
+        ...(singleAlbum && album.artist ? [
+          {label:`Play artist: ${album.artist}`,icon:'artist',action:()=>playArtistShuffled(album.artist)},
+          {label:`Play similar to ${album.artist}`,icon:'similar',action:()=>playSimilarArtist(album.artist)}
+        ] : []),
+        {label:autoDjEnabled() ? 'Auto-DJ is on' : 'Auto-DJ',icon:'radio',active:autoDjEnabled(),tooltip:'Keep playing when the queue runs out by adding related tracks (Settings → Playback → Auto-DJ)',action:()=>setAutoDjEnabled(!autoDjEnabled())}
+      ]},
+      {label:editLabel, icon:'edit', menuKey:'edit', action:()=>openTagEditor(albumTracks[0], albumTracks)},
+      {label:'Rating',icon:'star',menuKey:'rating',submenu:[
         // One single action, not a toggle: always makes sure every track in
         // the selected album(s) ends up Loved, leaving already-Loved tracks
         // untouched, never a separate Remove-Love button.
@@ -8970,18 +9890,22 @@
         {label:'1 star', icon:'★☆☆☆☆', active:ratingIs(1), ratingSymbol:true, help:`Set all tracks${countLabel} to 1 star`, action:()=>applyRating(1)},
         {label:'Clear', icon:'×', active:ratingIs(0), ratingSymbol:true, help:`Clear ratings from all tracks${countLabel}`, action:()=>applyRating(0)}
       ]},
-      {label:'Add to', icon:'plus', submenu:buildAddToPlaylistSubmenu(albumTracks)},
-      ...(androidDevices.length ? [{label:'Send to', icon:'plus', submenu:androidDevices.map(device => ({label:`${device.name || 'Android device'}${device.mounted ? '' : ' (not mounted)'}`, active:false, action:()=>sendTracksToAndroidDevice(device, albumTracks)}))}] : []),
-      {label:'Search',icon:'search',submenu:[
-        ...(singleAlbum ? [
-          {label:`Search album: ${contextAlbumLabel(album.title)}`, icon:'search', action:()=>showAlbumFromTrack(album.tracks[0])},
-          {label:`Search artist: ${album.artist || 'Unknown Artist'}`, icon:'search', action:()=>searchForArtist(album.artist, album.tracks?.[0] || null)},
-          {label:'Show file in browser', icon:'search', action:()=>showTrackFileInBrowser(albumTracks[0])}
-        ] : [])
+      {label:'Add to', icon:'plus', menuKey:'addTo', submenu:buildAddToPlaylistSubmenu(albumTracks)},
+      ...(androidDevices.length ? [{label:'Send to', icon:'device', menuKey:'send', submenu:androidDevices.map(device => ({label:`${device.name || 'Android device'}${device.mounted ? '' : ' (not mounted)'}`, icon:'device', active:false, action:()=>sendTracksToAndroidDevice(device, albumTracks)}))}] : []),
+      ...(singleAlbum ? [{label:'Find',icon:'search',menuKey:'find',submenu:[
+        {label:`Album: ${contextAlbumLabel(album.title)}`, icon:'album', action:()=>showAlbumFromTrack(album.tracks[0])},
+        {label:`Artist: ${album.artist || 'Unknown Artist'}`, icon:'artist', action:()=>searchForArtist(album.artist, album.tracks?.[0] || null)},
+        {label:'Show files in folder', icon:'folderOpen', action:()=>showTrackFileInBrowser(albumTracks[0])}
+      ]}] : []),
+      {label:`Tools${albumCount}`,icon:'tools',menuKey:'tools',submenu:[
+        ...(singleAlbum ? [{label:'Auto-tag album…', icon:'autoTag', tooltip:'Look the album up on MusicBrainz and fill in tags and cover', action:()=>openAutoTagAlbum(album)}] : []),
+        {label:'Tag tools…',icon:'tagTools',tooltip:'Find & replace, change case, copy or swap fields',action:()=>openTagToolsDialog(albumTracks)},
+        {label:'Analyse volume',icon:'gauge',tooltip:'Measure loudness and write ReplayGain track and album gain tags',action:()=>analyseReplayGainFor(albumTracks)},
+        {label:'Convert…',icon:'convert',tooltip:'Make copies in another format (MP3, AAC, Opus, Ogg, FLAC)',action:()=>openConvertDialog(albumTracks)},
+        {label:'Organise files…',icon:'folderMove',tooltip:'Rename and move into folders by a naming template',action:()=>openOrganiseDialog(albumTracks)}
       ]},
-      {label:`Delete files from disk… (${albumTracks.length} selected)`, icon:'trash', danger:true, action:()=>deleteTracksFromDisk(albumTracks)},
-      ...(playlistContext ? [{label:`Remove tracks from playlist${countLabel}`, playlistRemove:true, action:()=>removeTracksFromActivePlaylist(albumTracks)}] : []),
-      ...(singleAlbum ? [{label:'Auto-tag album…', icon:'tag', action:()=>openAutoTagAlbum(album)}] : [])
+      ...(playlistContext ? [{label:`Remove from playlist${albumCount}`, icon:'minus', menuKey:'remove', playlistRemove:true, action:()=>removeTracksFromActivePlaylist(albumTracks)}] : []),
+      {label:`Delete from disk… (${albumTracks.length} tracks)`, icon:'trash', menuKey:'delete', danger:true, action:()=>deleteTracksFromDisk(albumTracks)}
     ]);
   }
 
@@ -9549,8 +10473,93 @@
   }
   window.addEventListener('resize', reflowOpenInlineAlbum, { passive: true });
 
+  // ---------------------------------------------------------------------
+  // Hive: MusicBee's column browser. Panes (Genre / Album Artist / Album by
+  // default) above the Tracks table; each pane lists values present in the
+  // tracks the panes to its left allow. Ctrl/Cmd-click selects several.
+  // ---------------------------------------------------------------------
+  const BROWSER_FIELD_LABELS = { genre: 'Genre', albumArtist: 'Album Artist', artist: 'Artist', album: 'Album', year: 'Year', composer: 'Composer', grouping: 'Grouping', publisher: 'Publisher', virtual1: 'Virtual 1', virtual2: 'Virtual 2', virtual3: 'Virtual 3' };
+  const browserFieldLabel = f => (f.startsWith('virtual') ? hivebeeVirtualLabel(f) : BROWSER_FIELD_LABELS[f]);
+  const columnBrowserSelection = new Map(); // field -> Set of values
+  const columnBrowserBoundToggles = new WeakSet();
+  function columnBrowserActive() { return viewMode === 'songs' && !specialView && !!hbPref('browser.enabled'); }
+  function columnBrowserFields() {
+    const cols = [1, 2, 3, 4].map(i => String(hbPref(`browser.column${i}`) || '')).filter(f => BROWSER_FIELD_LABELS[f]);
+    return [...new Set(cols)].slice(0, 4);
+  }
+  function columnBrowserValue(t, field) {
+    const raw = field === 'albumArtist' ? (t?.albumArtist || t?.artist) : field === 'year' ? (t?.year ? String(t.year).slice(0, 4) : '') : field.startsWith('virtual') ? hivebeeVirtualValue(t, field) : t?.[field];
+    return normalizeMetadataText(raw || '').trim();
+  }
+  function applyColumnBrowser(tracks) {
+    if (!columnBrowserActive()) return tracks;
+    let out = tracks;
+    for (const field of columnBrowserFields()) {
+      const sel = columnBrowserSelection.get(field);
+      if (sel?.size) out = out.filter(t => sel.has(columnBrowserValue(t, field)));
+    }
+    return out;
+  }
+  function renderColumnBrowser(sourceTracks) {
+    const host = el.albumsToolbar?.querySelector('.column-browser');
+    const toggle = el.albumsToolbar?.querySelector('.column-browser-toggle');
+    if (toggle && !columnBrowserBoundToggles.has(toggle)) {
+      // Each tab's toolbar is a clone without listeners (cloneNode copies
+      // data-* markers but not handlers), so track bound nodes by identity.
+      columnBrowserBoundToggles.add(toggle);
+      toggle.addEventListener('click', () => { setHbPref('browser.enabled', !hbPref('browser.enabled')); renderSongsTable(); });
+    }
+    if (toggle) { toggle.classList.toggle('hidden', viewMode !== 'songs' || !!specialView); toggle.classList.toggle('active', !!hbPref('browser.enabled')); toggle.setAttribute('aria-pressed', hbPref('browser.enabled') ? 'true' : 'false'); }
+    if (!host) return;
+    const active = columnBrowserActive();
+    host.classList.toggle('hidden', !active);
+    if (!active) return;
+    const fields = columnBrowserFields();
+    host.style.setProperty('--column-browser-columns', String(fields.length));
+    let pool = sourceTracks;
+    const panes = fields.map(field => {
+      const counts = new Map();
+      for (const t of pool) { const v = columnBrowserValue(t, field); counts.set(v, (counts.get(v) || 0) + 1); }
+      const sel = columnBrowserSelection.get(field) || new Set();
+      // Drop selections that no longer exist under the panes to the left.
+      for (const v of [...sel]) if (!counts.has(v)) sel.delete(v);
+      columnBrowserSelection.set(field, sel);
+      const values = [...counts.keys()].sort((a, b) => (a === '') - (b === '') || songCollator.compare(a, b));
+      const html = `<div class="column-browser-pane" data-field="${field}"><div class="column-browser-head">${escapeHtml(browserFieldLabel(field))}</div><div class="column-browser-list" role="listbox" aria-multiselectable="true">`
+        + `<button type="button" class="column-browser-item column-browser-all${sel.size ? '' : ' selected'}" data-value="" data-all="1"><span>All (${(values.length).toLocaleString()})</span><small>${pool.length.toLocaleString()}</small></button>`
+        + values.map(v => `<button type="button" class="column-browser-item${sel.has(v) ? ' selected' : ''}" data-value="${escapeHtml(v)}"><span>${escapeHtml(v || '(Unknown)')}</span><small>${counts.get(v).toLocaleString()}</small></button>`).join('')
+        + `</div></div>`;
+      if (sel.size) pool = pool.filter(t => sel.has(columnBrowserValue(t, field)));
+      return html;
+    });
+    const scroll = [...host.querySelectorAll('.column-browser-list')].map(l => l.scrollTop);
+    host.innerHTML = panes.join('');
+    host.querySelectorAll('.column-browser-list').forEach((l, i) => { l.scrollTop = scroll[i] || 0; });
+    host.querySelectorAll('.column-browser-pane').forEach(pane => {
+      const field = pane.dataset.field;
+      pane.addEventListener('click', e => {
+        const item = e.target.closest('.column-browser-item'); if (!item) return;
+        const sel = columnBrowserSelection.get(field) || new Set();
+        if (item.dataset.all) sel.clear();
+        else if (e.ctrlKey || e.metaKey) { if (sel.has(item.dataset.value)) sel.delete(item.dataset.value); else sel.add(item.dataset.value); }
+        else { sel.clear(); sel.add(item.dataset.value); }
+        columnBrowserSelection.set(field, sel);
+        // A new choice resets the panes to its right, like MusicBee.
+        fields.slice(fields.indexOf(field) + 1).forEach(f => columnBrowserSelection.get(f)?.clear());
+        renderSongsTable();
+      });
+      pane.addEventListener('dblclick', e => {
+        const item = e.target.closest('.column-browser-item'); if (!item) return;
+        const tracks = sortTracks(applyColumnBrowser(tracksForCurrentContext()));
+        if (tracks.length) playQueue(tracks, 0, true);
+      });
+    });
+  }
+
   function renderSongsTable() {
-    const sourceTracks = tracksForCurrentContext();
+    const allContextTracks = tracksForCurrentContext();
+    renderColumnBrowser(allContextTracks);
+    const sourceTracks = applyColumnBrowser(allContextTracks);
     // Artist search is shared by the Albums and Tracks views. When the user
     // right-clicks a track/album, chooses "Search artist", and then switches
     // to Tracks, keep the same exact artist filter instead of falling back to
@@ -9962,6 +10971,7 @@
     }
     el.albumsGrid.classList.toggle('hidden', mode !== 'albums');
     el.songsTable.classList.toggle('hidden', mode !== 'songs');
+    if (mode !== 'songs') renderColumnBrowser([]);
     el.artistsGrid.classList.toggle('hidden', mode !== 'artists');
     if (mode === 'albums') renderAlbums();
     if (mode === 'songs') renderSongsTable();
@@ -10043,28 +11053,74 @@
   // were just listening to; falls back to a random library shuffle whenever
   // Last.fm has nothing (no API key configured, unknown artist, etc.) so it
   // always has something to add rather than silently doing nothing.
-  async function autoDjMoreTracks(seedTrack) {
+  // Hive: MusicBee's Auto-DJ options -- a source (whole library or one
+  // playlist), filters (minimum rating, skip recently played), a minimum gap
+  // between tracks by the same artist, and similar-artist preference.
+  function autoDjSourceTracks() {
+    const source = String(hbPref('autodj.source') || 'library');
+    if (source.startsWith('playlist:')) {
+      const pl = playlists.find(p => String(p.id) === source.slice(9));
+      if (pl) return tracksForPlaylist(pl).filter(t => isLocalPlaybackTrack(t));
+    }
+    return library.tracks;
+  }
+  function autoDjPick(pool, count, recentArtists) {
+    const gap = Math.max(0, Number(hbPref('autodj.artistGap')) || 0);
+    const artist = t => String(t?.artist || '').trim().toLowerCase();
+    const recent = recentArtists.slice(-gap);
+    const out = [];
+    const deferred = [];
+    for (const t of shuffleForPlayback(pool)) {
+      if (out.length >= count) break;
+      if (gap && artist(t) && recent.includes(artist(t))) { deferred.push(t); continue; }
+      out.push(t);
+      if (gap) { recent.push(artist(t)); if (recent.length > gap) recent.shift(); }
+    }
+    // A tiny pool can't always honour the gap; fill rather than stop.
+    while (out.length < count && deferred.length) out.push(deferred.shift());
+    return out;
+  }
+  async function autoDjMoreTracks(seedTrack, count = 15) {
     const alreadyQueued = new Set(currentQueue.map(qt => String(qt?.path || '')));
+    const minRating = Number(hbPref('autodj.minRating')) || 0;
+    const skipDays = Number(hbPref('autodj.skipPlayedDays')) || 0;
+    const playedCutoff = skipDays > 0 ? Date.now() - skipDays * 86400000 : 0;
+    const pool = autoDjSourceTracks().filter(t => t?.path && !alreadyQueued.has(String(t.path)) && !isTrackExcluded(t)
+      && (!minRating || Number(t.rating || 0) >= minRating)
+      && (!playedCutoff || Number(t.lastPlayedAt || 0) < playedCutoff));
+    const recentArtists = currentQueue.slice(Math.max(0, currentQueue.length - 10)).map(t => String(t?.artist || '').trim().toLowerCase());
     const name = String(seedTrack?.artist || '').trim();
-    if (name) {
+    if (name && hbPref('autodj.similar')) {
       try {
         const similar = await window.beehive.getSimilarArtists(name);
         const wanted = new Set((similar || []).map(a => String(a).trim().toLowerCase()));
         if (wanted.size) {
-          const matches = library.tracks.filter(lt => wanted.has(String(lt?.artist || '').trim().toLowerCase()) && !alreadyQueued.has(String(lt?.path || '')));
-          if (matches.length) return shuffleForPlayback(matches).slice(0, 15);
+          const matches = pool.filter(lt => wanted.has(String(lt?.artist || '').trim().toLowerCase()));
+          if (matches.length) return autoDjPick(matches, count, recentArtists);
         }
       } catch {}
     }
-    const rest = library.tracks.filter(lt => !alreadyQueued.has(String(lt?.path || '')));
-    return shuffleForPlayback(rest).slice(0, 15);
+    return autoDjPick(pool, count, recentArtists);
+  }
+  // Keep "upcoming" tracks queued ahead of the playing one, like MusicBee,
+  // instead of only refilling once the queue has run dry.
+  async function hivebeeAutoDjTopUp() {
+    if (!autoDjEnabled() || autoDjExtending || !currentQueue.length) return;
+    const want = Math.max(1, Math.min(50, Number(hbPref('autodj.upcoming')) || 5));
+    const ahead = currentQueue.length - 1 - currentIndex;
+    if (ahead >= want) return;
+    autoDjExtending = true;
+    try {
+      const more = await autoDjMoreTracks(currentQueue[currentIndex], want - ahead);
+      if (more.length) addTracksToQueue(more);
+    } finally { autoDjExtending = false; }
   }
   async function autoDjExtendQueueIfNeeded() {
     if (!autoDjEnabled() || autoDjExtending || !currentQueue.length) return false;
     autoDjExtending = true;
     try {
       const seed = currentQueue[currentIndex] || currentQueue[currentQueue.length - 1];
-      const more = await autoDjMoreTracks(seed);
+      const more = await autoDjMoreTracks(seed, Math.max(1, Math.min(50, Number(hbPref('autodj.upcoming')) || 5)));
       if (!more.length) return false;
       addTracksToQueue(more);
       return true;
@@ -10100,7 +11156,7 @@
     }
     if (respectShuffle && shuffle && queue.length > 1) {
       const chosen = queue[index];
-      queue = shuffleForPlayback(queue);
+      queue = hivebeeShuffleQueue(queue);
       const chosenIndex = queue.indexOf(chosen);
       index = chosenIndex >= 0 ? chosenIndex : Math.floor(Math.random() * queue.length);
     }
@@ -11242,7 +12298,22 @@
     scheduleNowPlayingSpectrumDraw();
   }
 
+  // Hive: MusicBee's track-change pop-up (desktop notification).
+  let hivebeeLastPopupKey = '';
+  function hivebeeTrackPopup(track) {
+    if (!track?.path || !hbPref('popup.enabled')) return;
+    const key = `${track.path}\u0000${currentIndex}`;
+    if (key === hivebeeLastPopupKey) return;
+    hivebeeLastPopupKey = key;
+    if (hbPref('popup.inactiveOnly') && document.hasFocus()) return;
+    window.beehive.showTrackPopup?.({
+      title: track.title || '', artist: track.artist || '', album: track.album || '',
+      cover: typeof track.cover === 'string' ? track.cover : '', seconds: Number(hbPref('popup.seconds')) || 4
+    });
+  }
   async function updateNowPlayingUI(t) {
+    hivebeeTrackPopup(t);
+    setTimeout(() => { hivebeeAutoDjTopUp().catch(() => {}); }, 1500);
     const generation = ++nowPlayingUiGeneration;
     window.__beehiveNowPlayingTrack = t;
     pluginEmit('track-change', t || null);
@@ -11814,10 +12885,108 @@
     }
     if (audio.paused) audio.play(true); else audio.pause();
   });
+  // ---------------------------------------------------------------------
+  // Hive: MusicBee's "Stop after Current" and sleep timer. Right-click the
+  // Play button. The pill under the transport shows what is armed.
+  // ---------------------------------------------------------------------
+  let hivebeeStopAfterCurrent = false;
+  let hivebeeSleep = null; // { kind: 'minutes', endsAt, action } | { kind: 'queue', action }
+  let hivebeeSleepTicker = 0;
+  function hivebeeStopsAtTrackEnd() {
+    if (hivebeeStopAfterCurrent) return true;
+    // "End of queue" only stops where the queue would have ended anyway.
+    return false;
+  }
+  function hivebeeStopNow(reason) {
+    try { audio.pause(); } catch {}
+    if (reason) diagnosticMark('HIVEBEE STOP', reason);
+  }
+  function hivebeeRunSleepAction(action) {
+    hivebeeStopNow('sleep timer');
+    if (action === 'close') setTimeout(() => window.beehive.window?.close?.(), 400);
+  }
+  // Called on a natural end of track, before advancing. True = handled.
+  function hivebeeHandleTrackEnd() {
+    if (hivebeeStopAfterCurrent) {
+      hivebeeStopAfterCurrent = false;
+      finishPlayCountSession({ countIfQualified: true });
+      hivebeeStopNow('stop after current');
+      renderHiveBeePlaybackBadge();
+      return true;
+    }
+    if (hivebeeSleep?.kind === 'queue' && getNextPlaybackIndex() < 0 && !autoDjEnabled()) {
+      const action = hivebeeSleep.action;
+      hivebeeSleep = null; renderHiveBeePlaybackBadge();
+      finishPlayCountSession({ countIfQualified: true });
+      hivebeeRunSleepAction(action);
+      return true;
+    }
+    return false;
+  }
+  function setHiveBeeStopAfterCurrent(on) {
+    hivebeeStopAfterCurrent = !!on;
+    if (gstActive) { if (on) gstSend('NEXT_CLEAR'); else gstSendNext(); }
+    renderHiveBeePlaybackBadge();
+  }
+  function setHiveBeeSleep(next) {
+    hivebeeSleep = next;
+    clearInterval(hivebeeSleepTicker); hivebeeSleepTicker = 0;
+    if (next?.kind === 'minutes') {
+      hivebeeSleepTicker = setInterval(() => {
+        if (!hivebeeSleep || hivebeeSleep.kind !== 'minutes') { clearInterval(hivebeeSleepTicker); return; }
+        if (Date.now() >= hivebeeSleep.endsAt) {
+          const action = hivebeeSleep.action;
+          hivebeeSleep = null; clearInterval(hivebeeSleepTicker); hivebeeSleepTicker = 0;
+          renderHiveBeePlaybackBadge();
+          hivebeeRunSleepAction(action);
+          return;
+        }
+        renderHiveBeePlaybackBadge();
+      }, 1000);
+    }
+    renderHiveBeePlaybackBadge();
+  }
+  function renderHiveBeePlaybackBadge() {
+    let badge = document.getElementById('hivebee-playback-badge');
+    if (!badge) {
+      badge = document.createElement('button');
+      badge.id = 'hivebee-playback-badge'; badge.type = 'button'; badge.className = 'hivebee-playback-badge hidden';
+      badge.title = 'Click to cancel';
+      badge.addEventListener('click', () => { setHiveBeeStopAfterCurrent(false); setHiveBeeSleep(null); });
+      el.btnPlay?.closest('.transport')?.appendChild(badge);
+    }
+    const parts = [];
+    if (hivebeeStopAfterCurrent) parts.push('Stops after this track');
+    if (hivebeeSleep?.kind === 'minutes') {
+      const left = Math.max(0, Math.round((hivebeeSleep.endsAt - Date.now()) / 1000));
+      parts.push(`Sleep in ${Math.floor(left / 60)}:${String(left % 60).padStart(2, '0')}`);
+    } else if (hivebeeSleep?.kind === 'queue') parts.push('Sleep at end of queue');
+    badge.textContent = parts.join(' · ');
+    badge.classList.toggle('hidden', !parts.length);
+  }
+  el.btnPlay.addEventListener('contextmenu', e => {
+    e.preventDefault();
+    const sleepActive = k => hivebeeSleep?.kind === k;
+    const sleepItems = (action) => [15, 30, 45, 60, 90, 120].map(min => ({
+      label: `${min} minutes`, icon: 'timer', active: sleepActive('minutes') && hivebeeSleep.minutes === min && hivebeeSleep.action === action,
+      action: () => setHiveBeeSleep({ kind: 'minutes', minutes: min, endsAt: Date.now() + min * 60000, action })
+    })).concat([{ label: 'At the end of the queue', icon: 'queueEnd', active: sleepActive('queue') && hivebeeSleep.action === action, action: () => setHiveBeeSleep({ kind: 'queue', action }) }]);
+    showContextMenu(e.clientX, e.clientY, [
+      { label: 'Stop after current track', icon: 'stopAfter', active: hivebeeStopAfterCurrent, action: () => setHiveBeeStopAfterCurrent(!hivebeeStopAfterCurrent) },
+      { label: 'Sleep timer: stop playback', icon: 'timer', submenu: sleepItems('stop') },
+      { label: 'Sleep timer: close Hive', icon: 'timer', submenu: sleepItems('close') },
+      ...(hivebeeSleep ? [{ label: 'Cancel sleep timer', icon: 'minus', action: () => setHiveBeeSleep(null) }] : []),
+      { label: 'Equaliser…', icon: 'equaliser', action: () => openEqualiserModal() }
+    ]);
+  });
   audio.addEventListener('play', () => { el.btnPlay.innerHTML = ic.pause || ''; });
   audio.addEventListener('pause', () => { el.btnPlay.innerHTML = ic.play || ''; });
 
-  el.btnNext.addEventListener('click', () => goNext());
+  el.btnNext.addEventListener('click', () => {
+    // MusicBee's "crossfade when skipping".
+    if (hbPref('crossfade.onSkip') && gstActive && !enginePaused && hivebeeStartCrossfade(gstPosition)) return;
+    goNext();
+  });
   el.btnPrev.addEventListener('click', () => goPrev());
 
   function stopPodcastTransport() {
@@ -11912,7 +13081,11 @@
     }
   }
 
-  audio.addEventListener('ended', () => { if (engineEnded && scheduledNextIndex < 0) goNext(); });
+  audio.addEventListener('ended', () => {
+    if (!engineEnded || scheduledNextIndex >= 0) return;
+    if (hivebeeHandleTrackEnd()) return;
+    goNext();
+  });
 
   // Seek bar: own the pointer gesture ourselves, like Strawberry's TrackSlider.
   // The browser's native range dragging is deliberately NOT allowed to compete
@@ -12244,7 +13417,7 @@
       if (currentQueue.length > 1) {
         const current = currentQueue[currentIndex];
         const rest = currentQueue.filter((_, i) => i !== currentIndex);
-        currentQueue = [current, ...shuffleForPlayback(rest)];
+        currentQueue = [current, ...hivebeeShuffleQueue(rest)];
         currentIndex = 0;
       } else if (currentQueue.length) {
         currentIndex = 0;
@@ -12633,6 +13806,7 @@
       console.warn('Startup cached-library load failed:', err);
       return null;
     });
+    loadHiveBeeDsp();
     const playlistsPromise = window.beehive.getPlaylists().catch(err => {
       console.warn('Startup playlist load failed:', err);
       return [];
@@ -16451,6 +17625,64 @@
   // appear twice (once as a hardcoded "built-in" option and again as its
   // seeded folder copy) and a default theme is never grouped under a
   // "Your themes" label that implies the user made it.
+  // Hive: MusicBee skins become theme files and join the Base theme list.
+  setTimeout(() => document.getElementById('theme-import-musicbee-btn')?.addEventListener('click', async () => {
+    const result = await window.beehive.importMusicBeeSkins?.();
+    if (!result) return;
+    if (result.imported.length) {
+      const select = document.getElementById('builtin-theme-select');
+      const current = select?.value;
+      await loadThemeFolderThemes();
+      if (select) { select.innerHTML = themeFolderThemes.map(t => `<option value="folder:${escapeHtml(t.file)}">${escapeHtml(t.name)}</option>`).join(''); if (current) select.value = current; }
+    }
+    if (result.imported.length || result.failed.length) showAppNotice(`${result.imported.length ? `Imported ${result.imported.length} MusicBee skin${result.imported.length === 1 ? '' : 's'}: ${result.imported.join(', ')}.\nPick one under Base theme.` : 'No skins imported.'}${result.failed.length ? `\n\nCouldn't convert:\n${result.failed.slice(0, 5).join('\n')}` : ''}`);
+  }), 0);
+  // Hive colour editor (MusicBee's skin colour editing, Hive-style): edit
+  // the theme's main colour variables live; Save writes a theme pack and
+  // applies it; Reset drops the preview.
+  const COLOUR_PREVIEW_VARS = ['--bg', '--panel', '--panel-strong', '--text', '--text-dim', '--text-dimmer', '--accent', '--accent-soft', '--accent-glow', '--ambient-a', '--ambient-b'];
+  function cssColourToHex(value) {
+    const probe = document.createElement('span'); probe.style.color = String(value || '').trim(); document.body.appendChild(probe);
+    const rgb = getComputedStyle(probe).color.match(/\d+(\.\d+)?/g) || ['0', '0', '0']; probe.remove();
+    return '#' + rgb.slice(0, 3).map(n => Math.round(Number(n)).toString(16).padStart(2, '0')).join('');
+  }
+  const hexToRgba = (hex, a) => { const n = parseInt(String(hex).slice(1), 16); return `rgba(${(n >> 16) & 255},${(n >> 8) & 255},${n & 255},${a})`; };
+  function refreshColourEditor() {
+    const cs = getComputedStyle(document.documentElement);
+    document.querySelectorAll('[data-colour-var]').forEach(input => { input.value = cssColourToHex(cs.getPropertyValue(input.dataset.colourVar)); });
+  }
+  function colourEditorValues() {
+    const v = {}; document.querySelectorAll('[data-colour-var]').forEach(i => { v[i.dataset.colourVar] = i.value; }); return v;
+  }
+  function colourEditorCss(v) {
+    return `:root {\n  --bg: ${v['--bg']};\n  --panel: ${hexToRgba(v['--panel'], 0.72)};\n  --panel-strong: ${hexToRgba(v['--panel'], 0.9)};\n  --text: ${v['--text']};\n  --text-dim: ${v['--text-dim']};\n  --text-dimmer: ${hexToRgba(v['--text-dim'], 0.7)};\n  --accent: ${v['--accent']};\n  --accent-soft: ${hexToRgba(v['--accent'], 0.35)};\n  --accent-glow: ${hexToRgba(v['--accent'], 0.26)};\n  --ambient-a: ${hexToRgba(v['--accent'], 0.16)};\n  --ambient-b: ${hexToRgba(v['--bg'], 0.14)};\n}\n`;
+  }
+  function previewColourEditor() {
+    const v = colourEditorValues(), root = document.documentElement.style;
+    root.setProperty('--bg', v['--bg']); root.setProperty('--panel', hexToRgba(v['--panel'], 0.72)); root.setProperty('--panel-strong', hexToRgba(v['--panel'], 0.9));
+    root.setProperty('--text', v['--text']); root.setProperty('--text-dim', v['--text-dim']); root.setProperty('--text-dimmer', hexToRgba(v['--text-dim'], 0.7));
+    root.setProperty('--accent', v['--accent']); root.setProperty('--accent-soft', hexToRgba(v['--accent'], 0.35)); root.setProperty('--accent-glow', hexToRgba(v['--accent'], 0.26));
+  }
+  function clearColourPreview() { COLOUR_PREVIEW_VARS.forEach(k => document.documentElement.style.removeProperty(k)); }
+  setTimeout(() => {
+    document.querySelectorAll('[data-colour-var]').forEach(input => input.addEventListener('input', previewColourEditor));
+    document.getElementById('colour-reset-btn')?.addEventListener('click', () => { clearColourPreview(); refreshColourEditor(); });
+    document.getElementById('colour-save-btn')?.addEventListener('click', async () => {
+      const name = await themedDialog({ title: 'Save colours as a theme', mode: 'prompt', value: 'My colours', placeholder: 'Theme name' });
+      if (!name || !String(name).trim()) return;
+      try {
+        const { file } = await window.beehive.saveCustomTheme({ name: String(name).trim(), css: colourEditorCss(colourEditorValues()) });
+        await loadThemeFolderThemes();
+        const select = document.getElementById('builtin-theme-select');
+        if (select) { select.innerHTML = themeFolderThemes.map(t => `<option value="folder:${escapeHtml(t.file)}">${escapeHtml(t.name)}</option>`).join(''); select.value = `folder:${file}`; }
+        await applyFolderTheme(file, true);
+        clearColourPreview();
+        refreshColourEditor();
+      } catch (err) { showAppNotice(`Could not save the theme: ${err?.message || err}`); }
+    });
+    document.getElementById('settings-tab-appearance')?.addEventListener('click', () => setTimeout(refreshColourEditor, 50));
+    refreshColourEditor();
+  }, 0);
   async function renderBuiltinThemes(){
     const select=document.getElementById('builtin-theme-select');
     if(!select)return;
@@ -17922,6 +19154,77 @@
   // number exactly -- even lowering it -- and resets the embed baseline, so
   // a play right afterward adds +1 on top of that new number in both places
   // and in the Yearly Wrap history.
+  // Hive: import a whole MusicBee library folder (stats, dates, ratings,
+  // Love, playlists). Preview first; nothing is written until confirmed.
+  document.getElementById('import-musicbee-library-btn')?.addEventListener('click', async () => {
+    const button = document.getElementById('import-musicbee-library-btn');
+    const status = document.getElementById('musicbee-library-import-status');
+    const folder = await window.beehive.chooseMusicBeeLibraryFolder();
+    if (!folder) return;
+    const n = v => Number(v || 0).toLocaleString();
+    button.disabled = true;
+    try {
+      status.textContent = 'Reading the MusicBee library…';
+      const preview = await window.beehive.previewMusicBeeLibraryImport(folder);
+      const plLines = (preview.playlists || []).map(pl => pl.kind === 'static'
+        ? `• ${pl.name}: ${n(pl.tracks)} tracks${pl.missing ? ` (${n(pl.missing)} not in your library)` : ''}`
+        : pl.kind === 'smart'
+          ? `• ${pl.name} (auto playlist, ${n(pl.rules)} rule${pl.rules === 1 ? '' : 's'})${pl.unsupported?.length ? ` — skipped: ${pl.unsupported.join(', ')}` : ''}`
+          : `• ${pl.name}: could not be read (${pl.error})`).join('\n');
+      const ok = await themedDialog({ title: 'Import MusicBee library', mode: 'confirm', message:
+`${n(preview.matched)} of ${n(preview.records)} MusicBee tracks match files in your library (${n(preview.unmatched)} not found).
+
+Will update:
+• Play/skip counts and last played: ${n(preview.statUpdates)} tracks (the higher count wins, nothing is lowered)
+• Date added: ${n(preview.addedAtUpdates)} tracks (MusicBee's earlier date)
+• Ratings: ${n(preview.ratings)} and Love: ${n(preview.loves)} (only where Hive has none; written to the files)
+
+Playlists:
+${plLines || '• none'}${preview.settings ? `
+
+Player settings from MusicBee (${preview.equaliserPresets ? `${n(preview.equaliserPresets)} equaliser presets, ` : ''}equaliser, balance, ReplayGain, shuffle and pop-up options) will replace Hive's current ones.` : ''}` });
+      if (!ok) { status.textContent = 'Import cancelled.'; return; }
+      status.textContent = 'Importing…';
+      const result = await window.beehive.applyMusicBeeLibraryImport(folder);
+      const byPath = new Map((library.tracks || []).map(t => [t.path, t]));
+      for (const [trackPath, fields] of Object.entries(result.updatedTracks || {})) {
+        const track = byPath.get(trackPath); if (track) Object.assign(track, fields);
+      }
+      for (const job of result.ratings || []) { const t = byPath.get(job.path); if (t) t.rating = job.rating; }
+      for (const job of result.loves || []) { const t = byPath.get(job.path); if (t) t.loved = true; }
+      // Re-importing replaces the earlier copy instead of adding duplicates.
+      let savedPlaylists = 0;
+      for (const imported of result.playlists || []) {
+        // Don't sit a second "Favorites" next to Hive's own one: a name already
+        // used by a playlist that didn't come from this import gets a suffix.
+        const clash = playlists.some(p => p.name === imported.name && p.description !== imported.description);
+        const pl = clash ? { ...imported, name: `${imported.name} (MusicBee)` } : imported;
+        const existing = playlists.find(p => p.name === pl.name && p.description === pl.description);
+        await window.beehive.savePlaylist(existing ? { ...existing, ...pl, id: existing.id } : pl);
+        savedPlaylists++;
+      }
+      playlists = await window.beehive.getPlaylists();
+      renderPlaylistManager();
+      renderNavigationEditors();
+      renderCurrentView();
+      if (result.equaliserPresets) equaliserPresets = result.equaliserPresets;
+      if (result.settings) applyMusicBeeSettings(result.settings);
+      const summary = result.summary || preview;
+      status.textContent = `Imported from MusicBee · ${n(summary.matched)} tracks matched · ${n(savedPlaylists)} playlists`;
+      showAppNotice(`MusicBee library imported.
+
+Tracks matched: ${n(summary.matched)}
+Play stats updated: ${n(summary.statUpdates)}
+Dates added restored: ${n(summary.addedAtUpdates)}
+Ratings and Love queued for writing: ${n((result.ratings || []).length + (result.loves || []).length)}
+Playlists: ${n(savedPlaylists)}`);
+    } catch (err) {
+      status.textContent = `MusicBee import failed: ${err?.message || err}`;
+    } finally {
+      button.disabled = false;
+    }
+  });
+
   el.importMusicBeeWrappedBtn?.addEventListener('click', async () => {
     const button = el.importMusicBeeWrappedBtn;
     const original = button.textContent;
@@ -18106,7 +19409,8 @@ Open Yearly Wrap to browse the imported years.`, 'Yearly Wrap');
     const key = handle.dataset.target;
     const targetEl = panelEls[key];
     const axis = handle.classList.contains('resize-v') ? 'x' : 'y';
-    const invert = handle.dataset.invert === 'true';
+    // Hive "swap panels" mirrors the body row, so side handles flip too.
+    const invertNow = () => (handle.dataset.invert === 'true') !== (axis === 'x' && document.documentElement.classList.contains('hb-swap-panels'));
     const [min, maxValue] = limits[key];
     const max = () => typeof maxValue === 'function' ? maxValue() : maxValue;
     let startPos = 0, startSize = 0, dragging = false;
@@ -18114,7 +19418,7 @@ Open Yearly Wrap to browse the imported years.`, 'Yearly Wrap');
     function onMove(e) {
       const pos = axis === 'x' ? e.clientX : e.clientY;
       let delta = pos - startPos;
-      if (invert) delta = -delta;
+      if (invertNow()) delta = -delta;
       const newSize = clamp(startSize + delta, min, max());
       targetEl.style[sizeProp[key]] = newSize + 'px';
     }

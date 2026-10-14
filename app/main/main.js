@@ -46,6 +46,13 @@ const { ScrobblingService } = require('./scrobbling');
 const { refreshDevices, sendTracksToDevice } = require('./device-manager');
 const { listAudioOutputs, effectiveOutputDevice } = require('./audio-output-manager');
 const { readMusicBeeWrappedArchive, musicBeeImportPlayId } = require('./musicbee-wrapped-import');
+const HiveEqualiser = require('../renderer/equaliser');
+const { planOrganise, DEFAULT_TEMPLATE: ORGANISE_DEFAULT_TEMPLATE } = require('./file-organiser');
+const ReplayGainAnalyser = require('./replaygain-analyser');
+const FileConverter = require('./file-converter');
+const MusicBeeSkins = require('./musicbee-skins');
+const { targetRelativePath: organiserRelativePath } = require('./file-organiser');
+const { parseMusicBeeLibrary, parseMusicBeePlaylist, parseMusicBeeAutoPlaylist, buildMusicBeeImportPlan, createTrackMatcher, parseMusicBeeSettings, mapMusicBeeSettings } = require('./musicbee-library');
 const { selectPreferredLyrics, lyricsSearchTitle } = require('./lyrics-provider');
 const { autoUpdater } = require('electron-updater');
 const { createUpdateChecker } = require('./update-checker');
@@ -117,6 +124,10 @@ function legacyStableConfigRoot() {
   return path.join(process.env.XDG_CONFIG_HOME || path.join(process.env.HOME || process.cwd(), '.config'), 'Hive');
 }
 function stableHiveDataRoot() {
+  // HIVE_DATA_ROOT names the data folder explicitly (used to run a test copy
+  // beside a real install); otherwise the folder-name search below applies.
+  const explicitRoot = String(process.env.HIVE_DATA_ROOT || '').trim();
+  if (explicitRoot) return path.resolve(explicitRoot);
   // Fully portable: the database, settings, artwork cache, playlists,
   // provider state, plugins and themes (all subfolders of this root, via
   // USER_DATA()) live INSIDE the Hive folder itself, not in a per-machine
@@ -395,6 +406,9 @@ const gstreamerBridge = createGstreamerBridge({
       const config = JSON.parse(fs.readFileSync(CONFIG_PATH(), 'utf8'));
       return String(config.audioOutputDevice || '').trim();
     } catch { return ''; }
+  },
+  getTempoPitchEnabled: () => {
+    try { return !!JSON.parse(fs.readFileSync(CONFIG_PATH(), 'utf8'))?.hivebee?.prefs?.['player.tempoPitch']; } catch { return false; }
   },
 });
 const {
@@ -1026,6 +1040,47 @@ function openYearlyWrapWindow(year = new Date().getFullYear(), theme = null) {
   return yearlyWrapWindow;
 }
 
+// Hive mini player (MusicBee's Mini Player): a small window that mirrors
+// the main window's now-playing state and sends its button presses back.
+let miniPlayerWindow = null;
+let miniPlayerState = null;
+let miniPlayerOnTop = true;
+function openMiniPlayerWindow() {
+  if (miniPlayerWindow && !miniPlayerWindow.isDestroyed()) { miniPlayerWindow.show(); miniPlayerWindow.focus(); return miniPlayerWindow; }
+  miniPlayerWindow = new BrowserWindow({
+    width: 400, height: 112, minWidth: 300, minHeight: 100, maxHeight: 220,
+    frame: false, resizable: true, alwaysOnTop: miniPlayerOnTop, backgroundColor: '#101116',
+    title: 'Hive Mini Player', autoHideMenuBar: true,
+    webPreferences: { preload: runtimeResourcePath(path.join('app','main','preload.js')), contextIsolation: true, nodeIntegration: false, sandbox: true }
+  });
+  miniPlayerWindow.on('closed', () => { miniPlayerWindow = null; });
+  miniPlayerWindow.loadFile(runtimeResourcePath(path.join('app','renderer','mini.html')));
+  return miniPlayerWindow;
+}
+ipcMain.handle('miniplayer:toggle', async () => {
+  if (miniPlayerWindow && !miniPlayerWindow.isDestroyed()) { miniPlayerWindow.close(); return false; }
+  openMiniPlayerWindow();
+  return true;
+});
+ipcMain.handle('miniplayer:getState', async () => (miniPlayerState ? { ...miniPlayerState, alwaysOnTop: miniPlayerOnTop } : null));
+ipcMain.on('miniplayer:state', (_evt, state) => {
+  miniPlayerState = state && typeof state === 'object' ? state : null;
+  if (miniPlayerWindow && !miniPlayerWindow.isDestroyed()) miniPlayerWindow.webContents.send('miniplayer:state', { ...miniPlayerState, alwaysOnTop: miniPlayerOnTop });
+});
+ipcMain.on('miniplayer:command', (_evt, cmd = {}) => {
+  const action = String(cmd?.action || '');
+  if (action === 'show-main') { try { mainWindow?.show(); mainWindow?.focus(); } catch {} return; }
+  if (action === 'close-mini') { try { miniPlayerWindow?.close(); } catch {} return; }
+  if (action === 'pin') {
+    miniPlayerOnTop = !miniPlayerOnTop;
+    try { miniPlayerWindow?.setAlwaysOnTop(miniPlayerOnTop); miniPlayerWindow?.webContents.send('miniplayer:state', { ...miniPlayerState, alwaysOnTop: miniPlayerOnTop }); } catch {}
+    return;
+  }
+  if (['toggle', 'prev', 'next', 'love', 'seek'].includes(action)) {
+    try { mainWindow?.webContents.send('miniplayer:command', { action, seconds: Number(cmd.seconds) || 0 }); } catch {}
+  }
+});
+
 ipcMain.handle('yearly-wrap:open', async (_evt, year, theme) => { openYearlyWrapWindow(Number(year) || new Date().getFullYear(), theme); return true; });
 
 // Pushed whenever the main window's now-playing accent changes, so an
@@ -1410,9 +1465,13 @@ ipcMain.handle('diagnostics:crashReportCount', async () => {
 });
 // Check-then-ask only: these never download or install without the explicit
 // user action each handler name describes (see update-checker.js).
-ipcMain.handle('updates:check', async () => updateChecker.check());
-ipcMain.handle('updates:download', async () => updateChecker.download());
-ipcMain.handle('updates:install', async () => { updateChecker.quitAndInstall(); return true; });
+// HIVE_DISABLE_UPDATES=1 turns the release updater off (e.g. for a test copy
+// run beside a real install).
+const UPDATES_DISABLED = process.env.HIVE_DISABLE_UPDATES === '1';
+const UPDATES_DISABLED_STATUS = { state: 'disabled', available: false, message: 'Updates are turned off for this copy of Hive.' };
+ipcMain.handle('updates:check', async () => (UPDATES_DISABLED ? UPDATES_DISABLED_STATUS : updateChecker.check()));
+ipcMain.handle('updates:download', async () => { if (UPDATES_DISABLED) throw new Error(UPDATES_DISABLED_STATUS.message); return updateChecker.download(); });
+ipcMain.handle('updates:install', async () => { if (UPDATES_DISABLED) throw new Error(UPDATES_DISABLED_STATUS.message); updateChecker.quitAndInstall(); return true; });
 ipcMain.handle('updates:status', async () => updateChecker.getStatus());
 updateChecker.onStatus(status => {
   try { mainWindow?.webContents?.send('updates:statusChanged', status); } catch {}
@@ -1545,7 +1604,7 @@ updateChecker.onStatus(status => {
   // Portable builds check too (portable-updater.js); a git checkout reports
   // itself as not updatable, so skip the check there to keep the log quiet.
   if (hasInstallerUpdateMetadata || !fs.existsSync(path.join(PORTABLE_ROOT(), '.git'))) {
-    setTimeout(() => { void updateChecker.check(); }, 5000);
+    if (!UPDATES_DISABLED) setTimeout(() => { void updateChecker.check(); }, 5000);
   }
   if (Array.isArray(recoveredMetadataJobs) && recoveredMetadataJobs.length) {
     setTimeout(() => {
@@ -1856,6 +1915,335 @@ ipcMain.handle('devices:sendTracks', async (evt, payload = {}) => {
   return result;
 });
 
+// Hive (MusicBee-style) player settings live under config.hivebee; the
+// renderer owns their meaning, main only stores a shallow-merged object.
+ipcMain.handle('hivebee:getSettings', async () => {
+  const config = await readJsonSafe(CONFIG_PATH(), { folders: [] });
+  return config.hivebee && typeof config.hivebee === 'object' ? config.hivebee : {};
+});
+ipcMain.handle('hivebee:saveSettings', async (_evt, patch = {}) => withJsonFileLock(CONFIG_PATH(), async () => {
+  const config = await readJsonSafe(CONFIG_PATH(), { folders: [] });
+  const current = config.hivebee && typeof config.hivebee === 'object' ? config.hivebee : {};
+  const next = { ...current };
+  for (const [key, value] of Object.entries(patch && typeof patch === 'object' ? patch : {})) {
+    next[key] = value && typeof value === 'object' && !Array.isArray(value) && current[key] && typeof current[key] === 'object'
+      ? { ...current[key], ...value } : value;
+  }
+  config.hivebee = next;
+  await writeJsonSafe(CONFIG_PATH(), config);
+  return next;
+}));
+
+// Hive interface size (MusicBee's font scaling): zoom the main window.
+ipcMain.handle('hivebee:setZoom', async (evt, factor) => {
+  const f = Math.max(0.7, Math.min(1.5, Number(factor) || 1));
+  try { if (mainWindow && evt.sender === mainWindow.webContents) mainWindow.webContents.setZoomFactor(f); } catch {}
+  return f;
+});
+
+// Track-change pop-up. The cover is resolved only inside Hive's own covers
+// cache (track.cover is a cache-relative name or an mbcover:// URL).
+let hivebeeLastPopup = null;
+ipcMain.handle('hivebee:trackPopup', async (_evt, info = {}) => {
+  const { Notification } = require('electron');
+  if (!Notification.isSupported()) return false;
+  let icon;
+  try {
+    const raw = String(info.cover || '').replace(/^mbcover:\/\/+/i, '').split(/[?#]/)[0];
+    const name = path.basename(decodeURIComponent(raw));
+    const file = name ? path.join(COVERS_DIR(), name) : '';
+    if (file && fs.existsSync(file)) icon = nativeImage.createFromPath(file).resize({ width: 256, height: 256 });
+  } catch {}
+  try { hivebeeLastPopup?.close(); } catch {}
+  const body = [info.artist, info.album].map(v => String(v || '').trim()).filter(Boolean).join(' — ');
+  const n = new Notification({ title: String(info.title || 'Now playing'), body, icon, silent: true, timeoutType: 'default' });
+  n.on('click', () => { try { mainWindow?.show(); mainWindow?.focus(); } catch {} });
+  n.show();
+  hivebeeLastPopup = n;
+  const seconds = Math.max(1, Math.min(30, Number(info.seconds) || 4));
+  setTimeout(() => { try { if (hivebeeLastPopup === n) n.close(); } catch {} }, seconds * 1000);
+  return true;
+});
+
+// ---------------------------------------------------------------------------
+// Hive "Organise files" (MusicBee's file organisation): rename/move tracks
+// by a naming template inside their own library folder, then remap every
+// path-keyed record Hive keeps so stats, playlists, Love dates and history
+// follow the files. Every run writes an undo log to <data>/organise-logs.
+// ---------------------------------------------------------------------------
+async function planOrganiseForPaths(paths, template) {
+  const config = await readJsonSafe(CONFIG_PATH(), { folders: [] });
+  const folders = resolveConfigFolders(config).map(f => path.resolve(f));
+  const cache = (await libraryCacheStore.get()) || { tracks: [] };
+  const byPath = new Map((cache.tracks || []).map(t => [path.resolve(String(t.path || '')), t]));
+  const groups = new Map();
+  const skipped = [];
+  for (const raw of Array.isArray(paths) ? paths : []) {
+    const p = path.resolve(String(raw || ''));
+    const track = byPath.get(p);
+    const root = folders.filter(f => isPathInsideFolder(p, f)).sort((a, b) => b.length - a.length)[0];
+    if (!track || !root) { skipped.push({ path: p, reason: !track ? 'not in the library' : 'outside the library folders' }); continue; }
+    if (!groups.has(root)) groups.set(root, []);
+    groups.get(root).push(track);
+  }
+  const moves = [];
+  for (const [root, tracks] of groups) moves.push(...planOrganise(tracks, { root, template, exists: p => fs.existsSync(p) }));
+  return { moves, skipped };
+}
+
+ipcMain.handle('organise:preview', async (_evt, payload = {}) => {
+  const template = String(payload.template || ORGANISE_DEFAULT_TEMPLATE);
+  const { moves, skipped } = await planOrganiseForPaths(payload.paths, template);
+  return { template, count: moves.length, moves: moves.slice(0, 200), skipped };
+});
+
+async function remapPathKeyedRecords(mapping) {
+  const remap = p => mapping.get(String(p || '')) || p;
+  const remapKeys = obj => {
+    if (!obj || typeof obj !== 'object' || Array.isArray(obj)) return obj;
+    const out = {};
+    for (const [k, v] of Object.entries(obj)) out[remap(k)] = v;
+    return out;
+  };
+  await withStatsMutation(async () => { await writeJsonSafe(STATS_PATH(), remapKeys(await readJsonSafe(STATS_PATH(), {}))); });
+  const cache = await libraryCacheStore.get();
+  if (cache && Array.isArray(cache.tracks)) {
+    cache.tracks = cache.tracks.map(t => (t?.path && mapping.has(t.path) ? { ...t, path: mapping.get(t.path) } : t));
+    await libraryCacheStore.set(cache);
+  }
+  await withJsonFileLock(PLAYLISTS_PATH(), async () => {
+    const lists = await readJsonSafe(PLAYLISTS_PATH(), []);
+    if (!Array.isArray(lists)) return;
+    await writeJsonSafe(PLAYLISTS_PATH(), lists.map(pl => ({
+      ...pl,
+      tracks: Array.isArray(pl.tracks) ? pl.tracks.map(remap) : pl.tracks,
+      trackAddedAt: remapKeys(pl.trackAddedAt),
+      favoriteAddedAt: remapKeys(pl.favoriteAddedAt)
+    })));
+  });
+  for (const file of [HISTORY_PATH(), LISTENING_EVENTS_PATH()]) {
+    const list = await readJsonSafe(file, null);
+    if (Array.isArray(list)) await writeJsonSafe(file, list.map(e => (e?.path && mapping.has(e.path) ? { ...e, path: mapping.get(e.path) } : e)));
+  }
+  const playback = await readJsonSafe(PLAYBACK_STATE_PATH(), null);
+  if (playback && typeof playback === 'object') {
+    if (Array.isArray(playback.paths)) playback.paths = playback.paths.map(remap);
+    if (playback.currentPath) playback.currentPath = remap(playback.currentPath);
+    await writeJsonSafe(PLAYBACK_STATE_PATH(), playback);
+  }
+  try { await databaseRequest('rename_tracks', { moves: [...mapping].map(([from, to]) => ({ from, to })) }); } catch (err) { crashDebug('ORGANISE DB RENAME FAILED', { message: err?.message || String(err) }); }
+}
+
+async function moveFileSafely(from, to) {
+  await fsp.mkdir(path.dirname(to), { recursive: true });
+  if (fs.existsSync(to)) throw new Error('target already exists');
+  try { await fsp.rename(from, to); }
+  catch (err) {
+    if (err?.code !== 'EXDEV') throw err;
+    await fsp.copyFile(from, to, fs.constants.COPYFILE_EXCL);
+    await fsp.unlink(from);
+  }
+}
+
+ipcMain.handle('organise:apply', async (_evt, payload = {}) => {
+  const template = String(payload.template || ORGANISE_DEFAULT_TEMPLATE);
+  const { moves, skipped } = await planOrganiseForPaths(payload.paths, template);
+  const done = [], errors = [];
+  const sourceDirs = new Set();
+  beginLibraryBulkWrite('Organising files');
+  try {
+    for (const { from, to } of moves) {
+      if (isPlaybackProtectedPath(from)) { skipped.push({ path: from, reason: 'playing now' }); continue; }
+      try {
+        markLibraryInternalWrite(from); markLibraryInternalWrite(to);
+        await moveFileSafely(from, to);
+        done.push({ from, to });
+        sourceDirs.add(path.dirname(from));
+        // Keep a same-named .lrc lyrics file with its track.
+        const lrcFrom = from.slice(0, from.length - path.extname(from).length) + '.lrc';
+        if (fs.existsSync(lrcFrom)) { try { await moveFileSafely(lrcFrom, to.slice(0, to.length - path.extname(to).length) + '.lrc'); } catch {} }
+      } catch (err) { errors.push({ path: from, error: err?.message || String(err) }); }
+    }
+    if (done.length) {
+      await remapPathKeyedRecords(new Map(done.map(m => [m.from, m.to])));
+      const logDir = path.join(USER_DATA(), 'organise-logs');
+      await fsp.mkdir(logDir, { recursive: true });
+      await writeJsonSafe(path.join(logDir, `organise-${new Date().toISOString().replace(/[:.]/g, '-')}.json`), { template, at: Date.now(), moves: done });
+    }
+    if (payload.removeEmptyFolders) {
+      const config = await readJsonSafe(CONFIG_PATH(), { folders: [] });
+      const roots = resolveConfigFolders(config).map(f => path.resolve(f));
+      for (const dir of [...sourceDirs].sort((a, b) => b.length - a.length)) {
+        for (let d = dir; roots.some(r => isPathInsideFolder(d, r) && d !== r); d = path.dirname(d)) {
+          try { if ((await fsp.readdir(d)).length) break; await fsp.rmdir(d); } catch { break; }
+        }
+      }
+    }
+  } finally {
+    endLibraryBulkWrite('Organising files');
+  }
+  return { moved: done, skipped, errors };
+});
+
+// Hive "Analyse volume": measure selected tracks with ffmpeg's EBU R128
+// scanner and write ReplayGain 2.0 tags (track, and album per album group)
+// through the metadata queue. Progress goes to the window as it runs.
+let replayGainAnalysisRunning = false;
+ipcMain.handle('replaygain:analyse', async (evt, payload = {}) => {
+  if (replayGainAnalysisRunning) throw new Error('A volume analysis is already running.');
+  replayGainAnalysisRunning = true;
+  try {
+    const cache = (await libraryCacheStore.get()) || { tracks: [] };
+    const byPath = new Map((cache.tracks || []).map(t => [t.path, t]));
+    const tracks = [];
+    for (const p of Array.isArray(payload.paths) ? payload.paths : []) {
+      const t = byPath.get(String(p));
+      if (t && await isTrackPathAllowedInLibrary(t.path) && fs.existsSync(t.path)) tracks.push(t);
+    }
+    const results = new Map(), errors = [];
+    let next = 0, done = 0;
+    const send = () => { try { evt.sender.send('replaygain:progress', { done, total: tracks.length }); } catch {} };
+    send();
+    const worker = async () => {
+      while (next < tracks.length) {
+        const t = tracks[next++];
+        try { results.set(t.path, { ...(await ReplayGainAnalyser.analyseFile(t.path)), duration: Number(t.duration) || 0 }); }
+        catch (err) { errors.push({ path: t.path, error: err?.message || String(err) }); }
+        done++; send();
+      }
+    };
+    await Promise.all(Array.from({ length: Math.min(3, Math.max(1, require('os').cpus().length - 1)) }, worker));
+    const albumKey = t => `${String(t.album || '').trim().toLowerCase()}\u0000${String(t.albumArtist || t.artist || '').trim().toLowerCase()}`;
+    const albums = new Map();
+    if (payload.album !== false) {
+      for (const t of tracks) {
+        if (!results.has(t.path) || !String(t.album || '').trim()) continue;
+        const key = albumKey(t);
+        if (!albums.has(key)) albums.set(key, []);
+        albums.get(key).push({ path: t.path, ...results.get(t.path) });
+      }
+    }
+    const albumValues = new Map([...albums].map(([k, list]) => [k, ReplayGainAnalyser.albumValues(list)]));
+    const jobs = [];
+    for (const t of tracks) {
+      const r = results.get(t.path);
+      if (!r) continue;
+      jobs.push({ kind: 'metadata', path: t.path, operation: 'metadata', artwork: null, tags: ReplayGainAnalyser.replayGainTags(r, payload.album !== false && String(t.album || '').trim() ? albumValues.get(albumKey(t)) : null) });
+    }
+    if (jobs.length && process.env.HIVEBEE_IMPORT_DRY_FILE_WRITES !== '1') enqueueMetadataSave(evt, jobs);
+    return { analysed: results.size, failed: errors.length, errors: errors.slice(0, 5), albums: albums.size, tags: jobs.slice(0, 3).map(j => j.tags) };
+  } finally {
+    replayGainAnalysisRunning = false;
+  }
+});
+
+// Hive File Converter (MusicBee's "Convert format"). Converted copies go
+// to a chosen folder (or beside the originals), named like the source or by
+// an organiser template; originals are never changed.
+let conversionRunning = false;
+ipcMain.handle('convert:chooseFolder', async () => {
+  const result = await dialog.showOpenDialog(mainWindow, { title: 'Save converted files to', properties: ['openDirectory', 'createDirectory'] });
+  return result.canceled ? '' : String(result.filePaths?.[0] || '');
+});
+ipcMain.handle('convert:run', async (evt, payload = {}) => {
+  if (conversionRunning) throw new Error('A conversion is already running.');
+  conversionRunning = true;
+  try {
+    const spec = FileConverter.formatSpec(payload.format, payload.quality);
+    const cache = (await libraryCacheStore.get()) || { tracks: [] };
+    const byPath = new Map((cache.tracks || []).map(t => [t.path, t]));
+    const tracks = (Array.isArray(payload.paths) ? payload.paths : []).map(p => byPath.get(String(p))).filter(t => t && fs.existsSync(t.path));
+    const destination = String(payload.destination || '').trim();
+    const outputs = [], errors = [];
+    const claimed = new Set();
+    let next = 0, done = 0;
+    const send = () => { try { evt.sender.send('convert:progress', { done, total: tracks.length }); } catch {} };
+    send();
+    const tempDir = path.join(app.getPath('temp'), 'hivebee-convert');
+    await fsp.mkdir(tempDir, { recursive: true });
+    const run = (cmd, args) => new Promise((resolve, reject) => {
+      const child = spawnTracked(cmd, args, { stdio: ['ignore', 'ignore', 'pipe'] });
+      let err = '';
+      child.stderr.on('data', c => { err += c; });
+      child.on('error', reject);
+      child.on('close', code => (code === 0 ? resolve() : reject(new Error(err.trim().split('\n').pop() || `ffmpeg exited ${code}`))));
+    });
+    const worker = async () => {
+      while (next < tracks.length) {
+        const t = tracks[next++];
+        try {
+          const relative = payload.useTemplate ? organiserRelativePath(t, payload.template) : '';
+          const out = FileConverter.outputPath(t.path, { destination, relative, format: payload.format, exists: p => fs.existsSync(p) || claimed.has(p) });
+          claimed.add(out);
+          await fsp.mkdir(path.dirname(out), { recursive: true });
+          await run('ffmpeg', FileConverter.ffmpegArgs(t.path, out, { format: payload.format, quality: spec.quality, sampleRate: payload.sampleRate, embedArtwork: payload.embedArtwork !== false }));
+          if (payload.embedArtwork !== false && spec.cover === 'tagger') {
+            const cover = path.join(tempDir, `${crypto.randomBytes(8).toString('hex')}.jpg`);
+            try {
+              await run('ffmpeg', ['-hide_banner', '-loglevel', 'error', '-nostdin', '-y', '-i', t.path, '-an', '-map', '0:v:0', '-frames:v', '1', cover]);
+              if (fs.existsSync(cover)) await runTagHelper({ op: 'embed_ogg_cover', path: out, imagePath: cover });
+            } catch {} finally { fsp.rm(cover, { force: true }).catch(() => {}); }
+          }
+          outputs.push({ from: t.path, to: out });
+        } catch (err) { errors.push({ path: t.path, error: err?.message || String(err) }); }
+        done++; send();
+      }
+    };
+    await Promise.all(Array.from({ length: Math.min(2, tracks.length || 1) }, worker));
+    return { converted: outputs.length, failed: errors.length, errors: errors.slice(0, 5), outputs: outputs.slice(0, 50) };
+  } finally {
+    conversionRunning = false;
+  }
+});
+
+// Equaliser presets are MusicBee .sde files in <data>/Equaliser, so a
+// MusicBee Equaliser folder can be copied straight in.
+const EQUALISER_DIR = () => path.join(USER_DATA(), 'Equaliser');
+const safePresetFile = name => {
+  const clean = String(name || '').replace(/[\\/:*?"<>|\x00-\x1f]/g, '').trim().slice(0, 80);
+  if (!clean || clean === '.' || clean === '..') throw new Error('Preset needs a name.');
+  return path.join(EQUALISER_DIR(), `${clean}.sde`);
+};
+async function listEqualiserPresets() {
+  const dir = EQUALISER_DIR();
+  await fsp.mkdir(dir, { recursive: true });
+  let files = (await fsp.readdir(dir)).filter(f => f.toLowerCase().endsWith('.sde'));
+  if (!files.length) {
+    for (const preset of HiveEqualiser.BUILT_IN) await fsp.writeFile(safePresetFile(preset.name), HiveEqualiser.serializeSde(preset));
+    files = (await fsp.readdir(dir)).filter(f => f.toLowerCase().endsWith('.sde'));
+  }
+  const presets = [];
+  for (const file of files) {
+    try { presets.push(HiveEqualiser.parseSde(await fsp.readFile(path.join(dir, file), 'utf8'), file.replace(/\.sde$/i, ''))); } catch {}
+  }
+  return presets.sort((a, b) => a.name.localeCompare(b.name, undefined, { sensitivity: 'base', numeric: true }));
+}
+ipcMain.handle('equaliser:listPresets', async () => listEqualiserPresets());
+ipcMain.handle('equaliser:savePreset', async (_evt, preset = {}) => {
+  await fsp.mkdir(EQUALISER_DIR(), { recursive: true });
+  await fsp.writeFile(safePresetFile(preset.name), HiveEqualiser.serializeSde(preset));
+  return listEqualiserPresets();
+});
+ipcMain.handle('equaliser:deletePreset', async (_evt, name) => {
+  await fsp.rm(safePresetFile(name), { force: true });
+  return listEqualiserPresets();
+});
+ipcMain.handle('equaliser:importPresets', async () => {
+  const result = await dialog.showOpenDialog(mainWindow, { title: 'Import equaliser presets (MusicBee .sde)', properties: ['openFile', 'multiSelections'], filters: [{ name: 'MusicBee equaliser preset', extensions: ['sde'] }] });
+  if (result.canceled) return { imported: 0, presets: await listEqualiserPresets() };
+  await fsp.mkdir(EQUALISER_DIR(), { recursive: true });
+  let imported = 0;
+  for (const file of result.filePaths || []) {
+    const name = path.basename(file).replace(/\.sde$/i, '');
+    try {
+      const preset = HiveEqualiser.parseSde(await fsp.readFile(file, 'utf8'), name);
+      await fsp.writeFile(safePresetFile(name), HiveEqualiser.serializeSde(preset));
+      imported++;
+    } catch {}
+  }
+  return { imported, presets: await listEqualiserPresets() };
+});
+
 ipcMain.handle('config:saveUiState', async (_evt, uiState = {}) => {
   const config = await readJsonSafe(CONFIG_PATH(), { folders: [] });
   const incoming = uiState && typeof uiState === 'object' ? uiState : {};
@@ -2066,6 +2454,37 @@ ipcMain.handle('themes:list', async () => {
   }
   themes.sort((a, b) => a.name.localeCompare(b.name));
   return { dir, themes };
+});
+// Hive: convert MusicBee XML skins into .hive-theme packs in the themes
+// folder (they then appear in Settings → Appearance like any other theme).
+ipcMain.handle('themes:importMusicBeeSkins', async () => {
+  const result = await dialog.showOpenDialog(mainWindow, { title: 'Import MusicBee skins (.xml)', properties: ['openFile', 'multiSelections'], filters: [{ name: 'MusicBee skin', extensions: ['xml'] }] });
+  if (result.canceled) return { imported: [], failed: [] };
+  const dir = THEMES_DIR();
+  await fsp.mkdir(dir, { recursive: true, mode: 0o700 });
+  const imported = [], failed = [];
+  for (const file of result.filePaths || []) {
+    const base = path.basename(file, path.extname(file));
+    try {
+      const theme = MusicBeeSkins.skinToHiveTheme(MusicBeeSkins.parseMusicBeeSkin(await fsp.readFile(file, 'utf8')), base);
+      const slug = String(theme.name).toLowerCase().replace(/[^a-z0-9]+/g, '-').replace(/^-+|-+$/g, '') || 'skin';
+      await writeJsonSafe(path.join(dir, `musicbee-${slug}.hive-theme`), theme);
+      imported.push(theme.name);
+    } catch (err) { failed.push(`${base}: ${err?.message || err}`); }
+  }
+  return { imported, failed };
+});
+// Hive colour editor: save the edited colours as a theme pack.
+ipcMain.handle('themes:saveCustom', async (_evt, theme = {}) => {
+  const name = String(theme.name || '').trim().slice(0, 60);
+  const css = String(theme.css || '');
+  if (!name || !css.trim()) throw new Error('A theme needs a name and colours.');
+  const slug = name.toLowerCase().replace(/[^a-z0-9]+/g, '-').replace(/^-+|-+$/g, '') || 'my-theme';
+  const dir = THEMES_DIR();
+  await fsp.mkdir(dir, { recursive: true, mode: 0o700 });
+  const file = `custom-${slug}.hive-theme`;
+  await writeJsonSafe(path.join(dir, file), { format: 'hive-theme', version: 1, name, css, source: 'Hive colour editor' });
+  return { file };
 });
 ipcMain.handle('themes:openFolder', async () => {
   const dir = THEMES_DIR();
@@ -4783,6 +5202,138 @@ ipcMain.handle('yearly-wrap:replacePlayCounts', async () => withStatsMutation(as
   // the new counts back here the UI keeps showing whatever it had before the
   // replacement until the next full restart/rescan.
   return { ok:true, importedPlays, importedTracks: counts.size, matchedTracks, ambiguous, unmatchedTracks: Math.max(0, counts.size - matchedTracks - ambiguous), updatedPlayCounts };
+}));
+
+// MusicBee library import (Hive). The user points at a MusicBee library
+// folder (the one holding MusicBeeLibrary.mbl); preview reports what would
+// change, apply writes play stats/date added, queues rating and Love writes
+// through the normal metadata queue, and hands converted playlists back to
+// the renderer, which saves them through playlists:save like any other.
+async function readMusicBeeLibraryFolder(folder) {
+  const dir = path.resolve(String(folder || ''));
+  const libraryFile = path.join(dir, 'MusicBeeLibrary.mbl');
+  if (!fs.existsSync(libraryFile)) throw new Error('That folder has no MusicBeeLibrary.mbl. Choose the MusicBee library folder (e.g. "MusicBee\\Library").');
+  const { records } = parseMusicBeeLibrary(await fsp.readFile(libraryFile));
+  const playlists = [];
+  const playlistDir = path.join(dir, 'Playlists');
+  let entries = [];
+  try { entries = await fsp.readdir(playlistDir, { withFileTypes:true }); } catch {}
+  for (const entry of entries) {
+    if (!entry.isFile()) continue;
+    const file = path.join(playlistDir, entry.name);
+    const ext = path.extname(entry.name).toLowerCase();
+    const name = path.basename(entry.name, path.extname(entry.name));
+    try {
+      if (ext === '.mbp') playlists.push({ kind:'static', name, paths: parseMusicBeePlaylist(await fsp.readFile(file)) });
+      else if (ext === '.xautopf') playlists.push({ kind:'smart', name, ...parseMusicBeeAutoPlaylist(await fsp.readFile(file, 'utf8'), name) });
+    } catch (err) {
+      playlists.push({ kind:'error', name, error: err?.message || String(err) });
+    }
+  }
+  // MusicBee keeps its settings and equaliser presets beside (or above) the
+  // library folder: <MusicBee>/AppData/MusicBee3Settings.ini, <MusicBee>/Equaliser.
+  let settingsFile = '', equaliserDir = '';
+  for (let up = dir, i = 0; i < 3; i++, up = path.dirname(up)) {
+    if (!settingsFile && fs.existsSync(path.join(up, 'AppData', 'MusicBee3Settings.ini'))) settingsFile = path.join(up, 'AppData', 'MusicBee3Settings.ini');
+    if (!equaliserDir && fs.existsSync(path.join(up, 'Equaliser'))) equaliserDir = path.join(up, 'Equaliser');
+  }
+  let settings = null;
+  if (settingsFile) { try { settings = mapMusicBeeSettings(parseMusicBeeSettings(await fsp.readFile(settingsFile, 'utf8'))); } catch {} }
+  let equaliserPresetFiles = [];
+  if (equaliserDir) { try { equaliserPresetFiles = (await fsp.readdir(equaliserDir)).filter(f => f.toLowerCase().endsWith('.sde')).map(f => path.join(equaliserDir, f)); } catch {} }
+  return { dir, records, playlists, settings, settingsFile, equaliserPresetFiles };
+}
+
+async function planMusicBeeLibraryImport(folder) {
+  const source = await readMusicBeeLibraryFolder(folder);
+  const libraryCache = (await libraryCacheStore.get()) || { tracks: [] };
+  const tracks = Array.isArray(libraryCache.tracks) ? libraryCache.tracks : [];
+  const stats = await readJsonSafe(STATS_PATH(), {});
+  const plan = buildMusicBeeImportPlan({ records: source.records, tracks, stats });
+  const match = createTrackMatcher(tracks);
+  const playlists = source.playlists.map(pl => {
+    if (pl.kind !== 'static') return pl;
+    const matched = [];
+    let missing = 0;
+    for (const p of pl.paths) { const t = match(p); if (t) matched.push(t.path); else missing++; }
+    return { kind:'static', name: pl.name, tracks: [...new Set(matched)], missing };
+  });
+  return { source, plan, playlists, libraryCache, stats };
+}
+
+const musicBeeImportSummary = ({ source, plan, playlists }) => ({
+  folder: source.dir,
+  records: source.records.length,
+  matched: plan.matched,
+  unmatched: plan.unmatched,
+  unmatchedSamples: plan.unmatchedSamples,
+  statUpdates: Object.keys(plan.statUpdates).length,
+  addedAtUpdates: Object.keys(plan.addedAt).length,
+  ratings: plan.ratingJobs.length,
+  loves: plan.loveJobs.length,
+  settingsFile: source.settingsFile || '',
+  settings: source.settings,
+  equaliserPresets: source.equaliserPresetFiles.length,
+  playlists: playlists.map(pl => pl.kind === 'static'
+    ? { kind:'static', name: pl.name, tracks: pl.tracks.length, missing: pl.missing }
+    : pl.kind === 'smart'
+      ? { kind:'smart', name: pl.name, rules: pl.rules.length, unsupported: pl.unsupported }
+      : { kind:'error', name: pl.name, error: pl.error })
+});
+
+ipcMain.handle('musicbee:chooseLibraryFolder', async () => {
+  const result = await dialog.showOpenDialog(mainWindow, { title: 'Choose your MusicBee library folder (contains MusicBeeLibrary.mbl)', properties: ['openDirectory'] });
+  return result.canceled ? '' : String(result.filePaths?.[0] || '');
+});
+
+ipcMain.handle('musicbee:previewLibraryImport', async (_evt, folder) => musicBeeImportSummary(await planMusicBeeLibraryImport(folder)));
+
+ipcMain.handle('musicbee:applyLibraryImport', async (evt, folder) => withStatsMutation(async () => {
+  const planned = await planMusicBeeLibraryImport(folder);
+  const { plan, libraryCache } = planned;
+  const stats = await readJsonSafe(STATS_PATH(), {});
+  for (const [trackPath, next] of Object.entries(plan.statUpdates)) stats[trackPath] = { ...(stats[trackPath] || {}), ...next };
+  await writeJsonSafe(STATS_PATH(), stats);
+  const updatedTracks = {};
+  if (Array.isArray(libraryCache.tracks)) {
+    libraryCache.tracks = libraryCache.tracks.map(track => {
+      if (!track?.path) return track;
+      const statUpdate = plan.statUpdates[track.path];
+      const addedAt = plan.addedAt[track.path];
+      if (!statUpdate && !addedAt) return track;
+      const next = { ...track };
+      if (statUpdate) Object.assign(next, { playCount: statUpdate.playCount, skipCount: statUpdate.skipCount, lastPlayedAt: statUpdate.lastPlayedAt });
+      if (addedAt) next.addedAt = addedAt;
+      updatedTracks[track.path] = { playCount: next.playCount, skipCount: next.skipCount, lastPlayedAt: next.lastPlayedAt, addedAt: next.addedAt };
+      return next;
+    });
+    await libraryCacheStore.set(libraryCache);
+  }
+  const fileJobs = [...plan.ratingJobs, ...plan.loveJobs];
+  // Test hook: headless runs against a copy of real data must not rewrite the
+  // user's actual music files, which every profile shares.
+  if (fileJobs.length && process.env.HIVEBEE_IMPORT_DRY_FILE_WRITES !== '1') enqueueMetadataSave(evt, fileJobs);
+  const playlists = planned.playlists
+    .filter(pl => pl.kind === 'static' || pl.kind === 'smart')
+    .map(pl => pl.kind === 'static'
+      ? { name: pl.name, tracks: pl.tracks, smart: false, description: 'Imported from MusicBee' }
+      : { name: pl.name, tracks: [], smart: true, match: pl.match, rules: pl.rules, limit: pl.limit, sort: pl.sort, smartShuffle: pl.smartShuffle,
+          filterDuplicates: pl.filterDuplicates, selectBy: 'track', sourceType: 'library', sourceValue: 'library', autoRefresh: true,
+          displayView: 'songs', description: pl.description || 'Imported from MusicBee' });
+  // Equaliser presets are plain .sde files: copy them in as-is (normalised).
+  let importedPresets = 0;
+  if (planned.source.equaliserPresetFiles.length) {
+    await fsp.mkdir(EQUALISER_DIR(), { recursive: true });
+    for (const file of planned.source.equaliserPresetFiles) {
+      const name = path.basename(file).replace(/\.sde$/i, '');
+      try {
+        await fsp.writeFile(safePresetFile(name), HiveEqualiser.serializeSde(HiveEqualiser.parseSde(await fsp.readFile(file, 'utf8'), name)));
+        importedPresets++;
+      } catch {}
+    }
+  }
+  return { ok: true, summary: musicBeeImportSummary(planned), updatedTracks, ratings: plan.ratingJobs, loves: plan.loveJobs, playlists,
+    settings: planned.source.settings, importedPresets, equaliserPresets: importedPresets ? await listEqualiserPresets() : null };
 }));
 
 ipcMain.handle('yearly-wrap:getYears', async () => {

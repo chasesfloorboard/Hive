@@ -12,8 +12,8 @@ test('Build 171 exposes Add to submenu with New Playlist, Favorites, and writabl
   assert.match(renderer, /label:\s*'\+ New Playlist'/);
   assert.match(renderer, /starFavoritesPlaylist\(\)/);
   assert.match(renderer, /String\(pl\.source \|\| ''\)\.toLowerCase\(\) === 'spotify'/);
-  assert.match(renderer, /label:'Add to',(?:icon:'plus',)?submenu:buildAddToPlaylistSubmenu\(queueTracks\)/);
-  assert.match(renderer, /label:'Add to', (?:icon:'plus', )?submenu:buildAddToPlaylistSubmenu\(albumTracks\)/);
+  assert.match(renderer, /label:'Add to',icon:'plus',(?:menuKey:'addTo',)?submenu:buildAddToPlaylistSubmenu\(queueTracks\)/);
+  assert.match(renderer, /label:'Add to', icon:'plus', (?:menuKey:'addTo', )?submenu:buildAddToPlaylistSubmenu\(albumTracks\)/);
 });
 
 test('Build 171 Add to submenu creates a playlist or appends selected tracks without duplicates', () => {
@@ -66,7 +66,7 @@ test('Build 171 adds spacing between Rating and its submenu arrow', () => {
 // never a separate Remove-Love button; a single-track selection keeps its own
 // toggle since there is no ambiguity there.
 test('bulk Love context-menu action is a single "Love N tracks" button that always loves, never a toggle', () => {
-  const start = renderer.indexOf("label:'Rating',icon:'star',submenu:[");
+  const start = renderer.indexOf("label:'Rating',icon:'star',menuKey:'rating',submenu:[");
   const end = renderer.indexOf("{label:'5 stars'", start);
   assert.ok(start >= 0 && end > start, 'Rating submenu must be present');
   const block = renderer.slice(start, end);

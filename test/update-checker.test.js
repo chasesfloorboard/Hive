@@ -123,9 +123,12 @@ test('package.json declares a GitHub publish target for electron-updater, pointe
 test('main.js wires the update checker to IPC, using the portable updater unless this is an installer build', () => {
   assert.match(main, /const \{ autoUpdater \} = require\('electron-updater'\);/);
   assert.match(main, /autoUpdater: hasInstallerUpdateMetadata \? autoUpdater : createPortableUpdater\(\{/);
-  assert.match(main, /ipcMain\.handle\('updates:check', async \(\) => updateChecker\.check\(\)\);/);
-  assert.match(main, /ipcMain\.handle\('updates:download', async \(\) => updateChecker\.download\(\)\);/);
-  assert.match(main, /ipcMain\.handle\('updates:install', async \(\) => \{ updateChecker\.quitAndInstall\(\); return true; \}\);/);
+  // Hive: the same wiring, behind the fork's HIVE_DISABLE_UPDATES guard
+  // (a Hive release would otherwise be installed over the fork).
+  assert.match(main, /const UPDATES_DISABLED = process\.env\.HIVE_DISABLE_UPDATES === '1';/);
+  assert.match(main, /ipcMain\.handle\('updates:check', async \(\) => \(UPDATES_DISABLED \? UPDATES_DISABLED_STATUS : updateChecker\.check\(\)\)\);/);
+  assert.match(main, /ipcMain\.handle\('updates:download', async \(\) => \{ if \(UPDATES_DISABLED\) throw [^}]*\}; return updateChecker\.download\(\); \}\);|ipcMain\.handle\('updates:download', async \(\) => \{ if \(UPDATES_DISABLED\) throw new Error\(UPDATES_DISABLED_STATUS\.message\); return updateChecker\.download\(\); \}\);/);
+  assert.match(main, /ipcMain\.handle\('updates:install', async \(\) => \{ if \(UPDATES_DISABLED\) throw new Error\(UPDATES_DISABLED_STATUS\.message\); updateChecker\.quitAndInstall\(\); return true; \}\);/);
   assert.match(main, /ipcMain\.handle\('updates:status', async \(\) => updateChecker\.getStatus\(\)\);/);
   // electron-updater is only for installer builds (they carry app-update.yml).
   // Real bug, confirmed live: bare app.isPackaged is not reliable -- the Linux

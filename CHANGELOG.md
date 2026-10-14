@@ -1,3 +1,14 @@
+# 2.0.0 — MusicBee's features and settings, in Hive
+
+Hive 2.0 rebuilds most of what MusicBee does well, in Hive's own UI. See `docs/HIVE-2.0.md` for how each part works.
+
+- **Bring your MusicBee library over** (Hive menu → Import MusicBee library…): play and skip counts, last played, date added, ratings and Love, static and auto playlists, equaliser presets and MusicBee's player settings. Previewed before anything is written; counts never go down and Hive's own ratings win.
+- **Sound:** 10/15-band equaliser with preamp, MusicBee `.sde` presets, Manual and Auto-Select by Genre; stereo balance; tempo and pitch (opt-in); crossfade (not within an album, optional on skip); fade on pause and resume; Smart ReplayGain.
+- **Playback:** stop after current and sleep timer (right-click Play); shuffle by track, album, artist, grouping or work, with same-artist spreading; Auto-DJ that keeps tracks queued, with source, artist gap, similar artists, recently-played and rating filters; track-change pop-ups; a mini player.
+- **Library tools:** column browser (Genre → Album Artist → Album, configurable, virtual tags); Organise files by naming template (stats, playlists and history follow the files; undo log); Tag tools (find & replace, case, copy/swap fields); Analyse volume (ReplayGain 2.0 tags); Convert (MP3, AAC, Opus, Ogg, FLAC); Find duplicates; virtual tags; smart playlist rules "in the last" and "does not contain".
+- **Customisation:** right-click menus grouped into Play / Edit / Rating / Add to / Send to / Find / Tools with an icon per entry, and sections you can hide; MusicBee skins import as themes; colour editor; panel arrangement (show/hide/swap panels, lyrics left or right, player bar on top); more track-list columns, row density, interface size.
+- **Fixes:** MP3s without an ID3 tag could not be tagged at all ("Missing filename or fileobj argument"); auto-tag showed a broken cover when the chosen release had no art, and ranked an album over the single you were tagging.
+
 # 1.0.5 — Monstercat Visualizer, no unneeded startup scans, lower idle CPU and disk use
 
 - **Monstercat Visualizer, as a real plugin.** A Visualizer page in the left sidebar: Monstercat-style spectrum bars (63 by default, 20 Hz–16 kHz, Monstercat smoothing, fast rise and adjustable fall) with the playing track's cover art, artist and title, drawn in Hive's current theme. Bundled in `resources/hive-plugins/monstercat-visualizer` and installed into the user's plugin folder (a copy Hive placed is updated when a new version ships; a user's own copy or a deleted one is left alone). Right-clicking the entry shows Plugin info and Plugin settings. The look and defaults follow marcopixel/monstercat-visualizer (MIT, credited in the plugin's README); no code is copied.

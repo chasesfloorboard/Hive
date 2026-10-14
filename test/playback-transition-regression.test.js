@@ -117,5 +117,6 @@ test('scrubbing after a track ends with no next queue track resumes the still-al
   assert.match(idleEosBlock, /gstCompatibleTrack\(currentQueue\[currentIndex\]\)/);
   assert.match(idleEosBlock, /gstActive = true;/);
   assert.match(idleEosBlock, /engineEnded = false;/);
-  assert.match(idleEosBlock, /gstSend\('SEEKPLAY\\t' \+ String\(target\)\);/);
+  // Hive: the helper takes positions in output time (song time / tempo).
+  assert.match(idleEosBlock, /gstSend\('SEEKPLAY\\t' \+ String\(target \/ hivebeeTempoFactor\(\)\)\);/);
 });

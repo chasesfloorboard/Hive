@@ -42,7 +42,10 @@
           <button class="dropdown-item" data-action="settings">⚙ Settings</button>
           <button class="dropdown-item" data-action="about">ℹ About Hive</button>
           <div class="dropdown-divider"></div>
-          <button class="dropdown-item" data-action="check-updates">Check for Updates…</button>
+          <button class="dropdown-item" data-action="equaliser">Equaliser…</button>
+          <button class="dropdown-item" data-action="mini-player">Mini player</button>
+          <button class="dropdown-item" data-action="find-duplicates">Find duplicates…</button>
+          <button class="dropdown-item" data-action="import-musicbee">Import MusicBee library…</button>
         </div>
       </div>
       <div class="topbar-tabs" id="topbar-tabs"><button id="tab-add-btn" class="tab tab-add" title="Add tab">+</button></div>
@@ -127,7 +130,9 @@
             <button class="view-btn active" data-mode="albums">Albums</button>
             <button class="view-btn" data-mode="songs">Tracks</button>
             <button class="view-btn" data-mode="artists">Artists</button>
+            <button class="view-btn column-browser-toggle hidden" type="button" aria-pressed="false" title="MusicBee-style column browser: filter by genre, artist and album">Browser</button>
           </div>
+          <div class="column-browser hidden" aria-label="Column browser"></div>
         </div>
 
         <div id="albums-grid" class="grid"></div>
@@ -191,6 +196,8 @@
         <button id="btn-love" class="icon-btn" title="Love"></button>
         <button id="btn-shuffle" class="icon-btn" title="Shuffle"></button>
         <button id="btn-repeat" class="icon-btn" title="Repeat"></button>
+        <button id="btn-eq" class="icon-btn" title="Equaliser"></button>
+        <button id="btn-mini" class="icon-btn" title="Mini player"></button>
         <div class="playbar-volume">
           <input id="pb-volume" type="range" min="0" max="100" value="80" aria-label="Volume" />
           <button id="pb-vol-icon" class="icon-btn" title="Mute"></button>
@@ -241,11 +248,95 @@
             <header class="settings-section-head"><h4 class="settings-section-title">Volume leveling</h4><p class="settings-section-desc">Uses ReplayGain tags embedded in your files. Off in bit-perfect mode.</p></header>
             <label class="settings-row">
               <span class="settings-row-text"><span class="settings-row-label">ReplayGain</span><span class="settings-hint">Album gain keeps an album's own dynamics and falls back to track gain.</span></span>
-              <select id="setting-replaygain-mode" class="settings-select"><option value="off">Off</option><option value="track">Track gain</option><option value="album">Album gain</option></select>
+              <select id="setting-replaygain-mode" class="settings-select"><option value="off">Off</option><option value="track">Track gain</option><option value="album">Album gain</option><option value="smart">Smart (album gain when playing an album in order)</option></select>
             </label>
             <label class="settings-row">
               <span class="settings-row-text"><span class="settings-row-label">Prevent clipping</span><span class="settings-hint">Use each file's peak value so leveling never distorts.</span></span>
               <input type="checkbox" id="setting-replaygain-clipping" checked />
+            </label>
+          </section>
+
+          <section class="settings-section">
+            <header class="settings-section-head"><h4 class="settings-section-title">Sound</h4><p class="settings-section-desc">MusicBee-style equaliser (10 or 15 bands, presets, auto-select by genre) and stereo balance. Off in bit-perfect mode.</p></header>
+            <div class="settings-row">
+              <span class="settings-row-text"><span class="settings-row-label">Equaliser</span><span class="settings-hint">Also on the player bar. Imports MusicBee .sde presets.</span></span>
+              <span class="settings-row-control"><button id="open-equaliser-btn" class="sidebar-add" type="button">Open equaliser…</button></span>
+            </div>
+            <label class="settings-row">
+              <span class="settings-row-text"><span class="settings-row-label">Fade on pause and resume</span><span class="settings-hint">Fade out before pausing and back in when playing again.</span></span>
+              <select class="settings-select" data-hivebee-pref="player.fadePauseMs"><option value="0">Off</option><option value="300">Short (0.3 s)</option><option value="700">Medium (0.7 s)</option><option value="1500">Long (1.5 s)</option></select>
+            </label>
+          </section>
+
+          <section class="settings-section">
+            <header class="settings-section-head"><h4 class="settings-section-title">Crossfade</h4><p class="settings-section-desc">Blend the end of one track into the start of the next. Off in bit-perfect mode.</p></header>
+            <label class="settings-row">
+              <span class="settings-row-text"><span class="settings-row-label">Crossfade</span></span>
+              <select class="settings-select" data-hivebee-pref="crossfade.ms"><option value="0">Off</option><option value="2000">2 seconds</option><option value="4000">4 seconds</option><option value="6000">6 seconds</option><option value="8000">8 seconds</option><option value="10000">10 seconds</option><option value="12000">12 seconds</option></select>
+            </label>
+            <label class="settings-row">
+              <span class="settings-row-text"><span class="settings-row-label">Not between tracks of the same album</span><span class="settings-hint">Keeps live albums and gapless mixes seamless.</span></span>
+              <input type="checkbox" data-hivebee-pref="crossfade.excludeAlbums" />
+            </label>
+            <label class="settings-row">
+              <span class="settings-row-text"><span class="settings-row-label">Crossfade when skipping</span><span class="settings-hint">Also blend when you press Next.</span></span>
+              <input type="checkbox" data-hivebee-pref="crossfade.onSkip" />
+            </label>
+          </section>
+
+          <section class="settings-section">
+            <header class="settings-section-head"><h4 class="settings-section-title">Shuffle</h4><p class="settings-section-desc">How the player's Shuffle button orders the queue.</p></header>
+            <label class="settings-row">
+              <span class="settings-row-text"><span class="settings-row-label">Shuffle by</span><span class="settings-hint">Album, Artist, Grouping and Work keep each group's tracks together and in order, and shuffle the groups.</span></span>
+              <select class="settings-select" data-hivebee-pref="shuffle.by"><option value="track">Track</option><option value="album">Album</option><option value="artist">Artist</option><option value="grouping">Grouping</option><option value="work">Work</option></select>
+            </label>
+            <label class="settings-row">
+              <span class="settings-row-text"><span class="settings-row-label">Spread out the same artist</span><span class="settings-hint">Avoid two songs by the same artist back to back.</span></span>
+              <select class="settings-select" data-hivebee-pref="shuffle.sameArtistBias"><option value="0">Off</option><option value="1">On</option></select>
+            </label>
+          </section>
+
+          <section class="settings-section">
+            <header class="settings-section-head"><h4 class="settings-section-title">Auto-DJ</h4><p class="settings-section-desc">Turn Auto-DJ on from the queue menu. It keeps tracks queued ahead so playback never runs out.</p></header>
+            <label class="settings-row">
+              <span class="settings-row-text"><span class="settings-row-label">Play from</span></span>
+              <select class="settings-select" data-hivebee-pref="autodj.source"><option value="library">Whole library</option></select>
+            </label>
+            <label class="settings-row">
+              <span class="settings-row-text"><span class="settings-row-label">Tracks to keep queued</span></span>
+              <select class="settings-select" data-hivebee-pref="autodj.upcoming"><option value="1">1</option><option value="3">3</option><option value="5">5</option><option value="10">10</option><option value="20">20</option></select>
+            </label>
+            <label class="settings-row">
+              <span class="settings-row-text"><span class="settings-row-label">Same artist no closer than</span><span class="settings-hint">Tracks between two songs by one artist.</span></span>
+              <select class="settings-select" data-hivebee-pref="autodj.artistGap"><option value="0">No limit</option><option value="2">2 tracks</option><option value="5">5 tracks</option><option value="10">10 tracks</option></select>
+            </label>
+            <label class="settings-row">
+              <span class="settings-row-text"><span class="settings-row-label">Prefer similar artists</span><span class="settings-hint">Uses Last.fm similar artists for the playing track.</span></span>
+              <input type="checkbox" data-hivebee-pref="autodj.similar" />
+            </label>
+            <label class="settings-row">
+              <span class="settings-row-text"><span class="settings-row-label">Skip tracks played in the last</span></span>
+              <select class="settings-select" data-hivebee-pref="autodj.skipPlayedDays"><option value="0">Don't skip</option><option value="1">day</option><option value="7">week</option><option value="30">month</option><option value="90">3 months</option></select>
+            </label>
+            <label class="settings-row">
+              <span class="settings-row-text"><span class="settings-row-label">Minimum rating</span></span>
+              <select class="settings-select" data-hivebee-pref="autodj.minRating"><option value="0">Any</option><option value="3">3 stars</option><option value="4">4 stars</option><option value="5">5 stars</option></select>
+            </label>
+          </section>
+
+          <section class="settings-section">
+            <header class="settings-section-head"><h4 class="settings-section-title">Track change pop-up</h4><p class="settings-section-desc">A desktop notification with the cover when a new track starts.</p></header>
+            <label class="settings-row">
+              <span class="settings-row-text"><span class="settings-row-label">Show a pop-up</span></span>
+              <input type="checkbox" data-hivebee-pref="popup.enabled" />
+            </label>
+            <label class="settings-row">
+              <span class="settings-row-text"><span class="settings-row-label">Only when Hive isn't the active window</span></span>
+              <input type="checkbox" data-hivebee-pref="popup.inactiveOnly" />
+            </label>
+            <label class="settings-row">
+              <span class="settings-row-text"><span class="settings-row-label">Show for</span><span class="settings-hint">Seconds before it closes.</span></span>
+              <select class="settings-select" data-hivebee-pref="popup.seconds"><option value="2">2 seconds</option><option value="4">4 seconds</option><option value="6">6 seconds</option><option value="10">10 seconds</option></select>
             </label>
           </section>
 
@@ -260,6 +351,32 @@
 
         <!-- ================= LIBRARY ================= -->
         <div id="settings-panel-library" class="settings-tab-panel" role="tabpanel" aria-labelledby="settings-tab-library" tabindex="0" data-settings-panel="library">
+          <section class="settings-section">
+            <header class="settings-section-head"><h4 class="settings-section-title">Virtual tags</h4><p class="settings-section-desc">Fields worked out from other tags with a formula (same syntax as Organise files: &lt;Field&gt;, $If, $IsNull, $Upper, $Lower, $Left). Use them in smart playlists and the column browser.</p></header>
+            <div class="settings-row virtual-tag-row">
+              <span class="settings-row-text"><input class="virtual-tag-name" data-hivebee-pref="virtual.virtual1.name" placeholder="Virtual 1" aria-label="Virtual 1 name"></span>
+              <span class="settings-row-control"><input class="virtual-tag-formula" data-hivebee-pref="virtual.virtual1.formula" placeholder="e.g. $If(&lt;Album Artist&gt;,&lt;Album Artist&gt;,&lt;Artist&gt;)" spellcheck="false" aria-label="Virtual 1 formula"></span>
+            </div>
+            <div class="settings-row virtual-tag-row">
+              <span class="settings-row-text"><input class="virtual-tag-name" data-hivebee-pref="virtual.virtual2.name" placeholder="Virtual 2" aria-label="Virtual 2 name"></span>
+              <span class="settings-row-control"><input class="virtual-tag-formula" data-hivebee-pref="virtual.virtual2.formula" placeholder="e.g. $If(&lt;Album Artist&gt;,&lt;Album Artist&gt;,&lt;Artist&gt;)" spellcheck="false" aria-label="Virtual 2 formula"></span>
+            </div>
+            <div class="settings-row virtual-tag-row">
+              <span class="settings-row-text"><input class="virtual-tag-name" data-hivebee-pref="virtual.virtual3.name" placeholder="Virtual 3" aria-label="Virtual 3 name"></span>
+              <span class="settings-row-control"><input class="virtual-tag-formula" data-hivebee-pref="virtual.virtual3.formula" placeholder="e.g. $If(&lt;Album Artist&gt;,&lt;Album Artist&gt;,&lt;Artist&gt;)" spellcheck="false" aria-label="Virtual 3 formula"></span>
+            </div>
+          </section>
+
+          <section class="settings-section">
+            <header class="settings-section-head"><h4 class="settings-section-title">Column browser</h4><p class="settings-section-desc">The panes above the Tracks list (Tracks view → Browser), left to right.</p></header>
+            <div class="settings-row column-browser-settings">
+              <select class="settings-select" data-hivebee-pref="browser.column1" aria-label="Column 1"><option value="genre">Genre</option><option value="albumArtist">Album Artist</option><option value="artist">Artist</option><option value="album">Album</option><option value="year">Year</option><option value="composer">Composer</option><option value="grouping">Grouping</option><option value="publisher">Publisher</option><option value="virtual1">Virtual 1</option><option value="virtual2">Virtual 2</option><option value="virtual3">Virtual 3</option></select>
+              <select class="settings-select" data-hivebee-pref="browser.column2" aria-label="Column 2"><option value="genre">Genre</option><option value="albumArtist">Album Artist</option><option value="artist">Artist</option><option value="album">Album</option><option value="year">Year</option><option value="composer">Composer</option><option value="grouping">Grouping</option><option value="publisher">Publisher</option><option value="virtual1">Virtual 1</option><option value="virtual2">Virtual 2</option><option value="virtual3">Virtual 3</option></select>
+              <select class="settings-select" data-hivebee-pref="browser.column3" aria-label="Column 3"><option value="genre">Genre</option><option value="albumArtist">Album Artist</option><option value="artist">Artist</option><option value="album">Album</option><option value="year">Year</option><option value="composer">Composer</option><option value="grouping">Grouping</option><option value="publisher">Publisher</option><option value="virtual1">Virtual 1</option><option value="virtual2">Virtual 2</option><option value="virtual3">Virtual 3</option></select>
+              <select class="settings-select" data-hivebee-pref="browser.column4" aria-label="Column 4"><option value="">(none)</option><option value="genre">Genre</option><option value="albumArtist">Album Artist</option><option value="artist">Artist</option><option value="album">Album</option><option value="year">Year</option><option value="composer">Composer</option><option value="grouping">Grouping</option><option value="publisher">Publisher</option><option value="virtual1">Virtual 1</option><option value="virtual2">Virtual 2</option><option value="virtual3">Virtual 3</option></select>
+            </div>
+          </section>
+
           <section class="settings-section">
             <header class="settings-section-head"><h4 class="settings-section-title">Music folders</h4><p class="settings-section-desc">Folders Hive scans for music. Removing one only takes it out of Hive; files are never touched.</p></header>
             <div id="settings-folder-list" class="settings-folder-list"></div>
@@ -308,6 +425,10 @@
           <section class="settings-section">
             <header class="settings-section-head"><h4 class="settings-section-title">Listening history</h4><p class="settings-section-desc">Play history used by Yearly Wrap and the Plays column.</p></header>
             <div class="settings-row">
+              <span class="settings-row-text"><span class="settings-row-label">MusicBee library</span><span id="musicbee-library-import-status" class="settings-hint" aria-live="polite">Bring over play counts, skips, last played, date added, ratings, Love and playlists from a MusicBee library folder.</span></span>
+              <span class="settings-row-control"><button id="import-musicbee-library-btn" class="sidebar-add" type="button">Import…</button></span>
+            </div>
+            <div class="settings-row">
               <span class="settings-row-text"><span class="settings-row-label">Wrapped data</span><span id="musicbee-wrapped-import-status" class="settings-hint" aria-live="polite">No Wrapped history yet.</span></span>
               <span class="settings-row-control">
                 <button id="import-musicbee-wrapped-btn" class="sidebar-add" type="button">Import…</button>
@@ -324,11 +445,76 @@
         <!-- ================= APPEARANCE ================= -->
         <div id="settings-panel-appearance" class="settings-tab-panel" role="tabpanel" aria-labelledby="settings-tab-appearance" tabindex="0" data-settings-panel="appearance">
           <section class="settings-section">
+            <header class="settings-section-head"><h4 class="settings-section-title">Panels</h4><p class="settings-section-desc">Arrange the window like MusicBee: show, hide and swap panels.</p></header>
+            <label class="settings-row">
+              <span class="settings-row-text"><span class="settings-row-label">Left panel</span><span class="settings-hint">Sidebar with your library, playlists and folders.</span></span>
+              <input type="checkbox" data-hivebee-pref="layout.sidebar" />
+            </label>
+            <label class="settings-row">
+              <span class="settings-row-text"><span class="settings-row-label">Show lyrics</span></span>
+              <input type="checkbox" data-hivebee-pref="layout.lyrics" />
+            </label>
+            <label class="settings-row">
+              <span class="settings-row-text"><span class="settings-row-label">Lyrics panel</span></span>
+              <select class="settings-select" data-hivebee-pref="layout.lyricsSide"><option value="left">Left panel</option><option value="right">Right panel</option></select>
+            </label>
+            <label class="settings-row">
+              <span class="settings-row-text"><span class="settings-row-label">Right panel</span><span class="settings-hint">Playing tracks and Now Playing.</span></span>
+              <input type="checkbox" data-hivebee-pref="layout.rightPanel" />
+            </label>
+            <label class="settings-row">
+              <span class="settings-row-text"><span class="settings-row-label">Playing tracks list</span></span>
+              <input type="checkbox" data-hivebee-pref="layout.queueList" />
+            </label>
+            <label class="settings-row">
+              <span class="settings-row-text"><span class="settings-row-label">Now Playing details and cover</span></span>
+              <input type="checkbox" data-hivebee-pref="layout.nowPlaying" />
+            </label>
+            <label class="settings-row">
+              <span class="settings-row-text"><span class="settings-row-label">Swap left and right panels</span></span>
+              <input type="checkbox" data-hivebee-pref="layout.swap" />
+            </label>
+            <label class="settings-row">
+              <span class="settings-row-text"><span class="settings-row-label">Player bar at the top</span></span>
+              <input type="checkbox" data-hivebee-pref="layout.playerTop" />
+            </label>
+            <label class="settings-row">
+              <span class="settings-row-text"><span class="settings-row-label">Track list rows</span><span class="settings-hint">Columns: right-click the Tracks header (drag headers to reorder).</span></span>
+              <select class="settings-select" data-hivebee-pref="layout.density"><option value="comfortable">Comfortable</option><option value="compact">Compact</option><option value="tight">Tight</option></select>
+            </label>
+            <label class="settings-row">
+              <span class="settings-row-text"><span class="settings-row-label">Cover thumbnails in track rows</span></span>
+              <input type="checkbox" data-hivebee-pref="layout.rowArt" />
+            </label>
+            <label class="settings-row">
+              <span class="settings-row-text"><span class="settings-row-label">Interface size</span><span class="settings-hint">Scales text and controls everywhere.</span></span>
+              <select class="settings-select" data-hivebee-pref="layout.zoom"><option value="80">80%</option><option value="90">90%</option><option value="100">100%</option><option value="110">110%</option><option value="125">125%</option><option value="150">150%</option></select>
+            </label>
+          </section>
+
+          <section class="settings-section">
+            <header class="settings-section-head"><h4 class="settings-section-title">Right-click menu</h4><p class="settings-section-desc">Choose which sections the track and album right-click menus show.</p></header>
+            <div id="context-menu-sections" class="context-menu-sections"></div>
+          </section>
+
+          <section class="settings-section">
             <header class="settings-section-head"><h4 class="settings-section-title">Theme</h4></header>
             <label class="settings-row">
               <span class="settings-row-text"><span class="settings-row-label">Base theme</span><span id="builtin-theme-description" class="settings-hint theme-description"></span></span>
               <select id="builtin-theme-select" class="settings-select" aria-label="Theme"></select>
             </label>
+            <div class="settings-row colour-editor-row">
+              <span class="settings-row-text"><span class="settings-row-label">Customise colours</span><span class="settings-hint">Changes preview live. Save keeps them as your own theme.</span></span>
+              <span class="settings-row-control colour-editor">
+                <label title="Background"><input type="color" data-colour-var="--bg"><span>Background</span></label>
+                <label title="Panels"><input type="color" data-colour-var="--panel"><span>Panels</span></label>
+                <label title="Text"><input type="color" data-colour-var="--text"><span>Text</span></label>
+                <label title="Secondary text"><input type="color" data-colour-var="--text-dim"><span>Secondary</span></label>
+                <label title="Accent"><input type="color" data-colour-var="--accent"><span>Accent</span></label>
+                <button id="colour-save-btn" class="sidebar-add" type="button">Save as theme…</button>
+                <button id="colour-reset-btn" class="sidebar-add" type="button">Reset</button>
+              </span>
+            </div>
             <label class="settings-row">
               <span class="settings-row-text"><span class="settings-row-label">Scheduled theme</span><span class="settings-hint">Switch between a day theme and a night theme at set times. While on, it picks the theme instead of Base theme.</span></span>
               <input type="checkbox" id="setting-theme-schedule" />
@@ -355,6 +541,7 @@
                 <button id="theme-open-folder-btn" class="sidebar-add" type="button">Open folder</button>
                 <button id="theme-import-btn" class="sidebar-add" type="button">Import…</button>
                 <button id="theme-export-btn" class="sidebar-add" type="button">Export…</button>
+                <button id="theme-import-musicbee-btn" class="sidebar-add" type="button" title="Turn MusicBee XML skins into Hive themes">MusicBee skin…</button>
               </span>
             </div>
           </section>
@@ -1047,6 +1234,10 @@
 
   <script src="icons.js"></script>
   <script src="theme-schedule.js"></script>
+  <script src="equaliser.js"></script>
+  <script src="tag-tools.js"></script>
+  <script src="duplicates.js"></script>
+  <script src="../main/file-organiser.js"></script>
   <script src="colorExtract.js"></script>
   <script src="renderer.js"></script>
 </body>

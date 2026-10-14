@@ -90,6 +90,21 @@ for line in sys.stdin:
                     (str(t.get('path','')),str(t.get('artist','') or ''),str(t.get('album','') or ''),str(t.get('title','') or ''),str(t.get('albumArtist','') or ''),float(t.get('fileMtimeMs') or 0),int(t.get('fileSize') or 0),1 if t.get('loved') else 0,json.dumps(t,separators=(',',':')),now) for t in tracks if t.get('path')
                 ])
             reply(req, {'count':len(tracks)})
+        elif cmd=='rename_tracks':
+            # Hive "Organise files": move rows to their new paths, keeping
+            # every stored field (the payload's own path is rewritten too).
+            renamed=0
+            with conn:
+                for pair in req.get('moves') or []:
+                    old=str(pair.get('from') or ''); new=str(pair.get('to') or '')
+                    if not old or not new or old==new: continue
+                    row=conn.execute('SELECT payload FROM tracks WHERE path=?',(old,)).fetchone()
+                    if not row: continue
+                    payload=json.loads(row[0]); payload['path']=new
+                    conn.execute('DELETE FROM tracks WHERE path=?',(new,))
+                    conn.execute('UPDATE tracks SET path=?, payload=? WHERE path=?',(new,json.dumps(payload,separators=(',',':')),old))
+                    renamed+=1
+            reply(req, {'count':renamed})
         elif cmd=='search_tracks':
             text=str(req.get('text') or '').strip()
             limit=max(1,min(5000,int(req.get('limit') or 1000)))

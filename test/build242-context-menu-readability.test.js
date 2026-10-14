@@ -9,8 +9,9 @@ const css = fs.readFileSync(path.join(root, 'app/renderer/styles.css'), 'utf8');
 test('Build 242 truncates only displayed album context labels at 15 characters', () => {
   assert.match(renderer, /function contextAlbumLabel\(value\)/);
   assert.match(renderer, /text\.length > 15 \? `\$\{text\.slice\(0,15\)\}…` : text/);
-  assert.match(renderer, /Search album: \$\{contextAlbumLabel\(t\.album\)\}/);
-  assert.match(renderer, /Search album: \$\{contextAlbumLabel\(album\.title\)\}/);
+  // Hive: the entries now live in the Find submenu ("Album: ...").
+  assert.match(renderer, /Album: \$\{contextAlbumLabel\(t\.album\)\}/);
+  assert.match(renderer, /Album: \$\{contextAlbumLabel\(album\.title\)\}/);
 });
 
 test('Build 242 keeps context menus compact and left-aligned', () => {

@@ -28,6 +28,8 @@ function createGstreamerBridge(deps) {
     startupDebugEnabled = false,
     gstreamerTraceEnabled = false,
     getAudioOutputDevice = () => '',
+    // Hive: SoundTouch tempo/pitch stage is only built when enabled.
+    getTempoPitchEnabled = () => false,
     readyTimeoutMs,
   } = deps;
 
@@ -66,6 +68,7 @@ function createGstreamerBridge(deps) {
   // registry cache pinned to Hive's own copies.
   function helperSpawnEnv(device) {
     const env = { ...process.env, HIVE_AUDIO_OUTPUT_DEVICE: device };
+    if (getTempoPitchEnabled()) env.HIVE_DSP_PITCH = '1'; else delete env.HIVE_DSP_PITCH;
     if (!isWindows) return env;
     const gst = path.join(process.resourcesPath || '', 'GStreamer');
     const pathKey = Object.keys(env).find(key => key.toUpperCase() === 'PATH') || 'Path';

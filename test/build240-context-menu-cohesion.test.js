@@ -13,7 +13,8 @@ test('Build 240 keeps Auto-tag single-target at the album context boundary', () 
   const block = renderer.slice(start, end);
   assert.match(block, /Array\.isArray\(album\)/);
   assert.match(block, /context action passes the one album/i);
-  assert.match(renderer, /label:'Auto-tag album…', icon:'tag', action:\(\)=>openAutoTagAlbum\(album\)/);
+  // Hive: now under the album menu's Tools submenu.
+  assert.match(renderer, /label:'Auto-tag album…', icon:'autoTag', tooltip:'[^']*', action:\(\)=>openAutoTagAlbum\(album\)/);
 });
 
 // MusicBee's per-track right-click menu has "Auto-Tag by Album" near the
@@ -26,7 +27,9 @@ test('track context menu offers Auto-tag album, built from the clicked track\'s 
   const start = renderer.indexOf('function showTrackContextMenu');
   const end = renderer.indexOf('function parseTimeValue', start);
   const block = renderer.slice(start, end);
-  assert.match(block, /label:'Auto-tag album…', icon:'tag', action:\(\)=>\{/);
+  // Hive: the Tools submenu entry calls autoTagAlbum, defined above it.
+  assert.match(block, /label:'Auto-tag album…',icon:'autoTag',tooltip:'[^']*',action:autoTagAlbum\}/);
+  assert.match(block, /const autoTagAlbum = \(\) => \{/);
   assert.match(block, /const key = albumKey\(t\);/);
   assert.match(block, /library\.tracks\.filter\(track => albumKey\(track\) === key\)\.sort\(albumTrackCompare\)/);
   assert.match(block, /openAutoTagAlbum\(\{ title: t\.album, artist: t\.albumArtist \|\| t\.artist, tracks: albumTracks \}\)/);
@@ -35,11 +38,12 @@ test('track context menu offers Auto-tag album, built from the clicked track\'s 
 // "Play Artist" and "Play Similar" were explicitly requested to sit under a
 // "Play More" submenu (matching MusicBee's layout), single-track only (a
 // bulk selection has no one artist to build either action from).
-test('track context menu offers Play Artist and Play Similar under a Play More submenu', () => {
+test('track context menu offers Play Artist and Play Similar inside its Play submenu', () => {
   const start = renderer.indexOf('function showTrackContextMenu');
   const end = renderer.indexOf('function parseTimeValue', start);
   const block = renderer.slice(start, end);
-  assert.match(block, /isLocal && !bulk && t\.artist \? \[\{label:'Play More',icon:'play',submenu:\[/);
+  assert.match(block, /\{label:'Play',icon:'play',menuKey:'play',submenu:\[/);
+  assert.match(block, /isLocal && !bulk && t\.artist \? \[\s*\{label:`Play artist:/);
   assert.match(block, /action:\(\)=>playArtistShuffled\(t\.artist\)/);
   assert.match(block, /action:\(\)=>playSimilarArtist\(t\.artist\)/);
 });
@@ -65,7 +69,8 @@ test('Build 240 gives track context actions the same existing Hive icon language
   const start = renderer.indexOf('function showTrackContextMenu');
   const end = renderer.indexOf('function parseTimeValue', start);
   const block = renderer.slice(start, end);
-  for (const icon of ['play', 'queue', 'plus', 'search', 'edit']) assert.match(block, new RegExp(`icon:'${icon}'`));
+  // Hive: every section and action has its own icon from icons.js.
+  for (const icon of ['play', 'playNext', 'queueEnd', 'plus', 'search', 'edit', 'tools', 'trash']) assert.match(block, new RegExp(`icon:'${icon}'`));
 });
 
 test('Build 240 established context-menu alignment, updated to the canonical left-aligned layout in Build 242', () => {
@@ -111,7 +116,7 @@ test('Turn on/off Auto-DJ has a hover tooltip explaining what it does, in both t
   const submenuBlock = renderer.slice(submenuStart, submenuEnd);
   assert.match(submenuBlock, /if \(!isRatingItem && si\.tooltip\) sb\.setAttribute\('data-tooltip', si\.tooltip\);/);
 
-  const occurrences = renderer.split("tooltip:'When your queue runs out, Auto-DJ keeps playing instead of stopping").length - 1;
+  const occurrences = renderer.split("tooltip:'Keep playing when the queue runs out by adding related tracks").length - 1;
   assert.equal(occurrences, 2, 'expected the Auto-DJ tooltip in both showTrackContextMenu and showAlbumContextMenu');
 });
 

@@ -51,6 +51,40 @@ print(json.dumps({
   }
 });
 
+// Every other MP3 test here pre-creates an ID3 header, which hid this: a
+// downloaded MP3 with no ID3 tag at all got a fresh, filename-less ID3() and
+// the save failed with "Missing filename or fileobj argument", so auto-tag,
+// tag editor and cover changes on such a file were all silently dropped.
+test('writing tags + artwork to an MP3 that has no ID3 header at all', () => {
+  const tempDir = fs.mkdtempSync(path.join(os.tmpdir(), 'hive-untagged-mp3-'));
+  const mp3 = path.join(tempDir, 'untagged.mp3');
+  const image = path.join(tempDir, 'front.jpg');
+  try {
+    const ffmpeg = spawnSync('ffmpeg', ['-y', '-f', 'lavfi', '-i', 'anullsrc=r=8000:cl=mono', '-t', '0.1', '-c:a', 'libmp3lame', '-id3v2_version', '0', '-write_xing', '0', mp3], { encoding: 'utf8' });
+    assert.equal(ffmpeg.status, 0, ffmpeg.stderr);
+    assert.notEqual(fs.readFileSync(mp3).subarray(0, 3).toString('latin1'), 'ID3', 'fixture must start without an ID3 header');
+    fs.writeFileSync(image, 'front-image');
+    const script = String.raw`
+import json, sys
+sys.path.insert(0, '..')
+from mutagen.id3 import ID3
+import tag_helper
+tag_helper.write_metadata(sys.argv[1], {'title': 'Pump Up the Jam', 'artist': 'Technotronic', 'track': '1'}, {'action':'write','slotType':'Cover (Front)','occurrence':1,'imagePath':sys.argv[2],'pictureType':'Cover (Front)','comment':''})
+t = ID3(sys.argv[1])
+print(json.dumps({'title': str(t.get('TIT2')), 'artist': str(t.get('TPE1')), 'track': str(t.get('TRCK')), 'pictures': [int(f.type) for f in t.getall('APIC')]}))
+`;
+    const result = spawnSync('python3', ['-c', script, mp3, image], { cwd: path.resolve(__dirname, '..', 'resources', 'python'), encoding: 'utf8' });
+    assert.equal(result.status, 0, result.stderr || result.stdout);
+    const out = JSON.parse(result.stdout.trim().split('\n').pop());
+    assert.equal(out.title, 'Pump Up the Jam');
+    assert.equal(out.artist, 'Technotronic');
+    assert.equal(out.track, '1');
+    assert.deepEqual(out.pictures, [3]);
+  } finally {
+    fs.rmSync(tempDir, { recursive: true, force: true });
+  }
+});
+
 // A user's advanced/custom tags box in the tag editor is populated from a
 // raw dump of every native tag the file already has (see editorNativeObject
 // in renderer.js), which can include a bare "LYRICS"/"USLT" duplicating the

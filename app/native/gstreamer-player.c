@@ -51,6 +51,22 @@ static GstElement *spectrum = NULL;
 static GstElement *track_gain_element = NULL;
 static GstElement *user_volume_element = NULL;
 static GstElement *audio_filter_bin = NULL;
+/* MusicBee-style DSP (Hive): preamp + up to 15-band parametric EQ and
+ * stereo balance, upstream in the audio-filter bin like ReplayGain. All are
+ * transparent at their defaults (0 dB, flat bands, centred) and forced flat in
+ * bit-perfect mode. */
+#define HIVE_EQ_MAX_BANDS 15
+static GstElement *eq_preamp_element = NULL;
+static GstElement *equalizer_element = NULL;
+static GstElement *panorama_element = NULL;
+/* Optional SoundTouch stage (HIVE_DSP_PITCH=1): it never passes audio through
+ * untouched, so it is only built when the user turned tempo/pitch on. */
+static GstElement *pitch_element = NULL;
+/* Output the main sink uses, so the crossfade companion opens the same one. */
+static gchar *output_kind = NULL;   /* "pulse", "null" (or NULL = default pulse) */
+static gchar *output_device = NULL; /* pulse device name, or NULL for default */
+/* Fade-in for the next pending LOAD; crossfades lengthen it. */
+static gint64 pending_load_fade_in_us = 0;
 /* Real dead end, confirmed live: this used to also route volume through the
  * real sink's own native "volume"/"mute" properties (pulsesink exposes
  * these directly) when available, on the theory that PulseAudio/PipeWire's
@@ -499,6 +515,39 @@ static void apply_track_gain(gdouble value) {
   g_object_set(track_gain_element, "volume", CLAMP(value, 0.0, 8.0), NULL);
 }
 
+/* EQ\t<enabled>\t<preamp dB>\t<freq:gain:bandwidth,...>  (up to 15 bands;
+ * unused bands are parked flat). Gains are dB in GStreamer's -24..+12 range. */
+static void apply_equalizer(gboolean enabled, gdouble preamp_db, const gchar *bands) {
+  if (!equalizer_element || !eq_preamp_element) return;
+  if (bit_perfect) enabled = FALSE;
+  gchar **items = (enabled && bands) ? g_strsplit(bands, ",", HIVE_EQ_MAX_BANDS + 1) : NULL;
+  const guint count = items ? MIN(g_strv_length(items), HIVE_EQ_MAX_BANDS) : 0;
+  for (guint i = 0; i < HIVE_EQ_MAX_BANDS; i++) {
+    GObject *band = gst_child_proxy_get_child_by_index(GST_CHILD_PROXY(equalizer_element), i);
+    if (!band) continue;
+    gdouble freq = 1000.0, gain = 0.0, width = 100.0;
+    if (i < count) {
+      gchar **f = g_strsplit(items[i], ":", 3);
+      if (f[0] && f[1]) {
+        freq = CLAMP(g_ascii_strtod(f[0], NULL), 10.0, 20000.0);
+        gain = CLAMP(g_ascii_strtod(f[1], NULL), -24.0, 12.0);
+        width = f[2] ? CLAMP(g_ascii_strtod(f[2], NULL), 1.0, 20000.0) : freq * 0.7071;
+      }
+      g_strfreev(f);
+    }
+    g_object_set(band, "freq", freq, "bandwidth", width, "gain", gain, NULL);
+    g_object_unref(band);
+  }
+  g_strfreev(items);
+  const gdouble preamp = enabled ? pow(10.0, CLAMP(preamp_db, -24.0, 12.0) / 20.0) : 1.0;
+  g_object_set(eq_preamp_element, "volume", preamp, NULL);
+}
+
+static void apply_balance(gdouble balance) {
+  if (!panorama_element) return;
+  g_object_set(panorama_element, "panorama", bit_perfect ? 0.0 : (gfloat)CLAMP(balance, -1.0, 1.0), NULL);
+}
+
 static void apply_output_mute(gboolean muted) {
   if (!player) return;
   g_object_set(player, "mute", muted, NULL);
@@ -841,7 +890,8 @@ static void run_pending_load(void) {
   g_free(b64);
   /* The new track starts from silence and fades in, so starting mid-song
    * (a remembered position) doesn't click either. */
-  begin_transport_fade(1.0, TRANSPORT_FADE_IN_US, TRUE);
+  begin_transport_fade(1.0, MAX(TRANSPORT_FADE_IN_US, pending_load_fade_in_us), TRUE);
+  pending_load_fade_in_us = 0;
   /* Commands that arrived after the LOAD (normally its PLAY) were held back
    * so they apply to the new track, in order. */
   command_tick(NULL);
@@ -869,6 +919,141 @@ static gboolean pending_load_tick(gpointer unused) {
   return G_SOURCE_REMOVE;
 }
 
+/* Hive crossfade companion. XFADE\t<b64 path>\t<position s>\t<ms>\t<gain>
+ * plays the OUTGOING track from <position> in a short-lived second pipeline
+ * on the same output and fades it to silence over <ms>, while the main
+ * pipeline LOADs the next track with a matching fade-in. The audio server
+ * mixes the two streams; the main pipeline and its state are untouched.
+ * Equal-power curve: gain * cos(t * pi/2). */
+/* While the companion prerolls, later commands (the main LOAD) wait, so the
+ * outgoing song never drops out between the two pipelines. */
+static gboolean xfade_pending = FALSE;
+static gboolean command_tick(gpointer unused);
+static void xfade_release_commands(void) {
+  if (!xfade_pending) return;
+  xfade_pending = FALSE;
+  command_tick(NULL);
+}
+
+typedef struct {
+  GstElement *pipe;
+  GstElement *volume;
+  gdouble gain;
+  gint64 started_us;
+  gint64 duration_us;
+  gdouble seek_to;
+  gboolean seeked;
+  guint tick;
+} XfadeCompanion;
+
+static void xfade_companion_free(XfadeCompanion *x) {
+  if (!x) return;
+  if (x->tick) g_source_remove(x->tick);
+  if (x->pipe) { gst_element_set_state(x->pipe, GST_STATE_NULL); gst_object_unref(x->pipe); }
+  g_free(x);
+}
+
+static gboolean xfade_companion_tick(gpointer data) {
+  XfadeCompanion *x = data;
+  if (!x->seeked) {
+    GstState state = GST_STATE_NULL;
+    if (gst_element_get_state(x->pipe, &state, NULL, 0) == GST_STATE_CHANGE_SUCCESS && state == GST_STATE_PAUSED) {
+      /* Pick up exactly where the main pipeline is now, not where it was
+       * when the command was sent (preroll took some time). */
+      gint64 live = 0;
+      gint64 target = (gint64)(x->seek_to * GST_SECOND);
+      if (player && gst_element_query_position(player, GST_FORMAT_TIME, &live) && live > 0) target = live;
+      gst_element_seek_simple(x->pipe, GST_FORMAT_TIME, GST_SEEK_FLAG_FLUSH | GST_SEEK_FLAG_ACCURATE, target);
+      gst_element_set_state(x->pipe, GST_STATE_PLAYING);
+      x->seeked = TRUE;
+      x->started_us = g_get_monotonic_time();
+      xfade_release_commands();
+    } else if (g_get_monotonic_time() - x->started_us > 3000000) {
+      x->tick = 0; xfade_companion_free(x); xfade_release_commands(); return G_SOURCE_REMOVE; /* never prerolled */
+    }
+    return G_SOURCE_CONTINUE;
+  }
+  const gdouble t = CLAMP((gdouble)(g_get_monotonic_time() - x->started_us) / (gdouble)MAX(1, x->duration_us), 0.0, 1.0);
+  g_object_set(x->volume, "volume", x->gain * cos(t * G_PI / 2.0), NULL);
+  if (t >= 1.0) { x->tick = 0; xfade_companion_free(x); trace_line("XFADE", "companion=finished"); return G_SOURCE_REMOVE; }
+  return G_SOURCE_CONTINUE;
+}
+
+static void start_xfade_companion(const gchar *b64, gdouble position, gdouble ms, gdouble gain) {
+  if (bit_perfect || ms <= 0) return;
+  gsize len = 0;
+  guchar *decoded = g_base64_decode(b64, &len);
+  if (!decoded || !len) { g_free(decoded); return; }
+  gchar *path = g_strndup((const gchar *)decoded, len);
+  g_free(decoded);
+  gchar *uri = path_to_uri(path);
+  g_free(path);
+  if (!uri) return;
+  XfadeCompanion *x = g_new0(XfadeCompanion, 1);
+  x->pipe = gst_element_factory_make("playbin3", NULL);
+  GstElement *bin = gst_bin_new(NULL);
+  x->volume = gst_element_factory_make("volume", NULL);
+  GstElement *out = !g_strcmp0(output_kind, "null") ? gst_element_factory_make("fakesink", NULL) : gst_element_factory_make("pulsesink", NULL);
+  if (!x->pipe || !bin || !x->volume || !out) {
+    if (bin) gst_object_unref(bin);
+    g_free(uri); xfade_companion_free(x); return;
+  }
+  if (!g_strcmp0(output_kind, "null")) g_object_set(out, "sync", TRUE, NULL);
+  else { if (output_device) g_object_set(out, "device", output_device, NULL); g_object_set(out, "volume", 1.0, "mute", FALSE, NULL); }
+  x->gain = CLAMP(gain, 0.0, 8.0);
+  g_object_set(x->volume, "volume", x->gain, NULL);
+  gst_bin_add_many(GST_BIN(bin), x->volume, out, NULL);
+  gst_element_link(x->volume, out);
+  GstPad *pad = gst_element_get_static_pad(x->volume, "sink");
+  gst_element_add_pad(bin, gst_ghost_pad_new("sink", pad));
+  gst_object_unref(pad);
+  g_object_set(x->pipe, "uri", uri, "audio-sink", bin, NULL);
+  g_free(uri);
+  /* No video and no subtitles, only audio. */
+  gint flags = 0; g_object_get(x->pipe, "flags", &flags, NULL); g_object_set(x->pipe, "flags", flags & 0x2, NULL);
+  x->seek_to = MAX(0.0, position);
+  x->duration_us = (gint64)(ms * 1000.0);
+  x->started_us = g_get_monotonic_time();
+  gst_element_set_state(x->pipe, GST_STATE_PAUSED);
+  x->tick = g_timeout_add(5, xfade_companion_tick, x);
+  xfade_pending = TRUE;
+  trace_line("XFADE", "companion=started");
+}
+
+/* Hive: MusicBee's "fade on pause". PAUSE_FADE\t<ms> fades out with the
+ * same sample-accurate transport fade LOAD uses, waits until the silent point
+ * is actually being heard, then pauses; later commands wait, like during a
+ * LOAD fade. Resuming from that silence fades back in (PLAY_FADE\t<ms>, or a
+ * short fade for a plain PLAY). */
+static gboolean pause_pending = FALSE;
+static gint64 pause_pending_since = 0;
+static gint64 pause_pending_max_us = 0;
+static gboolean pending_pause_tick(gpointer unused) {
+  (void)unused;
+  if (!pause_pending) return G_SOURCE_REMOVE;
+  g_mutex_lock(&volume_ramp_lock);
+  const gboolean silent = transport_fade_silent;
+  const GstClockTime silent_pts = transport_fade_silent_pts;
+  g_mutex_unlock(&volume_ramp_lock);
+  gboolean ready = g_get_monotonic_time() - pause_pending_since >= pause_pending_max_us;
+  if (!ready && silent) {
+    gint64 position = 0;
+    ready = !GST_CLOCK_TIME_IS_VALID(silent_pts)
+      || (gst_element_query_position(player, GST_FORMAT_TIME, &position) && position >= (gint64)silent_pts);
+  }
+  if (!ready) return G_SOURCE_CONTINUE;
+  pause_pending = FALSE;
+  gst_element_set_state(player, GST_STATE_PAUSED);
+  command_tick(NULL);
+  return G_SOURCE_REMOVE;
+}
+static gboolean transport_is_faded_out(void) {
+  g_mutex_lock(&volume_ramp_lock);
+  const gboolean faded = !transport_fade_active && transport_fade_gain <= 0.0;
+  g_mutex_unlock(&volume_ramp_lock);
+  return faded;
+}
+
 static gboolean command_tick(gpointer unused) {
   /* This callback is scheduled by the stdin reader whenever a command arrives.
    * It is deliberately event-driven rather than polled every 5 ms: slider
@@ -878,7 +1063,7 @@ static gboolean command_tick(gpointer unused) {
   g_atomic_int_set(&command_dispatch_pending, 0);
   /* While a LOAD is fading out, hold every later command in the queue;
    * run_pending_load() drains them afterwards, in order. */
-  if (load_pending) return G_SOURCE_REMOVE;
+  if (load_pending || pause_pending || xfade_pending) return G_SOURCE_REMOVE;
   gboolean stop_draining = FALSE;
   gboolean pending_volume = FALSE;
   gdouble latest_volume = user_volume;
@@ -901,6 +1086,8 @@ static gboolean command_tick(gpointer unused) {
         const gdouble load_offset = arg2 ? g_ascii_strtod(arg2, NULL) : 0.0;
         const gdouble load_start = arg3 ? g_ascii_strtod(arg3, NULL) : 0.0;
         const gdouble load_end = arg4 ? g_ascii_strtod(arg4, NULL) : 0.0;
+        /* Optional 6th field: fade-in in ms (crossfade). */
+        pending_load_fade_in_us = nparts > 5 && parts[5] ? CLAMP((gint64)(g_ascii_strtod(parts[5], NULL) * 1000.0), 0, 20000000) : 0;
         if (playing_state && stream_started && user_volume_element && !bit_perfect) {
           /* Audio is playing: fade out first instead of cutting it (the pop). */
           g_free(pending_load_b64);
@@ -914,13 +1101,31 @@ static gboolean command_tick(gpointer unused) {
         } else {
           handle_load(parts[1], load_offset, load_start, load_end);
         }
+      } else if (!g_strcmp0(parts[0], "NEXT_CLEAR")) {
+        /* "Stop after current": drop a pre-queued gapless next file. */
+        g_mutex_lock(&next_lock);
+        g_clear_pointer(&next_uri, g_free);
+        g_mutex_unlock(&next_lock);
       } else if (!g_strcmp0(parts[0], "NEXT") && parts[1]) {
         gsize len = 0; guchar *d = g_base64_decode(parts[1], &len);
         if (d && len) { gchar *path = g_strndup((const gchar*)d, len); set_next_path(path); g_free(path); }
         g_free(d);
-      } else if (!g_strcmp0(parts[0], "PLAY")) {
+      } else if (!g_strcmp0(parts[0], "PLAY") || !g_strcmp0(parts[0], "PLAY_FADE")) {
+        /* Never resume into the silence a faded pause left behind. */
+        if (user_volume_element && !bit_perfect && (transport_is_faded_out() || !g_strcmp0(parts[0], "PLAY_FADE"))) {
+          const gint64 fade_us = !g_strcmp0(parts[0], "PLAY_FADE") && parts[1] ? CLAMP((gint64)(g_ascii_strtod(parts[1], NULL) * 1000.0), 0, 10000000) : TRANSPORT_FADE_IN_US;
+          begin_transport_fade(1.0, MAX(fade_us, TRANSPORT_FADE_IN_US), TRUE);
+        }
         gst_element_set_state(player, GST_STATE_PLAYING);
-      } else if (!g_strcmp0(parts[0], "PAUSE")) {
+      } else if (!g_strcmp0(parts[0], "PAUSE_FADE") && parts[1] && playing_state && stream_started && user_volume_element && !bit_perfect) {
+        const gint64 fade_us = CLAMP((gint64)(g_ascii_strtod(parts[1], NULL) * 1000.0), 1000, 10000000);
+        begin_transport_fade(0.0, fade_us, FALSE);
+        pause_pending = TRUE;
+        pause_pending_since = g_get_monotonic_time();
+        pause_pending_max_us = fade_us + TRANSPORT_FADE_MAX_WAIT_US;
+        g_timeout_add(4, pending_pause_tick, NULL);
+        stop_draining = TRUE;
+      } else if (!g_strcmp0(parts[0], "PAUSE") || !g_strcmp0(parts[0], "PAUSE_FADE")) {
         gst_element_set_state(player, GST_STATE_PAUSED);
       } else if (!g_strcmp0(parts[0], "SEEKPLAY") && parts[1]) {
         handle_seek(g_ascii_strtod(parts[1], NULL));
@@ -960,6 +1165,18 @@ static gboolean command_tick(gpointer unused) {
           apply_output_mute(FALSE);
           trace_line("MUTE_DEFERRED", "user_muted=0 waiting_for=STREAM_START+PLAYING");
         }
+      } else if (!g_strcmp0(parts[0], "XFADE") && parts[1] && arg2 && arg3) {
+        start_xfade_companion(parts[1], g_ascii_strtod(arg2, NULL), g_ascii_strtod(arg3, NULL), arg4 ? g_ascii_strtod(arg4, NULL) : user_volume * track_gain);
+        if (xfade_pending) stop_draining = TRUE;
+      } else if (!g_strcmp0(parts[0], "EQ") && parts[1]) {
+        apply_equalizer(g_ascii_strcasecmp(parts[1], "1") == 0, arg2 ? g_ascii_strtod(arg2, NULL) : 0.0, arg3);
+      } else if (!g_strcmp0(parts[0], "TEMPO") && parts[1] && pitch_element) {
+        g_object_set(pitch_element, "tempo", (gfloat)CLAMP(g_ascii_strtod(parts[1], NULL), 0.5, 2.0), NULL);
+      } else if (!g_strcmp0(parts[0], "PITCH") && parts[1] && pitch_element) {
+        /* Semitones -> ratio. */
+        g_object_set(pitch_element, "pitch", (gfloat)pow(2.0, CLAMP(g_ascii_strtod(parts[1], NULL), -12.0, 12.0) / 12.0), NULL);
+      } else if (!g_strcmp0(parts[0], "BALANCE") && parts[1]) {
+        apply_balance(g_ascii_strtod(parts[1], NULL));
       } else if (!g_strcmp0(parts[0], "TRACE") && parts[1]) {
         trace_enabled = g_ascii_strcasecmp(parts[1], "1") == 0;
         trace_line("TRACE_STATE", trace_enabled ? "enabled=1" : "enabled=0");
@@ -1077,9 +1294,17 @@ int main(int argc, char **argv) {
     }
     requested_output = NULL;
   }
+  if (requested_output && !g_strcmp0(requested_output, "null")) {
+    /* Test hook: a silent real-time sink that keeps the full DSP chain
+     * (alsa:null is bit-perfect, which deliberately bypasses it). */
+    sink = gst_element_factory_make("fakesink", "audio-output");
+    if (sink) { g_object_set(sink, "sync", TRUE, NULL); event_line("OUTPUT_DEVICE", "null"); output_kind = g_strdup("null"); }
+    requested_output = NULL;
+  }
   if (requested_output && *requested_output) {
     GstElement *pulse_sink = gst_element_factory_make("pulsesink", "audio-output");
     if (pulse_sink) {
+      output_device = g_strdup(requested_output);
       g_object_set(pulse_sink, "device", requested_output, NULL);
       sink = pulse_sink;
       sink_is_pulse = TRUE;
@@ -1160,12 +1385,29 @@ int main(int argc, char **argv) {
   audio_filter_bin = gst_bin_new("hive-audio-filter");
   track_gain_element = gst_element_factory_make("volume", "hive-track-gain");
   spectrum = gst_element_factory_make("spectrum", "hive-spectrum");
+  eq_preamp_element = gst_element_factory_make("volume", "hive-eq-preamp");
+  equalizer_element = gst_element_factory_make("equalizer-nbands", "hive-equalizer");
+  panorama_element = gst_element_factory_make("audiopanorama", "hive-balance");
+  if (!bit_perfect && g_strcmp0(g_getenv("HIVE_DSP_PITCH"), "1") == 0) pitch_element = gst_element_factory_make("pitch", "hive-tempo-pitch");
   if (audio_filter_bin && track_gain_element && spectrum) {
     /* ~30 frames per second; the visualizer interpolates between them. */
     g_object_set(spectrum, "bands", SPECTRUM_FFT_BINS, "interval", (gint64)33000000,
       "threshold", (gint)SPECTRUM_FLOOR_DB, "post-messages", TRUE, NULL);
     gst_bin_add_many(GST_BIN(audio_filter_bin), track_gain_element, spectrum, NULL);
-    if (gst_element_link(track_gain_element, spectrum)) {
+    /* DSP stages are optional: a missing plugin just leaves them out. */
+    GstElement *last = track_gain_element;
+    gboolean linked = TRUE;
+    GstElement *stages[] = { eq_preamp_element, equalizer_element, panorama_element, pitch_element };
+    if (equalizer_element) g_object_set(equalizer_element, "num-bands", HIVE_EQ_MAX_BANDS, NULL);
+    if (panorama_element) g_object_set(panorama_element, "method", 0, NULL);
+    for (guint i = 0; i < G_N_ELEMENTS(stages); i++) {
+      if (!stages[i]) continue;
+      gst_bin_add(GST_BIN(audio_filter_bin), stages[i]);
+      if (!gst_element_link(last, stages[i])) { linked = FALSE; break; }
+      last = stages[i];
+    }
+    if (!linked) { eq_preamp_element = equalizer_element = panorama_element = pitch_element = NULL; }
+    if (linked && gst_element_link(last, spectrum)) {
       GstPad *sink_pad = gst_element_get_static_pad(track_gain_element, "sink");
       GstPad *src_pad = gst_element_get_static_pad(spectrum, "src");
       GstPad *ghost_sink = gst_ghost_pad_new("sink", sink_pad);
@@ -1194,6 +1436,8 @@ int main(int argc, char **argv) {
   playbin_flags &= ~HIVE_PLAY_FLAG_SOFT_VOLUME;
   g_object_set(player, "flags", playbin_flags, NULL);
   apply_track_gain(track_gain);
+  apply_equalizer(FALSE, 0.0, NULL);
+  apply_balance(0.0);
   apply_output_mute(FALSE);
   g_signal_connect(player, "about-to-finish", G_CALLBACK(about_to_finish_cb), NULL);
 
@@ -1211,6 +1455,8 @@ int main(int argc, char **argv) {
   gst_element_set_state(player, GST_STATE_NULL);
   g_thread_join(tin);
   g_clear_pointer(&next_uri, g_free);
+  g_clear_pointer(&output_kind, g_free);
+  g_clear_pointer(&output_device, g_free);
   g_async_queue_unref(commands);
   g_main_loop_unref(loop);
   /* playbin owns the audio-filter and audio-sink bins (it took their floating
@@ -1220,6 +1466,7 @@ int main(int argc, char **argv) {
   audio_filter_bin = NULL;
   spectrum = NULL;
   track_gain_element = NULL;
+  eq_preamp_element = equalizer_element = panorama_element = pitch_element = NULL;
   user_volume_element = NULL;
   g_object_unref(player);
   if (event_fp) fclose(event_fp);

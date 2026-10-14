@@ -1,5 +1,7 @@
 # Hive - project briefing for Claude Code
 
+**Hive 2.0 (2026-10-14):** MusicBee's features and settings were added (equaliser, crossfade, column browser, organise/convert/tag tools, MusicBee import, layout and theme customisation...). Read `docs/HIVE-2.0.md` before touching any of it; it lists where each feature lives and the headless test recipe.
+
 Hive is a vibe-coded Electron/GStreamer music player at pre-release build 258.
 This file exists so a fresh Claude Code session doesn't have to rediscover
 what a previous chat-based session (claude.ai) already found. Read this

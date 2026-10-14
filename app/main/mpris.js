@@ -6,7 +6,9 @@ const { pathToFileURL } = require('url');
 let dbus = null;
 try { dbus = require('dbus-next'); } catch (e) { console.warn('[MPRIS] dbus-next unavailable:', e?.message || e); }
 
-const SERVICE = 'org.mpris.MediaPlayer2.Beehive';
+// HIVE_MPRIS_NAME lets a second copy (e.g. a test instance) run beside Hive without taking its bus name.
+const MPRIS_NAME = String(process.env.HIVE_MPRIS_NAME || 'Beehive').replace(/[^A-Za-z0-9_]/g, '') || 'Beehive';
+const SERVICE = `org.mpris.MediaPlayer2.${MPRIS_NAME}`;
 const OBJECT_PATH = '/org/mpris/MediaPlayer2';
 const PLAYER = 'org.mpris.MediaPlayer2.Player';
 const ROOT = 'org.mpris.MediaPlayer2';
@@ -44,7 +46,7 @@ class RootInterface extends (dbus?.interface?.Interface || class {}) {
   get CanSetFullscreen() { return false; }
   get CanRaise() { return false; }
   get HasTrackList() { return false; }
-  get Identity() { return 'Beehive'; }
+  get Identity() { return MPRIS_NAME; }
   get DesktopEntry() { return 'hive'; }
   get SupportedUriSchemes() { return ['file']; }
   get SupportedMimeTypes() { return []; }

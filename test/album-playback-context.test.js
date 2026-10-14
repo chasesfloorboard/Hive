@@ -26,7 +26,8 @@ test('album context menu and album-card playback routes all use isolated album p
   // track-menu convention), but a single-album click still routes through
   // playAlbum() -- only a genuine multi-album bulk selection plays the
   // flattened track list directly.
-  assert.match(source, /\{label:'Play Now', icon:'play', action:\(\)=>\{ if \(singleAlbum\) playAlbum\(album\); else playQueue\(albumTracks, 0, true\); \}\}/);
+  // Hive groups these under one "Play" submenu (MusicBee-style).
+  assert.match(source, /icon:'play', action:\(\)=>\{ if \(singleAlbum\) playAlbum\(album\); else playQueue\(albumTracks, 0, true\); \}\}/);
   assert.match(source, /if \(m\?\.tracks\?\.length\) playAlbum\(m\);/);
   assert.match(source, /if\(m\?\.tracks\?\.length\)playAlbum\(m\);/);
   assert.doesNotMatch(source, /playQueue\(album\.tracks,\s*0\)/);
@@ -110,9 +111,9 @@ test('the album context menu adds Queue Next/Queue Last and a Rating/Love submen
   const start = source.indexOf('async function showAlbumContextMenu(e, album)');
   const end = source.indexOf('\n\n  // click = preview panel', start);
   const block = source.slice(start, end);
-  assert.match(block, /label:`Queue Next\$\{countLabel\}`, icon:'queue', action:\(\)=>addTracksToQueue\(albumTracks, currentIndex \+ 1\)/);
-  assert.match(block, /label:`Queue Last\$\{countLabel\}`, icon:'queue', action:\(\)=>addTracksToQueue\(albumTracks\)/);
-  assert.match(block, /label:'Rating',icon:'star',submenu:\[/);
+  assert.match(block, /label:`Play next\$\{albumCount\}`, icon:'playNext', action:\(\)=>addTracksToQueue\(albumTracks, currentIndex \+ 1\)/);
+  assert.match(block, /label:`Add to end of queue\$\{albumCount\}`, icon:'queueEnd', action:\(\)=>addTracksToQueue\(albumTracks\)/);
+  assert.match(block, /label:'Rating',icon:'star',menuKey:'rating',submenu:\[/);
   assert.match(block, /action:\(\)=>applyLove\(true\)/);
   assert.doesNotMatch(block, /label:'Remove Love'/);
   assert.match(block, /action:\(\)=>applyRating\(5\)/);
@@ -132,6 +133,6 @@ test('single-album-only actions are hidden once more than one album is selected'
   const block = source.slice(start, end);
   assert.match(block, /const singleAlbum = !\(bulk && albums\.length > 1\);/);
   assert.match(block, /singleAlbum \? \[\{label:'Auto-tag album…'/);
-  assert.match(block, /singleAlbum && album\.artist \? \[\{label:'Play More'/);
-  assert.match(block, /singleAlbum \? \[\s*\{label:`Search album:/);
+  assert.match(block, /singleAlbum && album\.artist \? \[\s*\{label:`Play artist:/);
+  assert.match(block, /singleAlbum \? \[\{label:'Find',icon:'search',menuKey:'find',submenu:\[\s*\{label:`Album:/);
 });

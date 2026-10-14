@@ -140,7 +140,7 @@ function createClient({ cacheFile, fetchImpl = global.fetch } = {}) {
     album = String(album || '').trim();
     artist = String(artist || '').trim();
     if (!album) return [];
-    const exactKey = cacheKey('release-v2', `${album}\n${artist}`);
+    const exactKey = cacheKey('release-v4', `${album}\n${artist}`);
     const cached = await getCached(exactKey);
     if (cached) return cached;
     const clauses = [`release:"${quote(album)}"`];
@@ -175,6 +175,16 @@ function createClient({ cacheFile, fetchImpl = global.fetch } = {}) {
         releaseId: release.id || null,
         mbid: release.id || null,
         score,
+        // score adds exact-title/artist bonuses for ranking (up to 260); the
+        // UI shows MusicBrainz's own 0-100 relevance instead.
+        matchPercent: Math.max(0, Math.min(100, Number(release.score || 0))),
+        trackCount: Number(release['track-count'] || 0) || 0,
+        // Album / Single / EP: an album and its lead single often share a title.
+        releaseType: String(release['release-group']?.['primary-type'] || ''),
+        format: Array.isArray(release.media) ? [...new Set(release.media.map(m => m?.format).filter(Boolean))].join(' + ') : '',
+        // Search results carry no cover-art-archive flags, so thumbnails use the
+        // release group's front, which CAA resolves from any release that has art.
+        thumbUrl: release['release-group']?.id ? `${CAA}/release-group/${encodeURIComponent(release['release-group'].id)}/front-250` : null,
         artworkUrl: release.id ? `${CAA}/release/${encodeURIComponent(release.id)}/front-1200` : null,
         width: 1200,
         height: 1200
@@ -216,7 +226,7 @@ function createClient({ cacheFile, fetchImpl = global.fetch } = {}) {
   async function getReleaseDetails(releaseId) {
     releaseId = String(releaseId || '').trim();
     if (!releaseId) return null;
-    const key = cacheKey('release-details-v1', releaseId);
+    const key = cacheKey('release-details-v2', releaseId);
     const cached = await getCached(key);
     if (cached) return cached;
     let data;
@@ -259,11 +269,23 @@ function createClient({ cacheFile, fetchImpl = global.fetch } = {}) {
       label: Array.isArray(data['label-info']) ? String(data['label-info'][0]?.label?.name || '').trim() : '',
       catalogNumber: Array.isArray(data['label-info']) ? String(data['label-info'][0]?.['catalog-number'] || '').trim() : '',
       barcode: String(data.barcode || '').trim(),
-      artworkUrl: data.id ? `${CAA}/release/${encodeURIComponent(data.id)}/front-1200` : null,
+      artworkUrl: releaseArtworkUrl(data, releaseId),
       tracks
     };
     await putCached(key, result);
     return result;
+  }
+
+  // Many releases (e.g. a 1991 DE pressing) have no art of their own, and
+  // /release/<id>/front-1200 404s -- the auto-tag preview then showed a broken
+  // image and claimed "shared cover ready". Use the release's own front only
+  // when CAA says it exists, else the release group's front, else nothing.
+  function releaseArtworkUrl(data, releaseId) {
+    const id = data?.id || releaseId;
+    const caa = data?.['cover-art-archive'];
+    if (id && (!caa || caa.front)) return `${CAA}/release/${encodeURIComponent(id)}/front-1200`;
+    const groupId = data?.['release-group']?.id;
+    return groupId ? `${CAA}/release-group/${encodeURIComponent(groupId)}/front-1200` : null;
   }
 
   return { searchReleaseGroups, searchReleases, identify, getReleaseDetails };

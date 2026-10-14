@@ -58,8 +58,12 @@ test('user volume sits in its own bin right before the real sink, not upstream w
   // hive-user-volume links directly to the real sink inside its own bin...
   assert.match(native, /gst_element_link\(user_volume_element, sink\)/);
   assert.match(native, /g_object_set\(player, "audio-sink", sink_bin, NULL\)/);
-  // ...and ReplayGain's chain (audio-filter) no longer includes it.
-  assert.match(native, /gst_element_link\(track_gain_element, spectrum\)/);
+  // ...and ReplayGain's chain (audio-filter: ReplayGain -> Hive EQ/balance
+  // DSP stages -> spectrum) never includes it.
+  assert.match(native, /GstElement \*last = track_gain_element;/);
+  assert.match(native, /GstElement \*stages\[\] = \{ eq_preamp_element, equalizer_element, panorama_element, pitch_element \};/);
+  assert.match(native, /gst_element_link\(last, spectrum\)/);
+  assert.doesNotMatch(native, /stages\[\][^;]*user_volume_element/);
   assert.doesNotMatch(native, /gst_element_link_many\(track_gain_element, user_volume_element/);
   // The old design's marker: writing playbin's own "volume" property was how
   // ordinary user volume used to reach the sink. It no longer should.
@@ -447,9 +451,42 @@ test('a LOAD during playback fades out before switching and holds later commands
   assert.match(load, /if \(playing_state && stream_started && user_volume_element && !bit_perfect\)/);
   assert.match(load, /begin_transport_fade\(0\.0, TRANSPORT_FADE_OUT_US, FALSE\)/);
   assert.match(load, /stop_draining = TRUE;/);
-  assert.match(native, /if \(load_pending\) return G_SOURCE_REMOVE;/);
+  assert.match(native, /if \(load_pending \|\| pause_pending \|\| xfade_pending\) return G_SOURCE_REMOVE;/);
   const run = nativeBlock('static void run_pending_load(void) {', '\n}');
-  assert.match(run, /begin_transport_fade\(1\.0, TRANSPORT_FADE_IN_US, TRUE\)/);
+  // Fades in from silence: the short default, or a crossfade's longer fade-in.
+  assert.match(run, /begin_transport_fade\(1\.0, MAX\(TRANSPORT_FADE_IN_US, pending_load_fade_in_us\), TRUE\)/);
+  assert.match(run, /pending_load_fade_in_us = 0;/);
   assert.match(run, /command_tick\(NULL\);/);
   assert.match(native, /gst_element_query_position\(player, GST_FORMAT_TIME, &position\) && position >= \(gint64\)silent_pts/);
+});
+
+// Hive "fade on pause": PAUSE_FADE reuses the transport fade, holds later
+// commands until the silent point is heard, then pauses; resuming out of that
+// silence always fades back in so playback can never come back muted.
+test('PAUSE_FADE fades out, waits for the silence to be heard, and resuming fades back in', () => {
+  const pause = nativeBlock('} else if (!g_strcmp0(parts[0], "PAUSE_FADE") && parts[1]', '} else if (!g_strcmp0(parts[0], "PAUSE") || !g_strcmp0(parts[0], "PAUSE_FADE"))');
+  assert.match(pause, /begin_transport_fade\(0\.0, fade_us, FALSE\)/);
+  assert.match(pause, /pause_pending = TRUE;/);
+  assert.match(pause, /stop_draining = TRUE;/);
+  const tick = nativeBlock('static gboolean pending_pause_tick(gpointer unused) {', '\n}');
+  assert.match(tick, /position >= \(gint64\)silent_pts/);
+  assert.match(tick, /gst_element_set_state\(player, GST_STATE_PAUSED\)/);
+  assert.match(tick, /command_tick\(NULL\);/);
+  const play = nativeBlock('} else if (!g_strcmp0(parts[0], "PLAY") || !g_strcmp0(parts[0], "PLAY_FADE")) {', '} else if (!g_strcmp0(parts[0], "PAUSE_FADE")');
+  assert.match(play, /transport_is_faded_out\(\)/);
+  assert.match(play, /begin_transport_fade\(1\.0, MAX\(fade_us, TRANSPORT_FADE_IN_US\), TRUE\)/);
+});
+
+// Hive crossfade: a companion pipeline plays the outgoing track and fades
+// it out; commands (the main LOAD with its long fade-in) wait until the
+// companion is actually playing, so the outgoing song never drops out.
+test('XFADE starts a companion that holds later commands until it plays, then fades out', () => {
+  const start = nativeBlock('static void start_xfade_companion(', '\n}');
+  assert.match(start, /if \(bit_perfect \|\| ms <= 0\) return;/);
+  assert.match(start, /xfade_pending = TRUE;/);
+  const tick = nativeBlock('static gboolean xfade_companion_tick(gpointer data) {', '\n}');
+  assert.match(tick, /gst_element_query_position\(player, GST_FORMAT_TIME, &live\)/);
+  assert.match(tick, /xfade_release_commands\(\);/);
+  assert.match(tick, /cos\(t \* G_PI \/ 2\.0\)/);
+  assert.match(native, /pending_load_fade_in_us = nparts > 5 && parts\[5\]/);
 });

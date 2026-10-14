@@ -365,13 +365,15 @@ test('the track context menu hides file-only actions (rating, delete from disk, 
   const block = renderer.slice(start, end);
   assert.match(block, /const isLocal = isLocalPlaybackTrack\(t\);/);
   assert.match(block, /\.\.\.\(isLocal \? \[\{label:'Rating'/);
-  assert.match(block, /\.\.\.\(isLocal \? \[\{label:'Show file in browser'/);
-  assert.match(block, /\.\.\.\(isLocal \? \[\{label:bulk \? `Delete files from disk/);
+  assert.match(block, /\.\.\.\(isLocal \? \[\{label:'Show file in folder'/);
+  assert.match(block, /\.\.\.\(isLocal \? \[\{label:`Delete from disk…\$\{count\}`/);
+  // Hive: the file tools (auto-tag, tag tools, convert...) are local-only too.
+  assert.match(block, /\.\.\.\(isLocal \? \[\{label:`Tools\$\{count\}`/);
   assert.match(block, /\.\.\.\(isLocal \? \[\{label:editLabel,icon:'edit'/);
   // Play/Queue/Add to/search must remain available for every track type,
   // podcast included -- this is not supposed to gate everything.
-  assert.match(block, /\{label:'Play Now',icon:'play'/);
-  assert.match(block, /\{label:'Add to',icon:'plus',submenu:buildAddToPlaylistSubmenu\(queueTracks\)\}/);
+  assert.match(block, /\{label:'Play',icon:'play',menuKey:'play',submenu:\[/);
+  assert.match(block, /\{label:'Add to',icon:'plus',menuKey:'addTo',submenu:buildAddToPlaylistSubmenu\(queueTracks\)\}/);
 });
 
 test('opening a favorited podcast show does not destroy the current search results', () => {

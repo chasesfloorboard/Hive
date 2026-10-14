@@ -794,7 +794,10 @@ def write_metadata(path, tags, artwork=None):
     if ext=='.mp3':
         obj=write_mp3(path,tags,save=False)
         if artwork: apply_artwork_mp3(obj,artwork)
-        obj.save(v2_version=4,v1=0)
+        # An MP3 with no ID3 header gets a fresh ID3() from write_mp3, which has
+        # no filename bound -- save() without the path failed with "Missing
+        # filename or fileobj argument" and every tag/cover edit was dropped.
+        obj.save(path,v2_version=4,v1=0)
         return
     if ext=='.flac':
         obj=write_flac(path,tags,save=False)
@@ -1266,6 +1269,20 @@ def write_tags(path,tags):
             else:f.tags[key]=str(v)
         f.save()
 
+def embed_ogg_cover(path, image_path):
+    """Ogg Vorbis/Opus front cover as METADATA_BLOCK_PICTURE (HiveBee converter)."""
+    from mutagen.oggvorbis import OggVorbis
+    from mutagen.oggopus import OggOpus
+    ext = Path(path).suffix.lower()
+    f = OggOpus(path) if ext == '.opus' else OggVorbis(path)
+    pic = Picture()
+    pic.data = Path(image_path).read_bytes()
+    pic.type = 3
+    pic.mime = mimetypes.guess_type(image_path)[0] or 'image/jpeg'
+    pic.desc = ''
+    f['METADATA_BLOCK_PICTURE'] = [base64.b64encode(pic.write()).decode('ascii')]
+    f.save()
+
 def main(req):
     op=req.get('op'); path=req.get('path')
     if not path or not os.path.exists(path): raise RuntimeError('Track file not found.')
@@ -1284,6 +1301,7 @@ def main(req):
     if op=='read_pcount': return {'count': read_pcount(path)}
     if op=='write_metadata': write_metadata(path,req.get('tags') or {},req.get('artwork')); return {'ok':True}
     if op=='modify_artwork': modify_artwork(path,req.get('operation') or {}); return {'ok':True,'pictures':read_artwork_metadata(path)}
+    if op=='embed_ogg_cover': embed_ogg_cover(path, req.get('imagePath')); return {'ok':True}
     if op=='clear_artwork': clear_artwork(path); return {'ok':True,'pictures':read_artwork_metadata(path)}
     if op=='replace_front': replace_front(path,req.get('imagePath'),req.get('pictureType','Cover (Front)'),req.get('comment','')); return {'ok':True,'pictures':read_artwork_metadata(path)}
     if op=='remove_front': remove_front(path); return {'ok':True,'pictures':read_artwork_metadata(path)}
