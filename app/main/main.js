@@ -1981,6 +1981,7 @@ ipcMain.handle('ytmusic:status', async () => youtubeMusic.status());
 ipcMain.handle('ytmusic:install', async () => youtubeMusic.installYtDlp());
 ipcMain.handle('ytmusic:resolve', async (_evt, track, opts) => youtubeMusic.resolve(track || {}, opts || {}));
 ipcMain.handle('ytmusic:tags', async (_evt, track) => youtubeMusic.musicBrainzTags(track || {}));
+ipcMain.handle('ytmusic:prefetch', async (_evt, tracks, opts) => youtubeMusic.prefetch(Array.isArray(tracks) ? tracks : [], { mode: opts?.mode === 'append' ? 'append' : 'queue' }));
 
 // Hive interface size (MusicBee's font scaling): zoom the main window.
 ipcMain.handle('hivebee:setZoom', async (evt, factor) => {

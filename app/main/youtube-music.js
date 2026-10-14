@@ -68,6 +68,14 @@ function scoreCandidate(want, info) {
 // near-certain title and artist match is accepted even when the length isn't.
 const acceptable = s => s.artistScore >= 0.5 && ((s.durationOk && s.titleScore >= 0.5) || s.titleScore >= 0.8);
 
+// "Bullet For My Valentine - Hand of Blood (Official Video)" -> "Hand of Blood (Official Video)"
+function videoTitleWithoutArtist(title, artist) {
+  const t = String(title || '');
+  const dash = t.search(/\s[-–—|]\s/);
+  if (dash > 0 && containment(firstArtist(artist), t.slice(0, dash)) >= 0.5) return t.slice(dash + 3);
+  return t;
+}
+
 // googlevideo URLs carry their own expiry (unix seconds).
 function urlExpiry(url) {
   try { const e = Number(new URL(url).searchParams.get('expire')); if (e > 0) return e * 1000; } catch {}
@@ -160,21 +168,37 @@ function create({ userDataDir, net }) {
     return (data.entries || []).filter(e => e?.id).map(e => ({ id: String(e.id), title: String(e.title || '') }));
   }
 
+  async function searchVideos(query) {
+    const raw = await ytDlp(['--flat-playlist', '-J', `ytsearch5:${query}`], 30000);
+    const data = JSON.parse(raw);
+    return (data.entries || []).filter(e => e?.id).map(e => ({ id: String(e.id), title: String(e.title || '') }));
+  }
+
   // Find the YouTube Music song for { title, artist, album, duration }.
   async function findMatch(want) {
     const query = `${firstArtist(want.artist)} ${normalise(want.title)}`.trim();
     const results = await searchSongs(query);
     const ranked = results.map(r => ({ ...r, pre: similarity(want.title, r.title) })).sort((a, b) => b.pre - a.pre).slice(0, 3);
     let best = null;
-    for (const cand of ranked) {
-      let info;
-      try { info = await videoInfo(cand.id); } catch { continue; }
-      const s = scoreCandidate(want, info);
-      if (!best || s.score > best.s.score) best = { info, s };
-      if (acceptable(s) && s.score >= 0.85) break;
+    const consider = info => { if (!info) return; const s = scoreCandidate(want, info); if (!best || s.score > best.s.score) best = { info, s }; };
+    // The top two are looked up together (most songs are settled by them);
+    // the third only if neither fits.
+    (await Promise.all(ranked.slice(0, 2).map(c => videoInfo(c.id).catch(() => null)))).forEach(consider);
+    if (!(best && acceptable(best.s)) && ranked[2]) consider(await videoInfo(ranked[2].id).catch(() => null));
+    if (best && acceptable(best.s)) return best.info;
+    // Some songs are only on YouTube as videos ("Artist - Title (Official
+    // Video)"). Search videos, strip the artist prefix, and require the
+    // length to match, since a video's title is less reliable.
+    const videos = await searchVideos(query).catch(() => []);
+    let bestVideo = null;
+    const vRanked = videos.map(v => ({ ...v, pre: containment(want.title, v.title) })).filter(v => v.pre >= 0.6).sort((a, b) => b.pre - a.pre).slice(0, 2);
+    for (const info of await Promise.all(vRanked.map(v => videoInfo(v.id).catch(() => null)))) {
+      if (!info) continue;
+      const cleaned = { ...info, title: videoTitleWithoutArtist(info.title, want.artist) };
+      const s = scoreCandidate(want, cleaned);
+      if (s.durationOk && s.titleScore >= 0.6 && s.artistScore >= 0.5 && (!bestVideo || s.score > bestVideo.s.score)) bestVideo = { info, s };
     }
-    if (!best || !acceptable(best.s)) return null;
-    return best.info;
+    return bestVideo ? bestVideo.info : null;
   }
 
   // Resolve a Hive track (path "ytm:…" plus title/artist/album/duration)
@@ -204,6 +228,44 @@ function create({ userDataDir, net }) {
     })();
     inflight.set(key, job);
     try { return await job; } finally { inflight.delete(key); }
+  }
+
+  // Prepare songs before they're clicked: match each on YouTube Music and
+  // fetch its audio link (valid for hours), two at a time. A newer list
+  // replaces the old one, so this always follows the current queue.
+  let prefetchList = [], prefetchRunning = 0, prefetchGeneration = 0;
+  function isReady(track) {
+    const id = matches?.[String(track?.path || '')]?.videoId;
+    const s = id && streams.get(id);
+    return !!(s && s.expires - Date.now() > 20 * 60 * 1000);
+  }
+  async function prefetchWorker(generation) {
+    prefetchRunning++;
+    try {
+      while (generation === prefetchGeneration && prefetchList.length) {
+        const track = prefetchList.shift();
+        if (isReady(track)) continue;
+        try { await resolve(track); } catch { /* not on YouTube Music: it'll say so when played */ }
+        await new Promise(r => setTimeout(r, 250)); // stay gentle with YouTube
+      }
+    } finally { prefetchRunning--; }
+  }
+  // mode 'queue' replaces the list (the play queue comes first); 'append'
+  // adds a browsed playlist's first songs after whatever is waiting.
+  async function prefetch(tracks, { mode = 'queue' } = {}) {
+    await loadMatches();
+    const wanted = (Array.isArray(tracks) ? tracks : []).filter(t => String(t?.path || '').startsWith('ytm:')).slice(0, 60).filter(t => !isReady(t));
+    if (mode === 'append') {
+      const have = new Set(prefetchList.map(t => t.path));
+      prefetchList.push(...wanted.filter(t => !have.has(t.path)));
+      prefetchList = prefetchList.slice(0, 80);
+      if (prefetchRunning < 2) for (let i = prefetchRunning; i < 2; i++) void prefetchWorker(prefetchGeneration);
+      return prefetchList.length;
+    }
+    const generation = ++prefetchGeneration;
+    prefetchList = wanted;
+    for (let i = 0; i < 2; i++) void prefetchWorker(generation);
+    return prefetchList.length;
   }
 
   // MusicBrainz (1 request a second, as its terms ask).
@@ -258,7 +320,7 @@ function create({ userDataDir, net }) {
     };
   }
 
-  return { status, installYtDlp, resolve, findMatch, musicBrainzTags };
+  return { status, installYtDlp, resolve, prefetch, findMatch, musicBrainzTags };
 }
 
-module.exports = { create, normalise, similarity, containment, scoreCandidate, acceptable, urlExpiry };
+module.exports = { create, normalise, similarity, containment, videoTitleWithoutArtist, scoreCandidate, acceptable, urlExpiry };

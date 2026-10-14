@@ -462,7 +462,13 @@
   async function prepareYoutubeMusicTrack(t, { fresh = false } = {}) {
     const token = ++youtubeLoadToken;
     if (!fresh && t.streamUrl && Number(t.ytStreamExpires) - Date.now() > 5 * 60 * 1000) return true;
-    const slow = setTimeout(() => { if (token === youtubeLoadToken && el.pbArtist) el.pbArtist.textContent = `Finding “${t.title}” on YouTube Music…`; }, 400);
+    const slow = setTimeout(() => {
+      if (token !== youtubeLoadToken) return;
+      // Not ready yet: stop the previous song now so the click feels answered.
+      try { if (podcastActive) audioElement.pause(); else if (gstActive) gstSend('PAUSE'); } catch {}
+      updateNowPlayingUI(t);
+      if (el.pbArtist) el.pbArtist.textContent = `Loading “${t.title}” from YouTube Music…`;
+    }, 250);
     try {
       const r = await window.beehive.resolveYouTubeMusic({ path: t.path, title: t.title, artist: t.artist, album: t.album, duration: t.duration, ytVideoId: t.ytVideoId || '' }, { fresh });
       if (token !== youtubeLoadToken) return false;
@@ -481,6 +487,21 @@
       return false;
     } finally { clearTimeout(slow); }
   }
+  // Prepare the queue's YouTube Music songs in the background, starting
+  // from the one after the current song and wrapping round, so clicking
+  // any of them starts almost at once.
+  let youtubeQueuePrefetchKey = '';
+  function prefetchQueueYoutubeMusic() {
+    if (!window.beehive.prefetchYouTubeMusic) return;
+    const n = currentQueue.length, start = Math.max(0, currentIndex);
+    const ordered = [];
+    for (let k = 0; k < n; k++) { const t = currentQueue[(start + k) % n]; if (isYoutubeMusicTrack(t)) ordered.push({ path: t.path, title: t.title, artist: t.artist, album: t.album, duration: t.duration, ytVideoId: t.ytVideoId || '' }); }
+    if (!ordered.length) return;
+    const key = `${ordered.length}:${ordered[0].path}:${ordered[ordered.length - 1].path}`;
+    if (key === youtubeQueuePrefetchKey) return;
+    youtubeQueuePrefetchKey = key;
+    void window.beehive.prefetchYouTubeMusic(ordered).catch(() => {});
+  }
   // Warm the next YouTube Music song so skipping to it is quick.
   function prefetchNextYoutubeMusicTrack() {
     const next = currentQueue[currentIndex + 1];
@@ -489,7 +510,13 @@
       .then(r => { next.streamUrl = r.streamUrl; next.ytVideoId = r.videoId; next.ytStreamExpires = r.expires; }).catch(() => {});
   }
 
-  async function podcastLoad(t, position=0, autoplay=false, { freshStream = false } = {}) {
+  let podcastLoadsInFlight = 0;
+  async function podcastLoad(t, position=0, autoplay=false, opts = {}) {
+    podcastLoadsInFlight++;
+    try { return await podcastLoadInner(t, position, autoplay, opts); }
+    finally { podcastLoadsInFlight--; }
+  }
+  async function podcastLoadInner(t, position=0, autoplay=false, { freshStream = false } = {}) {
     if (!isPodcastTrack(t)) return false;
     if (isYoutubeMusicTrack(t)) {
       if (!(await prepareYoutubeMusicTrack(t, { fresh: freshStream }))) return false;
@@ -521,8 +548,20 @@
     activeOffset = Number(position)||0;
     updateNowPlayingUI(t); dispatchAudio('loadedmetadata'); dispatchAudio('durationchange'); dispatchAudio('timeupdate'); updateSeekUI();
     syncMpris(t, enginePaused);
-    if (isYoutubeMusicTrack(t)) setTimeout(prefetchNextYoutubeMusicTrack, 2000);
-    if (autoplay) { try { await audioElement.play(); void scrobbleStart(t); } catch (err) { enginePaused=true; engineEnded=false; dispatchAudio('pause'); console.warn('Podcast playback blocked:', err?.message || err); } }
+    if (isYoutubeMusicTrack(t)) { setTimeout(prefetchNextYoutubeMusicTrack, 1500); setTimeout(prefetchQueueYoutubeMusic, 2500); }
+    if (autoplay) {
+      try { await audioElement.play(); void scrobbleStart(t); }
+      catch (err) {
+        // A newer song took over the element: nothing to do here.
+        if (currentQueue[currentIndex] !== t || audioElement.currentSrc !== t.streamUrl) return false;
+        // A YouTube link the browser can't open: get a fresh one once.
+        if (isYoutubeMusicTrack(t) && !freshStream && !(t._ytmRetriedAt > Date.now() - 60000)) {
+          t._ytmRetriedAt = Date.now(); t.streamUrl = '';
+          return podcastLoadInner(t, position, autoplay, { freshStream: true });
+        }
+        enginePaused=true; engineEnded=false; dispatchAudio('pause'); console.warn('Podcast playback blocked:', err?.message || err);
+      }
+    }
     return true;
   }
   audioElement.addEventListener('loadedmetadata', () => { if (!podcastActive) return; activeDuration = Number.isFinite(audioElement.duration) ? audioElement.duration : activeDuration; dispatchAudio('loadedmetadata'); dispatchAudio('durationchange'); });
@@ -535,7 +574,11 @@
   // fetch a fresh one once and carry on from the same spot.
   audioElement.addEventListener('error', () => {
     const t = currentQueue[currentIndex];
-    if (!podcastActive || !isYoutubeMusicTrack(t) || t._ytmRetriedAt > Date.now() - 60000) return;
+    // Only a real failure of the link that is loaded now counts. Switching
+    // songs clears the old source, which also raises "error"; retrying then
+    // would start a second load that fights the one in progress.
+    if (!podcastActive || podcastLoadsInFlight > 0 || !isYoutubeMusicTrack(t) || !t.streamUrl || audioElement.currentSrc !== t.streamUrl) return;
+    if (t._ytmRetriedAt > Date.now() - 60000) return;
     t._ytmRetriedAt = Date.now();
     t.streamUrl = '';
     void podcastLoad(t, Number(activeOffset) || 0, true, { freshStream: true });
@@ -5999,7 +6042,23 @@
     try { return await task; } finally { spotifyPlaylistHydrationInFlight.delete(id); }
   }
 
+  // Opening a playlist prepares its first YouTube Music songs, so the
+  // first click on one of them is quick too.
+  const youtubeViewPrefetched = new Set();
+  function prefetchPlaylistYoutubeMusic(pl, tracks) {
+    const key = String(pl?.id || '');
+    if (!key || youtubeViewPrefetched.has(key) || !window.beehive.prefetchYouTubeMusic) return;
+    const first = tracks.filter(isYoutubeMusicTrack).slice(0, 8);
+    if (!first.length) return;
+    youtubeViewPrefetched.add(key);
+    void window.beehive.prefetchYouTubeMusic(first.map(t => ({ path: t.path, title: t.title, artist: t.artist, album: t.album, duration: t.duration })), { mode: 'append' }).catch(() => {});
+  }
   function tracksForPlaylist(pl){
+    const tracks = tracksForPlaylistUncached(pl);
+    if (Array.isArray(tracks)) prefetchPlaylistYoutubeMusic(pl, tracks);
+    return tracks;
+  }
+  function tracksForPlaylistUncached(pl){
     if(pl?.smart) return evaluateSmartPlaylist(pl);
     if (pl?.source === 'spotify' && Array.isArray(pl?.spotifyTracks)) return pl.spotifyTracks.map(normalizeSpotifyTrackRecord).map(youtubeTrackForSpotify);
     const source = Array.isArray(pl?.tracks) ? pl.tracks : [];
@@ -6166,8 +6225,14 @@
 
   async function playPlaylist(pl){
     if (pl?.source === 'spotify') {
-      pl = await hydrateSpotifyPlaylist(pl);
-      if (pl?.id) playlists=playlists.map(item=>String(item.id)===String(pl.id)?pl:item);
+      // Refreshing from Spotify takes seconds; when the playlist already has
+      // its songs, play now and refresh in the background.
+      if (Array.isArray(pl.spotifyTracks) && pl.spotifyTracks.length) {
+        void hydrateSpotifyPlaylist(pl).then(fresh => { if (fresh?.id) playlists=playlists.map(item=>String(item.id)===String(fresh.id)?fresh:item); }).catch(() => {});
+      } else {
+        pl = await hydrateSpotifyPlaylist(pl);
+        if (pl?.id) playlists=playlists.map(item=>String(item.id)===String(pl.id)?pl:item);
+      }
     }
     const baseTracks=tracksForPlaylist(pl);
     const tracks=visualShuffleTracks(visualShuffleKeyForPlaylist(pl), baseTracks, playlistVisualShuffleEnabled(pl));

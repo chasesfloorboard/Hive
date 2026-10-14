@@ -24,3 +24,10 @@ test('stream links expire when googlevideo says so', () => {
   assert.equal(urlExpiry('https://rr1---sn.googlevideo.com/videoplayback?expire=1800000000&x=1'), 1800000000 * 1000);
   assert.ok(urlExpiry('https://example.com/a') > Date.now());
 });
+
+test('video titles lose the "Artist - " prefix before matching', () => {
+  const { videoTitleWithoutArtist } = require('../app/main/youtube-music');
+  assert.equal(videoTitleWithoutArtist('Bullet For My Valentine - Hand Of Blood (Official Audio)', 'Bullet For My Valentine'), 'Hand Of Blood (Official Audio)');
+  assert.equal(videoTitleWithoutArtist('Hand Of Blood', 'Bullet For My Valentine'), 'Hand Of Blood');
+  assert.equal(videoTitleWithoutArtist('Someone Else - Hand Of Blood', 'Bullet For My Valentine'), 'Someone Else - Hand Of Blood');
+});
