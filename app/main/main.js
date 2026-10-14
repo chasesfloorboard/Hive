@@ -88,10 +88,10 @@ const { storeRoot: musicBeeStoreRoot, yearDir: musicBeeYearDir, writeYearStore: 
 const STARTUP_DEBUG_ENABLED = process.argv.includes('--startup-debug') || process.env.BEEHIVE_STARTUP_DEBUG === '1';
 const PERFORMANCE_DEBUG_ENABLED = STARTUP_DEBUG_ENABLED || process.argv.includes('--scroll-debug') || process.env.BEEHIVE_SCROLL_DEBUG === '1';
 const GSTREAMER_TRACE_ENABLED = process.env.HIVE_GST_TRACE === '1';
-// POST-SPOTIFY 1.0: Spotify development is intentionally paused. Keep the
-// bridge implementation intact so it can be resumed later by changing this
-// single flag back to false. Do not remove the Spotify code while paused.
-const SPOTIFY_DEVELOPMENT_PAUSED = true;
+// Hive 1.0 paused Spotify; Hive 2.0 resumes it (playlist import and
+// playback through the Spicetify bridge). Setting this back to true makes
+// the bridge dormant again.
+const SPOTIFY_DEVELOPMENT_PAUSED = false;
 const STARTUP_DEBUG_STARTED_AT = process.hrtime.bigint();
 const HIVE_PROJECT_ROOT = path.resolve(__dirname, '..', '..');
 function findHiveContainerRoot(startPath) {
@@ -1966,6 +1966,11 @@ const internetRadio = require('./internet-radio').create({ net });
 ipcMain.handle('radio:search', async (_evt, query) => internetRadio.search(query));
 ipcMain.handle('radio:resolve', async (_evt, url) => internetRadio.resolve(url));
 ipcMain.handle('radio:nowPlaying', async (_evt, url) => (/^https?:\/\//i.test(String(url || '')) ? internetRadio.nowPlaying(url) : null));
+
+// Hive 2.0 Apple Music browser: public pages + iTunes previews, no Apple ID.
+const appleMusic = require('./apple-music').create({ net });
+ipcMain.handle('applemusic:search', async (_evt, term) => appleMusic.search(term));
+ipcMain.handle('applemusic:collection', async (_evt, url) => appleMusic.getCollection(url));
 
 // Hive interface size (MusicBee's font scaling): zoom the main window.
 ipcMain.handle('hivebee:setZoom', async (evt, factor) => {
@@ -7024,6 +7029,7 @@ function spotifyBridgeJson(res, status, body, requestOrigin = '') {
 function notifySpotifyBridgeWaiters() {
   for (const fn of [...spotifyBridgeWaiters]) { try { fn(); } catch {} }
 }
+let spotifyBridgeLastPollAt = 0;
 function enqueueSpotifyBridgeCommand(command) {
   const item = { id: ++spotifyBridgeSeq, command, createdAt: Date.now() };
   spotifyBridgeCommands.push(item);
@@ -7031,11 +7037,11 @@ function enqueueSpotifyBridgeCommand(command) {
   notifySpotifyBridgeWaiters();
   return item.id;
 }
-async function readHttpJson(req) {
+async function readHttpJson(req, maxBytes = 2 * 1024 * 1024) {
   let body = '';
   for await (const chunk of req) {
     body += chunk;
-    if (body.length > 2 * 1024 * 1024) throw new Error('Spotify bridge request too large.');
+    if (body.length > maxBytes) throw new Error('Spotify bridge request too large.');
   }
   return body ? JSON.parse(body) : {};
 }
@@ -7053,6 +7059,7 @@ function startSpotifyBridge() {
           spotifyBridgeSeenCommandsRequest = true;
           startupDebug('SPOTIFY BRIDGE COMMAND POLL RECEIVED', { origin: req.headers.origin || null });
         }
+        spotifyBridgeLastPollAt = Date.now();
         const after = Number(url.searchParams.get('after') || 0);
         const commands = spotifyBridgeCommands.filter(x => x.id > after);
         return spotifyBridgeJson(res, 200, { commands }, req.headers.origin || '');
@@ -7074,7 +7081,8 @@ function startSpotifyBridge() {
         return spotifyBridgeJson(res, 200, { ok: true }, req.headers.origin || '');
       }
       if (req.method === 'POST' && url.pathname === '/playlist') {
-        const data = await readHttpJson(req);
+        // Whole playlists with artwork links: thousands of tracks fit in 32 MB.
+        const data = await readHttpJson(req, 32 * 1024 * 1024);
         spotifyBridgeState = { ...spotifyBridgeState, connected: true, updatedAt: Date.now(), playlist: data };
         notifySpotifyBridgeWaiters();
         if (mainWindow && !mainWindow.isDestroyed()) mainWindow.webContents.send('spotify:playlist', data);
@@ -7469,11 +7477,21 @@ ipcMain.handle('playlists:importSpotify', async (_evt, input) => {
 
   // Prefer the Spicetify session. This lets Hive import private playlists and
   // the user's complete playlist without asking Hive to own Spotify credentials.
+  // The bridge polls every 250 ms while Spotify is open. When it is polling,
+  // give it time to page through long playlists; otherwise don't wait long.
   const commandId = enqueueSpotifyBridgeCommand({ type: 'getPlaylist', playlistId: id });
-  const deadline = Date.now() + 3500;
+  const bridgeLive = () => Date.now() - spotifyBridgeLastPollAt < 3000;
+  const startedLive = bridgeLive();
+  const deadline = Date.now() + (startedLive ? 120000 : 3500);
+  let bridgeError = '';
   while (Date.now() < deadline) {
     const current = spotifyBridgeState;
-    if (current?.playlist?.commandId === commandId) return current.playlist;
+    if (current?.playlist?.commandId === commandId) {
+      if (!current.playlist.error) return current.playlist;
+      bridgeError = String(current.playlist.error);
+      break;
+    }
+    if (startedLive && !bridgeLive()) break; // Spotify was closed mid-import
     await new Promise(resolve => setTimeout(resolve, 100));
   }
 
@@ -7484,7 +7502,7 @@ ipcMain.handle('playlists:importSpotify', async (_evt, input) => {
   if (!response.ok) throw new Error(`Spotify returned HTTP ${response.status}. Open Spotify and sign in, then try again.`);
   const html = await response.text();
   const match = html.match(/<script[^>]+id=[\"']__NEXT_DATA__[\"'][^>]*>([\s\S]*?)<\/script>/i);
-  if (!match) throw new Error('Spotify did not expose this playlist publicly. Open Spotify and sign in to import private playlists.');
+  if (!match) throw new Error(bridgeError ? `Spotify couldn't read this playlist (${bridgeError}).` : 'Spotify did not expose this playlist publicly. Open Spotify and sign in to import private playlists.');
   let data; try { data = JSON.parse(match[1]); } catch { throw new Error('Could not read Spotify playlist metadata.'); }
   const rows = findSpotifyTrackList(data) || [];
   const findSpotifyImage = value => {
@@ -7510,7 +7528,10 @@ ipcMain.handle('playlists:importSpotify', async (_evt, input) => {
     return { title: String(title).trim(), artist: artists.join(', '), spotifyUri: uri, spotifyId: String(uri).split(':').pop(), album: String(row?.album || '').trim(), duration, cover, artworkUrl: cover };
   }).filter(t => t.title && t.spotifyId);
   const name = String(data?.props?.pageProps?.state?.data?.entity?.name || data?.props?.pageProps?.data?.entity?.name || 'Spotify Playlist').trim();
-  const cover = tracks.find(t => /^https?:\/\//i.test(String(t.cover || t.artworkUrl || '')))?.cover || '';
+  const entity = data?.props?.pageProps?.state?.data?.entity || data?.props?.pageProps?.data?.entity || {};
+  const entitySources = Array.isArray(entity?.coverArt?.sources) ? entity.coverArt.sources : [];
+  const largest = entitySources.slice().sort((a, b) => (Number(b?.width) || 0) - (Number(a?.width) || 0))[0]?.url || '';
+  const cover = (/^https?:\/\//i.test(String(largest)) ? String(largest) : '') || tracks.find(t => /^https?:\/\//i.test(String(t.cover || t.artworkUrl || '')))?.cover || '';
   return { id, name, sourceUrl: `https://open.spotify.com/playlist/${id}`, cover, artworkUrl:cover, tracks, likelyTruncated: rows.length >= 100, source: 'spotify' };
 });
 

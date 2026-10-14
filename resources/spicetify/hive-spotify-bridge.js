@@ -118,9 +118,46 @@
 
   async function sendState() { await post('/state', playerPayload()); }
 
-  async function importPlaylist(command) {
-    const id = String(command.playlistId || '').trim();
-    if (!id) throw new Error('Missing Spotify playlist id');
+  // Spotify's own playlist API (Spicetify.Platform.PlaylistAPI) reads the
+  // playlist the way the client does: private, collaborative and very long
+  // playlists all work, with no Web API rate limits. Older clients fall back
+  // to the Web API through CosmosAsync.
+  function platformTrack(item, id) {
+    const uri = spotifyUriValue(item?.uri);
+    if (!/^spotify:track:/.test(uri) || !item?.name) return null;
+    const album = item.album || {};
+    const images = Array.isArray(album.images) ? album.images : [];
+    const artworkUrl = images.map(x => spotifyImageUrl(x?.url)).find(Boolean) || '';
+    const artists = Array.isArray(item.artists) ? item.artists.map(a => a?.name).filter(Boolean).join(', ') : '';
+    const ms = Number(item.duration?.milliseconds ?? item.duration ?? 0) || 0;
+    return {
+      title: String(item.name), artist: artists, album: String(album.name || ''), albumUri: spotifyUriValue(album.uri),
+      albumArtist: String(album.artist?.name || (Array.isArray(album.artists) ? album.artists.map(a => a?.name).filter(Boolean).join(', ') : '') || ''),
+      year: '', duration: ms / 1000, spotifyUri: uri, spotifyId: uri.split(':').pop(),
+      contextUri: `spotify:playlist:${id}`, spotifyContextUri: `spotify:playlist:${id}`, cover: artworkUrl, artworkUrl
+    };
+  }
+
+  async function readPlaylistWithPlatform(id) {
+    const api = Spicetify?.Platform?.PlaylistAPI;
+    if (!api?.getContents) return null;
+    const uri = `spotify:playlist:${id}`;
+    let meta = null;
+    try { meta = await api.getMetadata(uri); } catch {}
+    const tracks = [];
+    const limit = 500;
+    for (let offset = 0; offset < 20000; offset += limit) {
+      const page = await api.getContents(uri, { offset, limit });
+      const items = Array.isArray(page?.items) ? page.items : [];
+      for (const item of items) { const t = platformTrack(item, id); if (t) tracks.push(t); }
+      const total = Number(page?.totalLength ?? page?.totalCount ?? 0);
+      if (items.length < limit || (total && offset + limit >= total)) break;
+    }
+    const images = Array.isArray(meta?.images) ? meta.images.map(x => x?.url) : [];
+    return { name: String(meta?.name || ''), description: String(meta?.description || ''), images, tracks };
+  }
+
+  async function readPlaylistWithWebApi(id) {
     const fields = 'name,description,external_urls,images,tracks.items(track(name,uri,duration_ms,artists(name),album(uri,name,images,artists(name),release_date))),tracks.next,tracks.total';
     let url = `https://api.spotify.com/v1/playlists/${encodeURIComponent(id)}?fields=${encodeURIComponent(fields)}`;
     const tracks = [];
@@ -156,19 +193,31 @@
       }
       url = data?.tracks?.next || '';
     }
-    const playlistArtwork = [
-      ...(Array.isArray(first?.images) ? first.images.map(x => x?.url) : []),
-      ...(tracks.slice(0, 8).map(x => x.artworkUrl))
-    ].map(spotifyImageUrl).find(Boolean) || '';
+    return { name: String(first?.name || ''), description: String(first?.description || ''), images: Array.isArray(first?.images) ? first.images.map(x => x?.url) : [], tracks };
+  }
+
+  async function importPlaylist(command) {
+    const id = String(command.playlistId || '').trim();
+    if (!id) throw new Error('Missing Spotify playlist id');
+    let result = null, platformError = null;
+    try { result = await readPlaylistWithPlatform(id); } catch (err) { platformError = err; }
+    if (!result || (!result.tracks.length && Spicetify?.CosmosAsync)) {
+      try { result = await readPlaylistWithWebApi(id); }
+      catch (err) {
+        await post('/playlist', { commandId: Number(command.id), id, error: String((platformError || err)?.message || platformError || err) });
+        return;
+      }
+    }
+    const playlistArtwork = [...result.images, ...result.tracks.slice(0, 8).map(x => x.artworkUrl)].map(spotifyImageUrl).find(Boolean) || '';
     await post('/playlist', {
       commandId: Number(command.id),
       id,
-      name: String(first?.name || 'Spotify Playlist'),
-      description: String(first?.description || ''),
+      name: String(result.name || 'Spotify Playlist'),
+      description: String(result.description || ''),
       sourceUrl: `https://open.spotify.com/playlist/${id}`,
       cover: playlistArtwork,
       artworkUrl: playlistArtwork,
-      tracks,
+      tracks: result.tracks,
       contextUri: `spotify:playlist:${id}`,
       source: 'spotify'
     });

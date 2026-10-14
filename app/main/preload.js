@@ -28,6 +28,8 @@ contextBridge.exposeInMainWorld('beehive', {
   searchRadioStations: (query) => ipcRenderer.invoke('radio:search', String(query || '')),
   resolveRadioStream: (url) => ipcRenderer.invoke('radio:resolve', String(url || '')),
   getRadioNowPlaying: (url) => ipcRenderer.invoke('radio:nowPlaying', String(url || '')),
+  searchAppleMusic: (term) => ipcRenderer.invoke('applemusic:search', String(term || '')),
+  getAppleMusicCollection: (url) => ipcRenderer.invoke('applemusic:collection', String(url || '')),
   toggleMiniPlayer: () => ipcRenderer.invoke('miniplayer:toggle'),
   getMiniPlayerState: () => ipcRenderer.invoke('miniplayer:getState'),
   pushMiniPlayerState: (state) => ipcRenderer.send('miniplayer:state', state || null),

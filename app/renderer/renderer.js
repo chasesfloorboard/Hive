@@ -1530,6 +1530,132 @@
     setTimeout(pollRadioNowPlaying, 1500);
     radioPollTimer = setInterval(pollRadioNowPlaying, 20000);
   }
+  // ---------------------------------------------------------------------
+  // Hive 2.0 Apple Music browser. Search Apple Music's public playlists and
+  // albums or paste a link, then play or import them: songs found in the
+  // library play in full, everything else as Apple's 30-second preview
+  // (podcast-style stream tracks with "applemusic:" paths).
+  // ---------------------------------------------------------------------
+  let appleMusicModal = null;
+  function isAppleMusicPreview(t) { return isPodcastTrack(t) && String(t?.path || '').startsWith('applemusic:'); }
+  function appleMatchKey(text) {
+    return String(text || '').toLowerCase()
+      .replace(/[\(\[](feat\.?|ft\.?|with|mixed|explicit|clean)[^\)\]]*[\)\]]/g, ' ')
+      .replace(/\s+(feat\.?|ft\.?)\s+.*$/, ' ')
+      .normalize('NFKD').replace(/[̀-ͯ]/g, '').replace(/&/g, 'and').replace(/[^a-z0-9]+/g, '');
+  }
+  function appleLibraryIndex() {
+    const index = new Map();
+    for (const t of library.tracks || []) {
+      if (!isLocalPlaybackTrack(t)) continue;
+      const key = appleMatchKey(t.title);
+      if (!key) continue;
+      if (!index.has(key)) index.set(key, []);
+      index.get(key).push(t);
+    }
+    return index;
+  }
+  function appleLocalMatch(index, at) {
+    const candidates = index.get(appleMatchKey(at.title)) || [];
+    const firstArtist = appleMatchKey(String(at.artist || '').split(/,|&| x /i)[0]);
+    return candidates.find(t => { const a = appleMatchKey(`${t.artist} ${t.albumArtist || ''}`); return firstArtist && a.includes(firstArtist); }) || null;
+  }
+  function applePreviewTrack(at, collection) {
+    return { path: `applemusic:${at.appleId}`, source: 'podcast', streamUrl: at.previewUrl, title: at.title, artist: at.artist, album: at.album,
+      year: at.year || '', duration: 30, cover: '', artworkUrl: at.artwork || '', podcastId: '', podcastFeedUrl: at.url || '',
+      podcastDescription: `30-second Apple Music preview from “${collection?.name || at.album}”. The full song is on Apple Music.`, pubDate: '' };
+  }
+  function appleTracksForPlayback(collection) {
+    const index = appleLibraryIndex();
+    return collection.tracks.map(at => appleLocalMatch(index, at) || (at.previewUrl ? applePreviewTrack(at, collection) : null)).filter(Boolean);
+  }
+  function appleCardHtml(c) {
+    return `<button type="button" class="apple-card" data-apple-url="${escapeHtml(c.url)}">${c.artwork ? `<img src="${escapeHtml(c.artwork)}" alt="" loading="lazy">` : '<span class="apple-card-blank"></span>'}<strong>${escapeHtml(c.name)}</strong><small>${escapeHtml(c.curator || (c.kind === 'album' ? 'Album' : 'Playlist'))}</small></button>`;
+  }
+  function openAppleMusicDialog() {
+    if (!appleMusicModal || !document.body.contains(appleMusicModal)) {
+      appleMusicModal = document.createElement('div');
+      appleMusicModal.className = 'modal-overlay hidden';
+      appleMusicModal.innerHTML = `<div class="modal glass organise-modal apple-modal" role="dialog" aria-modal="true" aria-labelledby="apple-title">
+        <div class="modal-header"><div><h3 id="apple-title">Apple Music</h3><div class="modal-subtitle">Browse Apple Music playlists and albums. Songs in your library play in full; the rest play Apple's 30-second previews (full songs need the Apple Music app).</div></div><button class="modal-close" data-close type="button" aria-label="Close">✕</button></div>
+        <div class="modal-body organise-body">
+          <form class="radio-search" id="apple-search-form"><input type="search" class="settings-text" id="apple-query" placeholder="Search playlists and albums, or paste a music.apple.com link" spellcheck="false"><button type="submit" class="sidebar-add">Search</button></form>
+          <div class="organise-status" id="apple-status"></div>
+          <div id="apple-view"></div>
+        </div>
+        <div class="equaliser-footer"><button type="button" class="sidebar-add hidden" id="apple-back">← Back</button><span class="equaliser-footer-gap"></span><button type="button" class="sidebar-add" data-close>Close</button></div>
+      </div>`;
+      document.body.appendChild(appleMusicModal);
+      const m = appleMusicModal, view = m.querySelector('#apple-view'), status = m.querySelector('#apple-status'), back = m.querySelector('#apple-back');
+      m.addEventListener('click', e => { if (e.target === m) closeModal(m); });
+      m.querySelectorAll('[data-close]').forEach(b => b.addEventListener('click', () => closeModal(m)));
+      let lastResultsHtml = '', current = null;
+      const cleanError = err => String(err?.message || err).replace(/^Error invoking remote method '[^']+': (Error: )?/, '');
+      const showResults = async (term) => {
+        status.textContent = 'Searching Apple Music…'; back.classList.add('hidden');
+        try {
+          const r = await window.beehive.searchAppleMusic(term);
+          lastResultsHtml = (r.playlists.length ? `<h4 class="radio-heading">Playlists</h4><div class="apple-grid">${r.playlists.map(appleCardHtml).join('')}</div>` : '')
+            + (r.albums.length ? `<h4 class="radio-heading">Albums</h4><div class="apple-grid">${r.albums.map(appleCardHtml).join('')}</div>` : '');
+          view.innerHTML = lastResultsHtml; status.textContent = lastResultsHtml ? '' : 'Nothing found.';
+        } catch (err) { status.textContent = `Couldn't reach Apple Music (${cleanError(err)}).`; }
+      };
+      const showCollection = async (url) => {
+        status.textContent = 'Loading…';
+        try { current = await window.beehive.getAppleMusicCollection(url); }
+        catch (err) { status.textContent = cleanError(err); return; }
+        const index = appleLibraryIndex();
+        const rows = current.tracks.map((at, i) => {
+          const local = appleLocalMatch(index, at);
+          const badge = local ? '<span class="apple-badge apple-badge-local" title="Plays the full song from your library">In library</span>' : (at.previewUrl ? '<span class="apple-badge">Preview</span>' : '<span class="apple-badge apple-badge-none" title="Apple has no preview for this song">Apple Music only</span>');
+          return `<div class="apple-track" data-i="${i}"><span class="apple-track-n">${i + 1}</span><div class="apple-track-text"><div>${escapeHtml(at.title)}</div><small>${escapeHtml([at.artist, at.album].filter(Boolean).join(' — '))}</small></div>${badge}<span class="apple-track-time">${fmtTime(at.duration)}</span><button type="button" class="icon-btn" data-apple-play="${i}" title="Play" ${local || at.previewUrl ? '' : 'disabled'}>${theaterIcon('play')}</button></div>`;
+        }).join('');
+        const localCount = current.tracks.filter(at => appleLocalMatch(index, at)).length;
+        view.innerHTML = `<div class="apple-head">${current.artwork ? `<img src="${escapeHtml(current.artwork)}" alt="">` : ''}<div><div class="apple-kicker">${current.kind === 'album' ? 'ALBUM' : 'PLAYLIST'}</div><h3>${escapeHtml(current.name)}</h3><div class="dim">${escapeHtml(current.curator)} · ${current.tracks.length} songs · ${localCount} in your library</div>
+            ${current.description ? `<p class="apple-desc">${escapeHtml(current.description)}</p>` : ''}
+            <div class="apple-actions"><button type="button" class="sidebar-add" id="apple-play-all">Play</button><button type="button" class="sidebar-add" id="apple-import">Import as playlist</button><a class="sidebar-add" href="${escapeHtml(current.url)}" target="_blank" rel="noopener">Open in Apple Music</a></div></div></div>
+          <div class="apple-tracks">${rows}</div>
+          ${current.more?.length ? `<h4 class="radio-heading">More like this</h4><div class="apple-grid">${current.more.map(appleCardHtml).join('')}</div>` : ''}`;
+        status.textContent = ''; back.classList.toggle('hidden', !lastResultsHtml);
+        view.scrollTop = 0; m.querySelector('.modal-body').scrollTop = 0;
+      };
+      m.querySelector('#apple-search-form').addEventListener('submit', e => {
+        e.preventDefault();
+        const q = m.querySelector('#apple-query').value.trim(); if (!q) return;
+        if (/^https:\/\/(embed\.)?music\.apple\.com\//i.test(q)) showCollection(q); else showResults(q);
+      });
+      back.addEventListener('click', () => { view.innerHTML = lastResultsHtml; back.classList.add('hidden'); status.textContent = ''; });
+      view.addEventListener('click', async e => {
+        const card = e.target.closest('[data-apple-url]');
+        if (card) { showCollection(card.dataset.appleUrl); return; }
+        if (!current) return;
+        const one = e.target.closest('[data-apple-play]');
+        if (one) {
+          const at = current.tracks[Number(one.dataset.applePlay)];
+          const all = appleTracksForPlayback(current);
+          const index = appleLibraryIndex(), local = appleLocalMatch(index, at);
+          const start = all.findIndex(t => t.path === (local ? local.path : `applemusic:${at.appleId}`));
+          playQueue(all, Math.max(0, start), false);
+          return;
+        }
+        if (e.target.closest('#apple-play-all')) { const all = appleTracksForPlayback(current); if (all.length) playQueue(all, 0, false); return; }
+        if (e.target.closest('#apple-import')) {
+          const all = appleTracksForPlayback(current);
+          if (!all.length) { status.textContent = 'Nothing in this playlist can be played in Hive.'; return; }
+          const snapshots = {};
+          for (const t of all) if (isAppleMusicPreview(t)) snapshots[t.path] = t;
+          const created = await window.beehive.savePlaylist({ name: current.name || 'Apple Music playlist', tracks: all.map(t => t.path), podcastEpisodes: snapshots, smart: false,
+            description: `From Apple Music${current.curator ? ` (${current.curator})` : ''}: ${current.url}` });
+          playlists = await window.beehive.getPlaylists();
+          renderPlaylistManager(); renderNavigationEditors();
+          const previews = Object.keys(snapshots).length;
+          status.textContent = `Created “${created.name}”: ${all.length - previews} songs from your library, ${previews} previews${all.length < current.tracks.length ? `, ${current.tracks.length - all.length} skipped (no preview)` : ''}.`;
+        }
+      });
+    }
+    openModal(appleMusicModal);
+    setTimeout(() => appleMusicModal.querySelector('#apple-query')?.focus(), 50);
+  }
   function hivebeeMiniPlayerOnAudio(name) {
     if (['timeupdate', 'pause', 'ended'].includes(name)) hivebeeTrackResume(name);
     if (name === 'timeupdate') { if (Date.now() - miniLastPush > 5000) scheduleMiniPlayerPush(); return; }
@@ -2459,6 +2585,7 @@
     if (btn.dataset.action === 'mini-player') { window.beehive.toggleMiniPlayer?.().then(() => scheduleMiniPlayerPush(400)); }
     if (btn.dataset.action === 'find-duplicates') openDuplicatesDialog();
     if (btn.dataset.action === 'internet-radio') openRadioDialog();
+    if (btn.dataset.action === 'apple-music') openAppleMusicDialog();
     if (btn.dataset.action === 'import-musicbee') document.getElementById('import-musicbee-library-btn')?.click();
     // "check-updates" and any future items are placeholders for now.
   });
@@ -2840,7 +2967,7 @@
         const date = track?.pubDate ? new Date(track.pubDate) : null;
         const dateText = date && !Number.isNaN(date.getTime()) ? date.toLocaleDateString([], {year:'numeric', month:'short', day:'numeric'}) : '';
         container.innerHTML = `<div class="podcast-info">
-          <div class="podcast-info-kicker">${isRadioTrack(track) ? 'INTERNET RADIO' : 'PODCAST EPISODE'}</div>
+          <div class="podcast-info-kicker">${isRadioTrack(track) ? 'INTERNET RADIO' : isAppleMusicPreview(track) ? 'APPLE MUSIC PREVIEW' : 'PODCAST EPISODE'}</div>
           <strong class="podcast-info-title">${escapeHtml(track?.title || 'Untitled episode')}</strong>
           <div class="podcast-info-meta">${escapeHtml(track?.album || 'Podcast')}${dateText ? ` · ${escapeHtml(dateText)}` : ''}</div>
           ${description ? `<p class="podcast-info-description">${escapeHtml(description)}</p>` : `<p class="podcast-info-description dim">${isRadioTrack(track) ? 'Live stream. The song that is on now shows under the station name.' : 'No episode description was provided by the feed.'}</p>`}
@@ -6400,6 +6527,7 @@
     const input=await themedPrompt('Spotify playlist URL:', 'https://open.spotify.com/playlist/', 'Import Spotify playlist');
     if(!input)return;
     try{
+      showAppNotice('Importing the Spotify playlist…');
       const data=await window.beehive.importSpotifyPlaylist(input);
       const spotifyTracks=(data.tracks||[]).map((entry,i)=>({
         path:`spotify:track:${entry.spotifyId || i}`,
@@ -6413,9 +6541,12 @@
       const warm = await preloadSpotifyArtwork(spotifyTracks, playlistCover);
       const pl=await window.beehive.savePlaylist({name:data.name,tracks:[],spotifyTracks,smart:false,source:'spotify',sourceUrl:data.sourceUrl,spotifyPlaylistId:data.id,cover:playlistCover,artworkUrl:playlistCover,spotifyArtworkCacheFile:warm?.playlistCoverFile || '',description:'Spotify streaming playlist. Audio remains in Spotify; Hive controls the Spotify player.'});
       playlists=await window.beehive.getPlaylists(); closeModal(el.playlistImportModal); renderPlaylistManager();
-      showAppNotice(`Imported “${pl.name}” with ${spotifyTracks.length} Spotify tracks. Audio will stream through Spotify.`);
+      showAppNotice(data.likelyTruncated
+        ? `Imported the first ${spotifyTracks.length} tracks of “${pl.name}”. Spotify only shares 100 tracks publicly; open the Spotify app and import again for the whole playlist.`
+        : `Imported “${pl.name}” with ${spotifyTracks.length} Spotify tracks. Audio will stream through Spotify.`);
     }catch(err){
-      showAppNotice(`${err.message||'Could not import Spotify playlist.'} If Spotify authentication is required, start Spotify with spicetify auto, sign in there, and try the import again.`);
+      const message=String(err?.message||'Could not import Spotify playlist.').replace(/^Error invoking remote method '[^']+': (Error: )?/,'');
+      showAppNotice(`${message} For private playlists, open the Spotify app (with Spicetify applied), sign in, and try the import again.`);
     }
   }
 

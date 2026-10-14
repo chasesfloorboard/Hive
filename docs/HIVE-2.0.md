@@ -67,6 +67,8 @@ Settings for these live in `config.hivebee` (`prefs` flat keys, `dsp`); any Sett
 | Resume position for long tracks | Done | pref `player.resumeMinutes`, localStorage `hive:resume-positions` |
 | Theater mode with Up Next and artist bio | Done | `toggleTheaterMode` (F11, player bar button), `artist:info` IPC (Wikipedia summary) |
 | Internet radio (directory search, saved stations, stream links, now playing) | Done | `app/main/internet-radio.js` (radio-browser.info, .pls/.m3u, ICY titles), Hive menu → Internet radio… |
+| Spotify playlist import (resumed from 1.0's pause) | Done | `SPOTIFY_DEVELOPMENT_PAUSED = false`; bridge reads playlists with `Spicetify.Platform.PlaylistAPI` (whole/private playlists while Spotify is open), public embed fallback (first 100 tracks) |
+| Apple Music browser (not a MusicBee feature) | Done | `app/main/apple-music.js`: public music.apple.com pages + iTunes lookup previews; library matches play in full, the rest as 30 s previews; Hive menu → Apple Music… |
 | Shuffle by track/album/artist/grouping/work, spread same artist | Done | `hivebeeShuffleQueue`, Settings → Playback |
 | Auto-DJ options (source, keep N queued, artist gap, similar artists, skip recently played, min rating) | Done | Settings → Playback → Auto-DJ |
 | Fade on pause/resume | Done | helper `PAUSE_FADE`/`PLAY_FADE` (reuse the LOAD transport fade); Settings → Playback → Sound |
