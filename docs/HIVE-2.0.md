@@ -63,6 +63,10 @@ Settings for these live in `config.hivebee` (`prefs` flat keys, `dsp`); any Sett
 | ReplayGain Smart mode | Done | `smartReplayGainUsesAlbum` in renderer.js, Settings → Playback |
 | Stop after current / sleep timer (stop or close) | Done | right-click Play; helper `NEXT_CLEAR` |
 | Track-change pop-up notification | Done | `hivebee:trackPopup`, Settings → Playback |
+| Hotkeys (configurable) | Done | `HOTKEY_ACTIONS` in renderer.js, Settings → Hotkeys |
+| Resume position for long tracks | Done | pref `player.resumeMinutes`, localStorage `hive:resume-positions` |
+| Theater mode with Up Next and artist bio | Done | `toggleTheaterMode` (F11, player bar button), `artist:info` IPC (Wikipedia summary) |
+| Internet radio (directory search, saved stations, stream links, now playing) | Done | `app/main/internet-radio.js` (radio-browser.info, .pls/.m3u, ICY titles), Hive menu → Internet radio… |
 | Shuffle by track/album/artist/grouping/work, spread same artist | Done | `hivebeeShuffleQueue`, Settings → Playback |
 | Auto-DJ options (source, keep N queued, artist gap, similar artists, skip recently played, min rating) | Done | Settings → Playback → Auto-DJ |
 | Fade on pause/resume | Done | helper `PAUSE_FADE`/`PLAY_FADE` (reuse the LOAD transport fade); Settings → Playback → Sound |

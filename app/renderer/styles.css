@@ -5461,10 +5461,65 @@ html.hb-lyrics-right #queue-panel #lyrics-resize{flex:none}
 
 /* ---------------- player bar button visibility ---------------- */
 html.hb-hide-pb-love #btn-love, html.hb-hide-pb-shuffle #btn-shuffle, html.hb-hide-pb-repeat #btn-repeat,
-html.hb-hide-pb-eq #btn-eq, html.hb-hide-pb-mini #btn-mini, html.hb-hide-pb-volume .playbar-volume { display:none !important; }
+html.hb-hide-pb-eq #btn-eq, html.hb-hide-pb-mini #btn-mini, html.hb-hide-pb-theater #btn-theater, html.hb-hide-pb-volume .playbar-volume { display:none !important; }
 
 /* ---------------- settings: MusicBee-style categories + search ---------------- */
 .settings-search{width:100%;box-sizing:border-box;margin:0 0 8px;padding:7px 10px;border-radius:8px;border:1px solid var(--control-border);background:var(--control-bg);color:var(--text);font-size:12px}
 .modal-settings.settings-searching .settings-tab-btn.active{background:transparent;color:var(--text-dim)}
 .modal-settings.settings-searching .settings-panel-intro{display:none}
 .organise-template-setting{width:min(360px,100%);font-family:ui-monospace,monospace;font-size:12px}
+
+/* ---------------- hotkeys ---------------- */
+.hotkey-btn{width:auto !important;min-width:150px;margin:0 !important;font-variant-numeric:tabular-nums;font-family:ui-monospace,monospace;font-size:12px !important}
+.hotkey-clear{margin-left:6px}
+
+/* ---------------- theater mode ---------------- */
+.theater-mode{position:fixed;inset:0;z-index:400;display:grid;grid-template-columns:minmax(0,1fr) minmax(260px,360px);gap:40px;padding:56px 56px 48px;background:var(--bg);color:var(--text);overflow:hidden}
+.theater-mode.hidden{display:none}
+.theater-backdrop{position:absolute;inset:-40px;background:center/cover no-repeat;filter:blur(48px) saturate(1.2) brightness(.45);opacity:.85;z-index:0}
+.theater-mode > *:not(.theater-backdrop){position:relative;z-index:1}
+.theater-close{position:absolute !important;top:18px;right:22px;width:36px;height:36px;border-radius:50%;border:1px solid var(--control-border);background:var(--control-bg);color:var(--text);font-size:15px;cursor:pointer;z-index:2}
+.theater-main{display:flex;flex-direction:column;align-items:center;justify-content:center;gap:22px;min-height:0}
+.theater-cover{width:min(56vh,520px);aspect-ratio:1;object-fit:cover;border-radius:14px;box-shadow:0 30px 80px rgba(0,0,0,.55)}
+.theater-cover.hidden{visibility:hidden}
+.theater-meta{text-align:center;max-width:min(80%,720px)}
+.theater-title{font-size:30px;font-weight:700;line-height:1.15}
+.theater-artist{font-size:19px;color:var(--text-dim);margin-top:6px}
+.theater-album{font-size:14px;color:var(--text-dimmer);margin-top:4px}
+.theater-progress{display:grid;grid-template-columns:auto minmax(0,1fr) auto;gap:12px;align-items:center;width:min(70%,640px);font-size:12px;color:var(--text-dim);font-variant-numeric:tabular-nums}
+.theater-bar{height:5px;border-radius:3px;background:rgba(255,255,255,.14);cursor:pointer;overflow:hidden}
+.theater-bar > div{height:100%;width:0;background:var(--accent)}
+.theater-controls{display:flex;align-items:center;gap:14px}
+.theater-controls button{width:46px;height:46px;border-radius:50%;border:0;background:var(--control-bg);color:var(--text);display:grid;place-items:center;cursor:pointer}
+.theater-controls button svg{width:20px;height:20px}
+.theater-controls .theater-play{width:62px;height:62px;background:color-mix(in srgb,var(--accent) 40%,transparent)}
+.theater-controls .theater-play svg{width:26px;height:26px}
+.theater-controls button.loved{color:#ff6b8b}
+.theater-side{display:flex;flex-direction:column;gap:22px;min-height:0;overflow:auto;padding-top:24px}
+.theater-side section{background:color-mix(in srgb,var(--bg) 55%,transparent);border:1px solid var(--border);border-radius:12px;padding:14px 16px;backdrop-filter:blur(12px)}
+.theater-side h4{margin:0 0 10px;font-size:11px;letter-spacing:.08em;text-transform:uppercase;color:var(--text-dim)}
+.theater-upnext{margin:0;padding:0 0 0 18px;display:flex;flex-direction:column;gap:8px}
+.theater-upnext li span{display:block;font-size:13.5px}
+.theater-upnext li small{color:var(--text-dim);font-size:12px}
+.theater-artist-info.hidden{display:none}
+.theater-artist-info p{font-size:13px;line-height:1.55;color:var(--text-dim);margin:0 0 10px;display:-webkit-box;-webkit-line-clamp:9;-webkit-box-orient:vertical;overflow:hidden}
+.theater-artist-img{float:right;width:84px;height:84px;object-fit:cover;border-radius:8px;margin:0 0 8px 12px}
+.theater-artist-img.hidden{display:none}
+.theater-artist-info a{color:var(--accent);font-size:12px}
+@media (max-width:900px){.theater-mode{grid-template-columns:1fr;padding:48px 20px 24px}.theater-side{display:none}}
+.theater-upnext li.dim{list-style:none;margin-left:-18px;color:var(--text-dim);font-size:13px}
+
+/* ---------------- internet radio ---------------- */
+.radio-modal{width:min(760px,94vw)}
+.radio-search{display:flex;gap:8px;margin-bottom:10px}
+.radio-search input{flex:1;min-width:0}
+.radio-add summary{cursor:pointer;color:var(--text-dim);font-size:13px;margin:2px 0 10px}
+.radio-heading{margin:14px 0 6px;font-size:11px;letter-spacing:.08em;text-transform:uppercase;color:var(--text-dim)}
+.radio-list{display:flex;flex-direction:column;gap:2px;max-height:300px;overflow:auto}
+.radio-row{display:grid;grid-template-columns:36px minmax(0,1fr) auto auto;gap:10px;align-items:center;padding:6px 8px;border-radius:8px}
+.radio-row:hover{background:var(--control-bg)}
+.radio-logo{width:36px;height:36px;border-radius:6px;object-fit:contain;background:rgba(255,255,255,.06)}
+.radio-logo-empty{display:grid;place-items:center;font-size:18px}
+.radio-row-name{font-size:13.5px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+.radio-row-meta{font-size:12px;color:var(--text-dim);white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+.radio-empty{font-size:13px;color:var(--text-dim);padding:6px 8px}

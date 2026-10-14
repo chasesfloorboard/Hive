@@ -629,8 +629,10 @@
     'autodj.skipPlayedDays': 0, 'autodj.minRating': 0,
     'menu.hidden': [],
     'layout.sidebar': true, 'layout.lyrics': true, 'layout.rightPanel': true, 'layout.queueList': true, 'layout.nowPlaying': true,
+    'hotkeys': null,
     'playerbar.love': true, 'playerbar.shuffle': true, 'playerbar.repeat': true, 'playerbar.eq': true, 'playerbar.mini': true, 'playerbar.volume': true,
     'layout.swap': false, 'layout.playerTop': false, 'layout.lyricsSide': 'left', 'layout.density': 'comfortable', 'layout.rowArt': true, 'layout.zoom': 100,
+    'player.resumeMinutes': 0, 'theater.artistInfo': true, 'radio.stations': [], 'playerbar.theater': true,
     'player.fadePauseMs': 0, 'player.tempoPitch': false, 'player.tempo': 1, 'player.pitch': 0,
     'crossfade.ms': 0, 'crossfade.excludeAlbums': true, 'crossfade.onSkip': false,
     'convert.format': 'mp3', 'convert.quality': 'v0', 'convert.destination': '', 'convert.useTemplate': false, 'convert.embedArtwork': true,
@@ -639,7 +641,95 @@
   let hivebeePrefs = {};
   function hbPref(key) { return Object.prototype.hasOwnProperty.call(hivebeePrefs, key) ? hivebeePrefs[key] : HIVEBEE_PREF_DEFAULTS[key]; }
   // MusicBee-style panel arrangement, applied as classes on <html>.
-  const PLAYERBAR_BUTTONS = [['love', 'Love'], ['shuffle', 'Shuffle'], ['repeat', 'Repeat'], ['eq', 'Equaliser'], ['mini', 'Mini player'], ['volume', 'Volume']];
+  const PLAYERBAR_BUTTONS = [['love', 'Love'], ['shuffle', 'Shuffle'], ['repeat', 'Repeat'], ['eq', 'Equaliser'], ['mini', 'Mini player'], ['theater', 'Theater mode'], ['volume', 'Volume']];
+  // ---------------------------------------------------------------------
+  // Hive 2.0 hotkeys (MusicBee's Hotkeys): configurable in-app shortcuts.
+  // Stored as { action: "Ctrl+Shift+K" } in prefs 'hotkeys'; '' = none.
+  // Ignored while typing in a text field.
+  // ---------------------------------------------------------------------
+  const HOTKEY_ACTIONS = [
+    ['playPause', 'Play / pause', 'Space'], ['next', 'Next track', 'Ctrl+ArrowRight'], ['prev', 'Previous track', 'Ctrl+ArrowLeft'],
+    ['seekForward', 'Seek forward 10 s', 'Shift+ArrowRight'], ['seekBack', 'Seek back 10 s', 'Shift+ArrowLeft'],
+    ['volumeUp', 'Volume up', 'Ctrl+ArrowUp'], ['volumeDown', 'Volume down', 'Ctrl+ArrowDown'], ['mute', 'Mute', 'Ctrl+M'],
+    ['love', 'Love / unlove playing track', 'Ctrl+L'], ['shuffle', 'Shuffle on/off', 'Ctrl+S'], ['repeat', 'Repeat mode', 'Ctrl+R'],
+    ['stopAfter', 'Stop after current track', 'Ctrl+Shift+S'], ['search', 'Search library', 'Ctrl+F'], ['equaliser', 'Equaliser', 'Ctrl+E'],
+    ['miniPlayer', 'Mini player', 'Ctrl+Shift+M'], ['theater', 'Theater mode', 'F11'], ['settings', 'Settings', 'Ctrl+Comma']
+  ];
+  function hotkeyBindings() {
+    const saved = hbPref('hotkeys');
+    const out = {};
+    for (const [action, , fallback] of HOTKEY_ACTIONS) out[action] = saved && Object.prototype.hasOwnProperty.call(saved, action) ? String(saved[action] || '') : fallback;
+    return out;
+  }
+  function hotkeyFromEvent(e) {
+    if (['Control', 'Shift', 'Alt', 'Meta'].includes(e.key)) return '';
+    const parts = [];
+    if (e.ctrlKey || e.metaKey) parts.push('Ctrl');
+    if (e.altKey) parts.push('Alt');
+    if (e.shiftKey) parts.push('Shift');
+    const key = e.code === 'Space' ? 'Space' : e.code === 'Comma' ? 'Comma' : e.key.length === 1 ? e.key.toUpperCase() : e.key;
+    parts.push(key);
+    return parts.join('+');
+  }
+  function runHotkeyAction(action) {
+    const vol = el.pbVolume;
+    const nudgeVolume = d => { if (!vol || vol.disabled) return; vol.value = String(Math.max(0, Math.min(100, Number(vol.value) + d))); vol.dispatchEvent(new Event('input', { bubbles: true })); vol.dispatchEvent(new Event('change', { bubbles: true })); };
+    const seek = d => { try { const dur = Number(audioEngine.duration) || 0; audioEngine.currentTime = Math.max(0, Math.min(dur || Infinity, (Number(audioEngine.currentTime) || 0) + d)); } catch {} };
+    switch (action) {
+      case 'playPause': el.btnPlay?.click(); break;
+      case 'next': el.btnNext?.click(); break;
+      case 'prev': el.btnPrev?.click(); break;
+      case 'seekForward': seek(10); break;
+      case 'seekBack': seek(-10); break;
+      case 'volumeUp': nudgeVolume(5); break;
+      case 'volumeDown': nudgeVolume(-5); break;
+      case 'mute': document.getElementById('pb-vol-icon')?.click(); break;
+      case 'love': el.btnLove?.click(); break;
+      case 'shuffle': el.btnShuffle?.click(); break;
+      case 'repeat': el.btnRepeat?.click(); break;
+      case 'stopAfter': setHiveBeeStopAfterCurrent(!hivebeeStopAfterCurrent); break;
+      case 'search': el.search?.focus(); el.search?.select?.(); break;
+      case 'equaliser': openEqualiserModal(); break;
+      case 'miniPlayer': window.beehive.toggleMiniPlayer?.().then(() => scheduleMiniPlayerPush(400)); break;
+      case 'theater': if (typeof toggleTheaterMode === 'function') toggleTheaterMode(); break;
+      case 'settings': bindHiveBeePrefControls(); openModal(el.settingsModal); break;
+    }
+  }
+  let hotkeyRecording = null; // { action, button }
+  window.addEventListener('keydown', e => {
+    if (hotkeyRecording) {
+      e.preventDefault(); e.stopPropagation();
+      if (e.key === 'Escape') { hotkeyRecording.button.textContent = hotkeyBindings()[hotkeyRecording.action] || 'None'; hotkeyRecording = null; return; }
+      const combo = hotkeyFromEvent(e);
+      if (!combo) return;
+      const next = { ...hotkeyBindings() };
+      for (const k of Object.keys(next)) if (next[k] === combo) next[k] = ''; // one action per combo
+      next[hotkeyRecording.action] = combo;
+      hotkeyRecording = null;
+      setHbPref('hotkeys', next);
+      renderHotkeySettings();
+      return;
+    }
+    if (e.defaultPrevented || e.isComposing) return;
+    if (e.target?.closest?.('input, textarea, select, [contenteditable="true"]')) return;
+    const combo = hotkeyFromEvent(e);
+    if (!combo) return;
+    // Only Escape-closable things live in modals; leave keys alone there.
+    if (document.querySelector('.modal-overlay:not(.hidden)') && !['settings', 'theater'].includes(Object.entries(hotkeyBindings()).find(([, c]) => c === combo)?.[0])) return;
+    const action = Object.entries(hotkeyBindings()).find(([, c]) => c && c === combo)?.[0];
+    if (!action) return;
+    e.preventDefault(); e.stopPropagation();
+    runHotkeyAction(action);
+  }, true);
+  function prettyHotkey(combo) { return String(combo || '').replace('ArrowRight', '→').replace('ArrowLeft', '←').replace('ArrowUp', '↑').replace('ArrowDown', '↓').replace('Comma', ',') || 'None'; }
+  function renderHotkeySettings() {
+    const host = document.getElementById('hotkey-settings');
+    if (!host) return;
+    const b = hotkeyBindings();
+    host.innerHTML = HOTKEY_ACTIONS.map(([action, label]) => `<div class="settings-row"><span class="settings-row-text"><span class="settings-row-label">${escapeHtml(label)}</span></span><span class="settings-row-control"><button type="button" class="sidebar-add hotkey-btn" data-hotkey="${action}">${escapeHtml(prettyHotkey(b[action]))}</button><button type="button" class="settings-icon-btn hotkey-clear" data-hotkey-clear="${action}" title="Remove shortcut" aria-label="Remove shortcut">✕</button></span></div>`).join('');
+    host.querySelectorAll('[data-hotkey]').forEach(btn => btn.addEventListener('click', () => { hotkeyRecording = { action: btn.dataset.hotkey, button: btn }; btn.textContent = 'Press keys… (Esc to cancel)'; }));
+    host.querySelectorAll('[data-hotkey-clear]').forEach(btn => btn.addEventListener('click', () => { setHbPref('hotkeys', { ...hotkeyBindings(), [btn.dataset.hotkeyClear]: '' }); renderHotkeySettings(); }));
+  }
   let hivebeeLyricsHome = null;
   // Right-click the player bar's buttons area to choose which buttons show.
   setTimeout(() => document.querySelector('.playbar-right')?.addEventListener('contextmenu', e => {
@@ -717,6 +807,7 @@
   }
   function bindHiveBeePrefControls(root = document) {
     refreshAutoDjSourceOptions();
+    renderHotkeySettings();
     renderContextMenuSectionSettings();
     root.querySelectorAll('.column-browser-settings select').forEach(sel => sel.querySelectorAll('option[value^="virtual"]').forEach(o => { o.textContent = hivebeeVirtualLabel(o.value); }));
     root.querySelectorAll('[data-hivebee-pref]').forEach(input => {
@@ -1013,6 +1104,8 @@
   }
   async function gstLoadCurrent(offset = 0, requestGeneration = playbackLoadRequestGeneration, { startPaused = false } = {}) {
     const t = currentQueue[currentIndex];
+    // MusicBee's "remember position" for long tracks (audiobooks, mixes).
+    if (!(Number(offset) > 0)) { const resumeAt = hivebeeResumePositionFor(t); if (resumeAt > 0) offset = resumeAt; }
     if (!t?.path || !gstAvailable || !gstCompatibleTrack(t)) return false;
     if (requestGeneration !== playbackLoadRequestGeneration) return false;
     const generation = ++gstLoadGeneration;
@@ -1219,7 +1312,226 @@
     if (miniPushTimer) return;
     miniPushTimer = setTimeout(() => { miniPushTimer = 0; pushMiniPlayerState(); }, delay);
   }
+  // Resume positions: { path: seconds } in localStorage (per machine).
+  const RESUME_KEY = 'hive:resume-positions';
+  let resumeLastSave = 0;
+  function resumeThresholdSeconds() { return Math.max(0, Number(hbPref('player.resumeMinutes')) || 0) * 60; }
+  function readResumePositions() { try { return JSON.parse(localStorage.getItem(RESUME_KEY) || '{}') || {}; } catch { return {}; } }
+  function writeResumePositions(map) { try { localStorage.setItem(RESUME_KEY, JSON.stringify(map)); } catch {} }
+  function hivebeeResumePositionFor(track) {
+    const threshold = resumeThresholdSeconds();
+    if (!threshold || !track?.path || Number(track.duration || 0) < threshold) return 0;
+    const at = Number(readResumePositions()[track.path]) || 0;
+    return at > 5 && at < Number(track.duration || 0) - 10 ? at : 0;
+  }
+  function hivebeeTrackResume(name) {
+    const threshold = resumeThresholdSeconds();
+    const t = currentQueue[currentIndex];
+    if (!threshold || !t?.path || Number(t.duration || 0) < threshold) return;
+    const map = readResumePositions();
+    if (name === 'ended') { delete map[t.path]; writeResumePositions(map); return; }
+    if (name === 'timeupdate' && Date.now() - resumeLastSave < 5000) return;
+    resumeLastSave = Date.now();
+    const pos = Number(audioEngine.currentTime) || 0;
+    if (pos > 5) { map[t.path] = Math.round(pos); writeResumePositions(map); }
+  }
+  // ---------------------------------------------------------------------
+  // Hive 2.0 theater mode (MusicBee's Theater Mode): full-window now
+  // playing -- big cover on a blurred backdrop, progress and controls, the
+  // next tracks, and a short artist bio. F11 / Esc / the ✕ button leave.
+  // ---------------------------------------------------------------------
+  let theaterEl = null, theaterTimer = 0, theaterArtist = '';
+  function theaterIcon(name) { return window.BeehiveIcons?.[name] || ''; }
+  function toggleTheaterMode(force) {
+    const open = force ?? !(theaterEl && !theaterEl.classList.contains('hidden'));
+    if (!theaterEl) {
+      theaterEl = document.createElement('div');
+      theaterEl.id = 'theater-mode'; theaterEl.className = 'theater-mode hidden';
+      theaterEl.innerHTML = `<div class="theater-backdrop"></div>
+        <button type="button" class="theater-close" title="Leave theater mode (Esc)" aria-label="Leave theater mode">✕</button>
+        <div class="theater-main">
+          <img class="theater-cover" alt="">
+          <div class="theater-meta"><div class="theater-title"></div><div class="theater-artist"></div><div class="theater-album"></div></div>
+          <div class="theater-progress"><span class="theater-elapsed">0:00</span><div class="theater-bar"><div></div></div><span class="theater-duration">0:00</span></div>
+          <div class="theater-controls">
+            <button type="button" data-tm="prev" title="Previous">${theaterIcon('prev')}</button>
+            <button type="button" data-tm="play" class="theater-play" title="Play/Pause"></button>
+            <button type="button" data-tm="next" title="Next">${theaterIcon('next')}</button>
+            <button type="button" data-tm="love" title="Love"></button>
+          </div>
+        </div>
+        <aside class="theater-side">
+          <section><h4>Up next</h4><ol class="theater-upnext"></ol></section>
+          <section class="theater-artist-info hidden"><h4>About the artist</h4><img class="theater-artist-img" alt=""><p></p><a target="_blank" rel="noopener">Read more on Wikipedia</a></section>
+        </aside>`;
+      document.body.appendChild(theaterEl);
+      theaterEl.querySelector('.theater-close').addEventListener('click', () => toggleTheaterMode(false));
+      theaterEl.querySelectorAll('[data-tm]').forEach(b => b.addEventListener('click', () => {
+        ({ prev: el.btnPrev, play: el.btnPlay, next: el.btnNext, love: el.btnLove })[b.dataset.tm]?.click();
+        setTimeout(renderTheaterMode, 150);
+      }));
+      theaterEl.querySelector('.theater-bar').addEventListener('click', e => {
+        const d = Number(audioEngine.duration) || 0; if (!d) return;
+        const r = e.currentTarget.getBoundingClientRect();
+        try { audioEngine.currentTime = ((e.clientX - r.left) / r.width) * d; } catch {}
+      });
+      document.addEventListener('keydown', e => { if (e.key === 'Escape' && theaterEl && !theaterEl.classList.contains('hidden')) { e.preventDefault(); toggleTheaterMode(false); } });
+    }
+    theaterEl.classList.toggle('hidden', !open);
+    document.documentElement.classList.toggle('hb-theater-open', open);
+    clearInterval(theaterTimer); theaterTimer = 0;
+    if (open) { renderTheaterMode(); theaterTimer = setInterval(renderTheaterProgress, 500); }
+  }
+  function renderTheaterProgress() {
+    if (!theaterEl || theaterEl.classList.contains('hidden')) return;
+    const live = isRadioTrack(currentQueue[currentIndex]);
+    const d = live ? 0 : (Number(audioEngine.duration) || Number(currentQueue[currentIndex]?.duration) || 0), p = Number(audioEngine.currentTime) || 0;
+    theaterEl.querySelector('.theater-elapsed').textContent = fmtTime(p);
+    theaterEl.querySelector('.theater-duration').textContent = live ? 'LIVE' : fmtTime(d);
+    theaterEl.querySelector('.theater-bar > div').style.width = d ? `${Math.min(100, (p / d) * 100)}%` : '0';
+    theaterEl.querySelector('.theater-play').innerHTML = theaterIcon(audioEngine.paused ? 'play' : 'pause');
+  }
+  function renderTheaterMode() {
+    if (!theaterEl || theaterEl.classList.contains('hidden')) return;
+    const t = currentQueue[currentIndex];
+    let cover = '';
+    try { cover = t?.cover ? coverSrc(t.cover) : (t?.artworkUrl || ''); } catch {}
+    const img = theaterEl.querySelector('.theater-cover');
+    if (cover) { img.src = cover; img.classList.remove('hidden'); } else img.classList.add('hidden');
+    theaterEl.querySelector('.theater-backdrop').style.backgroundImage = cover ? `url("${String(cover).replace(/"/g, '%22')}")` : '';
+    theaterEl.querySelector('.theater-title').textContent = t?.title || 'Nothing playing';
+    theaterEl.querySelector('.theater-artist').textContent = t?.artist || '';
+    theaterEl.querySelector('.theater-album').textContent = [t?.album, t?.year].filter(Boolean).join(' · ');
+    theaterEl.querySelector('[data-tm="love"]').innerHTML = theaterIcon(t?.loved ? 'heartFilled' : 'heartOutline');
+    theaterEl.querySelector('[data-tm="love"]').classList.toggle('loved', !!t?.loved);
+    const upcoming = [];
+    for (let i = currentIndex + 1; i < currentQueue.length && upcoming.length < 5; i++) upcoming.push(currentQueue[i]);
+    theaterEl.querySelector('.theater-upnext').innerHTML = upcoming.length
+      ? upcoming.map(u => `<li><span>${escapeHtml(u?.title || '')}</span><small>${escapeHtml(u?.artist || '')}</small></li>`).join('')
+      : `<li class="dim">${autoDjEnabled() ? 'Auto-DJ will add more' : 'End of the queue'}</li>`;
+    renderTheaterProgress();
+    const artist = isRadioTrack(t) ? '' : String(t?.albumArtist || t?.artist || '').trim();
+    if (isRadioTrack(t) && radioNowPlayingText) theaterEl.querySelector('.theater-artist').textContent = `♪ ${radioNowPlayingText}`;
+    if (artist !== theaterArtist) {
+      theaterArtist = artist;
+      const box = theaterEl.querySelector('.theater-artist-info');
+      box.classList.add('hidden');
+      if (artist && hbPref('theater.artistInfo')) {
+        window.beehive.getArtistInfo?.(artist).then(info => {
+          if (theaterArtist !== artist || !info) return;
+          box.querySelector('p').textContent = info.extract;
+          box.querySelector('a').href = info.url || '#';
+          const pic = box.querySelector('.theater-artist-img');
+          if (info.image) { pic.src = info.image; pic.classList.remove('hidden'); } else pic.classList.add('hidden');
+          box.classList.remove('hidden');
+        }).catch(() => {});
+      }
+    }
+  }
+  // ---------------------------------------------------------------------
+  // Hive 2.0 internet radio (MusicBee's Web → Radio). A station plays as a
+  // podcast-style stream track whose path starts with "radio:". Saved
+  // stations live in the radio.stations pref; the directory is searched in
+  // the main process. While a station plays, its ICY song title is polled
+  // and shown in place of the artist line.
+  // ---------------------------------------------------------------------
+  let radioModal = null, radioPollTimer = 0, radioNowPlayingText = '';
+  function isRadioTrack(t) { return isPodcastTrack(t) && String(t?.path || '').startsWith('radio:'); }
+  function savedRadioStations() { const v = hbPref('radio.stations'); return Array.isArray(v) ? v : []; }
+  function radioStationTrack(st) {
+    const art = /^https:\/\//i.test(String(st.favicon || '')) ? String(st.favicon) : '';
+    return { path: `radio:${st.id}`, source: 'podcast', streamUrl: String(st.url), title: String(st.name), artist: 'Internet radio',
+      album: (st.tags || []).join(', ') || String(st.country || ''), duration: 0, cover: '', artworkUrl: art, podcastId: '', podcastFeedUrl: String(st.homepage || '') };
+  }
+  function playRadioStation(st) { playQueue([radioStationTrack(st)], 0, false); }
+  function radioRowHtml(st, saved) {
+    const meta = [st.tags?.join(', '), st.country, st.bitrate ? `${st.bitrate} kbps` : '', st.codec].filter(Boolean).join(' · ');
+    const logo = /^https:\/\//i.test(String(st.favicon || '')) ? `<img class="radio-logo" src="${escapeHtml(st.favicon)}" alt="" loading="lazy">` : '<span class="radio-logo radio-logo-empty">📻</span>';
+    return `<div class="radio-row" data-id="${escapeHtml(st.id)}">${logo}<div class="radio-row-text"><div class="radio-row-name">${escapeHtml(st.name)}</div><div class="radio-row-meta">${escapeHtml(meta)}</div></div>
+      <button type="button" class="sidebar-add" data-radio="play">Play</button><button type="button" class="sidebar-add" data-radio="${saved ? 'remove' : 'save'}">${saved ? 'Remove' : 'Save'}</button></div>`;
+  }
+  function openRadioDialog() {
+    if (!radioModal || !document.body.contains(radioModal)) {
+      radioModal = document.createElement('div');
+      radioModal.className = 'modal-overlay hidden';
+      radioModal.innerHTML = `<div class="modal glass organise-modal radio-modal" role="dialog" aria-modal="true" aria-labelledby="radio-title">
+        <div class="modal-header"><div><h3 id="radio-title">Internet radio</h3><div class="modal-subtitle">Search thousands of stations by name or genre (from radio-browser.info), or add a stream link. Saved stations stay here.</div></div><button class="modal-close" data-close type="button" aria-label="Close">✕</button></div>
+        <div class="modal-body organise-body">
+          <form class="radio-search" id="radio-search-form"><input type="search" class="settings-text" id="radio-query" placeholder="Station name or genre, e.g. jazz, BBC, lo-fi" spellcheck="false"><button type="submit" class="sidebar-add">Search</button></form>
+          <details class="radio-add"><summary>Add a station by link</summary>
+            <form id="radio-add-form" class="radio-search"><input class="settings-text" id="radio-add-name" placeholder="Name"><input class="settings-text" id="radio-add-url" placeholder="https://… stream, .pls or .m3u link" spellcheck="false"><button type="submit" class="sidebar-add">Add</button></form></details>
+          <h4 class="radio-heading">My stations</h4><div class="radio-list" id="radio-saved"></div>
+          <h4 class="radio-heading" id="radio-results-heading">Popular stations</h4><div class="organise-status" id="radio-status"></div><div class="radio-list" id="radio-results"></div>
+        </div>
+        <div class="equaliser-footer"><span class="equaliser-footer-gap"></span><button type="button" class="sidebar-add" data-close>Close</button></div>
+      </div>`;
+      document.body.appendChild(radioModal);
+      radioModal.addEventListener('click', e => { if (e.target === radioModal) closeModal(radioModal); });
+      radioModal.querySelectorAll('[data-close]').forEach(b => b.addEventListener('click', () => closeModal(radioModal)));
+      let results = [];
+      const status = radioModal.querySelector('#radio-status');
+      const renderSaved = () => {
+        const saved = savedRadioStations();
+        radioModal.querySelector('#radio-saved').innerHTML = saved.length ? saved.map(st => radioRowHtml(st, true)).join('') : '<div class="radio-empty">No saved stations yet. Press Save on a station to keep it here.</div>';
+      };
+      const renderResults = () => {
+        const savedIds = new Set(savedRadioStations().map(st => st.id));
+        radioModal.querySelector('#radio-results').innerHTML = results.map(st => radioRowHtml(st, savedIds.has(st.id))).join('');
+      };
+      const runSearch = async (q) => {
+        status.textContent = 'Searching…';
+        radioModal.querySelector('#radio-results-heading').textContent = q ? `Results for “${q}”` : 'Popular stations';
+        try { results = await window.beehive.searchRadioStations(q); status.textContent = results.length ? '' : 'No stations found.'; }
+        catch (err) { results = []; status.textContent = `Couldn't reach the station directory (${err?.message || err}).`; }
+        renderResults();
+      };
+      radioModal.querySelector('#radio-search-form').addEventListener('submit', e => { e.preventDefault(); runSearch(radioModal.querySelector('#radio-query').value.trim()); });
+      radioModal.querySelector('#radio-add-form').addEventListener('submit', async e => {
+        e.preventDefault();
+        const name = radioModal.querySelector('#radio-add-name').value.trim(), url = radioModal.querySelector('#radio-add-url').value.trim();
+        try {
+          const stream = await window.beehive.resolveRadioStream(url);
+          setHbPref('radio.stations', [...savedRadioStations(), { id: `custom-${Date.now().toString(36)}`, name: name || url, url: stream, homepage: '', favicon: '', tags: [], country: '', codec: '', bitrate: 0 }]);
+          radioModal.querySelector('#radio-add-name').value = ''; radioModal.querySelector('#radio-add-url').value = '';
+          renderSaved(); renderResults();
+        } catch (err) { status.textContent = String(err?.message || err).replace(/^Error invoking remote method '[^']+': (Error: )?/, ''); }
+      });
+      radioModal.querySelector('.modal-body').addEventListener('click', e => {
+        const btn = e.target.closest('[data-radio]'); if (!btn) return;
+        const id = btn.closest('.radio-row')?.dataset.id;
+        const st = savedRadioStations().find(x => x.id === id) || results.find(x => x.id === id);
+        if (!st) return;
+        if (btn.dataset.radio === 'play') playRadioStation(st);
+        else if (btn.dataset.radio === 'save') setHbPref('radio.stations', [...savedRadioStations().filter(x => x.id !== id), st]);
+        else if (btn.dataset.radio === 'remove') setHbPref('radio.stations', savedRadioStations().filter(x => x.id !== id));
+        if (btn.dataset.radio !== 'play') { renderSaved(); renderResults(); }
+      });
+      radioModal.addEventListener('error', e => { if (e.target.classList?.contains('radio-logo')) e.target.style.visibility = 'hidden'; }, true);
+      renderSaved();
+      runSearch('');
+    }
+    openModal(radioModal);
+  }
+  // Show the station's current song and "LIVE" while a station plays.
+  async function pollRadioNowPlaying() {
+    const t = currentQueue[currentIndex];
+    if (!isRadioTrack(t)) { radioNowPlayingText = ''; return; }
+    if (el.pbDuration) el.pbDuration.textContent = 'LIVE';
+    const info = await window.beehive.getRadioNowPlaying?.(t.streamUrl).catch(() => null);
+    if (currentQueue[currentIndex] !== t) return;
+    radioNowPlayingText = info?.raw || '';
+    const line = radioNowPlayingText ? `♪ ${radioNowPlayingText}` : (t.artist || 'Internet radio');
+    if (el.pbArtist) el.pbArtist.textContent = line;
+    if (theaterEl && !theaterEl.classList.contains('hidden')) theaterEl.querySelector('.theater-artist').textContent = line;
+  }
+  function scheduleRadioPolling(t) {
+    clearInterval(radioPollTimer); radioPollTimer = 0; radioNowPlayingText = '';
+    if (!isRadioTrack(t)) return;
+    setTimeout(pollRadioNowPlaying, 1500);
+    radioPollTimer = setInterval(pollRadioNowPlaying, 20000);
+  }
   function hivebeeMiniPlayerOnAudio(name) {
+    if (['timeupdate', 'pause', 'ended'].includes(name)) hivebeeTrackResume(name);
     if (name === 'timeupdate') { if (Date.now() - miniLastPush > 5000) scheduleMiniPlayerPush(); return; }
     if (['play', 'pause', 'ended', 'loadedmetadata', 'durationchange', 'seeked'].includes(name)) scheduleMiniPlayerPush();
   }
@@ -1233,6 +1545,12 @@
       else if (action === 'seek' && Number.isFinite(Number(cmd.seconds))) { try { audioEngine.currentTime = Math.max(0, Number(cmd.seconds)); } catch {} }
       scheduleMiniPlayerPush(350);
     });
+    const tbtn = document.getElementById('btn-theater');
+    if (tbtn) {
+      tbtn.innerHTML = '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linejoin="round" stroke-linecap="round"><path d="M4 8V5h3M17 5h3v3M20 16v3h-3M7 19H4v-3"/><rect x="8" y="9" width="8" height="6" rx="1"/></svg>';
+      tbtn.title = 'Theater mode (F11)';
+      tbtn.addEventListener('click', () => toggleTheaterMode());
+    }
     const btn = document.getElementById('btn-mini');
     if (btn) {
       btn.innerHTML = '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linejoin="round"><rect x="3" y="5" width="18" height="14" rx="2"/><rect x="11" y="11" width="8" height="6" rx="1" fill="currentColor"/></svg>';
@@ -2140,6 +2458,7 @@
     if (btn.dataset.action === 'equaliser') openEqualiserModal();
     if (btn.dataset.action === 'mini-player') { window.beehive.toggleMiniPlayer?.().then(() => scheduleMiniPlayerPush(400)); }
     if (btn.dataset.action === 'find-duplicates') openDuplicatesDialog();
+    if (btn.dataset.action === 'internet-radio') openRadioDialog();
     if (btn.dataset.action === 'import-musicbee') document.getElementById('import-musicbee-library-btn')?.click();
     // "check-updates" and any future items are placeholders for now.
   });
@@ -2521,10 +2840,10 @@
         const date = track?.pubDate ? new Date(track.pubDate) : null;
         const dateText = date && !Number.isNaN(date.getTime()) ? date.toLocaleDateString([], {year:'numeric', month:'short', day:'numeric'}) : '';
         container.innerHTML = `<div class="podcast-info">
-          <div class="podcast-info-kicker">PODCAST EPISODE</div>
+          <div class="podcast-info-kicker">${isRadioTrack(track) ? 'INTERNET RADIO' : 'PODCAST EPISODE'}</div>
           <strong class="podcast-info-title">${escapeHtml(track?.title || 'Untitled episode')}</strong>
           <div class="podcast-info-meta">${escapeHtml(track?.album || 'Podcast')}${dateText ? ` · ${escapeHtml(dateText)}` : ''}</div>
-          ${description ? `<p class="podcast-info-description">${escapeHtml(description)}</p>` : '<p class="podcast-info-description dim">No episode description was provided by the feed.</p>'}
+          ${description ? `<p class="podcast-info-description">${escapeHtml(description)}</p>` : `<p class="podcast-info-description dim">${isRadioTrack(track) ? 'Live stream. The song that is on now shows under the station name.' : 'No episode description was provided by the feed.'}</p>`}
         </div>`;
       } else {
         container.textContent = text;
@@ -12324,6 +12643,8 @@
   }
   async function updateNowPlayingUI(t) {
     hivebeeTrackPopup(t);
+    setTimeout(renderTheaterMode, 0);
+    scheduleRadioPolling(t);
     setTimeout(() => { hivebeeAutoDjTopUp().catch(() => {}); }, 1500);
     const generation = ++nowPlayingUiGeneration;
     window.__beehiveNowPlayingTrack = t;
@@ -18595,6 +18916,9 @@
     layoutPanel.append(section('Player bar', 'Choose the buttons on the right of the player bar (also by right-clicking that area).',
       PLAYERBAR_BUTTONS.map(([key, label]) => row(label, '', `<input type="checkbox" data-hivebee-pref="playerbar.${key}">`)).join('')));
     move(layoutPanel, ['Right-click menu', 'Column browser', 'Layout']);
+    const hotkeys = makePanel('hotkeys', 'Hotkeys', 'layout');
+    hotkeys.append(section('Keyboard shortcuts', 'Click a shortcut and press the new keys. They work while Hive is focused, but not while you type in a text box.', '<div id="hotkey-settings"></div><div class="settings-row settings-row-actions-only"><span class="settings-row-control"><button type="button" class="sidebar-add" id="hotkeys-reset-btn">Restore defaults</button></span></div>'));
+    hotkeys.querySelector('#hotkeys-reset-btn').addEventListener('click', () => { setHbPref('hotkeys', null); renderHotkeySettings(); });
 
     // Search across every category.
     const search = document.createElement('input');
@@ -18650,6 +18974,7 @@
     tags:'What Hive writes into your files, and virtual tags.',
     organise:'Naming template for organising files, and converter defaults.',
     layout:'Panels, player bar buttons, right-click menus and the column browser.',
+    hotkeys:'Keyboard shortcuts for playback and Hive features.',
     appearance:'Theme, colours, window and glass effects.',
     navigation:'Choose what shows in the left sidebar and in what order.',
     connections:'Discord, scrobbling services and phones.',

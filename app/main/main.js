@@ -1934,6 +1934,39 @@ ipcMain.handle('hivebee:saveSettings', async (_evt, patch = {}) => withJsonFileL
   return next;
 }));
 
+// Hive 2.0 artist info (MusicBee's artist panel): a short Wikipedia summary,
+// tried as the plain name and then as musician/band/rapper pages. Cached for
+// the session; only the artist name leaves the machine.
+const artistInfoCache = new Map();
+ipcMain.handle('artist:info', async (_evt, name) => {
+  const artist = String(name || '').trim().slice(0, 120);
+  if (!artist) return null;
+  if (artistInfoCache.has(artist.toLowerCase())) return artistInfoCache.get(artist.toLowerCase());
+  const candidates = [artist, `${artist} (musician)`, `${artist} (band)`, `${artist} (rapper)`, `${artist} (singer)`];
+  let found = null;
+  for (const title of candidates) {
+    try {
+      const res = await net.fetch(`https://en.wikipedia.org/api/rest_v1/page/summary/${encodeURIComponent(title.replace(/ /g, '_'))}`, { headers: { 'User-Agent': 'Hive/2.0 (music player; artist info)' } });
+      if (!res.ok) continue;
+      const data = await res.json();
+      if (data?.type === 'disambiguation' || !data?.extract) continue;
+      const text = `${data.description || ''} ${data.extract}`.toLowerCase();
+      // Skip pages that clearly aren't about music (e.g. a city sharing the name).
+      if (!/(music|singer|rapper|band|musician|songwriter|producer|dj|album|record|group|duo|composer|vocalist)/.test(text)) continue;
+      found = { title: data.title, description: data.description || '', extract: data.extract, url: data.content_urls?.desktop?.page || '', image: data.thumbnail?.source || '' };
+      break;
+    } catch { /* offline or blocked: no info */ }
+  }
+  artistInfoCache.set(artist.toLowerCase(), found);
+  return found;
+});
+
+// Hive 2.0 internet radio: directory search, playlist links, ICY titles.
+const internetRadio = require('./internet-radio').create({ net });
+ipcMain.handle('radio:search', async (_evt, query) => internetRadio.search(query));
+ipcMain.handle('radio:resolve', async (_evt, url) => internetRadio.resolve(url));
+ipcMain.handle('radio:nowPlaying', async (_evt, url) => (/^https?:\/\//i.test(String(url || '')) ? internetRadio.nowPlaying(url) : null));
+
 // Hive interface size (MusicBee's font scaling): zoom the main window.
 ipcMain.handle('hivebee:setZoom', async (evt, factor) => {
   const f = Math.max(0.7, Math.min(1.5, Number(factor) || 1));

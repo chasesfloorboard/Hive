@@ -8,7 +8,7 @@
      boundary (sandboxed iframe/webview with its own CSP) exists yet for
      plugins -- see docs/ai/HIVE-METADATA-BACKEND-CANON.md-style canon note
      to add before 1.0: build that isolation and remove this app-wide grant. -->
-<meta http-equiv="Content-Security-Policy" content="default-src 'self' mbfile: mbcover: data:; img-src 'self' mbcover: data: https:; media-src 'self' mbfile: https:; connect-src 'self' https:; style-src 'self' 'unsafe-inline' https:; script-src 'self' 'unsafe-eval';">
+<meta http-equiv="Content-Security-Policy" content="default-src 'self' mbfile: mbcover: data:; img-src 'self' mbcover: data: https:; media-src 'self' mbfile: https: http:; connect-src 'self' https:; style-src 'self' 'unsafe-inline' https:; script-src 'self' 'unsafe-eval';">
 <title>Hive</title>
 <link rel="stylesheet" href="styles.css" />
 </head>
@@ -45,6 +45,7 @@
           <button class="dropdown-item" data-action="equaliser">Equaliser…</button>
           <button class="dropdown-item" data-action="mini-player">Mini player</button>
           <button class="dropdown-item" data-action="find-duplicates">Find duplicates…</button>
+          <button class="dropdown-item" data-action="internet-radio">Internet radio…</button>
           <button class="dropdown-item" data-action="import-musicbee">Import MusicBee library…</button>
         </div>
       </div>
@@ -198,6 +199,7 @@
         <button id="btn-repeat" class="icon-btn" title="Repeat"></button>
         <button id="btn-eq" class="icon-btn" title="Equaliser"></button>
         <button id="btn-mini" class="icon-btn" title="Mini player"></button>
+        <button id="btn-theater" class="icon-btn" title="Theater mode"></button>
         <div class="playbar-volume">
           <input id="pb-volume" type="range" min="0" max="100" value="80" aria-label="Volume" />
           <button id="pb-vol-icon" class="icon-btn" title="Mute"></button>
@@ -262,6 +264,10 @@
               <span class="settings-row-text"><span class="settings-row-label">Equaliser</span><span class="settings-hint">Also on the player bar. Imports MusicBee .sde presets.</span></span>
               <span class="settings-row-control"><button id="open-equaliser-btn" class="sidebar-add" type="button">Open equaliser…</button></span>
             </div>
+            <label class="settings-row">
+              <span class="settings-row-text"><span class="settings-row-label">Remember position in long tracks</span><span class="settings-hint">Audiobooks and long mixes pick up where you stopped.</span></span>
+              <select class="settings-select" data-hivebee-pref="player.resumeMinutes"><option value="0">Off</option><option value="15">Longer than 15 minutes</option><option value="30">Longer than 30 minutes</option><option value="60">Longer than an hour</option></select>
+            </label>
             <label class="settings-row">
               <span class="settings-row-text"><span class="settings-row-label">Fade on pause and resume</span><span class="settings-hint">Fade out before pausing and back in when playing again.</span></span>
               <select class="settings-select" data-hivebee-pref="player.fadePauseMs"><option value="0">Off</option><option value="300">Short (0.3 s)</option><option value="700">Medium (0.7 s)</option><option value="1500">Long (1.5 s)</option></select>
