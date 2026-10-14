@@ -86,3 +86,5 @@ Settings for these live in `config.hivebee` (`prefs` flat keys, `dsp`); any Sett
 | Interface size (zoom 80-150%) | Done | `hivebee:setZoom` → `webContents.setZoomFactor` |
 | Lyrics dock left or right | Done | `layout.lyricsSide` moves `#lyrics-section` |
 | Colour editor (live preview, save as theme) | Done | Settings → Appearance → Theme → Customise colours; `themes:saveCustom` |
+| Player bar buttons can be hidden (Love, Shuffle, Repeat, Equaliser, Mini player, Volume) | Done | Settings → Layout → Player bar, or right-click the player bar's buttons |
+| Settings grouped like MusicBee's Preferences (Player, Library, Tags, File Organisation, Layout, Appearance, ...) with search | Done | `organiseSettingsLikeMusicBee` in renderer.js moves existing sections at startup |

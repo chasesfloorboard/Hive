@@ -629,6 +629,7 @@
     'autodj.skipPlayedDays': 0, 'autodj.minRating': 0,
     'menu.hidden': [],
     'layout.sidebar': true, 'layout.lyrics': true, 'layout.rightPanel': true, 'layout.queueList': true, 'layout.nowPlaying': true,
+    'playerbar.love': true, 'playerbar.shuffle': true, 'playerbar.repeat': true, 'playerbar.eq': true, 'playerbar.mini': true, 'playerbar.volume': true,
     'layout.swap': false, 'layout.playerTop': false, 'layout.lyricsSide': 'left', 'layout.density': 'comfortable', 'layout.rowArt': true, 'layout.zoom': 100,
     'player.fadePauseMs': 0, 'player.tempoPitch': false, 'player.tempo': 1, 'player.pitch': 0,
     'crossfade.ms': 0, 'crossfade.excludeAlbums': true, 'crossfade.onSkip': false,
@@ -638,7 +639,15 @@
   let hivebeePrefs = {};
   function hbPref(key) { return Object.prototype.hasOwnProperty.call(hivebeePrefs, key) ? hivebeePrefs[key] : HIVEBEE_PREF_DEFAULTS[key]; }
   // MusicBee-style panel arrangement, applied as classes on <html>.
+  const PLAYERBAR_BUTTONS = [['love', 'Love'], ['shuffle', 'Shuffle'], ['repeat', 'Repeat'], ['eq', 'Equaliser'], ['mini', 'Mini player'], ['volume', 'Volume']];
   let hivebeeLyricsHome = null;
+  // Right-click the player bar's buttons area to choose which buttons show.
+  setTimeout(() => document.querySelector('.playbar-right')?.addEventListener('contextmenu', e => {
+    e.preventDefault();
+    showContextMenu(e.clientX, e.clientY, [
+      { label: 'Player bar buttons', icon: 'settings', submenu: PLAYERBAR_BUTTONS.map(([key, label]) => ({ label, active: !!hbPref(`playerbar.${key}`), action: () => setHbPref(`playerbar.${key}`, !hbPref(`playerbar.${key}`)) })) }
+    ]);
+  }), 0);
   function applyHiveBeeLayout() {
     const root = document.documentElement;
     root.classList.toggle('hb-no-sidebar', !hbPref('layout.sidebar'));
@@ -648,6 +657,8 @@
     root.classList.toggle('hb-no-now-playing', !hbPref('layout.nowPlaying'));
     root.classList.toggle('hb-swap-panels', !!hbPref('layout.swap'));
     root.classList.toggle('hb-player-top', !!hbPref('layout.playerTop'));
+    // Player bar buttons (MusicBee lets you choose the player controls).
+    for (const key of PLAYERBAR_BUTTONS.map(b => b[0])) root.classList.toggle(`hb-hide-pb-${key}`, !hbPref(`playerbar.${key}`));
     // Lyrics can sit in the left panel (Hive's default) or the right one.
     const lyricsSection = document.getElementById('lyrics-section');
     const lyricsResize = document.getElementById('lyrics-resize');
@@ -674,7 +685,7 @@
   }
   function setHbPref(key, value) {
     hivebeePrefs = { ...hivebeePrefs, [key]: value };
-    if (String(key).startsWith('layout.')) applyHiveBeeLayout();
+    if (/^(layout|playerbar)\./.test(String(key))) applyHiveBeeLayout();
     window.beehive.saveHiveBeeSettings?.({ prefs: { [key]: value } }).catch?.(() => {});
   }
   function refreshAutoDjSourceOptions() {
@@ -18538,6 +18549,80 @@
   });
 
   // ---------------- settings modal tabs ----------------
+  // Hive 2.0: Settings grouped like MusicBee's Preferences. Existing sections
+  // (and their already-wired controls) are moved, not rebuilt; a few new
+  // sections are added; a search box filters every category at once.
+  (function organiseSettingsLikeMusicBee() {
+    const tabs = document.querySelector('.settings-tabs');
+    const general = document.getElementById('settings-panel-general');
+    if (!tabs || !general || tabs.dataset.musicbeeLayout) return;
+    tabs.dataset.musicbeeLayout = '1';
+    const sectionByTitle = title => [...document.querySelectorAll('.settings-section')].find(sec => sec.querySelector('.settings-section-title')?.textContent.trim() === title);
+    const makePanel = (key, label, afterKey) => {
+      const btn = document.createElement('button');
+      btn.id = `settings-tab-${key}`; btn.className = 'settings-tab-btn'; btn.type = 'button';
+      btn.setAttribute('role', 'tab'); btn.setAttribute('aria-selected', 'false'); btn.setAttribute('aria-controls', `settings-panel-${key}`);
+      btn.tabIndex = -1; btn.dataset.settingsTab = key; btn.textContent = label;
+      tabs.querySelector(`[data-settings-tab="${afterKey}"]`)?.after(btn);
+      const panel = document.createElement('div');
+      panel.id = `settings-panel-${key}`; panel.className = 'settings-tab-panel'; panel.setAttribute('role', 'tabpanel'); panel.tabIndex = 0;
+      panel.dataset.settingsPanel = key; panel.hidden = true;
+      document.getElementById(`settings-panel-${afterKey}`)?.after(panel);
+      return panel;
+    };
+    const move = (panel, titles) => titles.forEach(t => { const sec = sectionByTitle(t); if (sec) panel.appendChild(sec); });
+    const section = (title, desc, body) => {
+      const sec = document.createElement('section'); sec.className = 'settings-section';
+      sec.innerHTML = `<header class="settings-section-head"><h4 class="settings-section-title">${title}</h4>${desc ? `<p class="settings-section-desc">${desc}</p>` : ''}</header>${body}`;
+      return sec;
+    };
+    const row = (label, hint, control) => `<label class="settings-row"><span class="settings-row-text"><span class="settings-row-label">${label}</span>${hint ? `<span class="settings-hint">${hint}</span>` : ''}</span>${control}</label>`;
+    document.getElementById('settings-tab-general').textContent = 'Player';
+    const tags = makePanel('tags', 'Tags', 'library');
+    move(tags, ['Writing to your files', 'Virtual tags']);
+    const organise = makePanel('organise', 'File Organisation', 'tags');
+    organise.append(
+      section('Organise files', 'Used by right-click → Tools → Organise files. Same template syntax as MusicBee: &lt;Field&gt;, \\ for folders, $If, $IsNull, $Upper, $Lower, $Left.',
+        row('Naming template', '', '<input class="settings-text organise-template-setting" data-hivebee-pref="organise.template" spellcheck="false">')
+        + row('Remove folders left empty', '', '<input type="checkbox" data-hivebee-pref="organise.removeEmptyFolders">')),
+      section('File converter', 'Defaults for right-click → Tools → Convert.',
+        row('Format', '', '<select class="settings-select" data-hivebee-pref="convert.format"><option value="mp3">MP3</option><option value="aac">AAC (.m4a)</option><option value="opus">Opus</option><option value="vorbis">Ogg Vorbis</option><option value="flac">FLAC</option></select>')
+        + row('Embed cover art', '', '<input type="checkbox" data-hivebee-pref="convert.embedArtwork">')
+        + row('Name copies with the organise template', '', '<input type="checkbox" data-hivebee-pref="convert.useTemplate">'))
+    );
+    const layoutPanel = makePanel('layout', 'Layout', 'organise');
+    move(layoutPanel, ['Panels']);
+    layoutPanel.append(section('Player bar', 'Choose the buttons on the right of the player bar (also by right-clicking that area).',
+      PLAYERBAR_BUTTONS.map(([key, label]) => row(label, '', `<input type="checkbox" data-hivebee-pref="playerbar.${key}">`)).join('')));
+    move(layoutPanel, ['Right-click menu', 'Column browser', 'Layout']);
+
+    // Search across every category.
+    const search = document.createElement('input');
+    search.type = 'search'; search.className = 'settings-search'; search.placeholder = 'Search settings…'; search.setAttribute('aria-label', 'Search settings');
+    tabs.prepend(search);
+    search.addEventListener('input', () => {
+      const q = search.value.trim().toLowerCase();
+      const panels = [...document.querySelectorAll('.settings-tab-panel')];
+      document.querySelector('.modal-settings')?.classList.toggle('settings-searching', !!q);
+      if (!q) {
+        panels.forEach(pn => pn.querySelectorAll('.settings-section, .settings-row').forEach(n => { n.style.display = ''; }));
+        activateSettingsTab(document.querySelector('.settings-tab-btn.active') || document.querySelector('.settings-tab-btn'));
+        return;
+      }
+      for (const pn of panels) {
+        let any = false;
+        pn.querySelectorAll('.settings-section').forEach(sec => {
+          const titleHit = sec.querySelector('.settings-section-title')?.textContent.toLowerCase().includes(q);
+          let hits = 0;
+          sec.querySelectorAll('.settings-row').forEach(r => { const hit = titleHit || r.textContent.toLowerCase().includes(q); r.style.display = hit ? '' : 'none'; if (hit) hits++; });
+          const show = titleHit || hits > 0 || (!sec.querySelector('.settings-row') && sec.textContent.toLowerCase().includes(q));
+          sec.style.display = show ? '' : 'none';
+          if (show) any = true;
+        });
+        pn.hidden = !any; pn.classList.toggle('active', any);
+      }
+    });
+  })();
   const settingsTabs = Array.from(document.querySelectorAll('.settings-tab-btn'));
   function activateSettingsTab(btn, focus=false) {
     if (!btn) return;
@@ -18560,9 +18645,12 @@
     });
   });
   const settingsDescriptions = {
-    general:'Where your music plays and how it sounds.',
-    library:'Your music folders, what Hive writes into files, and listening history.',
-    appearance:'Theme, window, glass effects and layout.',
+    general:'Where your music plays, how it sounds, and how playback behaves.',
+    library:'Your music folders, library health and listening history.',
+    tags:'What Hive writes into your files, and virtual tags.',
+    organise:'Naming template for organising files, and converter defaults.',
+    layout:'Panels, player bar buttons, right-click menus and the column browser.',
+    appearance:'Theme, colours, window and glass effects.',
     navigation:'Choose what shows in the left sidebar and in what order.',
     connections:'Discord, scrobbling services and phones.',
     plugins:'Add and configure Hive extensions.',
