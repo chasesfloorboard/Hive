@@ -7155,7 +7155,7 @@ function launchSpotifyOrLogin() {
     const child = require('child_process').spawn(helper, [], {
       detached: true,
       stdio: 'ignore',
-      env: { ...process.env, HIVE_SPOTIFY_BACKGROUND: '1' }
+      env: { ...process.env, HIVE_SPOTIFY_BACKGROUND: '1', HIVE_PARENT_PID: String(process.pid) }
     });
     child.unref();
     startupDebug('SPOTIFY BACKGROUND LAUNCH', { helper });

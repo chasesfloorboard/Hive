@@ -156,6 +156,27 @@ cleanup() {
 }
 trap cleanup EXIT INT TERM
 
+# Spotify is Hive's audio engine for Spotify tracks, so it lives and dies
+# with Hive: once the Hive that started this helper is gone (and no other
+# Hive took over), stop Spotify instead of letting it play on.
+hive_gone() {
+  [[ -n "${HIVE_PARENT_PID:-}" ]] || return 1
+  kill -0 "$HIVE_PARENT_PID" >/dev/null 2>&1 && return 1
+  if pgrep -x Hive >/dev/null 2>&1; then
+    log 'The Hive that started this helper exited, but another Hive is running; leaving Spotify to it.'
+    trap - EXIT INT TERM
+    exit 0
+  fi
+  return 0
+}
+stop_for_closed_hive() {
+  log 'Hive closed; stopping its Spotify.'
+  status 'spotify-exited' 'Stopped with Hive.'
+  [[ -n "$SPOTIFY_PID" ]] && kill "$SPOTIFY_PID" >/dev/null 2>&1 || true
+  rm -f "$owner_file" >/dev/null 2>&1 || true
+  exit 0
+}
+
 if [[ "$hive_owned_spotify" -eq 1 ]]; then
   export DISPLAY="$DISPLAY_NUM"
   export GDK_BACKEND=x11
@@ -164,6 +185,7 @@ if [[ "$hive_owned_spotify" -eq 1 ]]; then
   unset WAYLAND_DISPLAY WAYLAND_SOCKET WAYLAND_DEBUG
   log "Hive-owned Spotify is already running on $DISPLAY; waiting for Spicetify bridge connection."
   while kill -0 "$SPOTIFY_PID" >/dev/null 2>&1; do
+    hive_gone && stop_for_closed_hive
     sleep 2
   done
   log 'Hive-owned Spotify exited; stopping its isolated display.'
@@ -295,6 +317,7 @@ fi
 log 'Spotify is running on the isolated display.'
 status 'spotify-running' "Spotify is running on $DISPLAY_NUM; waiting for Spicetify bridge connection."
 while pgrep -x spotify >/dev/null 2>&1 || kill -0 "$SPOTIFY_PID" >/dev/null 2>&1; do
+  hive_gone && stop_for_closed_hive
   sleep 2
 done
 log 'Spotify exited; stopping isolated display.'
