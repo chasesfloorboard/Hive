@@ -6045,20 +6045,17 @@
   // Opening a playlist prepares its first YouTube Music songs, so the
   // first click on one of them is quick too.
   const youtubeViewPrefetched = new Set();
-  function prefetchPlaylistYoutubeMusic(pl, tracks) {
+  function prefetchPlaylistYoutubeMusic(pl) {
     const key = String(pl?.id || '');
-    if (!key || youtubeViewPrefetched.has(key) || !window.beehive.prefetchYouTubeMusic) return;
-    const first = tracks.filter(isYoutubeMusicTrack).slice(0, 8);
-    if (!first.length) return;
+    if (!key || pl?.smart || youtubeViewPrefetched.has(key) || !window.beehive.prefetchYouTubeMusic) return;
     youtubeViewPrefetched.add(key);
+    const tracks = tracksForPlaylist(pl);
+    const first = (Array.isArray(tracks) ? tracks : []).filter(isYoutubeMusicTrack).slice(0, 8);
+    if (!first.length) { if (youtubeMusicReady === null) youtubeViewPrefetched.delete(key); return; }
     void window.beehive.prefetchYouTubeMusic(first.map(t => ({ path: t.path, title: t.title, artist: t.artist, album: t.album, duration: t.duration })), { mode: 'append' }).catch(() => {});
   }
   function tracksForPlaylist(pl){
-    const tracks = tracksForPlaylistUncached(pl);
-    if (Array.isArray(tracks)) prefetchPlaylistYoutubeMusic(pl, tracks);
-    return tracks;
-  }
-  function tracksForPlaylistUncached(pl){
+    if (pl?.id && !youtubeViewPrefetched.has(String(pl.id))) queueMicrotask(() => prefetchPlaylistYoutubeMusic(pl));
     if(pl?.smart) return evaluateSmartPlaylist(pl);
     if (pl?.source === 'spotify' && Array.isArray(pl?.spotifyTracks)) return pl.spotifyTracks.map(normalizeSpotifyTrackRecord).map(youtubeTrackForSpotify);
     const source = Array.isArray(pl?.tracks) ? pl.tracks : [];
