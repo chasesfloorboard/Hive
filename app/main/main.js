@@ -1972,6 +1972,13 @@ const appleMusic = require('./apple-music').create({ net });
 ipcMain.handle('applemusic:search', async (_evt, term) => appleMusic.search(term));
 ipcMain.handle('applemusic:collection', async (_evt, url) => appleMusic.getCollection(url));
 
+// Hive 2.0 YouTube Music streaming for Apple Music / Spotify playlists.
+const youtubeMusic = require('./youtube-music').create({ userDataDir: USER_DATA(), net });
+ipcMain.handle('ytmusic:status', async () => youtubeMusic.status());
+ipcMain.handle('ytmusic:install', async () => youtubeMusic.installYtDlp());
+ipcMain.handle('ytmusic:resolve', async (_evt, track, opts) => youtubeMusic.resolve(track || {}, opts || {}));
+ipcMain.handle('ytmusic:tags', async (_evt, track) => youtubeMusic.musicBrainzTags(track || {}));
+
 // Hive interface size (MusicBee's font scaling): zoom the main window.
 ipcMain.handle('hivebee:setZoom', async (evt, factor) => {
   const f = Math.max(0.7, Math.min(1.5, Number(factor) || 1));

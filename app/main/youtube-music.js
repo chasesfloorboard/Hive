@@ -1,0 +1,263 @@
+'use strict';
+// Hive 2.0 YouTube Music streaming. Playlists come from Apple Music or
+// Spotify (track lists and metadata only); the audio for songs that aren't
+// in the user's library is found on YouTube Music and streamed with yt-dlp.
+// Nothing is downloaded to disk: yt-dlp resolves a time-limited audio URL
+// that the renderer's media element plays, like a podcast episode.
+//
+// Matching: search YouTube Music's "Songs" results for "artist title",
+// rank by title similarity, then confirm the best candidates with their full
+// details (artist overlap and length within a few seconds). Matches are
+// cached on disk; stream URLs are cached in memory until they expire.
+//
+// Tags: whatever the source gave (Apple/iTunes: album, year, genre, cover;
+// Spotify: album, album artist), YouTube Music's own album/year, and a
+// MusicBrainz recording lookup for album artist, track/disc number, date and
+// MBIDs.
+
+const fs = require('fs');
+const fsp = fs.promises;
+const path = require('path');
+const { execFile } = require('child_process');
+
+const MB_API = 'https://musicbrainz.org/ws/2';
+const MB_USER_AGENT = 'Hive/2.0 ( https://github.com/ )';
+
+// Comparable form of a title or artist: drop "(feat. …)", "[Mixed]",
+// "- Remastered 2011" and punctuation, keep remix/version words.
+function normalise(text) {
+  return String(text || '').toLowerCase()
+    .normalize('NFKD').replace(/[\u0300-\u036f]/g, '')
+    .replace(/[\(\[](feat\.?|ft\.?|with|mixed|explicit|clean|official[^\)\]]*|audio|lyrics?[^\)\]]*)[^\)\]]*[\)\]]/g, ' ')
+    .replace(/\s+-\s+(\d{4}\s+)?remaster(ed)?.*$/, ' ')
+    .replace(/\s+(feat\.?|ft\.?)\s+.*$/, ' ')
+    .replace(/&/g, ' and ')
+    .replace(/[^a-z0-9]+/g, ' ').trim();
+}
+const words = text => new Set(normalise(text).split(' ').filter(Boolean));
+function similarity(a, b) {
+  const A = words(a), B = words(b);
+  if (!A.size || !B.size) return 0;
+  let both = 0;
+  for (const w of A) if (B.has(w)) both++;
+  return (2 * both) / (A.size + B.size);
+}
+// Share of the wanted words found in the other text (for artist lists,
+// where YouTube adds every featured artist).
+function containment(wanted, text) {
+  const A = words(wanted), B = words(text);
+  if (!A.size) return 0;
+  let hit = 0;
+  for (const w of A) if (B.has(w)) hit++;
+  return hit / A.size;
+}
+const firstArtist = artist => String(artist || '').split(/,|&| x | and | feat\.? | ft\.? /i)[0].trim();
+
+// Score a fully-described YouTube Music candidate against the wanted song.
+function scoreCandidate(want, info) {
+  const titleScore = Math.max(similarity(want.title, info.track || info.title), similarity(want.title, info.title));
+  const artistsText = [info.artist, ...(Array.isArray(info.artists) ? info.artists : []), info.channel].filter(Boolean).join(' ');
+  const artistScore = want.artist ? containment(firstArtist(want.artist), artistsText) : 1;
+  const wantDur = Number(want.duration) || 0, gotDur = Number(info.duration) || 0;
+  const diff = wantDur && gotDur ? Math.abs(wantDur - gotDur) : 0;
+  const durationOk = !wantDur || !gotDur || diff <= Math.max(8, wantDur * 0.05);
+  const score = titleScore * 0.55 + artistScore * 0.35 + (durationOk ? 0.1 : 0) - (wantDur && gotDur ? Math.min(0.3, diff / 120) : 0);
+  return { score, titleScore, artistScore, durationOk };
+}
+// A DJ-mix "[Mixed]" edit can differ in length from the full track, so a
+// near-certain title and artist match is accepted even when the length isn't.
+const acceptable = s => s.artistScore >= 0.5 && ((s.durationOk && s.titleScore >= 0.5) || s.titleScore >= 0.8);
+
+// googlevideo URLs carry their own expiry (unix seconds).
+function urlExpiry(url) {
+  try { const e = Number(new URL(url).searchParams.get('expire')); if (e > 0) return e * 1000; } catch {}
+  return Date.now() + 60 * 60 * 1000;
+}
+
+function create({ userDataDir, net }) {
+  const matchesFile = path.join(userDataDir, 'youtube-music-matches.json');
+  let matches = null;
+  let saveTimer = null;
+  const streams = new Map(); // videoId -> { url, expires, info }
+  const inflight = new Map();
+  let mbChain = Promise.resolve();
+  let mbLast = 0;
+
+  function ytDlpPath() {
+    const candidates = [
+      process.env.HIVE_YTDLP,
+      path.join(userDataDir, 'bin', 'yt-dlp'),
+      path.join(process.env.HOME || '', '.local', 'bin', 'yt-dlp'),
+      '/usr/local/bin/yt-dlp', '/usr/bin/yt-dlp'
+    ].filter(Boolean);
+    return candidates.find(p => { try { fs.accessSync(p, fs.constants.X_OK); return true; } catch { return false; } }) || '';
+  }
+
+  // yt-dlp needs a JavaScript runtime for YouTube; Node is always present
+  // with Hive's toolchain, deno is used when installed.
+  function runtimeArgs() {
+    const hasDeno = ['/usr/bin/deno', path.join(process.env.HOME || '', '.deno', 'bin', 'deno')].some(p => fs.existsSync(p));
+    return hasDeno ? [] : ['--js-runtimes', 'node'];
+  }
+
+  function ytDlp(args, timeoutMs = 45000) {
+    const bin = ytDlpPath();
+    if (!bin) return Promise.reject(Object.assign(new Error('yt-dlp is not installed. Hive needs it to stream from YouTube Music (Settings → Connections → YouTube Music → Install).'), { code: 'NO_YTDLP' }));
+    return new Promise((resolve, reject) => {
+      execFile(bin, [...runtimeArgs(), '--no-warnings', '--no-playlist', ...args], { timeout: timeoutMs, maxBuffer: 32 * 1024 * 1024 }, (err, stdout, stderr) => {
+        if (err) return reject(new Error(String(stderr || err.message).trim().split('\n').pop() || 'yt-dlp failed'));
+        resolve(stdout);
+      });
+    });
+  }
+
+  async function installYtDlp() {
+    const dir = path.join(userDataDir, 'bin');
+    await fsp.mkdir(dir, { recursive: true });
+    const res = await net.fetch('https://github.com/yt-dlp/yt-dlp/releases/latest/download/yt-dlp', { headers: { 'User-Agent': 'Hive/2.0' } });
+    if (!res.ok) throw new Error(`Download failed (${res.status})`);
+    const target = path.join(dir, 'yt-dlp');
+    await fsp.writeFile(`${target}.tmp`, Buffer.from(await res.arrayBuffer()), { mode: 0o755 });
+    await fsp.rename(`${target}.tmp`, target);
+    return status();
+  }
+
+  async function status() {
+    const bin = ytDlpPath();
+    let version = '';
+    if (bin) { try { version = String(await ytDlp(['--version'], 15000)).trim(); } catch {} }
+    return { installed: !!bin, path: bin, version };
+  }
+
+  async function loadMatches() {
+    if (matches) return matches;
+    try { matches = JSON.parse(await fsp.readFile(matchesFile, 'utf8')) || {}; } catch { matches = {}; }
+    return matches;
+  }
+  function saveMatchesSoon() {
+    clearTimeout(saveTimer);
+    saveTimer = setTimeout(async () => {
+      try { await fsp.writeFile(`${matchesFile}.tmp`, JSON.stringify(matches)); await fsp.rename(`${matchesFile}.tmp`, matchesFile); } catch {}
+    }, 1000);
+  }
+
+  async function videoInfo(videoId) {
+    const cached = streams.get(videoId);
+    if (cached && cached.expires - Date.now() > 5 * 60 * 1000) return cached.info;
+    const raw = await ytDlp(['-j', '-f', 'bestaudio[ext=webm]/bestaudio[ext=m4a]/bestaudio', `https://music.youtube.com/watch?v=${videoId}`]);
+    const info = JSON.parse(raw);
+    if (!/^https:\/\//.test(String(info.url || ''))) throw new Error('YouTube Music did not return an audio stream.');
+    const slim = { id: info.id, title: info.title, track: info.track, artist: info.artist, artists: info.artists, album: info.album,
+      release_year: info.release_year, release_date: info.release_date, duration: info.duration, channel: info.channel, url: info.url,
+      ext: info.ext, acodec: info.acodec, thumbnail: info.thumbnail };
+    streams.set(videoId, { url: slim.url, expires: urlExpiry(slim.url), info: slim });
+    return slim;
+  }
+
+  async function searchSongs(query) {
+    const raw = await ytDlp(['--flat-playlist', '-J', '--playlist-end', '6', `https://music.youtube.com/search?q=${encodeURIComponent(query)}#songs`], 30000);
+    const data = JSON.parse(raw);
+    return (data.entries || []).filter(e => e?.id).map(e => ({ id: String(e.id), title: String(e.title || '') }));
+  }
+
+  // Find the YouTube Music song for { title, artist, album, duration }.
+  async function findMatch(want) {
+    const query = `${firstArtist(want.artist)} ${normalise(want.title)}`.trim();
+    const results = await searchSongs(query);
+    const ranked = results.map(r => ({ ...r, pre: similarity(want.title, r.title) })).sort((a, b) => b.pre - a.pre).slice(0, 3);
+    let best = null;
+    for (const cand of ranked) {
+      let info;
+      try { info = await videoInfo(cand.id); } catch { continue; }
+      const s = scoreCandidate(want, info);
+      if (!best || s.score > best.s.score) best = { info, s };
+      if (acceptable(s) && s.score >= 0.85) break;
+    }
+    if (!best || !acceptable(best.s)) return null;
+    return best.info;
+  }
+
+  // Resolve a Hive track (path "ytm:…" plus title/artist/album/duration)
+  // to a playable stream. Concurrent requests for one track share work.
+  async function resolve(track, { fresh = false } = {}) {
+    const key = String(track?.path || '');
+    if (!key.startsWith('ytm:')) throw new Error('Not a YouTube Music track.');
+    if (inflight.has(key)) return inflight.get(key);
+    const job = (async () => {
+      const all = await loadMatches();
+      let videoId = String(track.ytVideoId || all[key]?.videoId || '');
+      if (fresh && videoId) streams.delete(videoId); // the old link expired or was refused
+      let info = null;
+      if (videoId) { try { info = await videoInfo(videoId); } catch { info = null; } }
+      if (!info) {
+        info = await findMatch({ title: track.title, artist: track.artist, album: track.album, duration: track.duration });
+        if (!info) throw new Error(`Couldn't find “${track.title}” on YouTube Music.`);
+        videoId = info.id;
+      }
+      all[key] = { videoId, title: info.track || info.title, artist: info.artist || '', at: Date.now() };
+      saveMatchesSoon();
+      return {
+        streamUrl: info.url, videoId, expires: streams.get(videoId)?.expires || 0,
+        youtube: { title: info.track || info.title, artist: info.artist || '', album: info.album || '', year: String(info.release_year || ''), duration: Number(info.duration) || 0 }
+      };
+    })();
+    inflight.set(key, job);
+    try { return await job; } finally { inflight.delete(key); }
+  }
+
+  // MusicBrainz (1 request a second, as its terms ask).
+  function mbJson(url) {
+    const run = async () => {
+      const wait = Math.max(0, 1100 - (Date.now() - mbLast));
+      if (wait) await new Promise(r => setTimeout(r, wait));
+      mbLast = Date.now();
+      const res = await net.fetch(url, { headers: { 'User-Agent': MB_USER_AGENT, Accept: 'application/json' } });
+      if (!res.ok) throw new Error(`MusicBrainz ${res.status}`);
+      return res.json();
+    };
+    const p = mbChain.then(run, run);
+    mbChain = p.catch(() => {});
+    return p;
+  }
+  const luceneQuote = v => `"${String(v || '').replace(/["\\]/g, ' ').trim()}"`;
+
+  // Tags for one song from MusicBrainz: the best recording whose title and
+  // artist match, preferring an official album release.
+  async function musicBrainzTags({ title, artist, album, duration }) {
+    const q = `recording:${luceneQuote(normalise(title))} AND artist:${luceneQuote(firstArtist(artist))}`;
+    const data = await mbJson(`${MB_API}/recording?query=${encodeURIComponent(q)}&fmt=json&limit=8`);
+    let best = null;
+    for (const rec of data.recordings || []) {
+      const credit = (rec['artist-credit'] || []).map(c => `${c.name}${c.joinphrase || ''}`).join('');
+      const t = similarity(title, rec.title), a = containment(firstArtist(artist), credit);
+      const lenOk = !duration || !rec.length || Math.abs(rec.length / 1000 - duration) <= Math.max(8, duration * 0.05);
+      if (t < 0.6 || a < 0.5 || !lenOk) continue;
+      for (const rel of rec.releases || []) {
+        const official = rel.status === 'Official' ? 1 : 0;
+        const albumMatch = album ? similarity(album, rel.title) : 0;
+        const type = rel['release-group']?.['primary-type'];
+        const score = t + a + official * 0.3 + albumMatch * 0.8 + (type === 'Album' ? 0.15 : type === 'Single' || type === 'EP' ? 0.05 : 0);
+        if (!best || score > best.score) best = { score, rec, rel, credit };
+      }
+    }
+    if (!best) return null;
+    const { rec, rel, credit } = best;
+    const medium = (rel.media || [])[0] || {};
+    const trackOnRelease = (medium.track || [])[0] || {};
+    const trackNumber = Number(trackOnRelease.number) || (Number.isFinite(Number(medium['track-offset'])) ? Number(medium['track-offset']) + 1 : 0);
+    const relArtist = (rel['artist-credit'] || []).map(c => `${c.name}${c.joinphrase || ''}`).join('') || credit;
+    return {
+      title: rec.title, artist: credit, album: rel.title, albumArtist: relArtist,
+      year: String(rec['first-release-date'] || rel.date || '').slice(0, 4),
+      date: String(rel.date || ''),
+      trackNumber, trackTotal: Number(medium['track-count']) || 0,
+      discNumber: Number(medium.position) || 0,
+      musicbrainzRecordingId: rec.id, musicbrainzReleaseId: rel.id, musicbrainzReleaseGroupId: rel['release-group']?.id || '',
+      isrc: (rec.isrcs || [])[0] || ''
+    };
+  }
+
+  return { status, installYtDlp, resolve, findMatch, musicBrainzTags };
+}
+
+module.exports = { create, normalise, similarity, containment, scoreCandidate, acceptable, urlExpiry };

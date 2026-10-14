@@ -193,7 +193,10 @@
     if (!isSpotifyTrack(t) || !t?.spotifyArtworkCacheFile) return '';
     return window.beehive.coverUrl?.(String(t.spotifyArtworkCacheFile)) || '';
   }
-  function isPodcastTrack(t) { return String(t?.source || '').toLowerCase() === 'podcast' && !!t?.streamUrl; }
+  // YouTube Music tracks (Hive 2.0) play through the same media element as
+  // podcasts; their stream URL is resolved when they're loaded.
+  function isYoutubeMusicTrack(t) { return String(t?.source || '').toLowerCase() === 'youtube' && String(t?.path || '').startsWith('ytm:'); }
+  function isPodcastTrack(t) { return (String(t?.source || '').toLowerCase() === 'podcast' && !!t?.streamUrl) || isYoutubeMusicTrack(t); }
   function isLocalPlaybackTrack(t) { return !!t?.path && !isPodcastTrack(t) && !isSpotifyTrack(t); }
   function spotifyPositionNow() {
     if (!spotifyState) return 0;
@@ -452,8 +455,42 @@
     return true;
   }
 
-  async function podcastLoad(t, position=0, autoplay=false) {
+  // Find the YouTube Music audio for a track before handing it to the media
+  // element. The previous song keeps playing until the new one is ready; a
+  // newer play request cancels this one.
+  let youtubeLoadToken = 0;
+  async function prepareYoutubeMusicTrack(t, { fresh = false } = {}) {
+    const token = ++youtubeLoadToken;
+    if (!fresh && t.streamUrl && Number(t.ytStreamExpires) - Date.now() > 5 * 60 * 1000) return true;
+    const slow = setTimeout(() => { if (token === youtubeLoadToken && el.pbArtist) el.pbArtist.textContent = `Finding “${t.title}” on YouTube Music…`; }, 400);
+    try {
+      const r = await window.beehive.resolveYouTubeMusic({ path: t.path, title: t.title, artist: t.artist, album: t.album, duration: t.duration, ytVideoId: t.ytVideoId || '' }, { fresh });
+      if (token !== youtubeLoadToken) return false;
+      t.streamUrl = r.streamUrl; t.ytVideoId = r.videoId; t.ytStreamExpires = r.expires;
+      if (!Number(t.duration) && r.youtube?.duration) t.duration = r.youtube.duration;
+      return true;
+    } catch (err) {
+      if (token !== youtubeLoadToken) return false;
+      const message = String(err?.message || err).replace(/^Error invoking remote method '[^']+': (Error: )?/, '');
+      showAppNotice(message);
+      if (el.pbArtist) el.pbArtist.textContent = t.artist || '';
+      return false;
+    } finally { clearTimeout(slow); }
+  }
+  // Warm the next YouTube Music song so skipping to it is quick.
+  function prefetchNextYoutubeMusicTrack() {
+    const next = currentQueue[currentIndex + 1];
+    if (!isYoutubeMusicTrack(next) || (next.streamUrl && Number(next.ytStreamExpires) - Date.now() > 10 * 60 * 1000)) return;
+    window.beehive.resolveYouTubeMusic?.({ path: next.path, title: next.title, artist: next.artist, album: next.album, duration: next.duration, ytVideoId: next.ytVideoId || '' })
+      .then(r => { next.streamUrl = r.streamUrl; next.ytVideoId = r.videoId; next.ytStreamExpires = r.expires; }).catch(() => {});
+  }
+
+  async function podcastLoad(t, position=0, autoplay=false, { freshStream = false } = {}) {
     if (!isPodcastTrack(t)) return false;
+    if (isYoutubeMusicTrack(t)) {
+      if (!(await prepareYoutubeMusicTrack(t, { fresh: freshStream }))) return false;
+      if (currentQueue[currentIndex] !== t) return false;
+    }
     // Cross-transport playback must have exactly one owner. Tear down any
     // active local Web Audio source, pending gapless source, GStreamer stream,
     // or Spotify playback before enabling the HTML media element. This is
@@ -480,6 +517,7 @@
     activeOffset = Number(position)||0;
     updateNowPlayingUI(t); dispatchAudio('loadedmetadata'); dispatchAudio('durationchange'); dispatchAudio('timeupdate'); updateSeekUI();
     syncMpris(t, enginePaused);
+    if (isYoutubeMusicTrack(t)) setTimeout(prefetchNextYoutubeMusicTrack, 2000);
     if (autoplay) { try { await audioElement.play(); void scrobbleStart(t); } catch (err) { enginePaused=true; engineEnded=false; dispatchAudio('pause'); console.warn('Podcast playback blocked:', err?.message || err); } }
     return true;
   }
@@ -489,6 +527,15 @@
   audioElement.addEventListener('timeupdate', () => { if (!podcastActive) return; activeOffset=Number(audioElement.currentTime)||0; dispatchAudio('timeupdate'); });
   audioElement.addEventListener('ended', () => { if (!podcastActive) return; activeOffset=activeDuration; enginePaused=true; engineEnded=true; dispatchAudio('timeupdate'); dispatchAudio('ended'); });
   audioElement.addEventListener('error', () => { if (!podcastActive) return; enginePaused=true; engineEnded=true; dispatchAudio('pause'); console.warn('Podcast episode could not be played:', tSafe(audioElement.error)); });
+  // A YouTube stream link expires after some hours (or can be refused);
+  // fetch a fresh one once and carry on from the same spot.
+  audioElement.addEventListener('error', () => {
+    const t = currentQueue[currentIndex];
+    if (!podcastActive || !isYoutubeMusicTrack(t) || t._ytmRetriedAt > Date.now() - 60000) return;
+    t._ytmRetriedAt = Date.now();
+    t.streamUrl = '';
+    void podcastLoad(t, Number(activeOffset) || 0, true, { freshStream: true });
+  });
   function tSafe(err) { return err ? `code ${err.code || 'unknown'}` : 'unknown media error'; }
   let gstLoadGeneration = 0;
   // Every user-initiated load gets a monotonically increasing request token.
@@ -1572,9 +1619,48 @@
       year: at.year || '', duration: 30, cover: '', artworkUrl: at.artwork || '', podcastId: '', podcastFeedUrl: at.url || '',
       podcastDescription: `30-second Apple Music preview from “${collection?.name || at.album}”. The full song is on Apple Music.`, pubDate: '' };
   }
+  // Songs not in the library stream from YouTube Music when yt-dlp is
+  // available; otherwise Apple's preview is the fallback.
+  let youtubeMusicReady = null;
+  async function youtubeMusicAvailable(refresh = false) {
+    if (youtubeMusicReady === null || refresh) {
+      try { youtubeMusicReady = !!(await window.beehive.getYouTubeMusicStatus?.())?.installed; } catch { youtubeMusicReady = false; }
+    }
+    return youtubeMusicReady;
+  }
+  function youtubeTrackFromApple(at) {
+    return { path: `ytm:apple:${at.appleId}`, source: 'youtube', streamUrl: '', title: at.title, artist: at.artist, album: at.album,
+      albumArtist: '', year: at.year || '', genre: at.genre || '', duration: Number(at.duration) || 0, cover: '', artworkUrl: at.artwork || '',
+      appleMusicUrl: at.url || '' };
+  }
   function appleTracksForPlayback(collection) {
     const index = appleLibraryIndex();
-    return collection.tracks.map(at => appleLocalMatch(index, at) || (at.previewUrl ? applePreviewTrack(at, collection) : null)).filter(Boolean);
+    return collection.tracks.map(at => appleLocalMatch(index, at)
+      || (youtubeMusicReady ? youtubeTrackFromApple(at) : (at.previewUrl ? applePreviewTrack(at, collection) : null))).filter(Boolean);
+  }
+  // Fill tags for streamed tracks from MusicBrainz (one lookup a second);
+  // returns how many tracks got tags. Only empty fields are filled, apart
+  // from the album artist and numbering, which sources rarely provide.
+  async function tagStreamedTracksFromMusicBrainz(tracks, onProgress) {
+    let tagged = 0, done = 0;
+    for (const t of tracks) {
+      try {
+        const mb = await window.beehive.getMusicBrainzTags({ title: t.title, artist: t.artist, album: t.album, duration: t.duration });
+        if (mb) {
+          t.albumArtist = t.albumArtist || mb.albumArtist;
+          t.album = t.album || mb.album;
+          t.year = t.year || mb.year;
+          if (!Number(t.track) && mb.trackNumber) t.track = mb.trackNumber;
+          if (!Number(t.trackTotal) && mb.trackTotal) t.trackTotal = mb.trackTotal;
+          if (!Number(t.disc) && mb.discNumber) t.disc = mb.discNumber;
+          t.musicbrainzRecordingId = mb.musicbrainzRecordingId; t.musicbrainzReleaseId = mb.musicbrainzReleaseId;
+          if (mb.isrc) t.isrc = mb.isrc;
+          tagged++;
+        }
+      } catch { /* offline or rate-limited: keep the source's tags */ }
+      onProgress?.(++done, tracks.length);
+    }
+    return tagged;
   }
   function appleCardHtml(c) {
     return `<button type="button" class="apple-card" data-apple-url="${escapeHtml(c.url)}">${c.artwork ? `<img src="${escapeHtml(c.artwork)}" alt="" loading="lazy">` : '<span class="apple-card-blank"></span>'}<strong>${escapeHtml(c.name)}</strong><small>${escapeHtml(c.curator || (c.kind === 'album' ? 'Album' : 'Playlist'))}</small></button>`;
@@ -1609,19 +1695,23 @@
       };
       const showCollection = async (url) => {
         status.textContent = 'Loading…';
+        await youtubeMusicAvailable();
         try { current = await window.beehive.getAppleMusicCollection(url); }
         catch (err) { status.textContent = cleanError(err); return; }
         const index = appleLibraryIndex();
         const rows = current.tracks.map((at, i) => {
           const local = appleLocalMatch(index, at);
-          const badge = local ? '<span class="apple-badge apple-badge-local" title="Plays the full song from your library">In library</span>' : (at.previewUrl ? '<span class="apple-badge">Preview</span>' : '<span class="apple-badge apple-badge-none" title="Apple has no preview for this song">Apple Music only</span>');
-          return `<div class="apple-track" data-i="${i}"><span class="apple-track-n">${i + 1}</span><div class="apple-track-text"><div>${escapeHtml(at.title)}</div><small>${escapeHtml([at.artist, at.album].filter(Boolean).join(' — '))}</small></div>${badge}<span class="apple-track-time">${fmtTime(at.duration)}</span><button type="button" class="icon-btn" data-apple-play="${i}" title="Play" ${local || at.previewUrl ? '' : 'disabled'}>${theaterIcon('play')}</button></div>`;
+          const badge = local ? '<span class="apple-badge apple-badge-local" title="Plays the full song from your library">In library</span>'
+            : youtubeMusicReady ? '<span class="apple-badge apple-badge-yt" title="Plays the full song from YouTube Music">YouTube Music</span>'
+            : (at.previewUrl ? '<span class="apple-badge">Preview</span>' : '<span class="apple-badge apple-badge-none" title="Apple has no preview for this song">Apple Music only</span>');
+          return `<div class="apple-track" data-i="${i}"><span class="apple-track-n">${i + 1}</span><div class="apple-track-text"><div>${escapeHtml(at.title)}</div><small>${escapeHtml([at.artist, at.album].filter(Boolean).join(' — '))}</small></div>${badge}<span class="apple-track-time">${fmtTime(at.duration)}</span><button type="button" class="icon-btn" data-apple-play="${i}" title="Play" ${local || youtubeMusicReady || at.previewUrl ? '' : 'disabled'}>${theaterIcon('play')}</button></div>`;
         }).join('');
         const localCount = current.tracks.filter(at => appleLocalMatch(index, at)).length;
+        const ytNote = youtubeMusicReady ? '' : `<div class="apple-yt-note">Songs you don't own play as 30-second previews. <button type="button" class="sidebar-add" id="apple-install-ytdlp">Play full songs from YouTube Music</button></div>`;
         view.innerHTML = `<div class="apple-head">${current.artwork ? `<img src="${escapeHtml(current.artwork)}" alt="">` : ''}<div><div class="apple-kicker">${current.kind === 'album' ? 'ALBUM' : 'PLAYLIST'}</div><h3>${escapeHtml(current.name)}</h3><div class="dim">${escapeHtml(current.curator)} · ${current.tracks.length} songs · ${localCount} in your library</div>
             ${current.description ? `<p class="apple-desc">${escapeHtml(current.description)}</p>` : ''}
             <div class="apple-actions"><button type="button" class="sidebar-add" id="apple-play-all">Play</button><button type="button" class="sidebar-add" id="apple-import">Import as playlist</button><a class="sidebar-add" href="${escapeHtml(current.url)}" target="_blank" rel="noopener">Open in Apple Music</a></div></div></div>
-          <div class="apple-tracks">${rows}</div>
+          ${ytNote}<div class="apple-tracks">${rows}</div>
           ${current.more?.length ? `<h4 class="radio-heading">More like this</h4><div class="apple-grid">${current.more.map(appleCardHtml).join('')}</div>` : ''}`;
         status.textContent = ''; back.classList.toggle('hidden', !lastResultsHtml);
         view.scrollTop = 0; m.querySelector('.modal-body').scrollTop = 0;
@@ -1641,22 +1731,42 @@
           const at = current.tracks[Number(one.dataset.applePlay)];
           const all = appleTracksForPlayback(current);
           const index = appleLibraryIndex(), local = appleLocalMatch(index, at);
-          const start = all.findIndex(t => t.path === (local ? local.path : `applemusic:${at.appleId}`));
+          const start = all.findIndex(t => t.path === (local ? local.path : youtubeMusicReady ? `ytm:apple:${at.appleId}` : `applemusic:${at.appleId}`));
           playQueue(all, Math.max(0, start), false);
           return;
         }
         if (e.target.closest('#apple-play-all')) { const all = appleTracksForPlayback(current); if (all.length) playQueue(all, 0, false); return; }
+        if (e.target.closest('#apple-install-ytdlp')) {
+          status.textContent = 'Installing yt-dlp…';
+          try { await window.beehive.installYtDlp(); } catch (err) { status.textContent = `Couldn't install yt-dlp (${cleanError(err)}).`; return; }
+          await youtubeMusicAvailable(true);
+          showCollection(current.url);
+          return;
+        }
         if (e.target.closest('#apple-import')) {
           const all = appleTracksForPlayback(current);
           if (!all.length) { status.textContent = 'Nothing in this playlist can be played in Hive.'; return; }
           const snapshots = {};
-          for (const t of all) if (isAppleMusicPreview(t)) snapshots[t.path] = t;
-          const created = await window.beehive.savePlaylist({ name: current.name || 'Apple Music playlist', tracks: all.map(t => t.path), podcastEpisodes: snapshots, smart: false,
-            description: `From Apple Music${current.curator ? ` (${current.curator})` : ''}: ${current.url}` });
+          for (const t of all) if (!isLocalPlaybackTrack(t)) snapshots[t.path] = t;
+          const playlistFields = { name: current.name || 'Apple Music playlist', tracks: all.map(t => t.path), smart: false,
+            description: `From Apple Music${current.curator ? ` (${current.curator})` : ''}: ${current.url}` };
+          let created = await window.beehive.savePlaylist({ ...playlistFields, podcastEpisodes: snapshots });
           playlists = await window.beehive.getPlaylists();
           renderPlaylistManager(); renderNavigationEditors();
-          const previews = Object.keys(snapshots).length;
-          status.textContent = `Created “${created.name}”: ${all.length - previews} songs from your library, ${previews} previews${all.length < current.tracks.length ? `, ${current.tracks.length - all.length} skipped (no preview)` : ''}.`;
+          const streamed = Object.values(snapshots);
+          const yt = streamed.filter(isYoutubeMusicTrack).length, previews = streamed.length - yt;
+          const summary = `Created “${created.name}”: ${all.length - streamed.length} from your library${yt ? `, ${yt} from YouTube Music` : ''}${previews ? `, ${previews} previews` : ''}${all.length < current.tracks.length ? `, ${current.tracks.length - all.length} skipped` : ''}.`;
+          status.textContent = summary;
+          const toTag = streamed.filter(isYoutubeMusicTrack);
+          if (toTag.length) {
+            const tagged = await tagStreamedTracksFromMusicBrainz(toTag, (n, total) => { status.textContent = `${summary} Tagging from MusicBrainz… ${n}/${total}`; });
+            const fresh = (await window.beehive.getPlaylists()).find(p => String(p.id) === String(created.id));
+            if (fresh) {
+              created = await window.beehive.savePlaylist({ ...fresh, podcastEpisodes: { ...(fresh.podcastEpisodes || {}), ...snapshots } });
+              playlists = await window.beehive.getPlaylists();
+            }
+            status.textContent = `${summary} MusicBrainz tagged ${tagged} of ${toTag.length}.`;
+          }
         }
       });
     }
@@ -5069,7 +5179,7 @@
       }).filter(Boolean);
     }
     return items.map(item => {
-      if (item && (item.source === 'spotify' || item.source === 'podcast')) return {...item};
+      if (item && (item.source === 'spotify' || item.source === 'podcast' || item.source === 'youtube')) return {...item};
       const pathKey = String(item?.path || item || '');
       return byPath.get(pathKey) || (allowSerializedLocal && item && item.path ? {...item} : null);
     }).filter(Boolean);
@@ -6530,6 +6640,29 @@
     }
   }
 
+  // Spotify supplies the track list and tags; songs in the library play
+  // from disk, the rest stream from YouTube Music inside Hive.
+  async function importSpotifyPlaylistAsYoutube(data, spotifyTracks) {
+    const index = appleLibraryIndex();
+    const all = spotifyTracks.map(st => appleLocalMatch(index, st) || {
+      path: `ytm:spotify:${st.spotifyId || st.spotifyUri}`, source: 'youtube', streamUrl: '', title: st.title, artist: st.artist,
+      album: st.album || '', albumArtist: st.albumArtist && st.albumArtist !== st.artist ? st.albumArtist : '', year: st.year || '',
+      duration: Number(st.duration) || 0, cover: '', artworkUrl: normalizeSpotifyArtworkSource(st.artworkUrl || st.cover || ''), spotifyUri: st.spotifyUri
+    });
+    const snapshots = {};
+    for (const t of all) if (isYoutubeMusicTrack(t)) snapshots[t.path] = t;
+    const cover = normalizeSpotifyArtworkSource(data.cover || data.artworkUrl || '');
+    let created = await window.beehive.savePlaylist({ name: data.name, tracks: all.map(t => t.path), podcastEpisodes: snapshots, smart: false,
+      description: `From Spotify: ${data.sourceUrl}`, cover: /^https?:\/\//i.test(cover) ? cover : '', artworkUrl: /^https?:\/\//i.test(cover) ? cover : '' });
+    playlists = await window.beehive.getPlaylists(); closeModal(el.playlistImportModal); renderPlaylistManager(); renderNavigationEditors();
+    const yt = Object.keys(snapshots).length;
+    showAppNotice(`Imported “${created.name}”: ${all.length - yt} songs from your library, ${yt} from YouTube Music. Tagging them from MusicBrainz in the background…`);
+    const tagged = await tagStreamedTracksFromMusicBrainz(Object.values(snapshots));
+    const fresh = (await window.beehive.getPlaylists()).find(p => String(p.id) === String(created.id));
+    if (fresh) { await window.beehive.savePlaylist({ ...fresh, podcastEpisodes: { ...(fresh.podcastEpisodes || {}), ...snapshots } }); playlists = await window.beehive.getPlaylists(); }
+    console.info('[YouTube Music] MusicBrainz tagged', tagged, 'of', yt);
+  }
+
   async function importSpotifyPlaylist(){
     const input=await themedPrompt('Spotify playlist URL:', 'https://open.spotify.com/playlist/', 'Import Spotify playlist');
     if(!input)return;
@@ -6544,6 +6677,14 @@
         albumArtist:entry.albumArtist || entry.artist || '', year:entry.year || ''
       })).filter(t=>t.spotifyUri);
       if(!spotifyTracks.length){ showAppNotice(`Spotify playlist “${data.name}” did not contain playable tracks.`); return; }
+      if (await youtubeMusicAvailable(true)) {
+        const via = await themedChoice(`How should Hive play “${data.name}”?`, [
+          { label: 'Full songs in Hive (YouTube Music)', value: 'youtube' },
+          { label: 'Through the Spotify app', value: 'spotify' }
+        ], 'Import Spotify playlist');
+        if (!via) return;
+        if (via === 'youtube') { await importSpotifyPlaylistAsYoutube(data, spotifyTracks); return; }
+      }
       const playlistCover = normalizeSpotifyArtworkSource(data.cover || data.artworkUrl || spotifyTracks[0]?.artworkUrl || '');
       const warm = await preloadSpotifyArtwork(spotifyTracks, playlistCover);
       const pl=await window.beehive.savePlaylist({name:data.name,tracks:[],spotifyTracks,smart:false,source:'spotify',sourceUrl:data.sourceUrl,spotifyPlaylistId:data.id,cover:playlistCover,artworkUrl:playlistCover,spotifyArtworkCacheFile:warm?.playlistCoverFile || '',description:'Spotify streaming playlist. Audio remains in Spotify; Hive controls the Spotify player.'});
