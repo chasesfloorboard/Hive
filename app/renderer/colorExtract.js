@@ -241,8 +241,14 @@
         // Boost saturation closer to dark theme's own multiplier and pull the
         // lightness ceiling back down so the hue itself stays visibly rich;
         // LIGHT_THEME_MAX_LUMINANCE below still guards solid-fill consumers.
-        const targetS = light ? Math.min(0.9, Math.max(ss, ss * 1.32)) : Math.min(0.96, Math.max(ss, ss * 1.28));
-        const accentL = light ? Math.min(0.72, Math.max(0.52, ll + 0.14)) : Math.min(0.64, Math.max(0.36, ll));
+        let targetS = light ? Math.min(0.9, Math.max(ss, ss * 1.32)) : Math.min(0.96, Math.max(ss, ss * 1.28));
+        // Pastel/faded covers still have a real hue, but multiplying a low
+        // saturation keeps it washed out. Give any clearly coloured cover a
+        // saturation floor (near-grey covers keep their own low value).
+        if (ss >= 0.12) targetS = Math.max(targetS, light ? 0.62 : 0.58);
+        // Keep the accent out of the near-white range where it fades into
+        // light panels (and reads as pastel on dark ones).
+        const accentL = light ? Math.min(0.6, Math.max(0.42, ll + 0.06)) : Math.min(0.62, Math.max(0.4, ll));
         let accentRgb = hslToRgb(hh, targetS, accentL);
         // Same hard ceiling as the monochrome branch above: accentL's 0.8
         // upper bound is still bright enough, combined with a pale cover's
