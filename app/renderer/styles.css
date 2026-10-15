@@ -5674,3 +5674,8 @@ span.apple-track-art{display:block;background:rgba(255,255,255,.06)}
 .streaming-page .icon-only-btn{display:inline-grid;place-items:center;padding:5px 10px;line-height:0}
 .streaming-page .icon-only-btn svg{width:16px;height:16px}
 .streaming-page .spotify-library-card .spotify-library-actions .icon-only-btn{flex:0 0 40px;padding:5px 0}
+
+/* Spotify Home shelves */
+.spotify-home-shelf { grid-auto-columns:168px; gap:12px; }
+.spotify-home-shelf .spotify-library-card { padding:7px; }
+.spotify-artist-card .spotify-library-art { border-radius:50%; }

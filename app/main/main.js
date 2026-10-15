@@ -7306,6 +7306,10 @@ ipcMain.handle('spotify:status', async () => ({
 ipcMain.handle('spotify:openForLogin', async () => {
   try { require('child_process').spawn('spotify', [], { detached: true, stdio: 'ignore' }).unref(); return true; } catch { return false; }
 });
+ipcMain.handle('spotify:home', async () => {
+  if (SPOTIFY_DEVELOPMENT_PAUSED) return { connected: false };
+  return askSpotifyBridge({ type: 'getHome' }, 20000);
+});
 ipcMain.handle('spotify:libraryPlaylists', async () => {
   if (SPOTIFY_DEVELOPMENT_PAUSED) return { connected: false };
   return askSpotifyBridge({ type: 'getLibraryPlaylists' });

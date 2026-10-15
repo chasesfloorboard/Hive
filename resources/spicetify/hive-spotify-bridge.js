@@ -256,8 +256,51 @@
     }
   }
 
+  // Spotify's Home feed (the signed-in user's shelves) through Spotify's
+  // own GraphQL "home" query, flattened to { title, items[{ uri, name,
+  // subtitle, image, kind }] } for Hive's Spotify page.
+  function firstImage(value, depth = 0) {
+    if (!value || depth > 7) return '';
+    if (typeof value === 'string') return /^https:\/\/(i\.scdn\.co|image-cdn-[a-z]+\.spotifycdn\.com|mosaic\.scdn\.co)\//.test(value) ? value : '';
+    if (Array.isArray(value)) { for (const v of value) { const f = firstImage(v, depth + 1); if (f) return f; } return ''; }
+    if (typeof value === 'object') {
+      if (typeof value.url === 'string' && firstImage(value.url)) return value.url;
+      for (const k of Object.keys(value)) { const f = firstImage(value[k], depth + 1); if (f) return f; }
+    }
+    return '';
+  }
+  async function sendHome(command) {
+    try {
+      const GQL = Spicetify?.GraphQL;
+      const def = GQL?.Definitions?.home;
+      if (!GQL?.Request || !def) throw new Error('This Spotify version does not expose its Home feed.');
+      const res = await GQL.Request(def, { timeZone: Intl.DateTimeFormat().resolvedOptions().timeZone || 'UTC', sp_t: '', facet: '', sectionItemsLimit: 12 });
+      const sections = res?.data?.home?.sectionContainer?.sections?.items || [];
+      const shelves = [];
+      for (const section of sections) {
+        const title = String(section?.data?.title?.transformedLabel || section?.data?.title?.text || '').trim();
+        const items = [];
+        for (const it of section?.sectionItems?.items || []) {
+          const data = it?.content?.data || {};
+          const uri = String(data.uri || it?.uri || '');
+          const kind = (uri.split(':')[1] || '').toLowerCase();
+          if (!/^(playlist|album|artist|show|episode)$/.test(kind)) continue;
+          const name = String(data.name || data.profile?.name || '').trim();
+          if (!name) continue;
+          const subtitle = String(data.ownerV2?.data?.name || data.artists?.items?.map(a => a?.profile?.name).filter(Boolean).join(', ') || data.publisher?.name || data.description || '').replace(/<[^>]+>/g, '').trim();
+          items.push({ uri, name, subtitle: subtitle.slice(0, 120), image: firstImage(data.images || data.coverArt || data.visuals || data), kind });
+        }
+        if (title && items.length) shelves.push({ title, items });
+      }
+      await post('/result', { commandId: Number(command.id), data: { shelves } });
+    } catch (err) {
+      await post('/result', { commandId: Number(command.id), error: String(err?.message || err) });
+    }
+  }
+
   async function execute(command) {
     const type = command?.command?.type;
+    if (type === 'getHome') return sendHome({ ...command.command, id: command.id });
     if (type === 'getPlaylist') return importPlaylist(command.command);
     if (type === 'getLibraryPlaylists') return sendLibraryPlaylists(command.command.id ? command.command : { ...command.command, id: command.id });
     if (type === 'playUri') {

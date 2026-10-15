@@ -2037,6 +2037,7 @@
       <div class="streaming-page-bar"><div class="organise-status" id="spotify-page-status"></div></div>
       <label class="streaming-setting">Play Spotify songs through
         <select class="settings-select" data-hivebee-pref="spotify.playVia"><option value="youtube">YouTube Music (in Hive)</option><option value="spotify">Spotify app</option></select></label>
+      <div id="spotify-home"></div>
       <h4 class="radio-heading">Your Spotify playlists</h4>
       <div class="organise-status" id="spotify-library-status"></div>
       <div class="apple-grid spotify-library-grid" id="spotify-library"></div>
@@ -2069,8 +2070,14 @@
     // app is already signed in). Import adds a playlist to Hive; Download
     // imports it and downloads its songs into Playlists/<name>.
     const libraryHost = spotifyPage.querySelector('#spotify-library');
-    libraryHost.addEventListener('click', async e => {
-      const btn = e.target.closest('[data-sl]'); if (!btn) return;
+    spotifyPage.querySelector('#spotify-home').addEventListener('click', e => {
+      const open = e.target.closest('[data-sh-open]');
+      if (open) { window.open(open.dataset.shOpen, '_blank'); return; }
+      const btn = e.target.closest('[data-sl]');
+      if (btn) void spotifyLibraryAction(btn);
+    });
+    libraryHost.addEventListener('click', e => { const btn = e.target.closest('[data-sl]'); if (btn) void spotifyLibraryAction(btn); });
+    async function spotifyLibraryAction(btn) {
       if (btn.dataset.sl === 'connect') { await connectSpotifyForLibrary(); return; }
       if (btn.dataset.sl === 'login') {
         // The Spotify app signs in with its own window; once signed in, close
@@ -2084,9 +2091,9 @@
       const existing = () => findImportedSpotifyPlaylist(url);
       if (btn.dataset.sl === 'open' && existing()) { void openPlaylistFromSidebar(existing(), sidebarNavIdForPlaylistId(existing().id)); return; }
       if (!existing()) { const ok = await importSpotifyPlaylist(url); if (!ok) return; }
-      renderSpotifyPagePlaylists(); renderSpotifyLibrary(spotifyLibraryCache);
+      renderSpotifyPagePlaylists(); renderSpotifyLibrary(spotifyLibraryCache); if (spotifyHomeCache) renderSpotifyHome(spotifyHomeCache);
       if (btn.dataset.sl === 'download' && existing()) downloadPlaylist(existing());
-    });
+    }
     bindHiveBeePrefControls(spotifyPage);
     return spotifyPage;
   }
@@ -2109,12 +2116,37 @@
         <span class="spotify-library-actions">${imported ? `<button type="button" class="sidebar-add" data-sl="open" data-url="${escapeHtml(url)}">Open</button>` : `<button type="button" class="sidebar-add" data-sl="import" data-url="${escapeHtml(url)}">Import</button>`}<button type="button" class="sidebar-add icon-only-btn" data-sl="download" data-url="${escapeHtml(url)}" title="Download" aria-label="Download ${escapeHtml(pl.name)}">${theaterIcon('download')}</button></span></div>`;
     }).join('') || '<div class="radio-empty">No playlists in your Spotify library.</div>';
   }
+  // Spotify's Home shelves (from the signed-in app via the bridge), shown
+  // like the Apple Music browse page. Playlists can be imported/downloaded;
+  // albums, artists and shows open in Spotify in the browser.
+  function renderSpotifyHome(shelves) {
+    const host = spotifyPage?.querySelector('#spotify-home'); if (!host) return;
+    if (!Array.isArray(shelves) || !shelves.length) { host.innerHTML = ''; return; }
+    const web = uri => `https://open.spotify.com/${String(uri).split(':').slice(1).join('/')}`;
+    host.innerHTML = shelves.map(sh => `<h4 class="radio-heading">${escapeHtml(sh.title)}</h4><div class="apple-shelf spotify-home-shelf">${sh.items.map(it => {
+      const art = /^https:/.test(it.image) ? `<img class="spotify-library-art" src="${escapeHtml(it.image)}" alt="" loading="lazy">` : '<span class="spotify-library-art spotify-library-art-blank">♪</span>';
+      const url = web(it.uri);
+      const actions = it.kind === 'playlist'
+        ? (findImportedSpotifyPlaylist(url) ? `<button type="button" class="sidebar-add" data-sl="open" data-url="${escapeHtml(url)}">Open</button>` : `<button type="button" class="sidebar-add" data-sl="import" data-url="${escapeHtml(url)}">Import</button>`)
+          + `<button type="button" class="sidebar-add icon-only-btn" data-sl="download" data-url="${escapeHtml(url)}" title="Download" aria-label="Download ${escapeHtml(it.name)}">${theaterIcon('download')}</button>`
+        : `<button type="button" class="sidebar-add" data-sh-open="${escapeHtml(url)}">Open in Spotify</button>`;
+      return `<div class="spotify-library-card${it.kind === 'artist' ? ' spotify-artist-card' : ''}">${art}<strong>${escapeHtml(it.name)}</strong><small>${escapeHtml(it.subtitle || it.kind)}</small><span class="spotify-library-actions">${actions}</span></div>`;
+    }).join('')}</div>`).join('');
+  }
+  let spotifyHomeCache = null;
+  async function loadSpotifyHome() {
+    try {
+      const r = await window.beehive.getSpotifyHome?.();
+      if (r?.connected && Array.isArray(r.data?.shelves)) { spotifyHomeCache = r.data.shelves; renderSpotifyHome(spotifyHomeCache); }
+    } catch {}
+  }
   async function loadSpotifyLibrary() {
+    if (spotifyHomeCache) renderSpotifyHome(spotifyHomeCache);
     const status = spotifyPage?.querySelector('#spotify-library-status'); if (!status) return;
     status.textContent = spotifyLibraryCache ? '' : 'Looking for the Spotify app…';
     let r = null;
     try { r = await window.beehive.getSpotifyLibraryPlaylists?.(); } catch {}
-    if (r?.connected && Array.isArray(r.data?.playlists)) { spotifyLibraryCache = r.data.playlists; status.textContent = ''; }
+    if (r?.connected && Array.isArray(r.data?.playlists)) { spotifyLibraryCache = r.data.playlists; status.textContent = ''; void loadSpotifyHome(); }
     else if (r?.connected && r.error) status.textContent = `Spotify couldn't list your playlists (${r.error}).`;
     else if (!spotifyLibraryCache) status.textContent = 'Connect the Spotify app (signed in, with Spicetify) to see your playlists here. You can still paste any playlist link above.';
     renderSpotifyLibrary(spotifyLibraryCache);
@@ -2126,7 +2158,7 @@
     for (let i = 0; i < 30; i++) {
       await new Promise(r => setTimeout(r, 2000));
       const r = await window.beehive.getSpotifyLibraryPlaylists?.().catch(() => null);
-      if (r?.connected && Array.isArray(r.data?.playlists)) { spotifyLibraryCache = r.data.playlists; if (status) status.textContent = ''; renderSpotifyLibrary(spotifyLibraryCache); return; }
+      if (r?.connected && Array.isArray(r.data?.playlists)) { spotifyLibraryCache = r.data.playlists; if (status) status.textContent = ''; renderSpotifyLibrary(spotifyLibraryCache); void loadSpotifyHome(); return; }
     }
     if (status) status.textContent = 'Spotify did not connect. Make sure it is installed, signed in and patched with Spicetify (the Hive add-on).';
   }

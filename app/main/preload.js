@@ -37,6 +37,7 @@ contextBridge.exposeInMainWorld('beehive', {
   resolveYouTubeMusic: (track, opts) => ipcRenderer.invoke('ytmusic:resolve', track || {}, opts || {}),
   getMusicBrainzTags: (track) => ipcRenderer.invoke('ytmusic:tags', track || {}),
   openSpotifyForLogin: () => ipcRenderer.invoke('spotify:openForLogin'),
+  getSpotifyHome: () => ipcRenderer.invoke('spotify:home'),
   getSpotifyLibraryPlaylists: () => ipcRenderer.invoke('spotify:libraryPlaylists'),
   choosePlaylistImage: () => ipcRenderer.invoke('playlist:chooseImage'),
   downloadYouTubeMusic: (track) => ipcRenderer.invoke('ytmusic:download', track || {}),
