@@ -77,6 +77,16 @@ function parseCollection(html) {
       });
     }
   }
+  // Album pages list songs without their own artist or artwork (the header
+  // carries them), so fill those in from the header.
+  const headerArtist = linkTitles(header?.subtitleLinks).join(', ');
+  const headerArt = artworkUrl(header?.artwork, 600);
+  const isAlbum = /album/i.test(String(header?.id || '')) || sections.some(s => /album/i.test(String(s.id)));
+  for (const t of tracks) {
+    if (!t.artist && headerArtist) t.artist = headerArtist;
+    if (!t.artwork && headerArt) t.artwork = headerArt;
+    if (!t.album && isAlbum && header?.title) t.album = String(header.title);
+  }
   const more = [];
   for (const section of sections.filter(s => s.itemKind === 'squareLockup')) {
     for (const item of section.items || []) { const c = lockupToCollection(item); if (c && !more.some(x => x.id === c.id)) more.push(c); }

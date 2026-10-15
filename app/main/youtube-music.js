@@ -57,15 +57,14 @@ const firstArtist = artist => String(artist || '').split(/,|&| x | and | feat\.?
 function scoreCandidate(want, info) {
   const titleScore = Math.max(similarity(want.title, info.track || info.title), similarity(want.title, info.title));
   const artistsText = [info.artist, ...(Array.isArray(info.artists) ? info.artists : []), info.channel].filter(Boolean).join(' ');
-  const artistScore = want.artist ? containment(firstArtist(want.artist), artistsText) : 1;
   const wantDur = Number(want.duration) || 0, gotDur = Number(info.duration) || 0;
+  // Without a wanted artist only an exact title with the right length counts.
+  const artistScore = want.artist ? containment(firstArtist(want.artist), artistsText) : (titleScore >= 0.99 && wantDur && gotDur && Math.abs(wantDur - gotDur) <= 3 ? 1 : 0);
   const diff = wantDur && gotDur ? Math.abs(wantDur - gotDur) : 0;
   const durationOk = !wantDur || !gotDur || diff <= Math.max(8, wantDur * 0.05);
   const score = titleScore * 0.55 + artistScore * 0.35 + (durationOk ? 0.1 : 0) - (wantDur && gotDur ? Math.min(0.3, diff / 120) : 0);
   return { score, titleScore, artistScore, durationOk };
 }
-// A DJ-mix "[Mixed]" edit can differ in length from the full track, so a
-// near-certain title and artist match is accepted even when the length isn't.
 const acceptable = s => s.artistScore >= 0.5 && ((s.durationOk && s.titleScore >= 0.5) || s.titleScore >= 0.8);
 
 // "Bullet For My Valentine - Hand of Blood (Official Video)" -> "Hand of Blood (Official Video)"
@@ -209,6 +208,10 @@ function create({ userDataDir, net }) {
     if (inflight.has(key)) return inflight.get(key);
     const job = (async () => {
       const all = await loadMatches();
+      // A saved match whose artist doesn't fit the song (an older, looser
+      // match) is redone.
+      const saved = all[key];
+      if (saved && track.artist && saved.artist && containment(firstArtist(track.artist), saved.artist) < 0.5) { delete all[key]; track = { ...track, ytVideoId: '' }; }
       let videoId = String(track.ytVideoId || all[key]?.videoId || '');
       if (fresh && videoId) streams.delete(videoId); // the old link expired or was refused
       let info = null;
