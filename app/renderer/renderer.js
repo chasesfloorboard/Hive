@@ -1320,7 +1320,39 @@
   // at full volume; the gain glides to each new level over a few
   // milliseconds, so dragging the slider no longer clicks. Falls back to the
   // element's own volume if Web Audio can't be set up.
-  let streamGain = null, streamRouteFailed = false;
+  let streamGain = null, streamRouteFailed = false, streamAnalyser = null, streamSpectrumBins = null;
+  // Same bands as the native helper (gstreamer-player.c emit_spectrum_message):
+  // 64 log-spaced bands from 20 Hz to 16 kHz, each the summed power of the
+  // FFT bins whose centres fall in it, as a 0-1 level over an 80 dB range.
+  // Web Audio reads about 2 dB lower than GStreamer's spectrum for the same
+  // signal, hence the offset.
+  function publishStreamSpectrum() {
+    if (!streamAnalyser || !podcastActive || audioElement.paused || !audioCtx) return;
+    const n = streamAnalyser.frequencyBinCount;
+    if (!streamSpectrumBins || streamSpectrumBins.length !== n) streamSpectrumBins = new Float32Array(n);
+    streamAnalyser.getFloatFrequencyData(streamSpectrumBins);
+    const binHz = (audioCtx.sampleRate / 2) / n, minHz = 20, maxHz = 16000, ratio = maxHz / minHz, floor = -80, offset = 2;
+    const levels = new Array(64);
+    for (let b = 0; b < 64; b++) {
+      const lo = minHz * Math.pow(ratio, b / 64), hi = minHz * Math.pow(ratio, (b + 1) / 64);
+      let power = 0, any = false;
+      for (let i = Math.max(0, Math.floor(lo / binHz - 0.5)); i < n; i++) {
+        const center = (i + 0.5) * binHz;
+        if (center >= hi) break;
+        if (center < lo) continue;
+        any = true;
+        const db = streamSpectrumBins[i] + offset;
+        if (db > floor) power += Math.pow(10, db / 10);
+      }
+      if (!any) {
+        const db = streamSpectrumBins[Math.min(n - 1, Math.floor(Math.sqrt(lo * hi) / binHz))] + offset;
+        if (db > floor) power = Math.pow(10, db / 10);
+      }
+      const db = 10 * Math.log10(Math.max(power, 1e-12));
+      levels[b] = Math.max(0, Math.min(1, (db - floor) / -floor));
+    }
+    publishSpectrum(levels);
+  }
   function ensureStreamRoute() {
     if (streamGain || streamRouteFailed) return !!streamGain;
     try {
@@ -1332,6 +1364,13 @@
       source.connect(streamGain);
       streamGain.connect(ctx.destination);
       audioElement.volume = 1;
+      // Feed the visualizer for streamed songs (GStreamer does it for files):
+      // an analyser before the volume, read about 30 times a second.
+      streamAnalyser = ctx.createAnalyser();
+      streamAnalyser.fftSize = 4096;
+      streamAnalyser.smoothingTimeConstant = 0.5;
+      source.connect(streamAnalyser);
+      setInterval(publishStreamSpectrum, 33);
       return true;
     } catch (err) {
       streamRouteFailed = true;
@@ -1876,7 +1915,10 @@
           for (const t of all) if (!isLocalPlaybackTrack(t)) snapshots[t.path] = t;
           status.textContent = 'Saving covers…';
           await cacheStreamedTrackArtwork(Object.values(snapshots));
+          let appleCover = '';
+          if (current.artwork) { try { appleCover = (await window.beehive.spotifyCacheArtwork?.([current.artwork]))?.[current.artwork] || ''; } catch {} }
           const playlistFields = { name: current.name || 'Apple Music playlist', tracks: all.map(t => t.path), smart: false,
+            cover: appleCover || current.artwork || '', artworkUrl: current.artwork || '', source: 'applemusic', sourceUrl: current.url || '',
             description: `From Apple Music${current.curator ? ` (${current.curator})` : ''}: ${current.url}` };
           let created = await window.beehive.savePlaylist({ ...playlistFields, podcastEpisodes: snapshots });
           playlists = await window.beehive.getPlaylists();
@@ -5496,7 +5538,9 @@
     // menu, playbar Love button, etc.) since embedded tags can change after a
     // queue was saved. Carrying them here just means a restored queue entry
     // is never blankly "not Loved" before that resolution has a chance to run.
-    return { path:String(t.path), source:String(t.source||'local'), spotifyUri:String(t.spotifyUri||''), spotifyId:String(t.spotifyId||''), spotifyContextUri:String(t.spotifyContextUri||t.contextUri||''), contextUri:String(t.contextUri||t.spotifyContextUri||''), streamUrl:String(t.streamUrl||''), title:String(t.title||''), artist:String(t.artist||''), album:String(t.album||''), albumUri:String(t.albumUri||''), albumArtist:String(t.albumArtist||''), duration:Number(t.duration)||0, cover:String(t.cover||''), artworkUrl:String(t.artworkUrl||''), spotifyArtworkCacheFile:String(t.spotifyArtworkCacheFile||''), year:String(t.year||''), podcastId:String(t.podcastId||''), podcastFeedUrl:String(t.podcastFeedUrl||''), podcastDescription:String(t.podcastDescription||''), pubDate:String(t.pubDate||''), loved:!!t.loved, rating:Number(t.rating)||0, ratingRaw:Number(t.ratingRaw)||0 };
+    return { path:String(t.path), source:String(t.source||'local'), spotifyUri:String(t.spotifyUri||''), spotifyId:String(t.spotifyId||''), spotifyContextUri:String(t.spotifyContextUri||t.contextUri||''), contextUri:String(t.contextUri||t.spotifyContextUri||''), streamUrl:String(t.streamUrl||''), title:String(t.title||''), artist:String(t.artist||''), album:String(t.album||''), albumUri:String(t.albumUri||''), albumArtist:String(t.albumArtist||''), duration:Number(t.duration)||0, cover:String(t.cover||''), artworkUrl:String(t.artworkUrl||''), spotifyArtworkCacheFile:String(t.spotifyArtworkCacheFile||''), year:String(t.year||''), podcastId:String(t.podcastId||''), podcastFeedUrl:String(t.podcastFeedUrl||''), podcastDescription:String(t.podcastDescription||''), pubDate:String(t.pubDate||''), loved:!!t.loved, rating:Number(t.rating)||0, ratingRaw:Number(t.ratingRaw)||0,
+      // Streamed songs: where they came from, for "Open in …" after a restart.
+      ...(t.appleMusicUrl ? { appleMusicUrl:String(t.appleMusicUrl) } : {}), ...(t.ytVideoId ? { ytVideoId:String(t.ytVideoId) } : {}), ...(t.genre ? { genre:String(t.genre) } : {}) };
   }
   function restoreQueueItems(items, paths, byPath, allowSerializedLocal = false) {
     if (!Array.isArray(items) || !items.length) {
@@ -5887,6 +5931,51 @@
     if (queueUndoStack.length > MAX_QUEUE_UNDO) queueUndoStack.shift();
     // A new queue edit starts a new branch, just like normal desktop undo.
     queueRedoStack.length = 0;
+  }
+
+  // Play the queue entry at index i from the beginning, keeping the queue
+  // (queue double-click, and right-click → Play now on a queued song).
+  function jumpToQueueIndex(i) {
+    if (!Number.isInteger(i) || !currentQueue[i]) return;
+    // Queue-row double-click is an explicit user playback command. It always
+    // means "play this song from the beginning" — including when this is
+    // the track restored from the previous session with a saved position.
+    startupPlaybackLocked = false;
+    gstTrackIndex = -1;
+    gstPositionUpdatesEnabled = false;
+    gstPosition = 0;
+    gstPositionUpdatedAt = performance.now();
+    try {
+      el.pbSeek.value = '0';
+      el.pbSeek.style.setProperty('--seek-progress', '0%');
+      el.pbSeek.setAttribute('aria-valuenow', '0');
+      el.pbElapsed.textContent = fmtTime(0);
+    } catch {}
+    if (currentQueue[currentIndex] && currentQueue[currentIndex] !== currentQueue[i]) playbackHistory.push(currentQueue[currentIndex]);
+    currentIndex = i;
+    selectedQueueIndex = i;
+    activeOffset = 0;
+    activeDuration = 0;
+    pendingRestoredOffset = null;
+    requestLoadAndPlayCurrent(true);
+  }
+
+  // Right-click → Play now: a song already in the queue is jumped to; any
+  // other song is put at the current position and played, the song that was
+  // playing moves right after it, and the rest of the queue stays as it is.
+  function playTracksNow(tracks) {
+    let list = (Array.isArray(tracks) ? tracks : []).filter(t => t?.path);
+    if (spotifyPlaysViaYoutube()) list = list.map(youtubeTrackForSpotify);
+    list = list.map(applyStreamLove);
+    if (!list.length) return;
+    if (!currentQueue.length || !currentQueue[currentIndex]) { playQueue(list, 0, false); return; }
+    if (list.length === 1) {
+      const i = currentQueue.findIndex(q => String(q?.path || '') === String(list[0].path));
+      if (i >= 0) { jumpToQueueIndex(i); return; }
+    }
+    const at = currentIndex;
+    addTracksToQueue(list, at);
+    jumpToQueueIndex(at);
   }
 
   function addTracksToQueue(tracks, insertIndex = currentQueue.length) {
@@ -6709,6 +6798,9 @@
       {label:'Add playlist to queue',action:()=>{const tracks=tracksForPlaylist(pl);if(!tracks.length){showAppNotice('This playlist has no tracks.');return;}addTracksToQueue(tracks);}},
       {label:'Info',action:()=>showPlaylistInfo(pl)},
       {label:'Play playlist',action:()=>playPlaylist(pl)},
+      {label:'Rename…',action:()=>openEditPlaylistModal(pl)},
+      {label:'Set image…',action:()=>setPlaylistImage(pl)},
+      ...(pl.customCover ? [{label:'Remove image',action:()=>setPlaylistImage(pl, true)}] : []),
       {label:'Duplicate playlist',action:()=>duplicatePlaylist(pl)},
       {label:playlistIsInSidebar(pl) ? 'Remove from sidebar' : 'Add to sidebar',action:()=>playlistIsInSidebar(pl) ? removePlaylistFromSidebar(sidebarNavigation.custom.find(x=>x.type==='playlist'&&String(x.playlistId)===String(pl.id))?.id) : addPlaylistToSidebar(pl)},
       ...(pl.smart ? [{label:'Edit smart playlist',action:()=>openSmartPlaylistModal(pl)}] : []),
@@ -7002,13 +7094,13 @@
   let spotifyLibraryIndexCache = null, spotifyLibraryIndexFor = null;
   function youtubeTrackForSpotifyAnyway(st) {
     if (!isSpotifyTrack(st)) return st;
-    if (youtubeMusicReady !== true) return st;
-    const saved = hivebeePrefs['spotify.playVia'];
-    hivebeePrefs['spotify.playVia'] = 'youtube';
-    try { return youtubeTrackForSpotify(st); } finally { if (saved === undefined) delete hivebeePrefs['spotify.playVia']; else hivebeePrefs['spotify.playVia'] = saved; }
+    return spotifyAsYoutubeTrack(st);
   }
   function youtubeTrackForSpotify(st) {
     if (!isSpotifyTrack(st) || !spotifyPlaysViaYoutube()) return st;
+    return spotifyAsYoutubeTrack(st);
+  }
+  function spotifyAsYoutubeTrack(st) {
     if (spotifyLibraryIndexFor !== library.tracks || spotifyLibraryIndexCache?.__size !== library.tracks.length) { spotifyLibraryIndexCache = appleLibraryIndex(); spotifyLibraryIndexCache.__size = library.tracks.length; spotifyLibraryIndexFor = library.tracks; }
     const local = appleLocalMatch(spotifyLibraryIndexCache, st);
     if (local) return local;
@@ -7016,7 +7108,7 @@
     return { path: `ytm:spotify:${st.spotifyId || String(st.spotifyUri || '').split(':').pop()}`, source: 'youtube', streamUrl: '',
       title: st.title, artist: st.artist, album: st.album || '', albumArtist: st.albumArtist && st.albumArtist !== st.artist ? st.albumArtist : '',
       year: st.year || '', duration: Number(st.duration) || 0, track: st.track || 0,
-      cover: st.spotifyArtworkCacheFile || '', artworkUrl: /^https?:\/\//i.test(art) ? art : '', spotifyUri: st.spotifyUri };
+      cover: st.spotifyArtworkCacheFile || '', artworkUrl: /^https?:\/\//i.test(art) ? art : '', spotifyUri: st.spotifyUri, albumUri: st.albumUri || '' };
   }
   void youtubeMusicAvailable();
 
@@ -7215,7 +7307,7 @@
       row.dataset.index=String(index);
       const count = pl.smart ? null : (Array.isArray(pl.tracks) ? pl.tracks.length : 0);
       const plIcon = String(pl.icon || '');
-      row.innerHTML=`<div class="playlist-row-name">${pl.source==='spotify' && (pl.cover || pl.artworkUrl) ? `<img class="playlist-row-cover" src="${escapeHtml(coverSrc(pl.cover || pl.artworkUrl))}" alt="" loading="eager" decoding="async" />` : ''}${plIcon ? `<span class="playlist-row-icon">${escapeHtml(plIcon)}</span>` : ''}<strong class="playlist-row-rich-name"></strong>${pl.smart?'<span class="smart-badge">AUTO PLAYLIST</span>':''}${pl.source==='spotify'?'<span class="smart-badge">SPOTIFY</span>':''}<div class="dim small">${pl.smart?'Dynamic · updates automatically':pl.source==='spotify'?`${Array.isArray(pl.spotifyTracks)?pl.spotifyTracks.length:0} Spotify track${(Array.isArray(pl.spotifyTracks)?pl.spotifyTracks.length:0)===1?'':'s'}`:`${count} track${count===1?'':'s'}`}</div></div><div class="playlist-actions"><button class="sidebar-add play-pl">▶ Play</button><button class="sidebar-add del-pl">Delete</button></div>`;
+      row.innerHTML=`<div class="playlist-row-name">${playlistImageSrc(pl) ? `<img class="playlist-row-cover" src="${escapeHtml(playlistImageSrc(pl))}" alt="" loading="eager" decoding="async" />` : ''}${plIcon ? `<span class="playlist-row-icon">${escapeHtml(plIcon)}</span>` : ''}<strong class="playlist-row-rich-name"></strong>${pl.smart?'<span class="smart-badge">AUTO PLAYLIST</span>':''}${pl.source==='spotify'?'<span class="smart-badge">SPOTIFY</span>':''}<div class="dim small">${pl.smart?'Dynamic · updates automatically':pl.source==='spotify'?`${Array.isArray(pl.spotifyTracks)?pl.spotifyTracks.length:0} Spotify track${(Array.isArray(pl.spotifyTracks)?pl.spotifyTracks.length:0)===1?'':'s'}`:`${count} track${count===1?'':'s'}`}</div></div><div class="playlist-actions"><button class="sidebar-add play-pl">▶ Play</button><button class="sidebar-add del-pl">Delete</button></div>`;
       setRichLabel(row.querySelector('.playlist-row-rich-name'), playlistLabel(pl));
       row.querySelector('.play-pl').onclick=e=>{e.stopPropagation();playPlaylist(pl);};
       row.querySelector('.del-pl').onclick=async e=>{e.stopPropagation();await window.beehive.deletePlaylist(pl.id);playlists=playlists.filter(x=>x.id!==pl.id);if(activePlaylistId===pl.id){activePlaylistId=null;specialView=null;}renderPlaylistManager();};
@@ -7307,7 +7399,9 @@
     const input=el.playlistLabelHtml;
     if(!input) return;
     input.value = raw;
-    playlistLabelStyleGenerated = false;
+    // A label that just shows the playlist's name (plain or styled) follows
+    // the name box, so renaming updates it; only a hand-edited label stays.
+    playlistLabelStyleGenerated = !raw || !/[<>]/.test(raw) || richLabelText(raw).trim() === String(el.playlistName?.value || '').trim();
     playlistLabelStyleChoice = 'plain';
     const classes = raw.match(/hive-(glow|pulse|rainbow)/i);
     if(classes) playlistLabelStyleChoice = classes[1].toLowerCase();
@@ -8688,6 +8782,32 @@
     setTimeout(render, 30);
   }
 
+  // Links for a song that isn't a local file: open it, its album or its
+  // artist on the service it came from, in the browser.
+  function streamedSourceLinks(t) {
+    if (!t || isLocalPlaybackTrack(t) || isRadioTrack(t)) return [];
+    const q = v => encodeURIComponent(String(v || '').trim());
+    const artist = String(t.artist || '').split(/,|&| feat\.? /i)[0].trim();
+    const links = [];
+    const spotifyId = String(t.spotifyUri || '').match(/^spotify:track:([A-Za-z0-9]{22})$/)?.[1] || (isSpotifyTrack(t) ? t.spotifyId : '');
+    const appleUrl = /^https:\/\/music\.apple\.com\//.test(String(t.appleMusicUrl || '')) ? String(t.appleMusicUrl) : (/^https:\/\/music\.apple\.com\//.test(String(t.podcastFeedUrl || '')) ? String(t.podcastFeedUrl) : '');
+    if (spotifyId) {
+      links.push({ label: 'Open song in Spotify', icon: 'play', url: `https://open.spotify.com/track/${spotifyId}` });
+      const albumId = String(t.albumUri || '').match(/^spotify:album:([A-Za-z0-9]{22})$/)?.[1];
+      links.push({ label: 'Open album in Spotify', icon: 'album', url: albumId ? `https://open.spotify.com/album/${albumId}` : `https://open.spotify.com/search/${q(`${t.album || t.title} ${artist}`)}` });
+      links.push({ label: 'Open artist in Spotify', icon: 'artist', url: `https://open.spotify.com/search/${q(artist)}/artists` });
+    }
+    if (appleUrl) {
+      links.push({ label: 'Open song in Apple Music', icon: 'play', url: appleUrl });
+      links.push({ label: 'Open album in Apple Music', icon: 'album', url: appleUrl.replace(/\?i=\d+.*$/, '') });
+      links.push({ label: 'Open artist in Apple Music', icon: 'artist', url: `https://music.apple.com/us/search?term=${q(artist)}` });
+    }
+    if (isYoutubeMusicTrack(t)) {
+      links.push({ label: 'Open song in YouTube Music', icon: 'play', url: t.ytVideoId ? `https://music.youtube.com/watch?v=${t.ytVideoId}` : `https://music.youtube.com/search?q=${q(`${artist} ${t.title}`)}` });
+      if (!spotifyId && !appleUrl) links.push({ label: 'Open album in YouTube Music', icon: 'album', url: `https://music.youtube.com/search?q=${q(`${artist} ${t.album || t.title}`)}` });
+    }
+    return links;
+  }
   async function showTrackContextMenu(x,y,t){
     if(!t)return;
     // Real bug, confirmed: queue rows are right-clicked with whatever object
@@ -8788,7 +8908,7 @@
     };
     showContextMenu(x,y,[
       {label:'Play',icon:'play',menuKey:'play',submenu:[
-        {label:bulk ? `Play ${selected.length} tracks now` : 'Play now',icon:'play',action:()=>playQueue(bulk ? queueTracks : [t],0)},
+        {label:bulk ? `Play ${selected.length} tracks now` : 'Play now',icon:'play',action:()=>playTracksNow(bulk ? queueTracks : [t])},
         {label:`Play next${count}`,icon:'playNext',action:()=>addTracksToQueue(queueTracks, currentIndex + 1)},
         {label:`Add to end of queue${count}`,icon:'queueEnd',action:()=>addTracksToQueue(queueTracks)},
         ...(isLocal && !bulk && t.artist ? [
@@ -8823,6 +8943,7 @@
       {label:'Add to',icon:'plus',menuKey:'addTo',submenu:buildAddToPlaylistSubmenu(queueTracks)},
       ...(isLocal && androidDevices.length ? [{label:'Send to',icon:'device',menuKey:'send',submenu:androidDevices.map(device => ({label:`${device.name || 'Android device'}${device.mounted ? '' : ' (not mounted)'}`,icon:'device',active:false,action:()=>sendTracksToAndroidDevice(device, queueTracks)}))}] : []),
       {label:'Find',icon:'search',menuKey:'find',submenu:[
+        ...streamedSourceLinks(t).map(link => ({ label: link.label, icon: link.icon, action: () => window.open(link.url, '_blank') })),
         {label:`Artist: ${t.artist || 'Unknown Artist'}`,icon:'artist',action:()=>searchForArtist(t.artist, t)},
         {label:`Album: ${contextAlbumLabel(t.album)}`,icon:'album',action:()=>showAlbumFromTrack(t)},
         ...(isLocal ? [{label:'Show file in folder',icon:'folderOpen',action:()=>showTrackFileInBrowser(t)}] : [])
@@ -10871,6 +10992,11 @@
     // actions substituted in (see that function for the rationale behind the
     // ordering itself).
     const albumCount = countLabel || '';
+    // Albums of streamed songs (no files): no tag/rating/file tools; offer
+    // likes, opening the album on its service, and downloading instead.
+    const streamedAlbum = albumTracks.length > 0 && albumTracks.every(track => !isLocalPlaybackTrack(track));
+    const albumLinks = streamedAlbum ? streamedSourceLinks(albumTracks[0]).filter(link => link.icon !== 'play') : [];
+    const fileOnly = item => (streamedAlbum ? [] : [item]);
     showContextMenu(e.clientX, e.clientY, [
       {label:'Play',icon:'play',menuKey:'play',submenu:[
         {label:singleAlbum ? 'Play album' : `Play ${albums.length} albums`, icon:'play', action:()=>{ if (singleAlbum) playAlbum(album); else playQueue(albumTracks, 0, true); }},
@@ -10882,8 +11008,10 @@
         ] : []),
         {label:autoDjEnabled() ? 'Auto-DJ is on' : 'Auto-DJ',icon:'radio',active:autoDjEnabled(),tooltip:'Keep playing when the queue runs out by adding related tracks (Settings → Playback → Auto-DJ)',action:()=>setAutoDjEnabled(!autoDjEnabled())}
       ]},
-      {label:editLabel, icon:'edit', menuKey:'edit', action:()=>openTagEditor(albumTracks[0], albumTracks)},
-      {label:'Rating',icon:'star',menuKey:'rating',submenu:[
+      ...fileOnly({label:editLabel, icon:'edit', menuKey:'edit', action:()=>openTagEditor(albumTracks[0], albumTracks)}),
+      ...(streamedAlbum ? [{label:allLoved ? 'Unlove album' : 'Love album', icon:allLoved ? 'heartFilled' : 'heartOutline', menuKey:'rating', action:()=>{ for (const track of albumTracks) setTrackLove(track, !allLoved, false); }}] : []),
+      ...(streamedAlbum && albumTracks.some(isYoutubeMusicTrack) ? [{label:'Download album', icon:'download', menuKey:'download', action:()=>downloadStreamedTracks(albumTracks)}] : []),
+      ...fileOnly({label:'Rating',icon:'star',menuKey:'rating',submenu:[
         // One single action, not a toggle: always makes sure every track in
         // the selected album(s) ends up Loved, leaving already-Loved tracks
         // untouched, never a separate Remove-Love button.
@@ -10894,23 +11022,24 @@
         {label:'2 stars', icon:'★★☆☆☆', active:ratingIs(2), ratingSymbol:true, help:`Set all tracks${countLabel} to 2 stars`, action:()=>applyRating(2)},
         {label:'1 star', icon:'★☆☆☆☆', active:ratingIs(1), ratingSymbol:true, help:`Set all tracks${countLabel} to 1 star`, action:()=>applyRating(1)},
         {label:'Clear', icon:'×', active:ratingIs(0), ratingSymbol:true, help:`Clear ratings from all tracks${countLabel}`, action:()=>applyRating(0)}
-      ]},
+      ]}),
       {label:'Add to', icon:'plus', menuKey:'addTo', submenu:buildAddToPlaylistSubmenu(albumTracks)},
       ...(androidDevices.length ? [{label:'Send to', icon:'device', menuKey:'send', submenu:androidDevices.map(device => ({label:`${device.name || 'Android device'}${device.mounted ? '' : ' (not mounted)'}`, icon:'device', active:false, action:()=>sendTracksToAndroidDevice(device, albumTracks)}))}] : []),
       ...(singleAlbum ? [{label:'Find',icon:'search',menuKey:'find',submenu:[
         {label:`Album: ${contextAlbumLabel(album.title)}`, icon:'album', action:()=>showAlbumFromTrack(album.tracks[0])},
         {label:`Artist: ${album.artist || 'Unknown Artist'}`, icon:'artist', action:()=>searchForArtist(album.artist, album.tracks?.[0] || null)},
-        {label:'Show files in folder', icon:'folderOpen', action:()=>showTrackFileInBrowser(albumTracks[0])}
+        ...albumLinks.map(link => ({ label: link.label, icon: link.icon, action: () => window.open(link.url, '_blank') })),
+        ...fileOnly({label:'Show files in folder', icon:'folderOpen', action:()=>showTrackFileInBrowser(albumTracks[0])})
       ]}] : []),
-      {label:`Tools${albumCount}`,icon:'tools',menuKey:'tools',submenu:[
+      ...(streamedAlbum ? [] : [{label:`Tools${albumCount}`,icon:'tools',menuKey:'tools',submenu:[
         ...(singleAlbum ? [{label:'Auto-tag album…', icon:'autoTag', tooltip:'Look the album up on MusicBrainz and fill in tags and cover', action:()=>openAutoTagAlbum(album)}] : []),
         {label:'Tag tools…',icon:'tagTools',tooltip:'Find & replace, change case, copy or swap fields',action:()=>openTagToolsDialog(albumTracks)},
         {label:'Analyse volume',icon:'gauge',tooltip:'Measure loudness and write ReplayGain track and album gain tags',action:()=>analyseReplayGainFor(albumTracks)},
         {label:'Convert…',icon:'convert',tooltip:'Make copies in another format (MP3, AAC, Opus, Ogg, FLAC)',action:()=>openConvertDialog(albumTracks)},
         {label:'Organise files…',icon:'folderMove',tooltip:'Rename and move into folders by a naming template',action:()=>openOrganiseDialog(albumTracks)}
-      ]},
+      ]}]),
       ...(playlistContext ? [{label:`Remove from playlist${albumCount}`, icon:'minus', menuKey:'remove', playlistRemove:true, action:()=>removeTracksFromActivePlaylist(albumTracks)}] : []),
-      {label:`Delete from disk… (${albumTracks.length} tracks)`, icon:'trash', menuKey:'delete', danger:true, action:()=>deleteTracksFromDisk(albumTracks)}
+      ...fileOnly({label:`Delete from disk… (${albumTracks.length} tracks)`, icon:'trash', menuKey:'delete', danger:true, action:()=>deleteTracksFromDisk(albumTracks)})
     ]);
   }
 
@@ -11924,6 +12053,24 @@
     return doc.body.firstElementChild?.textContent || raw.replace(/<[^>]*>/g, '');
   }
 
+  // A playlist's picture: one the user chose, else its source's artwork
+  // (Spotify / Apple Music, cached by Hive where possible).
+  function playlistImageSrc(pl) {
+    const raw = normalizeSpotifyArtworkSource(pl?.customCover || pl?.cover || pl?.artworkUrl || '');
+    return raw ? coverSrc(raw) : '';
+  }
+  async function setPlaylistImage(pl, clear = false) {
+    let name = '';
+    if (!clear) {
+      try { name = await window.beehive.choosePlaylistImage(); } catch (err) { showAppNotice(String(err?.message || err).replace(/^Error invoking remote method '[^']+': (Error: )?/, '')); return; }
+      if (!name) return;
+    }
+    const fresh = (await window.beehive.getPlaylists()).find(p => String(p.id) === String(pl.id)) || pl;
+    const saved = await window.beehive.savePlaylist({ ...fresh, customCover: clear ? '' : name });
+    playlists = playlists.map(p => String(p.id) === String(saved.id) ? saved : p);
+    renderPlaylistManager();
+    try { renderSidebarNavigation(); renderNavigationEditors(); } catch {}
+  }
   function playlistLabel(pl) {
     return String(pl?.label || pl?.name || 'Untitled Playlist');
   }
@@ -12346,27 +12493,7 @@
       if (!row || !el.queueList.contains(row)) return;
       const i = Number(row.dataset.idx);
       if (!Number.isInteger(i) || !currentQueue[i]) return;
-      // Queue-row double-click is an explicit user playback command. It always
-      // means "play this song from the beginning" — including when this is
-      // the track restored from the previous session with a saved position.
-      startupPlaybackLocked = false;
-      gstTrackIndex = -1;
-      gstPositionUpdatesEnabled = false;
-      gstPosition = 0;
-      gstPositionUpdatedAt = performance.now();
-      try {
-        el.pbSeek.value = '0';
-        el.pbSeek.style.setProperty('--seek-progress', '0%');
-        el.pbSeek.setAttribute('aria-valuenow', '0');
-        el.pbElapsed.textContent = fmtTime(0);
-      } catch {}
-      if (currentQueue[currentIndex] && currentQueue[currentIndex] !== currentQueue[i]) playbackHistory.push(currentQueue[currentIndex]);
-      currentIndex = i;
-      selectedQueueIndex = i;
-      activeOffset = 0;
-      activeDuration = 0;
-      pendingRestoredOffset = null;
-      requestLoadAndPlayCurrent(true);
+      jumpToQueueIndex(i);
     });
 
     el.queueList.addEventListener('contextmenu', e => {
@@ -15991,7 +16118,9 @@
       item.style.setProperty('--sidebar-nav-size', `${sidebarSize(def.id)}px`);
       item.draggable = true;
       const navIcon = sidebarIcon(def.id) || def.icon || def.icon || '';
-      item.innerHTML = `${navIcon ? `<span class="sidebar-nav-icon">${escapeHtml(navIcon)}</span>` : ''}<span class="sidebar-nav-label"></span>`;
+      const navPlaylist = def.type === 'playlist' ? sidebarPlaylistForEntry(def.id) : null;
+      const navImage = navPlaylist ? playlistImageSrc(navPlaylist) : '';
+      item.innerHTML = `${navImage ? `<img class="sidebar-nav-cover" src="${escapeHtml(navImage)}" alt="">` : navIcon ? `<span class="sidebar-nav-icon">${escapeHtml(navIcon)}</span>` : ''}<span class="sidebar-nav-label"></span>`;
       setRichLabel(item.querySelector('.sidebar-nav-label'), sidebarLabel(def.id));
       item.addEventListener('click', async () => {
         const nav = item.dataset.nav;
@@ -16035,6 +16164,9 @@
           if (!pl) { showContextMenu(e.clientX,e.clientY,[{label:'Remove from sidebar',action:()=>removePlaylistFromSidebar(def.id)}]); return; }
           showContextMenu(e.clientX,e.clientY,[
             {label:'Play playlist',action:()=>playPlaylist(pl)},
+            {label:'Rename…',action:()=>openEditPlaylistModal(pl)},
+            {label:'Set image…',action:()=>setPlaylistImage(pl)},
+            ...(pl.customCover ? [{label:'Remove image',action:()=>setPlaylistImage(pl, true)}] : []),
             {label:'Queue playlist',action:()=>{const tracks=tracksForPlaylist(pl); if(!tracks.length){showAppNotice('This playlist has no tracks.');return;} addTracksToQueue(tracks);}},
             ...(!pl.smart && playlistDownloadTracks(pl).length ? [{label:'Download playlist',action:()=>downloadPlaylist(pl)}] : []),
             {label:'Info',action:()=>showPlaylistInfo(pl)},
@@ -17409,6 +17541,12 @@
       else playlists.push(pl);
       editingPlaylistId=null;
       closeModal(el.playlistModal); renderPlaylistManager();
+      // A rename shows everywhere the playlist is listed straight away.
+      if (existing) {
+        try { renderSidebarNavigation(); renderNavigationEditors(); } catch {}
+        try { if (String(activePlaylistId) === String(pl.id) && el.sectionTitleText) el.sectionTitleText.textContent = pl.name; renderTabs(); } catch {}
+        try { renderSpotifyPagePlaylists(); } catch {}
+      }
     } catch (err) {
       showAppNotice(err?.message || 'Could not create playlist.');
     }

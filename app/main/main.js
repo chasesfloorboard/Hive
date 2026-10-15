@@ -2059,6 +2059,20 @@ ipcMain.handle('ytmusic:download', async (_evt, track = {}) => {
   if (cover && cover.startsWith(require('os').tmpdir())) fsp.unlink(cover).catch(() => {});
   return { path: file, existed: false };
 });
+// Pick an image for a playlist (Favorites included). It is copied into
+// Hive's covers cache under a content hash, so the original can move.
+ipcMain.handle('playlist:chooseImage', async () => {
+  const res = await dialog.showOpenDialog(mainWindow, { title: 'Choose a playlist image', properties: ['openFile'], filters: [{ name: 'Images', extensions: ['jpg', 'jpeg', 'png', 'webp', 'gif'] }] });
+  if (res.canceled || !res.filePaths[0]) return null;
+  const data = await fsp.readFile(res.filePaths[0]);
+  if (!data.length || data.length > 20 * 1024 * 1024) throw new Error('That image is empty or too large (20 MB max).');
+  const ext = (path.extname(res.filePaths[0]).toLowerCase().replace('.jpeg', '.jpg')) || '.jpg';
+  const name = `${crypto.createHash('sha1').update(data).digest('hex')}${ext}`;
+  await fsp.mkdir(COVERS_DIR(), { recursive: true });
+  const target = path.join(COVERS_DIR(), name);
+  if (!fs.existsSync(target)) await fsp.writeFile(target, data);
+  return name;
+});
 ipcMain.handle('ytmusic:prefetch', async (_evt, tracks, opts) => youtubeMusic.prefetch(Array.isArray(tracks) ? tracks : [], { mode: opts?.mode === 'append' ? 'append' : 'queue' }));
 
 // Hive interface size (MusicBee's font scaling): zoom the main window.

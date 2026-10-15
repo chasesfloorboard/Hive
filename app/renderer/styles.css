@@ -5572,3 +5572,4 @@ html.hb-hide-pb-eq #btn-eq, html.hb-hide-pb-mini #btn-mini, html.hb-hide-pb-thea
 .streaming-page .radio-search button, .streaming-page .sidebar-add { flex:0 0 auto; width:auto; }
 .hive-download-status{position:fixed;left:50%;bottom:104px;transform:translateX(-50%);z-index:300;padding:7px 14px;border-radius:999px;background:color-mix(in srgb,var(--bg) 82%,transparent);border:1px solid var(--border);color:var(--text);font-size:12.5px;backdrop-filter:blur(10px);max-width:70vw;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;pointer-events:none}
 .hive-download-status.hidden{display:none}
+.sidebar-nav-cover{width:18px;height:18px;border-radius:4px;object-fit:cover;margin-right:8px;flex:0 0 18px}

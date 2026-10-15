@@ -53,8 +53,14 @@ test('manual native track changes use the native LOAD/PLAY sequence without inse
 });
 
 test('explicit queue track double-click invalidates the live native transport before changing the active index', () => {
-  const start = renderer.indexOf("el.queueList.addEventListener('dblclick', e => {");
-  const end = renderer.indexOf("el.queueList.addEventListener('contextmenu'", start);
+  // Hive 2.0: the double-click handler delegates to jumpToQueueIndex(),
+  // which right-click → Play now on a queued song also uses.
+  const dblStart = renderer.indexOf("el.queueList.addEventListener('dblclick', e => {");
+  const dblEnd = renderer.indexOf("el.queueList.addEventListener('contextmenu'", dblStart);
+  assert.ok(dblStart >= 0 && dblEnd > dblStart);
+  assert.match(renderer.slice(dblStart, dblEnd), /jumpToQueueIndex\(i\)/);
+  const start = renderer.indexOf('function jumpToQueueIndex(i) {');
+  const end = renderer.indexOf('\n  }\n', start);
   assert.ok(start >= 0 && end > start);
   const block = renderer.slice(start, end);
   assert.match(block, /gstTrackIndex = -1/);
