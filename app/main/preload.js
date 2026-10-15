@@ -31,6 +31,7 @@ contextBridge.exposeInMainWorld('beehive', {
   searchAppleMusic: (term) => ipcRenderer.invoke('applemusic:search', String(term || '')),
   getAppleMusicCollection: (url) => ipcRenderer.invoke('applemusic:collection', String(url || '')),
   getAppleMusicBrowse: () => ipcRenderer.invoke('applemusic:browse'),
+  getAppleMusicArtwork: (url) => ipcRenderer.invoke('applemusic:artwork', String(url || '')),
   getYouTubeMusicStatus: () => ipcRenderer.invoke('ytmusic:status'),
   installYtDlp: () => ipcRenderer.invoke('ytmusic:install'),
   resolveYouTubeMusic: (track, opts) => ipcRenderer.invoke('ytmusic:resolve', track || {}, opts || {}),

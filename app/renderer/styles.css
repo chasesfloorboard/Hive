@@ -5598,3 +5598,5 @@ html.hb-hide-pb-eq #btn-eq, html.hb-hide-pb-mini #btn-mini, html.hb-hide-pb-thea
 .streaming-page .streaming-search-input:focus,.streaming-page .streaming-search-input:focus-visible{background:transparent!important;box-shadow:none!important;outline:none!important;border:0!important}
 .spotify-page-list .radio-row{grid-template-columns:36px minmax(0,1fr) auto auto auto}
 .spotify-library-grid > .spotify-library-actions{grid-column:1/-1}
+.apple-tracks:not(.apple-song-shelf) .apple-track{grid-template-columns:28px 36px minmax(0,1fr) auto 48px 32px}
+span.apple-track-art{display:block;background:rgba(255,255,255,.06)}

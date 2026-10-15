@@ -2008,6 +2008,7 @@ const appleMusic = require('./apple-music').create({ net });
 ipcMain.handle('applemusic:search', async (_evt, term) => appleMusic.search(term));
 ipcMain.handle('applemusic:collection', async (_evt, url) => appleMusic.getCollection(url));
 ipcMain.handle('applemusic:browse', async () => appleMusic.browse());
+ipcMain.handle('applemusic:artwork', async (_evt, url) => appleMusic.collectionArtwork(url));
 
 // Hive 2.0 YouTube Music streaming for Apple Music / Spotify playlists.
 const youtubeMusic = require('./youtube-music').create({ userDataDir: USER_DATA(), net });

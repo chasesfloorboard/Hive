@@ -199,7 +199,15 @@ function create({ net }) {
     return shelves;
   }
 
-  return { search, getCollection, browse };
+  // Just a playlist's or album's artwork (no song previews).
+  async function collectionArtwork(input) {
+    const ref = parseAppleMusicUrl(input);
+    if (!ref) return '';
+    const page = parseCollection(await getText(`https://music.apple.com/${ref.storefront}/${ref.kind}/x/${ref.id}`));
+    return page?.artwork || '';
+  }
+
+  return { search, getCollection, browse, collectionArtwork };
 }
 
 module.exports = { create, parseSearch, parseCollection, parseBrowse, parseAppleMusicUrl, artworkUrl };

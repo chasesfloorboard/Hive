@@ -1790,6 +1790,19 @@
   async function backfillStreamedPlaylistArtwork() {
     try {
       const lists = await window.beehive.getPlaylists();
+      // Apple Music playlists imported before they kept their artwork.
+      for (const pl of lists || []) {
+        if (pl?.customCover || pl?.cover || pl?.artworkUrl) continue;
+        const url = String(pl?.sourceUrl || '').match(/https:\/\/music\.apple\.com\/\S+/)?.[0] || String(pl?.description || '').match(/https:\/\/music\.apple\.com\/\S+/)?.[0];
+        if (!url) continue;
+        try {
+          const art = await window.beehive.getAppleMusicArtwork(url);
+          if (!art) continue;
+          const cached = (await window.beehive.spotifyCacheArtwork?.([art]))?.[art] || '';
+          const saved = await window.beehive.savePlaylist({ ...pl, cover: cached || art, artworkUrl: art, source: pl.source || 'applemusic', sourceUrl: pl.sourceUrl || url });
+          Object.assign(pl, saved);
+        } catch {}
+      }
       for (const pl of lists || []) {
         const eps = Object.values(pl?.podcastEpisodes || {}).filter(t => t && (isYoutubeMusicTrack(t) || isAppleMusicPreview(t)));
         if (!eps.length) continue;
@@ -1799,6 +1812,7 @@
         await window.beehive.savePlaylist({ ...pl, podcastEpisodes: snap });
       }
       playlists = await window.beehive.getPlaylists();
+      try { renderPlaylistManager(); renderSidebarNavigation(); } catch {}
     } catch (err) { console.warn('[Artwork] backfill failed:', err?.message || String(err)); }
   }
   setTimeout(() => { void backfillStreamedPlaylistArtwork(); }, 8000);
@@ -1884,7 +1898,7 @@
           const badge = local ? '<span class="apple-badge apple-badge-local" title="Plays the full song from your library">In library</span>'
             : youtubeMusicReady ? '<span class="apple-badge apple-badge-yt" title="Plays the full song from YouTube Music">YouTube Music</span>'
             : (at.previewUrl ? '<span class="apple-badge">Preview</span>' : '<span class="apple-badge apple-badge-none" title="Apple has no preview for this song">Apple Music only</span>');
-          return `<div class="apple-track" data-i="${i}" data-apple-id="${escapeHtml(at.appleId)}" data-local-path="${escapeHtml(local?.path || '')}"><span class="apple-track-n">${i + 1}</span><div class="apple-track-text"><div>${escapeHtml(at.title)}</div><small>${escapeHtml([at.artist, at.album].filter(Boolean).join(' — '))}</small></div>${badge}<span class="apple-track-time">${fmtTime(at.duration)}</span><button type="button" class="icon-btn" data-apple-play="${i}" title="Play" ${local || youtubeMusicReady || at.previewUrl ? '' : 'disabled'}>${theaterIcon('play')}</button></div>`;
+          return `<div class="apple-track" data-i="${i}" data-apple-id="${escapeHtml(at.appleId)}" data-local-path="${escapeHtml(local?.path || '')}"><span class="apple-track-n">${i + 1}</span>${at.artwork ? `<img class="apple-track-art" src="${escapeHtml(at.artwork)}" alt="" loading="lazy">` : '<span class="apple-track-art"></span>'}<div class="apple-track-text"><div>${escapeHtml(at.title)}</div><small>${escapeHtml([at.artist, at.album].filter(Boolean).join(' — '))}</small></div>${badge}<span class="apple-track-time">${fmtTime(at.duration)}</span><button type="button" class="icon-btn" data-apple-play="${i}" title="Play" ${local || youtubeMusicReady || at.previewUrl ? '' : 'disabled'}>${theaterIcon('play')}</button></div>`;
         }).join('');
         const localCount = current.tracks.filter(at => appleLocalMatch(index, at)).length;
         const ytNote = youtubeMusicReady ? '' : `<div class="apple-yt-note">Songs you don't own play as 30-second previews. <button type="button" class="sidebar-add" id="apple-install-ytdlp">Play full songs from YouTube Music</button></div>`;
@@ -2202,10 +2216,14 @@
       const local = to && libraryTrackByPath.get(to);
       if (local && i !== currentIndex) currentQueue[i] = local;
     }
+    const loves = { ...streamLoves() };
+    let lovesChanged = false;
     for (const d of done) {
       const local = libraryTrackByPath.get(d.to);
       if (local && d.loved && !local.loved) void setTrackLove(local, true, false);
+      if (local && d.loved) { const k = streamLoveKey(local); if (loves[k]) { delete loves[k]; lovesChanged = true; } }
     }
+    if (lovesChanged) setHbPref('streamLoves', loves);
     renderQueue();
     try { renderPlaylistManager(); } catch {}
   }
@@ -4649,11 +4667,25 @@
   }
   function streamLoves() { const v = hbPref('streamLoves'); return v && typeof v === 'object' && !Array.isArray(v) ? v : {}; }
   function isStreamLoved(t) { return !!streamLoves()[streamLoveKey(t)]; }
+  // Liked streamed songs as playable tracks (Favorites shows them next to
+  // loved files). Songs since downloaded are left out: the file is loved.
+  function streamedLovedTracks() {
+    const localLoved = new Set(library.tracks.filter(x => x?.loved).map(streamLoveKey));
+    return Object.entries(streamLoves()).filter(([key, e]) => e?.path && !localLoved.has(key)).map(([, e]) => {
+      const yt = String(e.path).startsWith('ytm:');
+      if (!yt && !e.streamUrl) return null;
+      return { path: e.path, source: yt ? 'youtube' : 'podcast', streamUrl: yt ? '' : e.streamUrl, title: e.title, artist: e.artist, album: e.album || '',
+        albumArtist: e.albumArtist || '', year: e.year || '', genre: e.genre || '', duration: Number(e.duration) || 0, cover: e.cover || '', artworkUrl: e.artworkUrl || '',
+        appleMusicUrl: e.appleMusicUrl || '', spotifyUri: e.spotifyUri || '', loved: true, addedAt: Number(e.at) || 0 };
+    }).filter(Boolean);
+  }
   function applyStreamLove(t) { if (t && isPodcastTrack(t) && !isRadioTrack(t)) t.loved = isStreamLoved(t); return t; }
   function setStreamTrackLove(t, value) {
     const key = streamLoveKey(t);
     const next = { ...streamLoves() };
-    if (value) next[key] = { at: Date.now(), path: t.path, title: t.title, artist: t.artist, album: t.album || '', artworkUrl: t.artworkUrl || '', cover: t.cover || '' };
+    if (value) next[key] = { at: Date.now(), path: t.path, title: t.title, artist: t.artist, album: t.album || '', albumArtist: t.albumArtist || '', year: t.year || '', genre: t.genre || '',
+      duration: Number(t.duration) || 0, artworkUrl: t.artworkUrl || '', cover: t.cover || '', appleMusicUrl: t.appleMusicUrl || '', spotifyUri: t.spotifyUri || '',
+      ...(isYoutubeMusicTrack(t) ? {} : { streamUrl: t.streamUrl || '' }) };
     else delete next[key];
     setHbPref('streamLoves', next);
     for (const q of currentQueue || []) if (q && isPodcastTrack(q) && streamLoveKey(q) === key) q.loved = value;
@@ -6905,12 +6937,13 @@
       {label:'Play playlist',action:()=>playPlaylist(pl)},
       {label:'Rename…',action:()=>openEditPlaylistModal(pl)},
       {label:'Set image…',action:()=>setPlaylistImage(pl)},
+      ...(currentQueue[currentIndex] ? [{label:'Use the playing song’s cover',action:()=>setPlaylistImageFromTrack(pl, currentQueue[currentIndex])}] : []),
       ...(pl.customCover ? [{label:'Remove image',action:()=>setPlaylistImage(pl, true)}] : []),
       {label:'Duplicate playlist',action:()=>duplicatePlaylist(pl)},
       {label:playlistIsInSidebar(pl) ? 'Remove from sidebar' : 'Add to sidebar',action:()=>playlistIsInSidebar(pl) ? removePlaylistFromSidebar(sidebarNavigation.custom.find(x=>x.type==='playlist'&&String(x.playlistId)===String(pl.id))?.id) : addPlaylistToSidebar(pl)},
       ...(pl.smart ? [{label:'Edit smart playlist',action:()=>openSmartPlaylistModal(pl)}] : []),
       {label:'Export as M3U',action:()=>exportNamedPlaylist(pl)},
-      ...(!pl.smart && playlistDownloadTracks(pl).length ? [{label:'Download playlist',action:()=>downloadPlaylist(pl)}] : []),
+      ...((!pl.smart || pl.systemKey === 'star-favorites' || pl.id === 'hive-star-favorites') && playlistDownloadTracks(pl).length ? [{label:'Download playlist',action:()=>downloadPlaylist(pl)}] : []),
       {label:'Delete playlist',danger:true,action:async()=>{await window.beehive.deletePlaylist(pl.id);playlists=playlists.filter(x=>x.id!==pl.id);if(activePlaylistId===pl.id){activePlaylistId=null;specialView=null;}renderPlaylistManager();}}
     ]);
   }
@@ -7002,7 +7035,8 @@
   }
   function evaluateSmartPlaylist(pl){
     const rules=Array.isArray(pl.rules)?pl.rules.filter(r=>r?.field):[];
-    let out=smartSourceTracks(pl).filter(t=>!rules.length || (pl.match==='any' ? rules.some(r=>smartCompare(t,r)) : rules.every(r=>smartCompare(t,r))));
+    const starFavorites = pl?.systemKey === 'star-favorites' || pl?.id === 'hive-star-favorites';
+    let out=[...smartSourceTracks(pl), ...(starFavorites ? streamedLovedTracks() : [])].filter(t=>!rules.length || (pl.match==='any' ? rules.some(r=>smartCompare(t,r)) : rules.every(r=>smartCompare(t,r))));
     if(pl.filterDuplicates) out=smartDeduplicate(out);
     out=sortSmartTracks(out, pl.sort || 'addedDesc');
     const isStarFavorites = pl?.systemKey === 'star-favorites' || pl?.id === 'hive-star-favorites';
@@ -9023,6 +9057,7 @@
         {label:autoDjEnabled() ? 'Auto-DJ is on' : 'Auto-DJ',icon:'radio',active:autoDjEnabled(),tooltip:'Keep playing when the queue runs out by adding related tracks (Settings → Playback → Auto-DJ)',action:()=>setAutoDjEnabled(!autoDjEnabled())}
       ]},
       ...(isLocal ? [{label:editLabel,icon:'edit',menuKey:'edit',action:()=>openTagEditor(t, selected)}] : []),
+      ...(!bulk && specialView === 'playlist' && activePlaylistId && playlists.some(p => String(p.id) === String(activePlaylistId)) ? [{label:'Use as playlist photo',icon:'album',menuKey:'edit',action:()=>setPlaylistImageFromTrack(playlists.find(p => String(p.id) === String(activePlaylistId)), t)}] : []),
       ...(isPodcastTrack(t) && !isRadioTrack(t) ? [{label:t.loved ? 'Unlove' : 'Love',icon:t.loved ? 'heartFilled' : 'heartOutline',menuKey:'rating',action:()=>setTrackLove(t, !t.loved)}] : []),
       ...(isYoutubeMusicTrack(t) ? [{label:'Download',icon:'download',menuKey:'download',submenu:[
         {label:'Download this song',icon:'download',action:()=>downloadStreamedTracks([t])},
@@ -12164,6 +12199,18 @@
     const raw = normalizeSpotifyArtworkSource(pl?.customCover || pl?.cover || pl?.artworkUrl || '');
     return raw ? coverSrc(raw) : '';
   }
+  // Use a song's cover as a playlist's picture (cached locally when it's a
+  // web image).
+  async function setPlaylistImageFromTrack(pl, t) {
+    let src = String(visualCoverForTrack(t) || '');
+    if (!src || /^data:/.test(src)) { showAppNotice('That song has no cover to use.'); return; }
+    if (/^https?:\/\//i.test(src)) { try { src = (await window.beehive.spotifyCacheArtwork?.([src]))?.[src] || src; } catch {} }
+    const fresh = (await window.beehive.getPlaylists()).find(p => String(p.id) === String(pl.id)) || pl;
+    const saved = await window.beehive.savePlaylist({ ...fresh, customCover: src });
+    playlists = playlists.map(p => String(p.id) === String(saved.id) ? saved : p);
+    renderPlaylistManager();
+    try { renderSidebarNavigation(); renderNavigationEditors(); } catch {}
+  }
   async function setPlaylistImage(pl, clear = false) {
     let name = '';
     if (!clear) {
@@ -13392,9 +13439,29 @@
   // old bitmap immediately, then reveal only after the new image has decoded.
   // A generation guard prevents an older decode from revealing stale artwork
   // after another track becomes current.
-  function paintNowPlayingCoverImmediately(img, src, generation) {
+  function paintNowPlayingCoverImmediately(img, src, generation, interim = null) {
     if (!img) return;
     const nextSrc = String(src || placeholderCover());
+    // When the queue already shows this song's cover, show that straight
+    // away and swap in the full-size image once it has loaded, instead of
+    // leaving the player blank while a remote cover downloads.
+    const interimSrc = interim && interim.complete && interim.naturalWidth > 0 ? String(interim.currentSrc || interim.src || '') : '';
+    if (interimSrc && !/^data:/.test(interimSrc) && img.src !== nextSrc && !(img.complete && img.src === nextSrc)) {
+      img.onload = null; img.onerror = null;
+      img.style.transition = 'none';
+      img.src = interimSrc;
+      img.style.opacity = '1';
+      if (interimSrc !== nextSrc) {
+        const full = new Image();
+        full.decoding = 'async';
+        full.onload = async () => {
+          try { if (typeof full.decode === 'function') await full.decode(); } catch {}
+          if (generation === nowPlayingUiGeneration) img.src = nextSrc;
+        };
+        full.src = nextSrc;
+      }
+      return;
+    }
     img.style.opacity = '0';
     img.style.transition = 'none';
     let revealed = false;
@@ -13580,8 +13647,11 @@
       currentQueueThumb.style.transition = 'none';
       currentQueueThumb.src = cover;
     }
-    paintNowPlayingCoverImmediately(el.pbCover, cover, generation);
-    paintNowPlayingCoverImmediately(el.npCover, cover, generation);
+    // The queue thumbnail (already loaded) bridges the gap while the
+    // large cover loads.
+    const queueThumbBefore = currentQueueThumb && currentQueueThumb.complete && currentQueueThumb.naturalWidth > 0 ? currentQueueThumb : null;
+    paintNowPlayingCoverImmediately(el.pbCover, cover, generation, queueThumbBefore);
+    paintNowPlayingCoverImmediately(el.npCover, cover, generation, queueThumbBefore);
     const transitionBackdrop = document.querySelector('.np-cover-stage');
     if (transitionBackdrop) transitionBackdrop.style.setProperty('--cover-backdrop', `url(\"${cover.replace(/\"/g, '\\\"')}\")`);
 
@@ -16271,9 +16341,10 @@
             {label:'Play playlist',action:()=>playPlaylist(pl)},
             {label:'Rename…',action:()=>openEditPlaylistModal(pl)},
             {label:'Set image…',action:()=>setPlaylistImage(pl)},
+            ...(currentQueue[currentIndex] ? [{label:'Use the playing song’s cover',action:()=>setPlaylistImageFromTrack(pl, currentQueue[currentIndex])}] : []),
             ...(pl.customCover ? [{label:'Remove image',action:()=>setPlaylistImage(pl, true)}] : []),
             {label:'Queue playlist',action:()=>{const tracks=tracksForPlaylist(pl); if(!tracks.length){showAppNotice('This playlist has no tracks.');return;} addTracksToQueue(tracks);}},
-            ...(!pl.smart && playlistDownloadTracks(pl).length ? [{label:'Download playlist',action:()=>downloadPlaylist(pl)}] : []),
+            ...((!pl.smart || pl.systemKey === 'star-favorites' || pl.id === 'hive-star-favorites') && playlistDownloadTracks(pl).length ? [{label:'Download playlist',action:()=>downloadPlaylist(pl)}] : []),
             {label:'Info',action:()=>showPlaylistInfo(pl)},
             {label:'Remove from sidebar',action:()=>removePlaylistFromSidebar(def.id)}
           ]);
