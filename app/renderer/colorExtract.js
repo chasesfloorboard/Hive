@@ -180,8 +180,14 @@
             const [ar, ag, ab] = capLuminance(lighten(avgR, avgG, avgB, 0.86), LIGHT_THEME_MAX_LUMINANCE);
             const [br, bg, bb] = capLuminance(lighten(avgR, avgG, avgB, 0.74), LIGHT_THEME_MAX_LUMINANCE);
             const [softR, softG, softB] = capLuminance([Math.min(255, ar + 8), Math.min(255, ag + 8), Math.min(255, ab + 8)], LIGHT_THEME_MAX_LUMINANCE);
+            // The accent also fills progress/volume bars and active icons, so
+            // on a light theme it must not be a pale grey: use a dark
+            // charcoal carrying the cover's faint tint. The washes (ambient,
+            // soft) stay light.
+            const [nh, ns] = rgbToHsl(avgR, avgG, avgB);
+            const [cr, cg, cb] = hslToRgb(nh, Math.min(ns, 0.16), 0.3);
             resolve({
-              accent: rgba(ar, ag, ab, 1),
+              accent: rgba(cr, cg, cb, 1),
               accentSoft: rgba(softR, softG, softB, 0.4),
               accentGlow: rgba(br, bg, bb, 0.5),
               ambientA: rgba(br, bg, bb, 0.4),
