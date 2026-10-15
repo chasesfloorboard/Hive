@@ -4613,6 +4613,7 @@
       el.btnLove.classList.toggle('loved', value);
       el.btnLove.setAttribute('aria-pressed', value ? 'true' : 'false');
       el.btnLove.title = value ? 'Unlove' : 'Love';
+      updateFavoritesSidebarIcon();
     }
   }
 
@@ -4698,6 +4699,7 @@
       el.btnLove.title = value ? 'Unlove' : 'Love';
     }
     renderQueue();
+    updateFavoritesSidebarIcon();
     return value;
   }
 
@@ -6715,6 +6717,8 @@
     // this already-randomized list, exactly as intended.
     const startIndex = shuffle ? Math.floor(Math.random() * tracks.length) : 0;
     playQueue(tracks,startIndex);
+    queueSourcePlaylistId = String(pl.id);
+    updateFavoritesSidebarIcon();
     return true;
   }
 
@@ -7445,8 +7449,10 @@
       row.className='playlist-row';
       row.dataset.index=String(index);
       const count = pl.smart ? null : (Array.isArray(pl.tracks) ? pl.tracks.length : 0);
-      const plIcon = String(pl.icon || '');
-      row.innerHTML=`<div class="playlist-row-name">${playlistImageSrc(pl) ? `<img class="playlist-row-cover" src="${escapeHtml(playlistImageSrc(pl))}" alt="" loading="eager" decoding="async" />` : ''}${plIcon ? `<span class="playlist-row-icon">${escapeHtml(plIcon)}</span>` : ''}<strong class="playlist-row-rich-name"></strong>${pl.smart?'<span class="smart-badge">AUTO PLAYLIST</span>':''}${pl.source==='spotify'?'<span class="smart-badge">SPOTIFY</span>':''}<div class="dim small">${pl.smart?'Dynamic · updates automatically':pl.source==='spotify'?`${Array.isArray(pl.spotifyTracks)?pl.spotifyTracks.length:0} Spotify track${(Array.isArray(pl.spotifyTracks)?pl.spotifyTracks.length:0)===1?'':'s'}`:`${count} track${count===1?'':'s'}`}</div></div><div class="playlist-actions"><button class="sidebar-add play-pl">▶ Play</button><button class="sidebar-add del-pl">Delete</button></div>`;
+      const rowImage = isStarFavoritesPlaylist(pl) && !pl.customCover ? favoritesRandomCover(pl) : playlistImageSrc(pl);
+      if (isStarFavoritesPlaylist(pl)) row.dataset.favorites = '1';
+      const plIcon = rowImage ? '' : String(pl.icon || '');
+      row.innerHTML=`<div class="playlist-row-name">${rowImage ? `<img class="playlist-row-cover" src="${escapeHtml(rowImage)}" alt="" loading="eager" decoding="async" />` : ''}${plIcon ? `<span class="playlist-row-icon">${escapeHtml(plIcon)}</span>` : ''}<strong class="playlist-row-rich-name"></strong>${pl.smart?'<span class="smart-badge">AUTO PLAYLIST</span>':''}${pl.source==='spotify'?'<span class="smart-badge">SPOTIFY</span>':''}<div class="dim small">${pl.smart?'Dynamic · updates automatically':pl.source==='spotify'?`${Array.isArray(pl.spotifyTracks)?pl.spotifyTracks.length:0} Spotify track${(Array.isArray(pl.spotifyTracks)?pl.spotifyTracks.length:0)===1?'':'s'}`:`${count} track${count===1?'':'s'}`}</div></div><div class="playlist-actions"><button class="sidebar-add play-pl">▶ Play</button><button class="sidebar-add del-pl">Delete</button></div>`;
       setRichLabel(row.querySelector('.playlist-row-rich-name'), playlistLabel(pl));
       row.querySelector('.play-pl').onclick=e=>{e.stopPropagation();playPlaylist(pl);};
       row.querySelector('.del-pl').onclick=async e=>{e.stopPropagation();await window.beehive.deletePlaylist(pl.id);playlists=playlists.filter(x=>x.id!==pl.id);if(activePlaylistId===pl.id){activePlaylistId=null;specialView=null;}renderPlaylistManager();};
@@ -12193,6 +12199,45 @@
     return doc.body.firstElementChild?.textContent || raw.replace(/<[^>]*>/g, '');
   }
 
+  function isStarFavoritesPlaylist(pl) { return pl?.systemKey === 'star-favorites' || pl?.id === 'hive-star-favorites'; }
+  // Sidebar picture for Favorites: the playing song's cover while Favorites is
+  // what's playing and the song is in it; otherwise the user's photo, or the
+  // star (no picture).
+  function favoritesSidebarImage(pl) {
+    const t = currentQueue[currentIndex];
+    if (t && queueSourcePlaylistId === String(pl.id) && t.loved) {
+      const c = coverSrc(visualCoverForTrack(t));
+      if (c && !/^data:/.test(c)) return c;
+    }
+    return pl.customCover ? coverSrc(pl.customCover) : '';
+  }
+  function updateFavoritesSidebarIcon() {
+    const fav = starFavoritesPlaylist();
+    if (!fav) return;
+    const navId = sidebarNavIdForPlaylistId(fav.id);
+    const item = navId && document.querySelector(`.sidebar-item[data-nav="${CSS.escape(navId)}"], [data-nav="${CSS.escape(navId)}"]`);
+    if (!item) return;
+    const img = favoritesSidebarImage(fav);
+    const current = item.querySelector('.sidebar-nav-cover, .sidebar-nav-icon');
+    const next = img ? Object.assign(document.createElement('img'), { className: 'sidebar-nav-cover', src: img, alt: '' })
+      : Object.assign(document.createElement('span'), { className: 'sidebar-nav-icon', textContent: sidebarIcon(navId) || '★' });
+    if (current?.tagName === next.tagName && (img ? current.src === next.src : current.textContent === next.textContent)) return;
+    if (current) current.replaceWith(next); else item.prepend(next);
+  }
+  // Playlists tab: Favorites shows a random cover from its songs (changing
+  // now and then) unless the user picked a photo.
+  function favoritesRandomCover(pl) {
+    const covers = [...new Set(tracksForPlaylist(pl).map(t => coverSrc(visualCoverForTrack(t))).filter(c => c && !/^data:/.test(c)))];
+    return covers.length ? covers[Math.floor(Math.random() * covers.length)] : '';
+  }
+  setInterval(() => {
+    const fav = starFavoritesPlaylist();
+    if (!fav || fav.customCover) return;
+    const img = document.querySelector('.playlist-row[data-favorites="1"] .playlist-row-cover');
+    if (!img || !img.offsetParent) return;
+    const next = favoritesRandomCover(fav);
+    if (next) img.src = next;
+  }, 9000);
   // A playlist's picture: one the user chose, else its source's artwork
   // (Spotify / Apple Music, cached by Hive where possible).
   function playlistImageSrc(pl) {
@@ -12445,7 +12490,10 @@
     return true;
   }
 
+  // Which playlist the current queue was started from (null = elsewhere).
+  let queueSourcePlaylistId = null;
   function playQueue(tracks, startIndex=0, respectShuffle=true) {
+    queueSourcePlaylistId = specialView === 'playlist' && activePlaylistId ? String(activePlaylistId) : null;
     // An explicit queue/album/track play action is a user-initiated transport
     // command. It must be allowed to start playback even when startup restored
     // a previous session in the deliberately-paused state.
@@ -13625,6 +13673,7 @@
     applyStreamLove(t);
     hivebeeTrackPopup(t);
     markApplePagePlaying(t);
+    updateFavoritesSidebarIcon();
     setTimeout(renderTheaterMode, 0);
     scheduleRadioPolling(t);
     setTimeout(() => { hivebeeAutoDjTopUp().catch(() => {}); }, 1500);
@@ -16294,7 +16343,7 @@
       item.draggable = true;
       const navIcon = sidebarIcon(def.id) || def.icon || def.icon || '';
       const navPlaylist = def.type === 'playlist' ? sidebarPlaylistForEntry(def.id) : null;
-      const navImage = navPlaylist ? playlistImageSrc(navPlaylist) : '';
+      const navImage = navPlaylist ? (isStarFavoritesPlaylist(navPlaylist) ? favoritesSidebarImage(navPlaylist) : playlistImageSrc(navPlaylist)) : '';
       item.innerHTML = `${navImage ? `<img class="sidebar-nav-cover" src="${escapeHtml(navImage)}" alt="">` : navIcon ? `<span class="sidebar-nav-icon">${escapeHtml(navIcon)}</span>` : ''}<span class="sidebar-nav-label"></span>`;
       setRichLabel(item.querySelector('.sidebar-nav-label'), sidebarLabel(def.id));
       item.addEventListener('click', async () => {
