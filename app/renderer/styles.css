@@ -5600,3 +5600,41 @@ html.hb-hide-pb-eq #btn-eq, html.hb-hide-pb-mini #btn-mini, html.hb-hide-pb-thea
 .spotify-library-grid > .spotify-library-actions{grid-column:1/-1}
 .apple-tracks:not(.apple-song-shelf) .apple-track{grid-template-columns:28px 36px minmax(0,1fr) auto 48px 32px}
 span.apple-track-art{display:block;background:rgba(255,255,255,.06)}
+
+/* Playlist badges must read on every theme (accent-soft can be near-black). */
+.smart-badge { color:var(--text-dim); border-color:color-mix(in srgb, var(--accent) 45%, var(--border, rgba(255,255,255,.18))); background:color-mix(in srgb, var(--accent) 12%, transparent); font-weight:650; }
+.smart-badge-spotify { color:#7fe3a4; border-color:rgba(30,215,96,.45); background:rgba(30,215,96,.10); }
+.smart-badge-apple { color:#ff8a9a; border-color:rgba(250,45,72,.45); background:rgba(250,45,72,.10); }
+
+/* Playlists page header, styled like the Apple Music / Spotify pages */
+.playlist-manager-head { align-items:flex-end; margin-bottom:22px; }
+.playlist-manager-kicker { color:var(--text-dimmer); font-size:9px; font-weight:850; letter-spacing:.18em; margin:0; }
+.playlist-manager-title { margin:6px 0 0; font-size:30px; line-height:1.05; font-weight:850; letter-spacing:-.025em; color:var(--text); }
+.playlist-manager-desc { margin:7px 0 0; color:var(--text-dim); font-size:12.5px; max-width:560px; line-height:1.5; }
+.playlist-manager-create { display:flex; gap:8px; flex-wrap:wrap; justify-content:flex-end; }
+
+/* ---------------- Playlists tab: cover cards ---------------- */
+.playlist-manager { max-width:1100px; }
+.playlist-list-window { display:grid; align-content:start; }
+.playlist-row.playlist-card { position:relative; display:flex; flex-direction:column; align-items:stretch; justify-content:flex-start; gap:10px; padding:10px; margin:0;
+  border:1px solid transparent; border-radius:14px; background:transparent; cursor:pointer; transition:background .15s ease, border-color .15s ease, transform .15s ease; }
+.playlist-row.playlist-card:hover { background:color-mix(in srgb, var(--control-bg) 80%, transparent); border-color:var(--border); transform:translateY(-2px); }
+.playlist-card-art { position:relative; aspect-ratio:1; border-radius:10px; overflow:hidden; background:linear-gradient(135deg, color-mix(in srgb,var(--accent) 35%, #1a1a1f), #111116);
+  box-shadow:0 10px 28px rgba(0,0,0,.35); display:grid; place-items:center; }
+.playlist-card-art .playlist-row-cover { width:100%; height:100%; flex:none; object-fit:cover; border-radius:unset; display:block; }
+.playlist-card-icon { font-size:46px; color:color-mix(in srgb, var(--text) 75%, transparent); line-height:1; }
+.playlist-card-play { position:absolute; right:10px; bottom:10px; width:44px; height:44px; border-radius:50%; border:0; display:grid; place-items:center; cursor:pointer;
+  background:var(--accent); color:var(--accent-contrast, #fff); box-shadow:0 8px 22px rgba(0,0,0,.45); opacity:0; transform:translateY(6px); transition:opacity .15s ease, transform .15s ease, filter .15s ease; }
+.playlist-card-play svg { width:18px; height:18px; margin-left:2px; }
+.playlist-card:hover .playlist-card-play, .playlist-card-play:focus-visible { opacity:1; transform:none; }
+.playlist-card-play:hover { filter:brightness(1.1); }
+.playlist-card-text { min-width:0; display:flex; flex-direction:column; gap:5px; padding:0 2px; }
+.playlist-card-text .playlist-row-rich-name { font-size:14px; font-weight:700; color:var(--text); white-space:nowrap; overflow:hidden; text-overflow:ellipsis; }
+.playlist-card-meta { display:flex; align-items:center; gap:6px; flex-wrap:nowrap; min-width:0; overflow:hidden; }
+.playlist-card-meta .smart-badge { margin-left:0; flex:none; }
+.playlist-card-count { font-size:12px; color:var(--text-dim); white-space:nowrap; overflow:hidden; text-overflow:ellipsis; }
+.playlist-card-delete { position:absolute; top:16px; right:16px; width:26px; height:26px; border-radius:50%; border:0; cursor:pointer; display:grid; place-items:center;
+  background:rgba(0,0,0,.55); color:#fff; font-size:12px; opacity:0; transition:opacity .15s ease, background .15s ease; }
+.playlist-card:hover .playlist-card-delete { opacity:1; }
+.playlist-card-delete:hover { background:#c0392b; }
+.playlist-list-window .playlist-row.playlist-card { height:auto; }

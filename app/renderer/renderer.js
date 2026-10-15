@@ -7415,7 +7415,7 @@
     if (!placeholder) return false;
     hideContentViews();
     placeholder.classList.remove('hidden');
-    placeholder.innerHTML='<div class="playlist-manager"><div class="playlist-manager-head"><div><p class="playlist-manager-kicker">PLAYLISTS</p><p class="dim">Create local playlists, dynamic smart playlists, or Spotify streaming playlists.</p></div><div class="playlist-manager-create"><button type="button" data-role="playlist-import" class="sidebar-add">Import Playlist</button><button type="button" data-role="playlist-new" class="sidebar-add">+ New playlist</button><button type="button" data-role="playlist-smart" class="sidebar-add">✦ Smart playlist</button></div></div><div data-role="playlist-manager-list"></div></div>';
+    placeholder.innerHTML='<div class="playlist-manager"><div class="playlist-manager-head"><div><p class="playlist-manager-kicker">YOUR MUSIC</p><h1 class="playlist-manager-title">Playlists</h1><p class="playlist-manager-desc">Your playlists and smart playlists, plus everything imported from Spotify and Apple Music.</p></div><div class="playlist-manager-create"><button type="button" data-role="playlist-import" class="sidebar-add">Import Playlist</button><button type="button" data-role="playlist-new" class="sidebar-add">+ New playlist</button><button type="button" data-role="playlist-smart" class="sidebar-add">✦ Smart playlist</button></div></div><div data-role="playlist-manager-list"></div></div>';
     const list=placeholder.querySelector('[data-role="playlist-manager-list"]');
 
     // Bind through the stable placeholder so a playlist-manager rerender cannot
@@ -7453,10 +7453,14 @@
       if (isStarFavoritesPlaylist(pl)) row.dataset.favorites = '1';
       const plIcon = String(pl.icon || '');
       // The icon (e.g. Favorites' star) only shows when there's no picture.
-      row.innerHTML=`<div class="playlist-row-name">${rowImage ? `<img class="playlist-row-cover" src="${escapeHtml(rowImage)}" alt="" loading="eager" decoding="async" />` : ''}${plIcon && !rowImage ? `<span class="playlist-row-icon">${escapeHtml(plIcon)}</span>` : ''}<strong class="playlist-row-rich-name"></strong>${pl.smart?'<span class="smart-badge">AUTO PLAYLIST</span>':''}${pl.source==='spotify'?'<span class="smart-badge">SPOTIFY</span>':''}<div class="dim small">${pl.smart?'Dynamic · updates automatically':pl.source==='spotify'?`${Array.isArray(pl.spotifyTracks)?pl.spotifyTracks.length:0} Spotify track${(Array.isArray(pl.spotifyTracks)?pl.spotifyTracks.length:0)===1?'':'s'}`:`${count} track${count===1?'':'s'}`}</div></div><div class="playlist-actions"><button class="sidebar-add play-pl">▶ Play</button><button class="sidebar-add del-pl">Delete</button></div>`;
+      // Card: big cover (or icon), play button over it, name + badges + count.
+      const countText = pl.smart ? 'Updates automatically' : pl.source==='spotify' ? `${Array.isArray(pl.spotifyTracks)?pl.spotifyTracks.length:0} Spotify track${(Array.isArray(pl.spotifyTracks)?pl.spotifyTracks.length:0)===1?'':'s'}` : `${count} track${count===1?'':'s'}`;
+      const badges = `${pl.smart?'<span class="smart-badge">AUTO PLAYLIST</span>':''}${pl.source==='spotify' || /^From Spotify: /.test(String(pl.description||''))?'<span class="smart-badge smart-badge-spotify">SPOTIFY</span>':''}${pl.source==='applemusic' || /^From Apple Music/.test(String(pl.description||''))?'<span class="smart-badge smart-badge-apple">APPLE MUSIC</span>':''}`;
+      row.classList.add('playlist-card');
+      row.innerHTML=`<div class="playlist-card-art">${rowImage ? `<img class="playlist-row-cover" src="${escapeHtml(rowImage)}" alt="" loading="lazy" decoding="async" />` : `<span class="playlist-card-icon">${escapeHtml(plIcon || '♪')}</span>`}<button type="button" class="playlist-card-play play-pl" title="Play" aria-label="Play ${escapeHtml(pl.name || 'playlist')}">${theaterIcon('play')}</button></div><div class="playlist-card-text"><strong class="playlist-row-rich-name"></strong><div class="playlist-card-meta">${badges}<span class="playlist-card-count">${escapeHtml(countText)}</span></div></div><button type="button" class="playlist-card-delete del-pl" title="Delete playlist" aria-label="Delete playlist">✕</button>`;
       setRichLabel(row.querySelector('.playlist-row-rich-name'), playlistLabel(pl));
       row.querySelector('.play-pl').onclick=e=>{e.stopPropagation();playPlaylist(pl);};
-      row.querySelector('.del-pl').onclick=async e=>{e.stopPropagation();await window.beehive.deletePlaylist(pl.id);playlists=playlists.filter(x=>x.id!==pl.id);if(activePlaylistId===pl.id){activePlaylistId=null;specialView=null;}renderPlaylistManager();};
+      row.querySelector('.del-pl').onclick=async e=>{e.stopPropagation();if(!(await themedDialog({title:'Delete playlist',mode:'confirm',message:`Delete “${pl.name || 'this playlist'}”? The songs themselves are not deleted.`})))return;await window.beehive.deletePlaylist(pl.id);playlists=playlists.filter(x=>x.id!==pl.id);if(activePlaylistId===pl.id){activePlaylistId=null;specialView=null;}renderPlaylistManager();};
       row.addEventListener('click',async()=>{
         // A playlist is its own browser context. Open it in a new Music tab
         // instead of reusing the primary Music tab, so its scroll position and
@@ -7484,21 +7488,35 @@
       return row;
     }
 
+    // Cards in a grid, still virtualised: only the visible grid rows are
+    // built. Columns follow the width; a grid row is a card plus its text.
     function updatePlaylistVirtualRows(force=false){
       const state=playlistVirtualState;
-      const rowHeight=state.rowHeight;
+      const gap=16, minCard=170, textH=62;
+      const width=Math.max(200, state.viewport.clientWidth || 800);
+      const cols=Math.max(1, Math.floor((width + gap) / (minCard + gap)));
+      const cardW=(width - gap * (cols - 1)) / cols;
+      const rowHeight=Math.round(cardW + textH + gap);
       const viewportHeight=state.viewport.clientHeight || 500;
       const scrollTop=state.viewport.scrollTop;
-      const overscan=5;
-      const start=Math.max(0,Math.floor(scrollTop/rowHeight)-overscan);
-      const end=Math.min(playlists.length,Math.ceil((scrollTop+viewportHeight)/rowHeight)+overscan);
-      if(!force && start===state.lastStart && end===state.lastEnd)return;
-      state.lastStart=start; state.lastEnd=end;
-      state.spacer.style.height=`${playlists.length*rowHeight}px`;
-      state.window.style.transform=`translateY(${start*rowHeight}px)`;
+      const overscan=2;
+      const totalRows=Math.ceil(playlists.length / cols);
+      const firstRow=Math.max(0,Math.floor(scrollTop/rowHeight)-overscan);
+      const lastRow=Math.min(totalRows,Math.ceil((scrollTop+viewportHeight)/rowHeight)+overscan);
+      const start=firstRow*cols, end=Math.min(playlists.length,lastRow*cols);
+      if(!force && start===state.lastStart && end===state.lastEnd && state.cols===cols)return;
+      state.lastStart=start; state.lastEnd=end; state.cols=cols; state.rowHeight=rowHeight;
+      state.spacer.style.height=`${totalRows*rowHeight}px`;
+      state.window.style.transform=`translateY(${firstRow*rowHeight}px)`;
+      state.window.style.gridTemplateColumns=`repeat(${cols}, minmax(0, 1fr))`;
+      state.window.style.gap=`${gap}px`;
       state.window.innerHTML='';
       for(let i=start;i<end;i++)state.window.appendChild(makePlaylistRow(playlists[i],i));
     }
+    if (!playlistVirtualState.resizeObserver && typeof ResizeObserver === 'function') {
+      playlistVirtualState.resizeObserver = new ResizeObserver(() => { if (playlistVirtualState.viewport?.isConnected) updatePlaylistVirtualRows(true); });
+    }
+    try { playlistVirtualState.resizeObserver?.disconnect(); playlistVirtualState.resizeObserver?.observe(viewport); } catch {}
     viewport.addEventListener('scroll',()=>{
       if(playlistVirtualState.raf)return;
       playlistVirtualState.raf=requestAnimationFrame(()=>{playlistVirtualState.raf=0;updatePlaylistVirtualRows();});
@@ -13965,8 +13983,12 @@
     });
     if (items.length) clearAutomaticCoverVisual(t);
     if (!items.length) {
-      const temporary = automaticCoverVisuals.get(String(t.path || ''));
-      if (temporary) items.push({ file: temporary, type: 'Automatic visual artwork' });
+      // Streamed/web tracks have no embedded covers: use their cover (cached
+      // file or artwork URL), or else the automatic visual. Without this the
+      // rotator painted the placeholder over the player and queue.
+      const own = visualCoverForTrack(t);
+      const temporary = own || automaticCoverVisuals.get(String(t.path || ''));
+      if (temporary) items.push({ file: temporary, type: own ? 'Cover (Front)' : 'Automatic visual artwork' });
     }
 
     const targets = [el.pbCover, el.npCover];
