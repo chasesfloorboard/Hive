@@ -466,8 +466,8 @@
       if (token !== youtubeLoadToken) return;
       // Not ready yet: stop the previous song now so the click feels answered.
       try { if (podcastActive) audioElement.pause(); else if (gstActive) gstSend('PAUSE'); } catch {}
-      updateNowPlayingUI(t);
-      if (el.pbArtist) el.pbArtist.textContent = `Loading “${t.title}” from YouTube Music…`;
+      updateNowPlayingUI(t); renderQueue();
+      if (el.pbArtist) el.pbArtist.textContent = 'Loading from YouTube Music…';
     }, 250);
     try {
       const r = await window.beehive.resolveYouTubeMusic({ path: t.path, title: t.title, artist: t.artist, album: t.album, duration: t.duration, ytVideoId: t.ytVideoId || '' }, { fresh });
@@ -546,7 +546,7 @@
     if (Number.isFinite(Number(position)) && Number(position) > 0) { try { audioElement.currentTime = Number(position); } catch {} }
     activeDuration = Number.isFinite(audioElement.duration) ? audioElement.duration : Number(t.duration)||0;
     activeOffset = Number(position)||0;
-    updateNowPlayingUI(t); dispatchAudio('loadedmetadata'); dispatchAudio('durationchange'); dispatchAudio('timeupdate'); updateSeekUI();
+    updateNowPlayingUI(t); renderQueue(); dispatchAudio('loadedmetadata'); dispatchAudio('durationchange'); dispatchAudio('timeupdate'); updateSeekUI();
     syncMpris(t, enginePaused);
     if (isYoutubeMusicTrack(t)) { setTimeout(prefetchNextYoutubeMusicTrack, 1500); setTimeout(prefetchQueueYoutubeMusic, 2500); }
     if (autoplay) {
@@ -1732,7 +1732,7 @@
           t.year = t.year || mb.year;
           if (!Number(t.track) && mb.trackNumber) t.track = mb.trackNumber;
           if (!Number(t.trackTotal) && mb.trackTotal) t.trackTotal = mb.trackTotal;
-          if (!Number(t.disc) && mb.discNumber) t.disc = mb.discNumber;
+          if (!Number(t.disc || t.disk) && mb.discNumber) { t.disc = mb.discNumber; t.disk = mb.discNumber; }
           t.musicbrainzRecordingId = mb.musicbrainzRecordingId; t.musicbrainzReleaseId = mb.musicbrainzReleaseId;
           if (mb.isrc) t.isrc = mb.isrc;
           tagged++;
@@ -1745,23 +1745,19 @@
   function appleCardHtml(c) {
     return `<button type="button" class="apple-card" data-apple-url="${escapeHtml(c.url)}">${c.artwork ? `<img src="${escapeHtml(c.artwork)}" alt="" loading="lazy">` : '<span class="apple-card-blank"></span>'}<strong>${escapeHtml(c.name)}</strong><small>${escapeHtml(c.curator || (c.kind === 'album' ? 'Album' : 'Playlist'))}</small></button>`;
   }
-  function openAppleMusicDialog() {
-    if (!appleMusicModal || !document.body.contains(appleMusicModal)) {
-      appleMusicModal = document.createElement('div');
-      appleMusicModal.className = 'modal-overlay hidden';
-      appleMusicModal.innerHTML = `<div class="modal glass organise-modal apple-modal" role="dialog" aria-modal="true" aria-labelledby="apple-title">
-        <div class="modal-header"><div><h3 id="apple-title">Apple Music</h3><div class="modal-subtitle">Browse Apple Music playlists and albums. Songs in your library play in full; the rest play Apple's 30-second previews (full songs need the Apple Music app).</div></div><button class="modal-close" data-close type="button" aria-label="Close">✕</button></div>
-        <div class="modal-body organise-body">
+  // The Apple Music page (sidebar → Apple Music). Built once and kept, so
+  // search results and the open playlist survive switching pages.
+  function appleMusicPageElement() {
+    if (!appleMusicModal) {
+      appleMusicModal = document.createElement('section');
+      appleMusicModal.className = 'streaming-page apple-page';
+      appleMusicModal.setAttribute('aria-label', 'Apple Music');
+      appleMusicModal.innerHTML = `<header class="streaming-page-head"><div><div class="streaming-kicker">BROWSE</div><h1>Apple Music</h1>
+          <p>Search Apple Music playlists and albums, or paste a music.apple.com link. Songs in your library play from your files; the rest stream from YouTube Music.</p></div></header>
           <form class="radio-search" id="apple-search-form"><input type="search" class="settings-text" id="apple-query" placeholder="Search playlists and albums, or paste a music.apple.com link" spellcheck="false"><button type="submit" class="sidebar-add">Search</button></form>
-          <div class="organise-status" id="apple-status"></div>
-          <div id="apple-view"></div>
-        </div>
-        <div class="equaliser-footer"><button type="button" class="sidebar-add hidden" id="apple-back">← Back</button><span class="equaliser-footer-gap"></span><button type="button" class="sidebar-add" data-close>Close</button></div>
-      </div>`;
-      document.body.appendChild(appleMusicModal);
+          <div class="streaming-page-bar"><button type="button" class="sidebar-add hidden" id="apple-back">← Back to results</button><div class="organise-status" id="apple-status"></div></div>
+          <div id="apple-view"></div>`;
       const m = appleMusicModal, view = m.querySelector('#apple-view'), status = m.querySelector('#apple-status'), back = m.querySelector('#apple-back');
-      m.addEventListener('click', e => { if (e.target === m) closeModal(m); });
-      m.querySelectorAll('[data-close]').forEach(b => b.addEventListener('click', () => closeModal(m)));
       let lastResultsHtml = '', current = null;
       const cleanError = err => String(err?.message || err).replace(/^Error invoking remote method '[^']+': (Error: )?/, '');
       const showResults = async (term) => {
@@ -1784,7 +1780,7 @@
           const badge = local ? '<span class="apple-badge apple-badge-local" title="Plays the full song from your library">In library</span>'
             : youtubeMusicReady ? '<span class="apple-badge apple-badge-yt" title="Plays the full song from YouTube Music">YouTube Music</span>'
             : (at.previewUrl ? '<span class="apple-badge">Preview</span>' : '<span class="apple-badge apple-badge-none" title="Apple has no preview for this song">Apple Music only</span>');
-          return `<div class="apple-track" data-i="${i}"><span class="apple-track-n">${i + 1}</span><div class="apple-track-text"><div>${escapeHtml(at.title)}</div><small>${escapeHtml([at.artist, at.album].filter(Boolean).join(' — '))}</small></div>${badge}<span class="apple-track-time">${fmtTime(at.duration)}</span><button type="button" class="icon-btn" data-apple-play="${i}" title="Play" ${local || youtubeMusicReady || at.previewUrl ? '' : 'disabled'}>${theaterIcon('play')}</button></div>`;
+          return `<div class="apple-track" data-i="${i}" data-apple-id="${escapeHtml(at.appleId)}" data-local-path="${escapeHtml(local?.path || '')}"><span class="apple-track-n">${i + 1}</span><div class="apple-track-text"><div>${escapeHtml(at.title)}</div><small>${escapeHtml([at.artist, at.album].filter(Boolean).join(' — '))}</small></div>${badge}<span class="apple-track-time">${fmtTime(at.duration)}</span><button type="button" class="icon-btn" data-apple-play="${i}" title="Play" ${local || youtubeMusicReady || at.previewUrl ? '' : 'disabled'}>${theaterIcon('play')}</button></div>`;
         }).join('');
         const localCount = current.tracks.filter(at => appleLocalMatch(index, at)).length;
         const ytNote = youtubeMusicReady ? '' : `<div class="apple-yt-note">Songs you don't own play as 30-second previews. <button type="button" class="sidebar-add" id="apple-install-ytdlp">Play full songs from YouTube Music</button></div>`;
@@ -1797,7 +1793,7 @@
         void window.beehive.spotifyCacheArtwork?.([...new Set(current.tracks.map(at => at.artwork).filter(Boolean))]).then(files => {
           for (const at of current.tracks) if (files?.[at.artwork]) at.cachedCover = files[at.artwork];
         }).catch(() => {});
-        view.scrollTop = 0; m.querySelector('.modal-body').scrollTop = 0;
+        m.scrollIntoView({ block: 'start' });
       };
       m.querySelector('#apple-search-form').addEventListener('submit', e => {
         e.preventDefault();
@@ -1855,9 +1851,88 @@
         }
       });
     }
-    openModal(appleMusicModal);
-    setTimeout(() => appleMusicModal.querySelector('#apple-query')?.focus(), 50);
+    return appleMusicModal;
   }
+  function openAppleMusicDialog() { return showSpecialNavigation('apple-music'); }
+  function markApplePagePlaying(t) {
+    if (!appleMusicModal) return;
+    const path = String(t?.path || '');
+    const appleId = /^(?:ytm:apple:|applemusic:)(.+)$/.exec(path)?.[1] || '';
+    appleMusicModal.querySelectorAll('.apple-track').forEach(row => {
+      row.classList.toggle('playing', !!path && ((appleId && row.dataset.appleId === appleId) || (row.dataset.localPath && row.dataset.localPath === path)));
+    });
+  }
+  // Sidebar → Apple Music / Spotify: full pages in the content area, like
+  // the Sandbox launcher.
+  function showStreamingPage(kind, tab = getActiveTab()) {
+    if (!tab || getActiveTab()?.id !== tab.id) return false;
+    specialView = kind;
+    activePlaylistId = null;
+    activeFolderPath = '';
+    hideContentViews();
+    const contentTools = tab.dom?.contentTools;
+    if (!contentTools) return false;
+    contentTools.classList.remove('hidden');
+    document.body.classList.remove('sandbox-mode');
+    const page = kind === 'apple-music' ? appleMusicPageElement() : spotifyPageElement();
+    if (contentTools.firstElementChild !== page || contentTools.children.length !== 1) contentTools.replaceChildren(page);
+    if (kind === 'spotify') renderSpotifyPagePlaylists();
+    void youtubeMusicAvailable();
+    syncSidebarSelectionForContext();
+    updateActiveTabLabel();
+    return true;
+  }
+
+  // The Spotify page: paste a playlist link to import it, choose where its
+  // audio comes from, and see the playlists imported from Spotify.
+  let spotifyPage = null;
+  function spotifyPageElement() {
+    if (spotifyPage) return spotifyPage;
+    spotifyPage = document.createElement('section');
+    spotifyPage.className = 'streaming-page spotify-page';
+    spotifyPage.setAttribute('aria-label', 'Spotify');
+    spotifyPage.innerHTML = `<header class="streaming-page-head"><div><div class="streaming-kicker">IMPORT</div><h1>Spotify</h1>
+        <p>Paste a Spotify playlist link. Hive takes the songs and their tags; songs in your library play from your files, the rest stream from YouTube Music (or the Spotify app, if you choose it below).</p></div></header>
+      <form class="radio-search" id="spotify-page-form"><input type="url" class="settings-text" id="spotify-page-url" placeholder="https://open.spotify.com/playlist/…" spellcheck="false"><button type="submit" class="sidebar-add">Import</button></form>
+      <div class="streaming-page-bar"><div class="organise-status" id="spotify-page-status"></div></div>
+      <label class="streaming-setting">Play Spotify songs through
+        <select class="settings-select" data-hivebee-pref="spotify.playVia"><option value="youtube">YouTube Music (in Hive)</option><option value="spotify">Spotify app</option></select></label>
+      <h4 class="radio-heading">Imported from Spotify</h4>
+      <div class="spotify-page-list" id="spotify-page-list"></div>`;
+    const form = spotifyPage.querySelector('#spotify-page-form');
+    form.addEventListener('submit', async e => {
+      e.preventDefault();
+      const input = spotifyPage.querySelector('#spotify-page-url').value.trim();
+      if (!input) return;
+      const status = spotifyPage.querySelector('#spotify-page-status');
+      status.textContent = 'Importing…';
+      const ok = await importSpotifyPlaylist(input);
+      status.textContent = ok ? '' : status.textContent === 'Importing…' ? '' : status.textContent;
+      if (ok) spotifyPage.querySelector('#spotify-page-url').value = '';
+      renderSpotifyPagePlaylists();
+    });
+    spotifyPage.querySelector('#spotify-page-list').addEventListener('click', e => {
+      const row = e.target.closest('[data-pl-id]'); if (!row) return;
+      const pl = playlists.find(p => String(p.id) === row.dataset.plId); if (!pl) return;
+      if (e.target.closest('[data-sp="play"]')) void playPlaylist(pl);
+      else void openPlaylistFromSidebar(pl, sidebarNavIdForPlaylistId(pl.id));
+    });
+    bindHiveBeePrefControls(spotifyPage);
+    return spotifyPage;
+  }
+  function renderSpotifyPagePlaylists() {
+    const list = spotifyPage?.querySelector('#spotify-page-list');
+    if (!list) return;
+    const fromSpotify = playlists.filter(p => p?.source === 'spotify' || /^From Spotify: /.test(String(p?.description || '')));
+    list.innerHTML = fromSpotify.length ? fromSpotify.map(p => {
+      const count = p.source === 'spotify' ? (p.spotifyTracks || []).length : (p.tracks || []).length;
+      const art = normalizeSpotifyArtworkSource(p.cover || p.artworkUrl || '');
+      return `<div class="radio-row" data-pl-id="${escapeHtml(String(p.id))}">${/^https:\/\//i.test(art) ? `<img class="radio-logo" src="${escapeHtml(art)}" alt="">` : '<span class="radio-logo radio-logo-empty">♫</span>'}
+        <div class="radio-row-text"><div class="radio-row-name">${escapeHtml(p.name)}</div><div class="radio-row-meta">${count} songs</div></div>
+        <button type="button" class="sidebar-add" data-sp="play">Play</button><button type="button" class="sidebar-add" data-sp="open">Open</button></div>`;
+    }).join('') : '<div class="radio-empty">No Spotify playlists yet. Paste a link above.</div>';
+  }
+
   function hivebeeMiniPlayerOnAudio(name) {
     if (['timeupdate', 'pause', 'ended'].includes(name)) hivebeeTrackResume(name);
     if (name === 'timeupdate') { if (Date.now() - miniLastPush > 5000) scheduleMiniPlayerPush(); return; }
@@ -2787,7 +2862,7 @@
     if (btn.dataset.action === 'mini-player') { window.beehive.toggleMiniPlayer?.().then(() => scheduleMiniPlayerPush(400)); }
     if (btn.dataset.action === 'find-duplicates') openDuplicatesDialog();
     if (btn.dataset.action === 'internet-radio') openRadioDialog();
-    if (btn.dataset.action === 'apple-music') openAppleMusicDialog();
+    if (btn.dataset.action === 'apple-music') void showSpecialNavigation('apple-music');
     if (btn.dataset.action === 'import-musicbee') document.getElementById('import-musicbee-library-btn')?.click();
     // "check-updates" and any future items are placeholders for now.
   });
@@ -3683,6 +3758,12 @@
     if (cachedSpotify) return cachedSpotify;
     const external = spotifyArtworkUrl(track);
     if (external) return external;
+    // Streamed tracks (YouTube Music, previews, radio): the cover saved in
+    // Hive's cache, else the source's artwork URL.
+    if (isPodcastTrack(track)) {
+      if (track.cover) return track.cover;
+      if (/^https?:\/\//i.test(String(track.artworkUrl || ''))) return track.artworkUrl;
+    }
     return automaticCoverVisuals.get(String(track.path || '')) || null;
   }
 
@@ -5921,6 +6002,8 @@
       : specialView === 'top' ? 'pl-top'
       : specialView === 'history' ? 'history'
       : specialView === 'sandbox' ? 'sandbox'
+      : specialView === 'apple-music' ? 'apple-music'
+      : specialView === 'spotify' ? 'spotify'
       : specialView === 'plugin-view' ? (active?.navId || null)
       : specialView === 'podcasts' ? 'podcasts'
       : specialView === 'playlist' ? sidebarNavIdForPlaylistId(activePlaylistId)
@@ -6781,15 +6864,17 @@
     playlists = await window.beehive.getPlaylists(); closeModal(el.playlistImportModal); renderPlaylistManager(); renderNavigationEditors();
     const yt = Object.keys(snapshots).length;
     showAppNotice(`Imported “${created.name}”: ${all.length - yt} songs from your library, ${yt} from YouTube Music. Tagging them from MusicBrainz in the background…`);
-    const tagged = await tagStreamedTracksFromMusicBrainz(Object.values(snapshots));
-    const fresh = (await window.beehive.getPlaylists()).find(p => String(p.id) === String(created.id));
-    if (fresh) { await window.beehive.savePlaylist({ ...fresh, podcastEpisodes: { ...(fresh.podcastEpisodes || {}), ...snapshots } }); playlists = await window.beehive.getPlaylists(); }
-    console.info('[YouTube Music] MusicBrainz tagged', tagged, 'of', yt);
+    void (async () => {
+      const tagged = await tagStreamedTracksFromMusicBrainz(Object.values(snapshots));
+      const fresh = (await window.beehive.getPlaylists()).find(p => String(p.id) === String(created.id));
+      if (fresh) { await window.beehive.savePlaylist({ ...fresh, podcastEpisodes: { ...(fresh.podcastEpisodes || {}), ...snapshots } }); playlists = await window.beehive.getPlaylists(); }
+      console.info('[YouTube Music] MusicBrainz tagged', tagged, 'of', yt);
+    })();
   }
 
-  async function importSpotifyPlaylist(){
-    const input=await themedPrompt('Spotify playlist URL:', 'https://open.spotify.com/playlist/', 'Import Spotify playlist');
-    if(!input)return;
+  async function importSpotifyPlaylist(link){
+    const input = typeof link === 'string' && link ? link : await themedPrompt('Spotify playlist URL:', 'https://open.spotify.com/playlist/', 'Import Spotify playlist');
+    if(!input)return false;
     try{
       showAppNotice('Importing the Spotify playlist…');
       const data=await window.beehive.importSpotifyPlaylist(input);
@@ -6800,14 +6885,14 @@
         album:entry.album || '', albumUri:entry.albumUri || '', year:entry.year || '', duration:spotifyDurationSeconds(entry.duration), cover:entry.cover || entry.artworkUrl || '', artworkUrl:entry.artworkUrl || entry.cover || '', track:i+1,
         albumArtist:entry.albumArtist || entry.artist || '', year:entry.year || ''
       })).filter(t=>t.spotifyUri);
-      if(!spotifyTracks.length){ showAppNotice(`Spotify playlist “${data.name}” did not contain playable tracks.`); return; }
+      if(!spotifyTracks.length){ showAppNotice(`Spotify playlist “${data.name}” did not contain playable tracks.`); return false; }
       if (await youtubeMusicAvailable(true)) {
         const via = await themedChoice(`How should Hive play “${data.name}”?`, [
           { label: 'Full songs in Hive (YouTube Music)', value: 'youtube' },
           { label: 'Through the Spotify app', value: 'spotify' }
         ], 'Import Spotify playlist');
-        if (!via) return;
-        if (via === 'youtube') { await importSpotifyPlaylistAsYoutube(data, spotifyTracks); return; }
+        if (!via) return false;
+        if (via === 'youtube') { await importSpotifyPlaylistAsYoutube(data, spotifyTracks); return true; }
       }
       const playlistCover = normalizeSpotifyArtworkSource(data.cover || data.artworkUrl || spotifyTracks[0]?.artworkUrl || '');
       const warm = await preloadSpotifyArtwork(spotifyTracks, playlistCover);
@@ -6816,9 +6901,11 @@
       showAppNotice(data.likelyTruncated
         ? `Imported the first ${spotifyTracks.length} tracks of “${pl.name}”. Spotify only shares 100 tracks publicly; open the Spotify app and import again for the whole playlist.`
         : `Imported “${pl.name}” with ${spotifyTracks.length} Spotify tracks. Audio will stream through Spotify.`);
+      return true;
     }catch(err){
       const message=String(err?.message||'Could not import Spotify playlist.').replace(/^Error invoking remote method '[^']+': (Error: )?/,'');
       showAppNotice(`${message} For private playlists, open the Spotify app (with Spicetify applied), sign in, and try the import again.`);
+      return false;
     }
   }
 
@@ -7639,6 +7726,11 @@
     if (nav === 'sandbox') {
       specialView = 'sandbox';
       showSandboxView(tab);
+      renderTabs();
+      return true;
+    }
+    if (nav === 'apple-music' || nav === 'spotify') {
+      showStreamingPage(nav, tab);
       renderTabs();
       return true;
     }
@@ -13051,6 +13143,7 @@
   }
   async function updateNowPlayingUI(t) {
     hivebeeTrackPopup(t);
+    markApplePagePlaying(t);
     setTimeout(renderTheaterMode, 0);
     scheduleRadioPolling(t);
     setTimeout(() => { hivebeeAutoDjTopUp().catch(() => {}); }, 1500);
@@ -13108,8 +13201,10 @@
     const disc = t.disk != null && t.disk !== '' ? String(t.disk) : '';
     const trackNo = t.track != null && t.track !== '' ? String(t.track) : '';
     el.npTrack.textContent = (disc || trackNo) ? `Disc ${disc || '—'}  ·  Track ${trackNo || '—'}` : '';
-    const ext = String(t.path || '').split('.').pop().toUpperCase();
-    const formatLabel = ext || String(t.codec || '').toUpperCase();
+    // Streamed tracks have no file extension; name their source instead.
+    const streamLabel = isYoutubeMusicTrack(t) ? 'YOUTUBE MUSIC' : isRadioTrack(t) ? 'RADIO' : isAppleMusicPreview(t) ? 'PREVIEW' : isPodcastTrack(t) ? 'PODCAST' : '';
+    const ext = streamLabel ? '' : String(t.path || '').split('.').pop().toUpperCase();
+    const formatLabel = streamLabel || ext || String(t.codec || '').toUpperCase();
     el.npFormat.textContent = formatLabel;
     el.npFormat.classList.toggle('hidden', !formatLabel);
     const codecLower = String(t.codec || ext || '').toLowerCase();
@@ -15086,6 +15181,7 @@
       if(specialView==='playlist' && activePlaylistId){const pl=playlists.find(p=>String(p.id)===String(activePlaylistId));if(pl)return setView(viewMode);}
       if(specialView==='history')return window.beehive.getHistory().then(h=>{const t=historyTracks(h||[]);return viewMode==='albums'?renderSpecialAlbums(t):renderSpecialSongs(t);});
       if(specialView==='sandbox') return showSandboxView();
+      if(specialView==='apple-music' || specialView==='spotify') return showStreamingPage(specialView);
       if(specialView==='plugin-view') return showPluginView();
       if(specialView==='yearly-wrap') return renderYearlyWrap();
     }
@@ -15236,6 +15332,8 @@
     { id:'yearly-wrap', label:'Yearly Wrap', description:'A quiet annual listening retrospective', icon:'' },
     { id:'sandbox', label:'Sandbox', description:'Plugin sandbox launcher', icon:'' },
     { id:'podcasts', label:'Podcasts', description:'Podcast search and episodes', icon:'' },
+    { id:'apple-music', label:'Apple Music', description:'Browse Apple Music playlists and albums', icon:'' },
+    { id:'spotify', label:'Spotify', description:'Import Spotify playlists', icon:'' },
     { id:'pl-recent', label:'Recently Added', description:'Tracks added after your first library scan', icon:'' },
     { id:'pl-top', label:'Top 25 Most Played', description:'Most played tracks', icon:'' },
   ];
@@ -15311,11 +15409,22 @@
     if (!hasSavedNavigation) {
       const divider = { id:'divider-top', type:'divider', label:'' };
       custom = [divider];
-      order = ['music', 'pl-explorer', divider.id, 'history', 'podcasts', 'pl-top', 'pl-recent', 'yearly-wrap', 'sandbox'];
+      order = ['music', 'pl-explorer', divider.id, 'history', 'podcasts', 'apple-music', 'spotify', 'pl-top', 'pl-recent', 'yearly-wrap', 'sandbox'];
       hidden = new Set(['sandbox']);
     }
     order = order.filter(id => id !== 'explorer');
     hidden.delete('explorer');
+    // Hive 2.0: Apple Music and Spotify became sidebar pages. Existing layouts
+    // get them once, right after Podcasts (hide them in Settings → Sidebar).
+    try {
+      const streamingKey = 'beehive:navigation-streaming-pages-v1';
+      if (hasSavedNavigation && localStorage.getItem(streamingKey) !== '1') {
+        order = order.filter(id => id !== 'apple-music' && id !== 'spotify');
+        const at = order.indexOf('podcasts');
+        order.splice(at >= 0 ? at + 1 : order.length, 0, 'apple-music', 'spotify');
+        localStorage.setItem(streamingKey, '1');
+      }
+    } catch {}
     // One-time migration: older navigation builds could leave Podcasts in the
     // pinned set. Podcasts is a normal sidebar destination by default; users can
     // explicitly pin it again later, and the migration marker prevents a future
@@ -15337,6 +15446,15 @@
     return { order, hidden, labels, custom, meta, pinned, pinnedOrder };
   }
   let sidebarNavigation = loadNavigationPrefs();
+  // Layouts restored from Hive's saved UI state predate the Apple Music and
+  // Spotify pages; put them after Podcasts (they stay hideable).
+  function ensureStreamingPagesInSidebar() {
+    const order = sidebarNavigation.order;
+    const missing = ['apple-music', 'spotify'].filter(id => !order.includes(id));
+    if (!missing.length) return;
+    const at = order.indexOf('podcasts');
+    order.splice(at >= 0 ? at + 1 : order.length, 0, ...missing);
+  }
   // Playlists is a permanent top-bar destination. Keep it immediately after Music,
   // and keep an already-pinned Favorites projection immediately after it. Other
   // pinned destinations retain their relative order after these fixed entries.
@@ -15540,7 +15658,7 @@
     try {
       const config=await window.beehive.getConfig(), ui=config?.uiState; if(!ui||typeof ui!=='object') return;
       if (ui.layout && typeof ui.layout === 'object') { layout = { ...layout, ...ui.layout }; isLocked = !!layout.lockResize; applySavedSizes(); updateLockUI(); }
-      if(ui.sidebarNavigation&&typeof ui.sidebarNavigation==='object') { const saved=ui.sidebarNavigation; if(Array.isArray(saved.custom)) sidebarNavigation.custom=saved.custom.filter(x=>x&&(x.type==='divider'||x.type==='playlist')&&typeof x.id==='string'&& (x.type!=='playlist'||x.playlistId)); const valid=new Set(SIDEBAR_NAV_DEFS.map(d=>d.id).concat(sidebarNavigation.custom.map(x=>x.id))); if(Array.isArray(saved.order)) sidebarNavigation.order=saved.order.filter(id=>valid.has(id)); if(Array.isArray(saved.hidden)) sidebarNavigation.hidden=new Set(saved.hidden.filter(id=>valid.has(id))); if(saved.labels&&typeof saved.labels==='object') sidebarNavigation.labels={...sidebarNavigation.labels,...saved.labels}; if(saved.meta&&typeof saved.meta==='object') sidebarNavigation.meta=saved.meta; if(Array.isArray(saved.pinned)) sidebarNavigation.pinned=new Set(saved.pinned.filter(id=>valid.has(id))); if(Array.isArray(saved.pinnedOrder)) sidebarNavigation.pinnedOrder=saved.pinnedOrder.filter(id=>valid.has(id)); else sidebarNavigation.pinnedOrder=sidebarNavigation.order.filter(id=>sidebarNavigation.pinned.has(id)); for(const id of sidebarNavigation.pinned) if(!sidebarNavigation.pinnedOrder.includes(id)) sidebarNavigation.pinnedOrder.push(id); sidebarNavigation.pinnedOrder=sidebarNavigation.pinnedOrder.filter(id=>sidebarNavigation.pinned.has(id)); if(!sidebarNavigation.pinned.has('music')) sidebarNavigation.pinned.add('music'); if(!sidebarNavigation.pinnedOrder.includes('music')) sidebarNavigation.pinnedOrder.unshift('music'); if(!sidebarNavigation.order.includes('music')) sidebarNavigation.order.unshift('music'); }
+      if(ui.sidebarNavigation&&typeof ui.sidebarNavigation==='object') { const saved=ui.sidebarNavigation; if(Array.isArray(saved.custom)) sidebarNavigation.custom=saved.custom.filter(x=>x&&(x.type==='divider'||x.type==='playlist')&&typeof x.id==='string'&& (x.type!=='playlist'||x.playlistId)); const valid=new Set(SIDEBAR_NAV_DEFS.map(d=>d.id).concat(sidebarNavigation.custom.map(x=>x.id))); if(Array.isArray(saved.order)) sidebarNavigation.order=saved.order.filter(id=>valid.has(id)); if(Array.isArray(saved.hidden)) sidebarNavigation.hidden=new Set(saved.hidden.filter(id=>valid.has(id))); if(saved.labels&&typeof saved.labels==='object') sidebarNavigation.labels={...sidebarNavigation.labels,...saved.labels}; if(saved.meta&&typeof saved.meta==='object') sidebarNavigation.meta=saved.meta; if(Array.isArray(saved.pinned)) sidebarNavigation.pinned=new Set(saved.pinned.filter(id=>valid.has(id))); if(Array.isArray(saved.pinnedOrder)) sidebarNavigation.pinnedOrder=saved.pinnedOrder.filter(id=>valid.has(id)); else sidebarNavigation.pinnedOrder=sidebarNavigation.order.filter(id=>sidebarNavigation.pinned.has(id)); for(const id of sidebarNavigation.pinned) if(!sidebarNavigation.pinnedOrder.includes(id)) sidebarNavigation.pinnedOrder.push(id); sidebarNavigation.pinnedOrder=sidebarNavigation.pinnedOrder.filter(id=>sidebarNavigation.pinned.has(id)); if(!sidebarNavigation.pinned.has('music')) sidebarNavigation.pinned.add('music'); if(!sidebarNavigation.pinnedOrder.includes('music')) sidebarNavigation.pinnedOrder.unshift('music'); if(!sidebarNavigation.order.includes('music')) sidebarNavigation.order.unshift('music'); ensureStreamingPagesInSidebar(); }
       if(Array.isArray(ui.tabs)) {
         const byId=new Map(ui.tabs.map(x=>[x.id,x]));
         for(const t of tabs){
@@ -15700,7 +15818,7 @@
           return openPlaylistFromSidebar(pl, nav);
         }
         if (nav === 'podcasts') { await showSpecialNavigation('podcasts'); return; }
-        if (nav === 'sandbox') { await showSpecialNavigation(nav); return; }
+        if (nav === 'sandbox' || nav === 'apple-music' || nav === 'spotify') { await showSpecialNavigation(nav); return; }
         if (nav === 'explorer') return;
         if (nav === 'music') {
           await showSpecialNavigation('music');
@@ -15856,6 +15974,7 @@
     if (nav === 'pl-top') return 'top';
     if (nav === 'pl-favorites') return 'playlist';
     if (nav === 'sandbox') return 'sandbox';
+    if (nav === 'apple-music' || nav === 'spotify') return nav;
     if (isPluginViewNav(nav)) return 'plugin-view';
     if (nav === 'yearly-wrap') return 'yearly-wrap';
     if (nav === 'podcasts') return 'podcasts';
@@ -16402,6 +16521,8 @@
     if (specialView === 'top') return 'Top 25 Most Played';
     if (specialView === 'history') return 'History';
     if (specialView === 'sandbox') return 'Sandbox';
+    if (specialView === 'apple-music') return 'Apple Music';
+    if (specialView === 'spotify') return 'Spotify';
     if (specialView === 'plugin-view') return sidebarLabel(getActiveTab()?.navId) || 'Plugin';
     if (viewMode === 'songs') return 'Tracks';
     if (viewMode === 'artists') return 'Artists';
@@ -16728,6 +16849,8 @@
       : specialView === 'top' ? 'Top 25 Most Played'
       : specialView === 'history' ? 'History'
       : specialView === 'sandbox' ? 'Sandbox'
+      : specialView === 'apple-music' ? 'Apple Music'
+      : specialView === 'spotify' ? 'Spotify'
       : specialView === 'podcasts' ? 'Podcasts'
       : specialView === 'yearly-wrap' ? 'Yearly Wrap'
       : specialView === 'folder' && state.activeFolderPath ? String(state.activeFolderPath).split(/[\\/]/).filter(Boolean).pop() || String(state.activeFolderPath)
@@ -17075,7 +17198,7 @@
   el.playlistCancel.addEventListener('click',()=>closeModal(el.playlistModal));
   el.playlistImportCancel.addEventListener('click',()=>closeModal(el.playlistImportModal));
   el.playlistImportFile.addEventListener('click',importPlaylistFile);
-  el.playlistImportSpotify.addEventListener('click',importSpotifyPlaylist);
+  el.playlistImportSpotify?.addEventListener('click',()=>importSpotifyPlaylist());
   el.playlistName.addEventListener('input',()=>{
     if(playlistLabelStyleGenerated && el.playlistLabelHtml){
       el.playlistLabelHtml.value=generatedPlaylistLabel();

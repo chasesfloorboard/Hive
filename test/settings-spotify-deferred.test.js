@@ -18,10 +18,10 @@ test('Advanced CSS settings panel is removed while supported theme controls rema
   assert.match(html, /id="theme-export-btn"/);
 });
 
-test('Spotify playlist import is enabled again in Hive 2.0', () => {
-  assert.doesNotMatch(html, /id="playlist-import-spotify"[^>]*disabled/);
-  assert.doesNotMatch(html, /id="playlist-import-spotify"[^>]*data-deferred/);
-  assert.match(source, /playlistImportSpotify/);
+test('Spotify playlist import lives on the Spotify sidebar page in Hive 2.0', () => {
+  assert.doesNotMatch(html, /id="playlist-import-spotify"/);
+  assert.match(source, /\{ id:'spotify', label:'Spotify'/);
+  assert.match(source, /function spotifyPageElement\(\)/);
 });
 
 test('Spotify development resumes in Hive 2.0 behind the same flag', () => {

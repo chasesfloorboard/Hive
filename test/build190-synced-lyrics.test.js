@@ -36,7 +36,7 @@ test('Build 190 does not select empty online lyric payloads', () => {
 const rendererSource = require('node:fs').readFileSync(require('node:path').join(__dirname, '..', 'app', 'renderer', 'renderer.js'), 'utf8');
 const stylesSource = require('node:fs').readFileSync(require('node:path').join(__dirname, '..', 'app', 'renderer', 'styles.css'), 'utf8');
 
-test('New-user sidebar: Music, Playlists, divider, History, Podcasts, Top 25, Recently Added, Yearly Wrap; Sandbox hidden', () => {
+test('New-user sidebar: Music, Playlists, divider, History, Podcasts, Apple Music, Spotify, Top 25, Recently Added, Yearly Wrap; Sandbox hidden', () => {
   const defsStart = rendererSource.indexOf('const SIDEBAR_NAV_DEFS = [');
   const defsEnd = rendererSource.indexOf('];', defsStart) + 2;
   const defs = rendererSource.slice(defsStart, defsEnd);
@@ -48,7 +48,8 @@ test('New-user sidebar: Music, Playlists, divider, History, Podcasts, Top 25, Re
   // 2026-09: the user's reference layout has a single divider and no Sandbox
   // button (Favorites is inserted after Playlists once playlists load).
   assert.match(rendererSource, /id:'divider-top'.*type:'divider'/);
-  assert.match(rendererSource, /order = \['music', 'pl-explorer', divider\.id, 'history', 'podcasts', 'pl-top', 'pl-recent', 'yearly-wrap', 'sandbox'\];\s*hidden = new Set\(\['sandbox'\]\);/);
+  // Hive 2.0 adds the Apple Music and Spotify pages after Podcasts.
+  assert.match(rendererSource, /order = \['music', 'pl-explorer', divider\.id, 'history', 'podcasts', 'apple-music', 'spotify', 'pl-top', 'pl-recent', 'yearly-wrap', 'sandbox'\];\s*hidden = new Set\(\['sandbox'\]\);/);
   assert.match(rendererSource, /label:\s*''/);
   assert.match(rendererSource, /divider\.title = def\.label \? `\$\{def\.label\} divider` : 'Divider'/);
   assert.match(rendererSource, /textContent='\+ Add divider'/);

@@ -5552,3 +5552,21 @@ html.hb-hide-pb-eq #btn-eq, html.hb-hide-pb-mini #btn-mini, html.hb-hide-pb-thea
 @media (max-width:640px){.apple-head{flex-direction:column;align-items:flex-start}.apple-track{grid-template-columns:minmax(0,1fr) auto 32px}.apple-track-n,.apple-track-time{display:none}}
 .apple-badge-yt{color:#ff6b6b;border-color:color-mix(in srgb,#ff4e45 45%,transparent)}
 .apple-yt-note{display:flex;align-items:center;gap:10px;flex-wrap:wrap;font-size:12.5px;color:var(--text-dim);margin:0 0 10px;padding:8px 10px;border:1px solid var(--border);border-radius:8px}
+
+/* ---------------- Apple Music / Spotify sidebar pages ---------------- */
+.streaming-page { width:100%; min-height:100%; box-sizing:border-box; padding:30px 34px 34px; max-width:1100px; }
+.streaming-page-head { display:flex; align-items:flex-end; margin-bottom:18px; }
+.streaming-kicker { color:var(--text-dimmer); font-size:9px; font-weight:850; letter-spacing:.18em; }
+.streaming-page h1 { margin:6px 0 0; font-size:30px; line-height:1.05; font-weight:850; letter-spacing:-.025em; }
+.streaming-page-head p { margin:7px 0 0; color:var(--text-dim); font-size:12px; max-width:720px; line-height:1.5; }
+.streaming-page-bar { display:flex; align-items:center; gap:12px; min-height:28px; margin:4px 0 6px; }
+.streaming-page-bar .organise-status { margin:0; }
+.streaming-setting { display:flex; align-items:center; gap:10px; font-size:13px; color:var(--text-dim); margin:6px 0 4px; }
+.spotify-page-list { display:flex; flex-direction:column; gap:2px; }
+.spotify-page-list .radio-row { cursor:pointer; }
+.spotify-page-list .radio-logo { object-fit:cover; }
+@media (max-width:640px){ .streaming-page { padding:20px 16px; } }
+.apple-track.playing { background:color-mix(in srgb,var(--accent) 22%,transparent); }
+.apple-track.playing .apple-track-text div { color:var(--accent); font-weight:600; }
+.streaming-page .radio-search input { flex:1 1 auto; width:auto; min-width:0; }
+.streaming-page .radio-search button, .streaming-page .sidebar-add { flex:0 0 auto; width:auto; }

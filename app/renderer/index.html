@@ -46,7 +46,6 @@
           <button class="dropdown-item" data-action="mini-player">Mini player</button>
           <button class="dropdown-item" data-action="find-duplicates">Find duplicates…</button>
           <button class="dropdown-item" data-action="internet-radio">Internet radio…</button>
-          <button class="dropdown-item" data-action="apple-music">Apple Music…</button>
           <button class="dropdown-item" data-action="import-musicbee">Import MusicBee library…</button>
         </div>
       </div>
@@ -838,9 +837,9 @@
     <div class="modal glass playlist-modal">
       <div class="modal-header"><h3>Import Playlist</h3><button class="modal-close" aria-label="Close" data-close>✕</button></div>
       <div class="modal-body playlist-form playlist-import-form">
-        <p class="dim">Import a local M3U/M3U8 playlist or add a Spotify playlist as a streaming source. Spotify tracks stay online and play through the Spotify desktop client controlled by Hive.</p>
+        <p class="dim">Import a local M3U/M3U8 playlist. Spotify and Apple Music playlists are imported from their pages in the sidebar.</p>
         <button id="playlist-import-file" class="playlist-import-choice"><strong>Import Playlist File</strong><span>M3U / M3U8 from your computer</span></button>
-        <button id="playlist-import-spotify" class="playlist-import-choice" type="button"><strong>Import Spotify Playlist URL</strong><span>Whole playlist when Spotify is open (private ones too); first 100 tracks otherwise</span></button>
+        
         <div class="tag-actions"><button id="playlist-import-cancel" class="sidebar-add">Cancel</button></div>
       </div>
     </div>
