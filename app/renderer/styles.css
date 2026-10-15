@@ -5671,3 +5671,6 @@ span.apple-track-art{display:block;background:rgba(255,255,255,.06)}
 .streaming-page .streaming-search .streaming-search-input:hover,
 .streaming-page .streaming-search .streaming-search-input:focus { background:transparent !important; box-shadow:none !important; border:0 !important; outline:none !important; border-radius:unset !important; }
 .streaming-page .streaming-search { box-shadow:none; }
+.streaming-page .icon-only-btn{display:inline-grid;place-items:center;padding:5px 10px;line-height:0}
+.streaming-page .icon-only-btn svg{width:16px;height:16px}
+.streaming-page .spotify-library-card .spotify-library-actions .icon-only-btn{flex:0 0 40px;padding:5px 0}

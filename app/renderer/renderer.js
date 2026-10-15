@@ -1904,7 +1904,7 @@
         const ytNote = youtubeMusicReady ? '' : `<div class="apple-yt-note">Songs you don't own play as 30-second previews. <button type="button" class="sidebar-add" id="apple-install-ytdlp">Play full songs from YouTube Music</button></div>`;
         view.innerHTML = `<div class="apple-head">${current.artwork ? `<img src="${escapeHtml(current.artwork)}" alt="">` : ''}<div><div class="apple-kicker">${current.kind === 'album' ? 'ALBUM' : 'PLAYLIST'}</div><h3>${escapeHtml(current.name)}</h3><div class="dim">${escapeHtml(current.curator)} · ${current.tracks.length} songs · ${localCount} in your library</div>
             ${current.description ? `<p class="apple-desc">${escapeHtml(current.description)}</p>` : ''}
-            <div class="apple-actions"><button type="button" class="sidebar-add" id="apple-play-all">Play</button><button type="button" class="sidebar-add" id="apple-import">Import as playlist</button><button type="button" class="sidebar-add" id="apple-download">Download playlist</button><a class="sidebar-add" href="${escapeHtml(current.url)}" target="_blank" rel="noopener">Open in Apple Music</a></div></div></div>
+            <div class="apple-actions"><button type="button" class="sidebar-add" id="apple-play-all">Play</button><button type="button" class="sidebar-add" id="apple-import">Import as playlist</button><button type="button" class="sidebar-add icon-only-btn" id="apple-download" title="Download playlist" aria-label="Download playlist">${theaterIcon('download')}</button><a class="sidebar-add" href="${escapeHtml(current.url)}" target="_blank" rel="noopener">Open in Apple Music</a></div></div></div>
           ${ytNote}<div class="apple-tracks">${rows}</div>
           ${current.more?.length ? `<h4 class="radio-heading">More like this</h4><div class="apple-grid">${current.more.map(appleCardHtml).join('')}</div>` : ''}`;
         status.textContent = ''; back.classList.toggle('hidden', !lastResultsHtml);
@@ -2106,7 +2106,7 @@
       const imported = findImportedSpotifyPlaylist(url);
       return `<div class="spotify-library-card">${/^https:/.test(pl.image) ? `<img class="spotify-library-art" src="${escapeHtml(pl.image)}" alt="" loading="lazy">` : '<span class="spotify-library-art spotify-library-art-blank">♪</span>'}
         <strong>${escapeHtml(pl.name)}</strong><small>${escapeHtml([pl.owner, pl.count ? `${pl.count} songs` : ''].filter(Boolean).join(' · '))}</small>
-        <span class="spotify-library-actions">${imported ? `<button type="button" class="sidebar-add" data-sl="open" data-url="${escapeHtml(url)}">Open</button>` : `<button type="button" class="sidebar-add" data-sl="import" data-url="${escapeHtml(url)}">Import</button>`}<button type="button" class="sidebar-add" data-sl="download" data-url="${escapeHtml(url)}">Download</button></span></div>`;
+        <span class="spotify-library-actions">${imported ? `<button type="button" class="sidebar-add" data-sl="open" data-url="${escapeHtml(url)}">Open</button>` : `<button type="button" class="sidebar-add" data-sl="import" data-url="${escapeHtml(url)}">Import</button>`}<button type="button" class="sidebar-add icon-only-btn" data-sl="download" data-url="${escapeHtml(url)}" title="Download" aria-label="Download ${escapeHtml(pl.name)}">${theaterIcon('download')}</button></span></div>`;
     }).join('') || '<div class="radio-empty">No playlists in your Spotify library.</div>';
   }
   async function loadSpotifyLibrary() {
@@ -2139,7 +2139,7 @@
       const art = normalizeSpotifyArtworkSource(p.cover || p.artworkUrl || '');
       return `<div class="radio-row" data-pl-id="${escapeHtml(String(p.id))}">${/^https:\/\//i.test(art) ? `<img class="radio-logo" src="${escapeHtml(art)}" alt="">` : '<span class="radio-logo radio-logo-empty">♫</span>'}
         <div class="radio-row-text"><div class="radio-row-name">${escapeHtml(p.name)}</div><div class="radio-row-meta">${count} songs</div></div>
-        <button type="button" class="sidebar-add" data-sp="play">Play</button><button type="button" class="sidebar-add" data-sp="download">Download</button><button type="button" class="sidebar-add" data-sp="open">Open</button></div>`;
+        <button type="button" class="sidebar-add" data-sp="play">Play</button><button type="button" class="sidebar-add icon-only-btn" data-sp="download" title="Download" aria-label="Download ${escapeHtml(p.name)}">${theaterIcon('download')}</button><button type="button" class="sidebar-add" data-sp="open">Open</button></div>`;
     }).join('') : '<div class="radio-empty">No Spotify playlists yet. Paste a link above.</div>';
   }
 
