@@ -2021,18 +2021,26 @@ ipcMain.handle('ytmusic:download', async (_evt, track = {}) => {
   const config = await readJsonSafe(CONFIG_PATH(), { folders: [] });
   const folder = (Array.isArray(config.folders) ? config.folders : []).map(resolveConfiguredFolder).find(f => f && fs.existsSync(f));
   if (!folder) throw new Error('Add a music folder in Settings → Library first.');
-  const clean = (v, fallback) => (String(v || '').replace(/[\\/:*?"<>|\x00-\x1f]/g, '_').replace(/\s+/g, ' ').trim().replace(/^\.+/, '').slice(0, 120) || fallback);
+  const clean = (v, fallback) => (String(v || '').replace(/\s*:\s*/g, ' - ').replace(/[\\/*?"<>|\x00-\x1f]/g, '_').replace(/\s+/g, ' ').trim().replace(/^\.+/, '').slice(0, 120) || fallback);
   const artist = clean(track.albumArtist || String(track.artist || '').split(/,|&| feat\.? /i)[0], 'Unknown Artist');
   const album = clean(track.album, 'Unknown Album');
   const n = Number(track.track) || 0;
-  const baseName = `${n ? String(n).padStart(2, '0') + ' - ' : ''}${clean(track.title, 'Untitled')}`;
-  const dir = path.join(folder, artist, album);
+  // Playlist downloads go to <music folder>/Playlists/<playlist name>/ as
+  // "NN - Artist - Title.mp3" in playlist order; single songs go to
+  // <Artist>/<Album>/.
+  const playlistName = track.playlistFolder ? clean(track.playlistFolder, 'Playlist') : '';
+  const position = Number(track.playlistPosition) || 0;
+  const baseName = playlistName
+    ? `${position ? String(position).padStart(2, '0') + ' - ' : ''}${clean(String(track.artist || '').split(/,|&| feat\.? /i)[0], 'Unknown Artist')} - ${clean(track.title, 'Untitled')}`
+    : `${n ? String(n).padStart(2, '0') + ' - ' : ''}${clean(track.title, 'Untitled')}`;
+  const dir = playlistName ? path.join(folder, 'Playlists', playlistName) : path.join(folder, artist, album);
   const existing = path.join(dir, `${baseName}.mp3`);
   if (fs.existsSync(existing)) return { path: existing, existed: true };
   const r = await youtubeMusic.resolve(track);
   const file = await youtubeMusic.downloadAudio(r.videoId, dir, baseName);
   const tags = {};
-  for (const [k, v] of Object.entries({ title: track.title, artist: track.artist, album: track.album, albumArtist: track.albumArtist, genre: track.genre, year: track.year, track: n || '', disk: track.disk || track.disc || '' })) {
+  // Fill gaps (Spotify's public data has no album) from the YouTube Music match.
+  for (const [k, v] of Object.entries({ title: track.title, artist: track.artist, album: track.album || r.youtube?.album, albumArtist: track.albumArtist, genre: track.genre, year: track.year || r.youtube?.year, track: n || '', disk: track.disk || track.disc || '' })) {
     if (v !== undefined && v !== null && String(v).trim()) tags[k] = String(v);
   }
   // Cover: Hive's cached copy if there is one, else the source's artwork URL.

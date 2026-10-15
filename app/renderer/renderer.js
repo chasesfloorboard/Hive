@@ -1825,7 +1825,7 @@
         const ytNote = youtubeMusicReady ? '' : `<div class="apple-yt-note">Songs you don't own play as 30-second previews. <button type="button" class="sidebar-add" id="apple-install-ytdlp">Play full songs from YouTube Music</button></div>`;
         view.innerHTML = `<div class="apple-head">${current.artwork ? `<img src="${escapeHtml(current.artwork)}" alt="">` : ''}<div><div class="apple-kicker">${current.kind === 'album' ? 'ALBUM' : 'PLAYLIST'}</div><h3>${escapeHtml(current.name)}</h3><div class="dim">${escapeHtml(current.curator)} · ${current.tracks.length} songs · ${localCount} in your library</div>
             ${current.description ? `<p class="apple-desc">${escapeHtml(current.description)}</p>` : ''}
-            <div class="apple-actions"><button type="button" class="sidebar-add" id="apple-play-all">Play</button><button type="button" class="sidebar-add" id="apple-import">Import as playlist</button><a class="sidebar-add" href="${escapeHtml(current.url)}" target="_blank" rel="noopener">Open in Apple Music</a></div></div></div>
+            <div class="apple-actions"><button type="button" class="sidebar-add" id="apple-play-all">Play</button><button type="button" class="sidebar-add" id="apple-import">Import as playlist</button><button type="button" class="sidebar-add" id="apple-download">Download playlist</button><a class="sidebar-add" href="${escapeHtml(current.url)}" target="_blank" rel="noopener">Open in Apple Music</a></div></div></div>
           ${ytNote}<div class="apple-tracks">${rows}</div>
           ${current.more?.length ? `<h4 class="radio-heading">More like this</h4><div class="apple-grid">${current.more.map(appleCardHtml).join('')}</div>` : ''}`;
         status.textContent = ''; back.classList.toggle('hidden', !lastResultsHtml);
@@ -1854,6 +1854,14 @@
           return;
         }
         if (e.target.closest('#apple-play-all')) { const all = appleTracksForPlayback(current); if (all.length) playQueue(all, 0, false); return; }
+        if (e.target.closest('#apple-download')) {
+          if (!youtubeMusicReady) { status.textContent = 'Downloading needs yt-dlp; use “Play full songs from YouTube Music” above to install it.'; return; }
+          const tracks = appleTracksForPlayback(current).map((t, i) => isYoutubeMusicTrack(t) ? { ...t, playlistFolder: current.name || 'Apple Music playlist', playlistPosition: i + 1 } : null).filter(Boolean);
+          if (!tracks.length) { status.textContent = 'Every song here is already in your library.'; return; }
+          status.textContent = `Downloading ${tracks.length} songs to Playlists/${current.name}…`;
+          downloadStreamedTracks(tracks);
+          return;
+        }
         if (e.target.closest('#apple-install-ytdlp')) {
           status.textContent = 'Installing yt-dlp…';
           try { await window.beehive.installYtDlp(); } catch (err) { status.textContent = `Couldn't install yt-dlp (${cleanError(err)}).`; return; }
@@ -1950,10 +1958,15 @@
       if (ok) spotifyPage.querySelector('#spotify-page-url').value = '';
       renderSpotifyPagePlaylists();
     });
+    spotifyPage.querySelector('#spotify-page-list').addEventListener('contextmenu', e => {
+      const row = e.target.closest('[data-pl-id]'); if (!row) return;
+      const pl = playlists.find(p => String(p.id) === row.dataset.plId); if (pl) showPlaylistContextMenu(e, pl);
+    });
     spotifyPage.querySelector('#spotify-page-list').addEventListener('click', e => {
       const row = e.target.closest('[data-pl-id]'); if (!row) return;
       const pl = playlists.find(p => String(p.id) === row.dataset.plId); if (!pl) return;
       if (e.target.closest('[data-sp="play"]')) void playPlaylist(pl);
+      else if (e.target.closest('[data-sp="download"]')) downloadPlaylist(pl);
       else void openPlaylistFromSidebar(pl, sidebarNavIdForPlaylistId(pl.id));
     });
     bindHiveBeePrefControls(spotifyPage);
@@ -1968,7 +1981,7 @@
       const art = normalizeSpotifyArtworkSource(p.cover || p.artworkUrl || '');
       return `<div class="radio-row" data-pl-id="${escapeHtml(String(p.id))}">${/^https:\/\//i.test(art) ? `<img class="radio-logo" src="${escapeHtml(art)}" alt="">` : '<span class="radio-logo radio-logo-empty">♫</span>'}
         <div class="radio-row-text"><div class="radio-row-name">${escapeHtml(p.name)}</div><div class="radio-row-meta">${count} songs</div></div>
-        <button type="button" class="sidebar-add" data-sp="play">Play</button><button type="button" class="sidebar-add" data-sp="open">Open</button></div>`;
+        <button type="button" class="sidebar-add" data-sp="play">Play</button><button type="button" class="sidebar-add" data-sp="download">Download</button><button type="button" class="sidebar-add" data-sp="open">Open</button></div>`;
     }).join('') : '<div class="radio-empty">No Spotify playlists yet. Paste a link above.</div>';
   }
 
@@ -1982,9 +1995,23 @@
     downloadStatusEl.textContent = text || '';
     downloadStatusEl.classList.toggle('hidden', !text);
   }
+  // A playlist's songs to download: its YouTube Music songs, plus Spotify
+  // songs turned into YouTube Music ones whatever the playback setting.
+  // Each carries the playlist folder and its position for the file name.
+  function playlistDownloadTracks(pl) {
+    const raw = pl?.source === 'spotify' && Array.isArray(pl.spotifyTracks)
+      ? pl.spotifyTracks.map(normalizeSpotifyTrackRecord).map(st => youtubeTrackForSpotifyAnyway(st))
+      : tracksForPlaylist(pl);
+    return raw.map((t, i) => isYoutubeMusicTrack(t) ? { ...t, playlistFolder: pl.name || 'Playlist', playlistPosition: i + 1 } : null).filter(Boolean);
+  }
+  function downloadPlaylist(pl) {
+    const tracks = playlistDownloadTracks(pl);
+    if (!tracks.length) { showAppNotice(`Every song in “${pl?.name}” is already in your library.`); return; }
+    downloadStreamedTracks(tracks);
+  }
   function downloadStreamedTracks(tracks) {
-    const seen = new Set(downloadQueue.map(t => t.path));
-    const add = (tracks || []).filter(t => isYoutubeMusicTrack(t) && !seen.has(t.path) && (seen.add(t.path), true));
+    const seen = new Set(downloadQueue.map(t => `${t.path}|${t.playlistFolder || ''}`));
+    const add = (tracks || []).filter(t => isYoutubeMusicTrack(t) && !seen.has(`${t.path}|${t.playlistFolder || ''}`) && (seen.add(`${t.path}|${t.playlistFolder || ''}`), true));
     if (!add.length) { showAppNotice('Those songs are already downloaded or queued.'); return; }
     downloadQueue.push(...add);
     if (!downloadRunning) void runDownloads();
@@ -1999,6 +2026,7 @@
       showDownloadStatus(`Downloading ${n}/${n + downloadQueue.length}: ${t.title}`);
       try {
         const r = await window.beehive.downloadYouTubeMusic({ path: t.path, title: t.title, artist: t.artist, album: t.album, albumArtist: t.albumArtist || '',
+          playlistFolder: t.playlistFolder || '', playlistPosition: t.playlistPosition || 0,
           genre: t.genre || '', year: t.year || '', track: t.track || 0, disk: t.disk || t.disc || '', duration: t.duration, cover: t.cover || '', artworkUrl: t.artworkUrl || '', ytVideoId: t.ytVideoId || '' });
         done.push({ from: t.path, to: r.path, loved: !!t.loved });
       } catch (err) {
@@ -6685,6 +6713,7 @@
       {label:playlistIsInSidebar(pl) ? 'Remove from sidebar' : 'Add to sidebar',action:()=>playlistIsInSidebar(pl) ? removePlaylistFromSidebar(sidebarNavigation.custom.find(x=>x.type==='playlist'&&String(x.playlistId)===String(pl.id))?.id) : addPlaylistToSidebar(pl)},
       ...(pl.smart ? [{label:'Edit smart playlist',action:()=>openSmartPlaylistModal(pl)}] : []),
       {label:'Export as M3U',action:()=>exportNamedPlaylist(pl)},
+      ...(!pl.smart && playlistDownloadTracks(pl).length ? [{label:'Download playlist',action:()=>downloadPlaylist(pl)}] : []),
       {label:'Delete playlist',danger:true,action:async()=>{await window.beehive.deletePlaylist(pl.id);playlists=playlists.filter(x=>x.id!==pl.id);if(activePlaylistId===pl.id){activePlaylistId=null;specialView=null;}renderPlaylistManager();}}
     ]);
   }
@@ -6971,6 +7000,13 @@
   // Hive; the Spotify app is only used when chosen.
   function spotifyPlaysViaYoutube() { return youtubeMusicReady === true && hbPref('spotify.playVia') !== 'spotify'; }
   let spotifyLibraryIndexCache = null, spotifyLibraryIndexFor = null;
+  function youtubeTrackForSpotifyAnyway(st) {
+    if (!isSpotifyTrack(st)) return st;
+    if (youtubeMusicReady !== true) return st;
+    const saved = hivebeePrefs['spotify.playVia'];
+    hivebeePrefs['spotify.playVia'] = 'youtube';
+    try { return youtubeTrackForSpotify(st); } finally { if (saved === undefined) delete hivebeePrefs['spotify.playVia']; else hivebeePrefs['spotify.playVia'] = saved; }
+  }
   function youtubeTrackForSpotify(st) {
     if (!isSpotifyTrack(st) || !spotifyPlaysViaYoutube()) return st;
     if (spotifyLibraryIndexFor !== library.tracks || spotifyLibraryIndexCache?.__size !== library.tracks.length) { spotifyLibraryIndexCache = appleLibraryIndex(); spotifyLibraryIndexCache.__size = library.tracks.length; spotifyLibraryIndexFor = library.tracks; }
@@ -8765,7 +8801,7 @@
       ...(isPodcastTrack(t) && !isRadioTrack(t) ? [{label:t.loved ? 'Unlove' : 'Love',icon:t.loved ? 'heartFilled' : 'heartOutline',menuKey:'rating',action:()=>setTrackLove(t, !t.loved)}] : []),
       ...(isYoutubeMusicTrack(t) ? [{label:'Download',icon:'download',menuKey:'download',submenu:[
         {label:'Download this song',icon:'download',action:()=>downloadStreamedTracks([t])},
-        ...(specialView === 'playlist' && activePlaylistId ? [{label:'Download every streamed song in this playlist',icon:'download',action:()=>{ const pl = playlists.find(p => String(p.id) === String(activePlaylistId)); downloadStreamedTracks(pl ? tracksForPlaylist(pl) : []); }}] : []),
+        ...(specialView === 'playlist' && activePlaylistId ? [{label:'Download this playlist',icon:'download',action:()=>{ const pl = playlists.find(p => String(p.id) === String(activePlaylistId)); if (pl) downloadPlaylist(pl); }}] : []),
         {label:'Download every streamed song in the queue',icon:'download',action:()=>downloadStreamedTracks(currentQueue)}
       ]}] : []),
       ...(isLocal ? [{label:'Rating',icon:'star',menuKey:'rating',submenu:[
@@ -16000,7 +16036,7 @@
           showContextMenu(e.clientX,e.clientY,[
             {label:'Play playlist',action:()=>playPlaylist(pl)},
             {label:'Queue playlist',action:()=>{const tracks=tracksForPlaylist(pl); if(!tracks.length){showAppNotice('This playlist has no tracks.');return;} addTracksToQueue(tracks);}},
-            ...(tracksForPlaylist(pl).some(isYoutubeMusicTrack) ? [{label:'Download streamed songs',action:()=>downloadStreamedTracks(tracksForPlaylist(pl))}] : []),
+            ...(!pl.smart && playlistDownloadTracks(pl).length ? [{label:'Download playlist',action:()=>downloadPlaylist(pl)}] : []),
             {label:'Info',action:()=>showPlaylistInfo(pl)},
             {label:'Remove from sidebar',action:()=>removePlaylistFromSidebar(def.id)}
           ]);
