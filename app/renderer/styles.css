@@ -5653,3 +5653,21 @@ span.apple-track-art{display:block;background:rgba(255,255,255,.06)}
 }
 .settings-row .theme-select-group{display:flex;flex-direction:row;flex-wrap:nowrap;align-items:center;gap:8px;min-width:0}
 .theme-select-group .settings-select{flex:1 1 auto;min-width:180px;width:auto}
+
+/* Spotify page: your Spotify playlists as cards like the Playlists tab */
+.spotify-library-grid.spotify-library-ready { display:grid; grid-template-columns:repeat(auto-fill, minmax(168px, 1fr)); gap:14px; margin-bottom:10px; }
+.spotify-library-card { display:flex; flex-direction:column; gap:6px; min-width:0; padding:9px; border-radius:12px; border:1px solid transparent; transition:background .15s ease, border-color .15s ease; }
+.spotify-library-card:hover { background:color-mix(in srgb, var(--control-bg) 80%, transparent); border-color:var(--border); }
+.spotify-library-art { width:100%; aspect-ratio:1; object-fit:cover; border-radius:9px; display:block; box-shadow:0 8px 22px rgba(0,0,0,.28); }
+.spotify-library-art-blank { display:grid; place-items:center; font-size:40px; color:color-mix(in srgb, var(--text) 70%, transparent);
+  background:linear-gradient(135deg, color-mix(in srgb, #1db954 40%, var(--control-bg)), color-mix(in srgb, var(--accent) 25%, var(--control-bg))); }
+.spotify-library-card strong { font-size:13.5px; white-space:nowrap; overflow:hidden; text-overflow:ellipsis; margin-top:2px; }
+.spotify-library-card small { font-size:12px; color:var(--text-dim); white-space:nowrap; overflow:hidden; text-overflow:ellipsis; }
+.streaming-page .spotify-library-card .spotify-library-actions { display:flex; gap:6px; margin-top:4px; width:100%; }
+.streaming-page .spotify-library-card .spotify-library-actions .sidebar-add { flex:1 1 0; min-width:0; width:auto; padding:5px 6px; font-size:12px; text-align:center; overflow:hidden; text-overflow:ellipsis; white-space:nowrap; }
+/* The search bar's text box blends into the bar in every state and theme
+   (general input styles were giving it its own darker box). */
+.streaming-page .streaming-search .streaming-search-input,
+.streaming-page .streaming-search .streaming-search-input:hover,
+.streaming-page .streaming-search .streaming-search-input:focus { background:transparent !important; box-shadow:none !important; border:0 !important; outline:none !important; border-radius:0 !important; }
+.streaming-page .streaming-search { box-shadow:none; }

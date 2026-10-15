@@ -2100,10 +2100,11 @@
   function renderSpotifyLibrary(list) {
     const host = spotifyPage?.querySelector('#spotify-library'); if (!host) return;
     if (!list) { host.innerHTML = '<span class="spotify-library-actions"><button type="button" class="sidebar-add" data-sl="connect">Connect Spotify</button><button type="button" class="sidebar-add" data-sl="login">Log in to Spotify</button></span>'; return; }
+    host.classList.add('spotify-library-ready');
     host.innerHTML = list.map(pl => {
       const url = `https://open.spotify.com/playlist/${String(pl.uri).split(':').pop()}`;
       const imported = findImportedSpotifyPlaylist(url);
-      return `<div class="apple-card spotify-library-card">${/^https:/.test(pl.image) ? `<img src="${escapeHtml(pl.image)}" alt="" loading="lazy">` : '<span class="apple-card-blank"></span>'}
+      return `<div class="spotify-library-card">${/^https:/.test(pl.image) ? `<img class="spotify-library-art" src="${escapeHtml(pl.image)}" alt="" loading="lazy">` : '<span class="spotify-library-art spotify-library-art-blank">♪</span>'}
         <strong>${escapeHtml(pl.name)}</strong><small>${escapeHtml([pl.owner, pl.count ? `${pl.count} songs` : ''].filter(Boolean).join(' · '))}</small>
         <span class="spotify-library-actions">${imported ? `<button type="button" class="sidebar-add" data-sl="open" data-url="${escapeHtml(url)}">Open</button>` : `<button type="button" class="sidebar-add" data-sl="import" data-url="${escapeHtml(url)}">Import</button>`}<button type="button" class="sidebar-add" data-sl="download" data-url="${escapeHtml(url)}">Download</button></span></div>`;
     }).join('') || '<div class="radio-empty">No playlists in your Spotify library.</div>';
