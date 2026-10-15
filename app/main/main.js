@@ -508,7 +508,7 @@ try {
 // Linux desktop tray integration. Electron uses StatusNotifierItem on Linux when
 // available, which is the native path used by GNOME-compatible tray hosts.
 const { createTrayController } = require('./tray');
-const { createWindowStateTracker, visibleBounds } = require('./window-state');
+const { createWindowStateTracker, visibleBounds, boundsOnArea } = require('./window-state');
 const { createLibraryCacheStore } = require('./library-cache-store');
 const { createArtistImageProvider } = require('./artist-images');
 const { libraryChangeReason } = require('./library-change-check');
@@ -670,7 +670,8 @@ const SCAN_LOG_PATH = () => path.join(beehiveLogDir(), 'scan-live.log');
 // library metadata/play statistics so playback recovery can be updated often.
 const PLAYBACK_STATE_PATH = () => path.join(USER_DATA(), 'playback-state.json');
 const WINDOW_STATE_PATH = () => path.join(USER_DATA(), 'window-state.json');
-const windowState = createWindowStateTracker({ fs, path, filePath: WINDOW_STATE_PATH });
+const windowState = createWindowStateTracker({ fs, path, filePath: WINDOW_STATE_PATH,
+  displayAreaFor: b => { try { return screen.getDisplayMatching(b).workArea; } catch { return null; } } });
 // Every library.json read/write goes through this store; see library-cache-store.js.
 const libraryCacheStore = createLibraryCacheStore({
   read: () => readJsonSafe(LIBRARY_CACHE_PATH(), null),
@@ -1170,7 +1171,10 @@ function createWindow({ preservePlayback = false } = {}) {
   const savedWindow = windowState.snapshot();
   let workAreas = [];
   try { workAreas = screen.getAllDisplays().map(d => d.workArea); } catch {}
-  const bounds = visibleBounds(savedWindow.bounds, workAreas);
+  // Reopen on the monitor the window was last on, even if it was moved there
+  // while maximized (the windowed bounds still point at the old monitor).
+  const lastArea = savedWindow.area && workAreas.find(a => a.x === savedWindow.area.x && a.y === savedWindow.area.y && a.width === savedWindow.area.width && a.height === savedWindow.area.height);
+  const bounds = visibleBounds(lastArea ? boundsOnArea(savedWindow.bounds, lastArea) : savedWindow.bounds, workAreas);
   mainWindow = new BrowserWindow({
     ...(bounds ? { x:bounds.x, y:bounds.y, width:bounds.width, height:bounds.height } : { width:1440, height:860 }),
     minWidth: 1024,

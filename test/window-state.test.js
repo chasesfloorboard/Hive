@@ -174,3 +174,20 @@ test('on Windows a locked state file is replaced instead of silently not saving'
   assert.deepEqual(JSON.parse(fs.readFileSync(file, 'utf8')).bounds, { x: 40, y: 50, width: 1300, height: 900 });
   assert.deepEqual(fs.readdirSync(dir), ['window-state.json'], 'no temp file left behind');
 });
+
+test('a window maximized on another monitor reopens there', () => {
+  const { boundsOnArea } = require('../app/main/window-state');
+  const left = { x: 0, y: 1120, width: 2560, height: 1440 };
+  const right = { x: 2560, y: 0, width: 1440, height: 2560 };
+  // Windowed bounds still on the right monitor, last seen maximized on the left.
+  const moved = boundsOnArea({ x: 2547, y: 880, width: 1440, height: 1289 }, left);
+  assert.ok(moved.x >= left.x && moved.x + moved.width <= left.x + left.width);
+  assert.ok(moved.y >= left.y && moved.y + moved.height <= left.y + left.height);
+  assert.equal(moved.width, 1440);
+  // Already on that monitor: unchanged.
+  const same = { x: 3000, y: 200, width: 1200, height: 1800 };
+  assert.deepEqual(boundsOnArea(same, right), same);
+  // Bigger than the monitor: shrunk to fit.
+  const big = boundsOnArea({ x: 0, y: 1120, width: 2560, height: 1440 }, right);
+  assert.ok(big.width <= 1440 && big.height <= 2560);
+});

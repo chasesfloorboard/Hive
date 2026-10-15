@@ -37,8 +37,22 @@ function visibleBounds(bounds, workAreas, minVisible = MIN_VISIBLE_PX) {
   return onScreen ? b : null;
 }
 
-function createWindowStateTracker({ fs, path, filePath, platform = process.platform, setTimeout: setTimer = setTimeout, clearTimeout: clearTimer = clearTimeout }) {
-  let state = { bounds: null, maximized: false, fullScreen: false };
+// A maximized/fullscreen window can be moved to another monitor without ever
+// being windowed there, so its windowed bounds still point at the old one.
+// The work area it was last on is saved too, and the windowed bounds are
+// moved (and shrunk if needed) into it before maximizing again.
+function boundsOnArea(bounds, area) {
+  if (!isUsableBounds(area)) return bounds;
+  const a = { x: Number(area.x), y: Number(area.y), width: Number(area.width), height: Number(area.height) };
+  const b = isUsableBounds(bounds) ? bounds : { width: Math.round(a.width * 0.75), height: Math.round(a.height * 0.75) };
+  const cx = Number(b.x) + Number(b.width) / 2, cy = Number(b.y) + Number(b.height) / 2;
+  if (Number.isFinite(cx) && cx >= a.x && cx < a.x + a.width && cy >= a.y && cy < a.y + a.height) return bounds;
+  const width = Math.min(Number(b.width), a.width), height = Math.min(Number(b.height), a.height);
+  return { x: a.x + Math.round((a.width - width) / 2), y: a.y + Math.round((a.height - height) / 2), width, height };
+}
+
+function createWindowStateTracker({ fs, path, filePath, platform = process.platform, displayAreaFor = null, setTimeout: setTimer = setTimeout, clearTimeout: clearTimer = clearTimeout }) {
+  let state = { bounds: null, maximized: false, fullScreen: false, area: null };
   let settleTimer = null;
 
   function load() {
@@ -47,14 +61,15 @@ function createWindowStateTracker({ fs, path, filePath, platform = process.platf
       state = {
         bounds: isUsableBounds(saved.bounds) ? saved.bounds : null,
         maximized: saved.maximized === true,
-        fullScreen: saved.fullScreen === true
+        fullScreen: saved.fullScreen === true,
+        area: isUsableBounds(saved.area) ? saved.area : null
       };
     } catch {}
     return snapshot();
   }
 
   function snapshot() {
-    return { bounds: state.bounds ? { ...state.bounds } : null, maximized: state.maximized, fullScreen: state.fullScreen };
+    return { bounds: state.bounds ? { ...state.bounds } : null, maximized: state.maximized, fullScreen: state.fullScreen, ...(state.area ? { area: { ...state.area } } : {}) };
   }
 
   function capture(win) {
@@ -65,9 +80,13 @@ function createWindowStateTracker({ fs, path, filePath, platform = process.platf
       if (win.isMinimized()) return;  // keep the mode the window will restore to
       state.fullScreen = fullScreen;
       state.maximized = maximized;
+      const b = win.getBounds();
       if (!fullScreen && !maximized) {
-        const b = win.getBounds();
         if (isUsableBounds(b)) state.bounds = b;
+      }
+      if (displayAreaFor && isUsableBounds(b)) {
+        const area = displayAreaFor(b);
+        if (isUsableBounds(area)) state.area = { x: area.x, y: area.y, width: area.width, height: area.height };
       }
     } catch {}
   }
@@ -124,4 +143,4 @@ function createWindowStateTracker({ fs, path, filePath, platform = process.platf
   return { load, snapshot, capture, saveSync, attach };
 }
 
-module.exports = { createWindowStateTracker, visibleBounds, isUsableBounds };
+module.exports = { createWindowStateTracker, visibleBounds, isUsableBounds, boundsOnArea };
