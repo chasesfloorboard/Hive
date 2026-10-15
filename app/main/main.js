@@ -2007,6 +2007,7 @@ ipcMain.handle('radio:nowPlaying', async (_evt, url) => (/^https?:\/\//i.test(St
 const appleMusic = require('./apple-music').create({ net });
 ipcMain.handle('applemusic:search', async (_evt, term) => appleMusic.search(term));
 ipcMain.handle('applemusic:collection', async (_evt, url) => appleMusic.getCollection(url));
+ipcMain.handle('applemusic:browse', async () => appleMusic.browse());
 
 // Hive 2.0 YouTube Music streaming for Apple Music / Spotify playlists.
 const youtubeMusic = require('./youtube-music').create({ userDataDir: USER_DATA(), net });
@@ -7138,6 +7139,19 @@ function notifySpotifyBridgeWaiters() {
   for (const fn of [...spotifyBridgeWaiters]) { try { fn(); } catch {} }
 }
 let spotifyBridgeLastPollAt = 0;
+const spotifyBridgeResults = new Map();
+// Ask the Spotify app (through the bridge) and wait for its answer.
+async function askSpotifyBridge(command, timeoutMs = 15000) {
+  if (Date.now() - spotifyBridgeLastPollAt > 3000) return { connected: false };
+  const id = enqueueSpotifyBridgeCommand(command);
+  const deadline = Date.now() + timeoutMs;
+  while (Date.now() < deadline) {
+    const r = spotifyBridgeResults.get(id);
+    if (r) { spotifyBridgeResults.delete(id); return { connected: true, ...r }; }
+    await new Promise(resolve => setTimeout(resolve, 100));
+  }
+  return { connected: true, error: 'Spotify did not answer in time.' };
+}
 function enqueueSpotifyBridgeCommand(command) {
   const item = { id: ++spotifyBridgeSeq, command, createdAt: Date.now() };
   spotifyBridgeCommands.push(item);
@@ -7189,6 +7203,12 @@ function startSpotifyBridge() {
       if (req.method === 'POST' && url.pathname === '/ack') {
         const data = await readHttpJson(req);
         if (Number(data?.id) > 0) spotifyBridgeCommands = spotifyBridgeCommands.filter(x => x.id !== Number(data.id));
+        return spotifyBridgeJson(res, 200, { ok: true }, req.headers.origin || '');
+      }
+      if (req.method === 'POST' && url.pathname === '/result') {
+        const data = await readHttpJson(req, 8 * 1024 * 1024);
+        if (Number(data?.commandId) > 0) spotifyBridgeResults.set(Number(data.commandId), data);
+        if (spotifyBridgeResults.size > 50) spotifyBridgeResults.delete(spotifyBridgeResults.keys().next().value);
         return spotifyBridgeJson(res, 200, { ok: true }, req.headers.origin || '');
       }
       if (req.method === 'POST' && url.pathname === '/playlist') {
@@ -7281,6 +7301,14 @@ ipcMain.handle('spotify:status', async () => ({
   bridgeServer: !!spotifyBridgeServer,
   background: spotifyBackgroundStatus()
 }));
+// Open the normal, visible Spotify app so the user can sign in.
+ipcMain.handle('spotify:openForLogin', async () => {
+  try { require('child_process').spawn('spotify', [], { detached: true, stdio: 'ignore' }).unref(); return true; } catch { return false; }
+});
+ipcMain.handle('spotify:libraryPlaylists', async () => {
+  if (SPOTIFY_DEVELOPMENT_PAUSED) return { connected: false };
+  return askSpotifyBridge({ type: 'getLibraryPlaylists' });
+});
 ipcMain.handle('spotify:launch', async () => {
   if (SPOTIFY_DEVELOPMENT_PAUSED) return false;
   return launchSpotifyOrLogin();

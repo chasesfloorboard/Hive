@@ -232,9 +232,34 @@
     });
   }
 
+  // The playlists in the user's Spotify library (folders flattened), for
+  // Hive's Spotify page.
+  async function sendLibraryPlaylists(command) {
+    const out = [];
+    try {
+      const api = Spicetify?.Platform?.RootlistAPI;
+      const res = api?.getContents ? await api.getContents({ limit: 2000 }) : null;
+      const walk = list => {
+        for (const it of list || []) {
+          if (it?.type === 'folder') walk(it.items);
+          else if (it?.type === 'playlist' && it.uri) {
+            const images = Array.isArray(it.images) ? it.images : [];
+            out.push({ uri: spotifyUriValue(it.uri), name: String(it.name || ''), owner: String(it.owner?.name || it.owner?.displayName || ''),
+              count: Number(it.totalLength ?? it.length ?? 0) || 0, image: images.map(x => spotifyImageUrl(x?.url)).find(Boolean) || '' });
+          }
+        }
+      };
+      walk(res?.items);
+      await post('/result', { commandId: Number(command.id), data: { playlists: out } });
+    } catch (err) {
+      await post('/result', { commandId: Number(command.id), error: String(err?.message || err) });
+    }
+  }
+
   async function execute(command) {
     const type = command?.command?.type;
     if (type === 'getPlaylist') return importPlaylist(command.command);
+    if (type === 'getLibraryPlaylists') return sendLibraryPlaylists(command.command.id ? command.command : { ...command.command, id: command.id });
     if (type === 'playUri') {
       const uri = spotifyUriValue(command.command.uri);
       if (!uri) throw new Error('Missing Spotify track URI');

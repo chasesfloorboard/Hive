@@ -5573,3 +5573,28 @@ html.hb-hide-pb-eq #btn-eq, html.hb-hide-pb-mini #btn-mini, html.hb-hide-pb-thea
 .hive-download-status{position:fixed;left:50%;bottom:104px;transform:translateX(-50%);z-index:300;padding:7px 14px;border-radius:999px;background:color-mix(in srgb,var(--bg) 82%,transparent);border:1px solid var(--border);color:var(--text);font-size:12.5px;backdrop-filter:blur(10px);max-width:70vw;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;pointer-events:none}
 .hive-download-status.hidden{display:none}
 .sidebar-nav-cover{width:18px;height:18px;border-radius:4px;object-fit:cover;margin-right:8px;flex:0 0 18px}
+.apple-shelf{display:grid;grid-auto-flow:column;grid-auto-columns:150px;gap:10px;overflow-x:auto;padding-bottom:8px;margin-bottom:6px;scrollbar-width:thin}
+.apple-song-shelf .apple-track{grid-template-columns:36px minmax(0,1fr) 48px 32px 32px}
+.apple-track-art{width:36px;height:36px;border-radius:5px;object-fit:cover}
+.spotify-library-card{cursor:default}
+.spotify-library-actions{display:flex;gap:6px;margin-top:4px}
+.spotify-library-actions .sidebar-add{padding:3px 9px;font-size:12px}
+
+/* Apple Music / Spotify page search bars */
+.streaming-page .streaming-search{display:flex;align-items:center;gap:0;height:46px;max-width:760px;margin:6px 0 14px;padding:0 5px 0 16px;border-radius:999px;
+  background:color-mix(in srgb,var(--control-bg) 85%,transparent);border:1px solid var(--control-border, var(--border));box-shadow:0 6px 22px rgba(0,0,0,.18) inset, 0 1px 0 rgba(255,255,255,.03);
+  transition:border-color .15s ease, box-shadow .15s ease, background .15s ease}
+.streaming-page .streaming-search:hover{border-color:color-mix(in srgb,var(--accent) 35%,var(--border))}
+.streaming-page .streaming-search:focus-within{border-color:color-mix(in srgb,var(--accent) 70%,transparent);box-shadow:0 0 0 3px color-mix(in srgb,var(--accent) 22%,transparent)}
+.streaming-search-icon{display:grid;place-items:center;width:20px;height:20px;color:var(--text-dim);flex:none}
+.streaming-search-icon svg{width:17px;height:17px}
+.streaming-page .streaming-search-input{flex:1 1 auto;min-width:0;width:auto;height:100%;padding:0 12px;border:0;outline:0;background:transparent;color:var(--text);font:inherit;font-size:14px}
+.streaming-page .streaming-search-input::placeholder{color:var(--text-dimmer, var(--text-dim))}
+.streaming-page .streaming-search-input::-webkit-search-cancel-button{filter:invert(1) opacity(.5)}
+.streaming-search-btn{flex:none;height:36px;padding:0 18px;border:0;border-radius:999px;cursor:pointer;font:inherit;font-size:13px;font-weight:650;
+  color:var(--accent-contrast, #fff);background:var(--accent);transition:filter .15s ease, transform .1s ease}
+.streaming-search-btn:hover{filter:brightness(1.08)}
+.streaming-search-btn:active{transform:scale(.97)}
+.streaming-page .streaming-search-input:focus,.streaming-page .streaming-search-input:focus-visible{background:transparent!important;box-shadow:none!important;outline:none!important;border:0!important}
+.spotify-page-list .radio-row{grid-template-columns:36px minmax(0,1fr) auto auto auto}
+.spotify-library-grid > .spotify-library-actions{grid-column:1/-1}

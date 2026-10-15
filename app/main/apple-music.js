@@ -92,6 +92,43 @@ function parseCollection(html) {
   };
 }
 
+// The Browse page: shelves of playlists/albums ("New This Week", "Daily
+// Top 100", ...) and of songs ("Best New Songs"). Radio, videos and the
+// like are left out.
+function trackFromLockup(item) {
+  const cd = item?.contentDescriptor || {};
+  const id = String(cd.identifiers?.storeAdamID || '');
+  if (!id || cd.kind !== 'song' || !item.title) return null;
+  return {
+    appleId: id, title: String(item.title), artist: linkTitles(item.subtitleLinks).join(', '),
+    album: linkTitles(item.tertiaryLinks)[0] || '', duration: (Number(item.duration) || 0) / 1000,
+    artwork: artworkUrl(item.artwork, 600), url: String(cd.url || ''), previewUrl: ''
+  };
+}
+function parseBrowse(html) {
+  const shelves = [];
+  for (const section of sectionsOf(serverData(html))) {
+    const title = section.header?.item?.titleLink?.title || (section.itemKind === 'flowcaseLockup' ? 'Featured' : '');
+    if (section.itemKind === 'trackLockup') {
+      const songs = (section.items || []).map(trackFromLockup).filter(Boolean);
+      if (songs.length) shelves.push({ title, kind: 'songs', items: songs.slice(0, 20) });
+      continue;
+    }
+    const cards = [];
+    for (const item of section.items || []) {
+      const c = lockupToCollection(item) || (() => {
+        const cd = item?.contentDescriptor || {};
+        const id = String(cd.identifiers?.storeAdamID || '');
+        if (!id || !/^(playlist|album)$/.test(String(cd.kind))) return null;
+        return { kind: String(cd.kind), id, name: String(item.title || item.headline || ''), curator: String(item.subtitle || ''), artwork: artworkUrl(item.artwork, 400), url: String(cd.url || '') };
+      })();
+      if (c && c.name && !cards.some(x => x.id === c.id)) cards.push(c);
+    }
+    if (cards.length) shelves.push({ title, kind: 'cards', items: cards.slice(0, 20) });
+  }
+  return shelves;
+}
+
 // https://music.apple.com/<storefront>/<playlist|album>/<slug>/<id>
 function parseAppleMusicUrl(input) {
   const m = String(input || '').trim().match(/^https:\/\/(?:embed\.)?music\.apple\.com\/([a-z]{2})\/(playlist|album)\/(?:[^/?#]+\/)?((?:pl\.[A-Za-z0-9.-]+)|\d+)/i);
@@ -143,7 +180,16 @@ function create({ net }) {
     return { ...page, ...ref, url: `https://music.apple.com/${ref.storefront}/${ref.kind}/${ref.id}` };
   }
 
-  return { search, getCollection };
+  let browseCache = null;
+  async function browse(storefront = 'us') {
+    const sf = /^[a-z]{2}$/i.test(storefront) ? storefront.toLowerCase() : 'us';
+    if (browseCache && browseCache.sf === sf && Date.now() - browseCache.at < 30 * 60 * 1000) return browseCache.shelves;
+    const shelves = parseBrowse(await getText(`https://music.apple.com/${sf}/browse`));
+    browseCache = { sf, at: Date.now(), shelves };
+    return shelves;
+  }
+
+  return { search, getCollection, browse };
 }
 
-module.exports = { create, parseSearch, parseCollection, parseAppleMusicUrl, artworkUrl };
+module.exports = { create, parseSearch, parseCollection, parseBrowse, parseAppleMusicUrl, artworkUrl };

@@ -484,8 +484,11 @@
     } catch (err) {
       if (token !== youtubeLoadToken) return false;
       const message = String(err?.message || err).replace(/^Error invoking remote method '[^']+': (Error: )?/, '');
-      showAppNotice(message);
+      // A small note rather than a dialog; playback moves on by itself.
+      showDownloadStatus(message);
+      setTimeout(() => { if (downloadStatusEl?.textContent === message) showDownloadStatus(downloadRunning ? downloadStatusEl.textContent : ''); }, 5000);
       if (el.pbArtist) el.pbArtist.textContent = t.artist || '';
+      t._ytmUnavailable = true;
       return false;
     } finally { clearTimeout(slow); }
   }
@@ -521,7 +524,11 @@
   async function podcastLoadInner(t, position=0, autoplay=false, { freshStream = false } = {}) {
     if (!isPodcastTrack(t)) return false;
     if (isYoutubeMusicTrack(t)) {
-      if (!(await prepareYoutubeMusicTrack(t, { fresh: freshStream }))) return false;
+      if (!(await prepareYoutubeMusicTrack(t, { fresh: freshStream }))) {
+        // Not on YouTube Music: when it was meant to play, go on to the next song.
+        if (autoplay && t._ytmUnavailable && currentQueue[currentIndex] === t && currentIndex < currentQueue.length - 1) setTimeout(() => { if (currentQueue[currentIndex] === t) el.btnNext.click(); }, 1200);
+        return false;
+      }
       if (currentQueue[currentIndex] !== t) return false;
     }
     // Cross-transport playback must have exactly one owner. Tear down any
@@ -1832,20 +1839,39 @@
       appleMusicModal.setAttribute('aria-label', 'Apple Music');
       appleMusicModal.innerHTML = `<header class="streaming-page-head"><div><div class="streaming-kicker">BROWSE</div><h1>Apple Music</h1>
           <p>Search Apple Music playlists and albums, or paste a music.apple.com link. Songs in your library play from your files; the rest stream from YouTube Music.</p></div></header>
-          <form class="radio-search" id="apple-search-form"><input type="search" class="settings-text" id="apple-query" placeholder="Search playlists and albums, or paste a music.apple.com link" spellcheck="false"><button type="submit" class="sidebar-add">Search</button></form>
-          <div class="streaming-page-bar"><button type="button" class="sidebar-add hidden" id="apple-back">← Back to results</button><div class="organise-status" id="apple-status"></div></div>
+          <form class="radio-search streaming-search" id="apple-search-form"><span class="streaming-search-icon" aria-hidden="true">${theaterIcon('search')}</span><input type="search" class="streaming-search-input" id="apple-query" placeholder="Search playlists and albums, or paste a music.apple.com link" spellcheck="false" aria-label="Search Apple Music"><button type="submit" class="streaming-search-btn">Search</button></form>
+          <div class="streaming-page-bar"><button type="button" class="sidebar-add hidden" id="apple-back">← Back</button><button type="button" class="sidebar-add hidden" id="apple-home">Browse</button><div class="organise-status" id="apple-status"></div></div>
           <div id="apple-view"></div>`;
       const m = appleMusicModal, view = m.querySelector('#apple-view'), status = m.querySelector('#apple-status'), back = m.querySelector('#apple-back');
       let lastResultsHtml = '', current = null;
       const cleanError = err => String(err?.message || err).replace(/^Error invoking remote method '[^']+': (Error: )?/, '');
       const showResults = async (term) => {
-        status.textContent = 'Searching Apple Music…'; back.classList.add('hidden');
+        status.textContent = 'Searching Apple Music…'; back.classList.add('hidden'); m.querySelector('#apple-home').classList.remove('hidden');
         try {
           const r = await window.beehive.searchAppleMusic(term);
           lastResultsHtml = (r.playlists.length ? `<h4 class="radio-heading">Playlists</h4><div class="apple-grid">${r.playlists.map(appleCardHtml).join('')}</div>` : '')
             + (r.albums.length ? `<h4 class="radio-heading">Albums</h4><div class="apple-grid">${r.albums.map(appleCardHtml).join('')}</div>` : '');
           view.innerHTML = lastResultsHtml; status.textContent = lastResultsHtml ? '' : 'Nothing found.';
         } catch (err) { status.textContent = `Couldn't reach Apple Music (${cleanError(err)}).`; }
+      };
+      // Apple Music's Browse page: what the page shows before any search.
+      let browseSongs = new Map();
+      const songRowHtml = at => `<div class="apple-track" data-browse-song="${escapeHtml(at.appleId)}" data-apple-id="${escapeHtml(at.appleId)}"><img class="apple-track-art" src="${escapeHtml(at.artwork)}" alt="" loading="lazy"><div class="apple-track-text"><div>${escapeHtml(at.title)}</div><small>${escapeHtml([at.artist, at.album].filter(Boolean).join(' — '))}</small></div><span class="apple-track-time">${at.duration ? fmtTime(at.duration) : ''}</span><button type="button" class="icon-btn" data-browse-play="${escapeHtml(at.appleId)}" title="Play now">${theaterIcon('play')}</button><button type="button" class="icon-btn" data-browse-next="${escapeHtml(at.appleId)}" title="Play next">＋</button></div>`;
+      const showBrowse = async () => {
+        status.textContent = 'Loading Apple Music…'; back.classList.add('hidden'); m.querySelector('#apple-home').classList.add('hidden');
+        await youtubeMusicAvailable();
+        try {
+          const shelves = await window.beehive.getAppleMusicBrowse();
+          browseSongs = new Map();
+          lastResultsHtml = shelves.map(sh => {
+            if (sh.kind === 'songs') {
+              sh.items.forEach(at => browseSongs.set(at.appleId, at));
+              return `<h4 class="radio-heading">${escapeHtml(sh.title)}</h4><div class="apple-tracks apple-song-shelf">${sh.items.slice(0, 10).map(songRowHtml).join('')}</div>`;
+            }
+            return `<h4 class="radio-heading">${escapeHtml(sh.title)}</h4><div class="apple-shelf">${sh.items.map(appleCardHtml).join('')}</div>`;
+          }).join('');
+          view.innerHTML = lastResultsHtml; status.textContent = '';
+        } catch (err) { status.textContent = `Couldn't load Apple Music (${cleanError(err)}).`; }
       };
       const showCollection = async (url) => {
         status.textContent = 'Loading…';
@@ -1879,9 +1905,20 @@
         if (/^https:\/\/(embed\.)?music\.apple\.com\//i.test(q)) showCollection(q); else showResults(q);
       });
       back.addEventListener('click', () => { view.innerHTML = lastResultsHtml; back.classList.add('hidden'); status.textContent = ''; });
+      m.querySelector('#apple-home').addEventListener('click', () => { m.querySelector('#apple-query').value = ''; void showBrowse(); });
+      void showBrowse();
       view.addEventListener('click', async e => {
         const card = e.target.closest('[data-apple-url]');
-        if (card) { showCollection(card.dataset.appleUrl); return; }
+        if (card) { showCollection(card.dataset.appleUrl); m.querySelector('#apple-home').classList.remove('hidden'); return; }
+        const songBtn = e.target.closest('[data-browse-play], [data-browse-next]');
+        if (songBtn) {
+          const at = browseSongs.get(songBtn.dataset.browsePlay || songBtn.dataset.browseNext);
+          if (!at) return;
+          const local = appleLocalMatch(appleLibraryIndex(), at);
+          const track = applyStreamLove(local || (youtubeMusicReady ? youtubeTrackFromApple(at) : (at.previewUrl ? applePreviewTrack(at, null) : youtubeTrackFromApple(at))));
+          if (songBtn.dataset.browsePlay) playTracksNow([track]); else { addTracksToQueue([track], currentIndex + 1); showAppNotice(`“${at.title}” plays next.`); }
+          return;
+        }
         if (!current) return;
         const one = e.target.closest('[data-apple-play]');
         if (one) {
@@ -1965,7 +2002,7 @@
     document.body.classList.remove('sandbox-mode');
     const page = kind === 'apple-music' ? appleMusicPageElement() : spotifyPageElement();
     if (contentTools.firstElementChild !== page || contentTools.children.length !== 1) contentTools.replaceChildren(page);
-    if (kind === 'spotify') renderSpotifyPagePlaylists();
+    if (kind === 'spotify') { renderSpotifyPagePlaylists(); void loadSpotifyLibrary(); }
     void youtubeMusicAvailable();
     syncSidebarSelectionForContext();
     updateActiveTabLabel();
@@ -1982,10 +2019,13 @@
     spotifyPage.setAttribute('aria-label', 'Spotify');
     spotifyPage.innerHTML = `<header class="streaming-page-head"><div><div class="streaming-kicker">IMPORT</div><h1>Spotify</h1>
         <p>Paste a Spotify playlist link. Hive takes the songs and their tags; songs in your library play from your files, the rest stream from YouTube Music (or the Spotify app, if you choose it below).</p></div></header>
-      <form class="radio-search" id="spotify-page-form"><input type="url" class="settings-text" id="spotify-page-url" placeholder="https://open.spotify.com/playlist/…" spellcheck="false"><button type="submit" class="sidebar-add">Import</button></form>
+      <form class="radio-search streaming-search" id="spotify-page-form"><span class="streaming-search-icon" aria-hidden="true">${theaterIcon('plus')}</span><input type="url" class="streaming-search-input" id="spotify-page-url" placeholder="Paste a Spotify playlist link — https://open.spotify.com/playlist/…" spellcheck="false" aria-label="Spotify playlist link"><button type="submit" class="streaming-search-btn">Import</button></form>
       <div class="streaming-page-bar"><div class="organise-status" id="spotify-page-status"></div></div>
       <label class="streaming-setting">Play Spotify songs through
         <select class="settings-select" data-hivebee-pref="spotify.playVia"><option value="youtube">YouTube Music (in Hive)</option><option value="spotify">Spotify app</option></select></label>
+      <h4 class="radio-heading">Your Spotify playlists</h4>
+      <div class="organise-status" id="spotify-library-status"></div>
+      <div class="apple-grid spotify-library-grid" id="spotify-library"></div>
       <h4 class="radio-heading">Imported from Spotify</h4>
       <div class="spotify-page-list" id="spotify-page-list"></div>`;
     const form = spotifyPage.querySelector('#spotify-page-form');
@@ -2011,8 +2051,69 @@
       else if (e.target.closest('[data-sp="download"]')) downloadPlaylist(pl);
       else void openPlaylistFromSidebar(pl, sidebarNavIdForPlaylistId(pl.id));
     });
+    // Your library, read from the Spotify app through Hive's bridge (the
+    // app is already signed in). Import adds a playlist to Hive; Download
+    // imports it and downloads its songs into Playlists/<name>.
+    const libraryHost = spotifyPage.querySelector('#spotify-library');
+    libraryHost.addEventListener('click', async e => {
+      const btn = e.target.closest('[data-sl]'); if (!btn) return;
+      if (btn.dataset.sl === 'connect') { await connectSpotifyForLibrary(); return; }
+      if (btn.dataset.sl === 'login') {
+        // The Spotify app signs in with its own window; once signed in, close
+        // it and press Connect (Hive then runs it in the background).
+        try { await window.beehive.openSpotifyForLogin?.(); } catch {}
+        const st = spotifyPage.querySelector('#spotify-library-status');
+        if (st) st.textContent = 'Sign in in the Spotify window, close it, then press Connect Spotify.';
+        return;
+      }
+      const url = btn.dataset.url;
+      const existing = () => findImportedSpotifyPlaylist(url);
+      if (btn.dataset.sl === 'open' && existing()) { void openPlaylistFromSidebar(existing(), sidebarNavIdForPlaylistId(existing().id)); return; }
+      if (!existing()) { const ok = await importSpotifyPlaylist(url); if (!ok) return; }
+      renderSpotifyPagePlaylists(); renderSpotifyLibrary(spotifyLibraryCache);
+      if (btn.dataset.sl === 'download' && existing()) downloadPlaylist(existing());
+    });
     bindHiveBeePrefControls(spotifyPage);
     return spotifyPage;
+  }
+  let spotifyLibraryCache = null;
+  function spotifyPlaylistIdFromUrl(u) { return String(u || '').match(/playlist[/:]([A-Za-z0-9]{22})/)?.[1] || ''; }
+  function findImportedSpotifyPlaylist(url) {
+    const id = spotifyPlaylistIdFromUrl(url);
+    if (!id) return null;
+    return playlists.find(p => p?.spotifyPlaylistId === id || spotifyPlaylistIdFromUrl(p?.sourceUrl) === id || spotifyPlaylistIdFromUrl(p?.description) === id) || null;
+  }
+  function renderSpotifyLibrary(list) {
+    const host = spotifyPage?.querySelector('#spotify-library'); if (!host) return;
+    if (!list) { host.innerHTML = '<span class="spotify-library-actions"><button type="button" class="sidebar-add" data-sl="connect">Connect Spotify</button><button type="button" class="sidebar-add" data-sl="login">Log in to Spotify</button></span>'; return; }
+    host.innerHTML = list.map(pl => {
+      const url = `https://open.spotify.com/playlist/${String(pl.uri).split(':').pop()}`;
+      const imported = findImportedSpotifyPlaylist(url);
+      return `<div class="apple-card spotify-library-card">${/^https:/.test(pl.image) ? `<img src="${escapeHtml(pl.image)}" alt="" loading="lazy">` : '<span class="apple-card-blank"></span>'}
+        <strong>${escapeHtml(pl.name)}</strong><small>${escapeHtml([pl.owner, pl.count ? `${pl.count} songs` : ''].filter(Boolean).join(' · '))}</small>
+        <span class="spotify-library-actions">${imported ? `<button type="button" class="sidebar-add" data-sl="open" data-url="${escapeHtml(url)}">Open</button>` : `<button type="button" class="sidebar-add" data-sl="import" data-url="${escapeHtml(url)}">Import</button>`}<button type="button" class="sidebar-add" data-sl="download" data-url="${escapeHtml(url)}">Download</button></span></div>`;
+    }).join('') || '<div class="radio-empty">No playlists in your Spotify library.</div>';
+  }
+  async function loadSpotifyLibrary() {
+    const status = spotifyPage?.querySelector('#spotify-library-status'); if (!status) return;
+    status.textContent = spotifyLibraryCache ? '' : 'Looking for the Spotify app…';
+    let r = null;
+    try { r = await window.beehive.getSpotifyLibraryPlaylists?.(); } catch {}
+    if (r?.connected && Array.isArray(r.data?.playlists)) { spotifyLibraryCache = r.data.playlists; status.textContent = ''; }
+    else if (r?.connected && r.error) status.textContent = `Spotify couldn't list your playlists (${r.error}).`;
+    else if (!spotifyLibraryCache) status.textContent = 'Connect the Spotify app (signed in, with Spicetify) to see your playlists here. You can still paste any playlist link above.';
+    renderSpotifyLibrary(spotifyLibraryCache);
+  }
+  async function connectSpotifyForLibrary() {
+    const status = spotifyPage?.querySelector('#spotify-library-status');
+    if (status) status.textContent = 'Starting Spotify in the background…';
+    try { await window.beehive.spotifyLaunch?.(); } catch {}
+    for (let i = 0; i < 30; i++) {
+      await new Promise(r => setTimeout(r, 2000));
+      const r = await window.beehive.getSpotifyLibraryPlaylists?.().catch(() => null);
+      if (r?.connected && Array.isArray(r.data?.playlists)) { spotifyLibraryCache = r.data.playlists; if (status) status.textContent = ''; renderSpotifyLibrary(spotifyLibraryCache); return; }
+    }
+    if (status) status.textContent = 'Spotify did not connect. Make sure it is installed, signed in and patched with Spicetify (the Hive add-on).';
   }
   function renderSpotifyPagePlaylists() {
     const list = spotifyPage?.querySelector('#spotify-page-list');
@@ -3413,6 +3514,10 @@
     renderedLyricsTrackPath = String(track?.path || '');
     const container = el.lyricsText;
     if (!container) return;
+    // Start every song's lyrics at the top. Before its first timed line there
+    // is no highlighted lyric to scroll to, so the previous song's scroll
+    // position used to stay until that line came up.
+    try { if (el.lyricsRail) el.lyricsRail.scrollTop = 0; container.scrollTop = 0; } catch {}
     if (!syncedLyricsEntries.length) {
       container.classList.remove('lyrics-synced');
       if (!text && String(track?.source || '') === 'podcast') {
