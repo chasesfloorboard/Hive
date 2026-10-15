@@ -320,7 +320,72 @@ function create({ userDataDir, net }) {
     };
   }
 
-  return { status, installYtDlp, resolve, prefetch, findMatch, musicBrainzTags };
+  // Serve a byte range of a video's audio for the media element. YouTube
+  // refuses open-ended requests ("bytes=0-", which is what a media element
+  // sends) and a short answer would look like the end of the song, so the
+  // whole requested range is returned as one stream that is filled with
+  // bounded 2 MB requests as the player reads it. A refused link is
+  // replaced once with a fresh one.
+  const CHUNK = 2 * 1024 * 1024;
+  async function fetchChunk(videoId, from, to) {
+    for (let attempt = 0; attempt < 2; attempt++) {
+      if (attempt) streams.delete(videoId);
+      const info = await videoInfo(videoId);
+      const res = await net.fetch(info.url, { headers: { Range: `bytes=${from}-${to}` } });
+      if (res.status === 403 || res.status === 410) continue;
+      if (!res.ok) throw new Error(`YouTube answered ${res.status}`);
+      return res;
+    }
+    throw new Error('YouTube refused the audio stream.');
+  }
+  async function streamRange(videoId, rangeHeader) {
+    const m = /bytes=(\d+)-(\d*)/.exec(String(rangeHeader || ''));
+    const start = m ? Number(m[1]) : 0;
+    const wantedEnd = m && m[2] ? Number(m[2]) : Infinity;
+    const first = await fetchChunk(videoId, start, Math.min(wantedEnd, start + CHUNK - 1));
+    const total = Number(/\/(\d+)$/.exec(first.headers.get('content-range') || '')?.[1]) || 0;
+    const end = Math.min(wantedEnd, total ? total - 1 : start + CHUNK - 1);
+    let next = start + CHUNK, current = first.body.getReader(), cancelled = false;
+    const body = new ReadableStream({
+      async pull(controller) {
+        try {
+          while (!cancelled) {
+            const { value, done } = await current.read();
+            if (value?.length) { controller.enqueue(value); return; }
+            if (!done) continue;
+            if (next > end) { controller.close(); return; }
+            const res = await fetchChunk(videoId, next, Math.min(end, next + CHUNK - 1));
+            next += CHUNK;
+            current = res.body.getReader();
+          }
+        } catch (err) { controller.error(err); }
+      },
+      cancel() { cancelled = true; try { current.cancel(); } catch {} }
+    });
+    return { status: 206, total, start, end, contentType: first.headers.get('content-type') || 'audio/webm', body };
+  }
+
+  // Save a song's audio as <dir>/<baseName>.mp3: YouTube's best audio,
+  // converted by ffmpeg to VBR V0 MP3 (~245 kbps). Returns the file path.
+  async function downloadAudio(videoId, dir, baseName) {
+    await fsp.mkdir(dir, { recursive: true });
+    // YouTube now and then refuses a download (HTTP 403); a retry a moment
+    // later usually goes through.
+    let out = '', lastErr = null;
+    for (let attempt = 0; attempt < 3 && !out; attempt++) {
+      if (attempt) await new Promise(r => setTimeout(r, attempt * 2500));
+      try {
+        out = await ytDlp(['-f', 'bestaudio', '-x', '--audio-format', 'mp3', '--audio-quality', '0', '--no-overwrites', '--no-part', '--retries', '5',
+          '-o', path.join(dir, `${baseName}.%(ext)s`), '--print', 'after_move:filepath', `https://music.youtube.com/watch?v=${videoId}`], 10 * 60 * 1000);
+      } catch (err) { lastErr = err; }
+    }
+    if (!out) throw lastErr || new Error('yt-dlp failed');
+    const file = String(out).trim().split('\n').filter(Boolean).pop() || '';
+    if (!file || !fs.existsSync(file)) throw new Error('yt-dlp did not produce a file.');
+    return file;
+  }
+
+  return { status, installYtDlp, resolve, prefetch, findMatch, musicBrainzTags, streamRange, downloadAudio };
 }
 
 module.exports = { create, normalise, similarity, containment, videoTitleWithoutArtist, scoreCandidate, acceptable, urlExpiry };

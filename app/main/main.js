@@ -817,7 +817,9 @@ let mm; // music-metadata, loaded lazily (ESM)
 // ---------- protocol registration (must happen before app.ready) ----------
 protocol.registerSchemesAsPrivileged([
   { scheme: 'mbfile', privileges: { stream: true, bypassCSP: true, supportFetchAPI: true, corsEnabled: true } },
-  { scheme: 'mbcover', privileges: { stream: true, bypassCSP: true, supportFetchAPI: true, corsEnabled: true } }
+  { scheme: 'mbcover', privileges: { stream: true, bypassCSP: true, supportFetchAPI: true, corsEnabled: true } },
+  // YouTube Music audio, fetched in bounded chunks by the main process.
+  { scheme: 'ytstream', privileges: { stream: true, bypassCSP: true, supportFetchAPI: true, corsEnabled: true } }
 ]);
 
 function decodePath(url, prefix) {
@@ -1312,6 +1314,19 @@ app.on('before-quit', () => {
 });
 
 app.whenReady().then(async () => {
+  // Streamed audio (YouTube Music, radio, podcasts) is routed through Web
+  // Audio so volume changes can glide instead of jumping (a jump clicks).
+  // Web Audio silences cross-origin media without CORS, and most stream
+  // hosts send none, so media responses get a permissive header. Only
+  // media requests are touched.
+  try {
+    require('electron').session.defaultSession.webRequest.onHeadersReceived((details, callback) => {
+      if (details.resourceType !== 'media') return callback({});
+      const headers = { ...(details.responseHeaders || {}) };
+      if (!Object.keys(headers).some(k => k.toLowerCase() === 'access-control-allow-origin')) headers['Access-Control-Allow-Origin'] = ['*'];
+      callback({ responseHeaders: headers });
+    });
+  } catch (err) { console.warn('[Hive] media CORS hook unavailable:', err?.message || err); }
   // Backfill play 'source' provenance ('import' vs. 'hive') onto Wrapped
   // Data written before that field existed, using the same signal a MusicBee
   // archive vs. a native Hive play always differs on: fileUrl is a foreign
@@ -1521,6 +1536,20 @@ updateChecker.onStatus(status => {
     };
     await Promise.all(Array.from({ length: Math.min(8, list.length) }, worker));
     return results;
+  });
+
+  // ytstream://v/<videoId> -> the song's audio, one bounded range at a time.
+  protocol.handle('ytstream', async (request) => {
+    const videoId = String(new URL(request.url).pathname || '').replace(/^\/+/, '').split('/')[0];
+    if (!/^[A-Za-z0-9_-]{6,20}$/.test(videoId)) return new Response('Bad video id', { status: 400 });
+    try {
+      const r = await youtubeMusic.streamRange(videoId, request.headers.get('range'));
+      const headers = new Headers({ 'Accept-Ranges': 'bytes', 'Access-Control-Allow-Origin': '*', 'Cache-Control': 'no-store', 'Content-Type': r.contentType,
+        'Content-Length': String(r.end - r.start + 1), 'Content-Range': `bytes ${r.start}-${r.end}/${r.total || '*'}` });
+      return new Response(r.body, { status: 206, headers });
+    } catch (err) {
+      return new Response(String(err?.message || err), { status: 502 });
+    }
   });
 
   protocol.handle('mbcover', async (request) => {
@@ -1981,6 +2010,43 @@ ipcMain.handle('ytmusic:status', async () => youtubeMusic.status());
 ipcMain.handle('ytmusic:install', async () => youtubeMusic.installYtDlp());
 ipcMain.handle('ytmusic:resolve', async (_evt, track, opts) => youtubeMusic.resolve(track || {}, opts || {}));
 ipcMain.handle('ytmusic:tags', async (_evt, track) => youtubeMusic.musicBrainzTags(track || {}));
+// Download a streamed song into the first library folder as
+// <Artist>/<Album>/<NN - >Title.mp3, tagged and with its cover, so the
+// library picks it up and Hive plays the file from then on.
+ipcMain.handle('ytmusic:download', async (_evt, track = {}) => {
+  const config = await readJsonSafe(CONFIG_PATH(), { folders: [] });
+  const folder = (Array.isArray(config.folders) ? config.folders : []).map(resolveConfiguredFolder).find(f => f && fs.existsSync(f));
+  if (!folder) throw new Error('Add a music folder in Settings → Library first.');
+  const clean = (v, fallback) => (String(v || '').replace(/[\\/:*?"<>|\x00-\x1f]/g, '_').replace(/\s+/g, ' ').trim().replace(/^\.+/, '').slice(0, 120) || fallback);
+  const artist = clean(track.albumArtist || String(track.artist || '').split(/,|&| feat\.? /i)[0], 'Unknown Artist');
+  const album = clean(track.album, 'Unknown Album');
+  const n = Number(track.track) || 0;
+  const baseName = `${n ? String(n).padStart(2, '0') + ' - ' : ''}${clean(track.title, 'Untitled')}`;
+  const dir = path.join(folder, artist, album);
+  const existing = path.join(dir, `${baseName}.mp3`);
+  if (fs.existsSync(existing)) return { path: existing, existed: true };
+  const r = await youtubeMusic.resolve(track);
+  const file = await youtubeMusic.downloadAudio(r.videoId, dir, baseName);
+  const tags = {};
+  for (const [k, v] of Object.entries({ title: track.title, artist: track.artist, album: track.album, albumArtist: track.albumArtist, genre: track.genre, year: track.year, track: n || '', disk: track.disk || track.disc || '' })) {
+    if (v !== undefined && v !== null && String(v).trim()) tags[k] = String(v);
+  }
+  // Cover: Hive's cached copy if there is one, else the source's artwork URL.
+  let cover = '';
+  const cached = String(track.cover || '').replace(/^mbcover:\/\/+/i, '').split(/[?#]/)[0];
+  if (cached && !/^https?:/i.test(cached)) { const f = path.join(COVERS_DIR(), path.basename(decodeURIComponent(cached))); if (fs.existsSync(f)) cover = f; }
+  if (!cover && /^https:\/\//i.test(String(track.artworkUrl || ''))) {
+    try {
+      const res = await net.fetch(String(track.artworkUrl));
+      if (res.ok) { cover = path.join(require('os').tmpdir(), `hive-cover-${process.pid}-${Date.now()}.jpg`); await fsp.writeFile(cover, Buffer.from(await res.arrayBuffer())); }
+    } catch { cover = ''; }
+  }
+  // Tags and the front cover in one ID3 write.
+  try { await runTagHelper({ op: 'write_metadata', path: file, tags, artwork: cover ? { action: 'add', imagePath: cover, pictureType: 'Cover (Front)' } : null }); }
+  catch (err) { console.warn('[YouTube Music] tagging failed:', err?.message || err); }
+  if (cover && cover.startsWith(require('os').tmpdir())) fsp.unlink(cover).catch(() => {});
+  return { path: file, existed: false };
+});
 ipcMain.handle('ytmusic:prefetch', async (_evt, tracks, opts) => youtubeMusic.prefetch(Array.isArray(tracks) ? tracks : [], { mode: opts?.mode === 'append' ? 'append' : 'queue' }));
 
 // Hive interface size (MusicBee's font scaling): zoom the main window.
@@ -5529,6 +5595,7 @@ async function writeEmbeddedPlayCount(trackPath, value) {
 }
 
 async function embedPlayCountDelta(trackPath, delta) {
+  if (isVirtualTrackPath(trackPath)) return { embedded: false };
   const amount = Math.max(0, Math.floor(Number(delta) || 0));
   if (!amount) return { embedded: false, pCount: await readEmbeddedPlayCount(trackPath) };
   return withMusicBeeWriteLock(trackPath, async () => {
@@ -6519,9 +6586,13 @@ async function metadataJobAlreadySatisfied(job) {
   return false;
 }
 
+// Streamed tracks (YouTube Music, podcasts, radio, Apple previews, Spotify)
+// have synthetic paths like "ytm:apple:123" and no file to write. Their
+// likes and stats live in Hive's own data, never in tags.
+function isVirtualTrackPath(p) { return /(^|[\\/])(ytm|podcast|radio|applemusic|spotify):/i.test(String(p || '')); }
 function enqueueMetadataSave(evt, jobs, options = {}) {
   const sender = evt?.sender || mainWindow?.webContents;
-  const normalizedJobs = (Array.isArray(jobs) ? jobs : []).map(job => ({ ...job, id:String(job?.id || crypto.randomUUID()), createdAt:Number(job?.createdAt || Date.now()), path:String(job?.path || '') })).filter(job => job.path);
+  const normalizedJobs = (Array.isArray(jobs) ? jobs : []).filter(job => !isVirtualTrackPath(job?.path)).map(job => ({ ...job, id:String(job?.id || crypto.randomUUID()), createdAt:Number(job?.createdAt || Date.now()), path:String(job?.path || '') })).filter(job => job.path);
   metadataSaveQueue = metadataSaveQueue.then(() => new Promise((resolve) => {
     taskManager.enqueue('metadata', async () => {
       try { await runMetadataBatch(normalizedJobs, sender, options); } finally { resolve(); }
@@ -7930,7 +8001,7 @@ ipcMain.handle('track:toggleLove', async (evt, trackPath, value) => {
 
 ipcMain.handle('tracks:setLove', async (evt, trackPaths = [], loved) => {
   const requestedPaths = [...new Set((Array.isArray(trackPaths) ? trackPaths : [])
-    .filter(Boolean).map(p => String(p)))];
+    .filter(Boolean).map(p => String(p)).filter(p => !isVirtualTrackPath(p)))];
   const value = !!loved;
   const results = { updated: 0, failed: 0, skipped: 0, errors: [] };
 

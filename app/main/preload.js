@@ -34,6 +34,7 @@ contextBridge.exposeInMainWorld('beehive', {
   installYtDlp: () => ipcRenderer.invoke('ytmusic:install'),
   resolveYouTubeMusic: (track, opts) => ipcRenderer.invoke('ytmusic:resolve', track || {}, opts || {}),
   getMusicBrainzTags: (track) => ipcRenderer.invoke('ytmusic:tags', track || {}),
+  downloadYouTubeMusic: (track) => ipcRenderer.invoke('ytmusic:download', track || {}),
   prefetchYouTubeMusic: (tracks, opts) => ipcRenderer.invoke('ytmusic:prefetch', Array.isArray(tracks) ? tracks : [], opts || {}),
   toggleMiniPlayer: () => ipcRenderer.invoke('miniplayer:toggle'),
   getMiniPlayerState: () => ipcRenderer.invoke('miniplayer:getState'),

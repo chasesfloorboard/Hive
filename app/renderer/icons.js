@@ -10,6 +10,7 @@
 
     pause: `<svg viewBox="0 0 24 24" fill="currentColor"><path d="M6.5 5h4v14h-4zM13.5 5h4v14h-4z"/></svg>`,
 
+    download: `<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="M12 4v11"/><path d="m7 10 5 5 5-5"/><path d="M5 20h14"/></svg>`,
     heartOutline: `<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linejoin="round"><path d="M12 20.2S3.9 15.4 3.9 9.6C3.9 6.6 6.1 4.6 8.7 4.6c1.9 0 3.3 1.1 3.3 1.1s1.4-1.1 3.3-1.1c2.6 0 4.8 2 4.8 5 0 5.8-8.1 10.6-8.1 10.6z"/></svg>`,
 
     heartFilled: `<svg viewBox="0 0 24 24" fill="currentColor"><path d="M12 20.2S3.9 15.4 3.9 9.6C3.9 6.6 6.1 4.6 8.7 4.6c1.9 0 3.3 1.1 3.3 1.1s1.4-1.1 3.3-1.1c2.6 0 4.8 2 4.8 5 0 5.8-8.1 10.6-8.1 10.6z"/></svg>`,
