@@ -5638,3 +5638,18 @@ span.apple-track-art{display:block;background:rgba(255,255,255,.06)}
 .playlist-card:hover .playlist-card-delete { opacity:1; }
 .playlist-card-delete:hover { background:#c0392b; }
 .playlist-list-window .playlist-row.playlist-card { height:auto; }
+.theme-select-group{display:inline-flex;align-items:center;gap:8px}
+.theme-shuffle-btn{width:34px;height:34px;flex:none;display:grid;place-items:center;border-radius:9px;border:1px solid var(--control-border, var(--border));background:var(--control-bg);color:var(--text);cursor:pointer;transition:background .15s ease,border-color .15s ease,transform .1s ease}
+.theme-shuffle-btn svg{width:16px;height:16px}
+.theme-shuffle-btn:hover{border-color:color-mix(in srgb,var(--accent) 55%,var(--border));background:color-mix(in srgb,var(--accent) 14%,var(--control-bg))}
+.theme-shuffle-btn:active{transform:scale(.94)}
+.theme-shuffle-btn:disabled{opacity:.45;cursor:default}
+
+/* "On" icons (loved, shuffle/repeat on, ...) use the accent, which follows
+   the playing cover and can be near-white or near-black. Mix it toward the
+   theme's text colour so it always stands out from the background. */
+.icon-btn.active, #btn-love.loved, .playbar-right .icon-btn.active, .transport .icon-btn.active {
+  color: color-mix(in srgb, var(--accent) 62%, var(--text));
+}
+.settings-row .theme-select-group{display:flex;flex-direction:row;flex-wrap:nowrap;align-items:center;gap:8px;min-width:0}
+.theme-select-group .settings-select{flex:1 1 auto;min-width:180px;width:auto}

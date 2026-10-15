@@ -19172,6 +19172,24 @@
     if(theme && baseSelect) baseSelect.value=`folder:${file}`;
     themeScheduleTimer=setTimeout(applyThemeSchedule, Math.min(60000, lib.msUntilNextSwitch(now, dayStart, nightStart)+500));
   }
+  // Settings → Appearance: the shuffle button left of the theme list picks
+  // a different theme at random, applied through the list's own change path.
+  (function initThemeShuffleButton(){
+    const btn=document.getElementById('theme-shuffle-btn');
+    if(!btn) return;
+    btn.innerHTML=window.BeehiveIcons?.shuffle || '⤮';
+    btn.addEventListener('click',e=>{
+      e.preventDefault(); e.stopPropagation();
+      const select=document.getElementById('builtin-theme-select');
+      if(!select || select.disabled) return;
+      const choices=[...select.options].filter(o=>o.value && !o.disabled && o.value!==select.value);
+      if(!choices.length) return;
+      select.value=choices[Math.floor(Math.random()*choices.length)].value;
+      select.dispatchEvent(new Event('change',{bubbles:true}));
+    });
+    const sync=()=>{ const select=document.getElementById('builtin-theme-select'); btn.disabled=!!select?.disabled; };
+    new MutationObserver(sync).observe(document.getElementById('builtin-theme-select'),{attributes:true,attributeFilter:['disabled']});
+  })();
   function initThemeScheduleControls(){
     const toggle=document.getElementById('setting-theme-schedule');
     const rows=document.getElementById('theme-schedule-rows');
