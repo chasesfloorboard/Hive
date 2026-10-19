@@ -235,3 +235,9 @@ class AppleMusic(private val http: OkHttpClient = defaultHttp()) {
         private fun JsonObject.str(key: String): String? = (this[key] as? JsonPrimitive)?.contentOrNull
     }
 }
+
+/** How Hive keeps an Apple Music song that isn't in the library. */
+fun AmSong.toStream() = com.local.hive.mobile.data.StreamTrack(
+    key = "am:$appleId", source = "Apple Music", title = title, artist = artist, album = album,
+    durationMs = durationMs, artworkUrl = artwork, previewUrl = previewUrl, url = url,
+)

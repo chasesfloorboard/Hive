@@ -67,6 +67,12 @@ import com.local.hive.mobile.stream.AmSearch
 import com.local.hive.mobile.stream.AmShelf
 import com.local.hive.mobile.stream.AmSong
 import com.local.hive.mobile.stream.AppleMusic
+import com.local.hive.mobile.stream.SpCard
+import com.local.hive.mobile.stream.SpCollection
+import com.local.hive.mobile.stream.Spotify
+import com.local.hive.mobile.stream.toStream
+import com.local.hive.mobile.data.StreamTrack
+import com.local.hive.mobile.data.Track
 import com.local.hive.mobile.ui.theme.Hive
 import com.local.hive.mobile.ui.theme.HiveGlassLayers
 import com.local.hive.mobile.ui.theme.HiveShape
@@ -131,7 +137,7 @@ fun AppleMusicScreen(vm: MainViewModel, bottomPadding: Dp, onBack: () -> Unit, o
                     is Load.Failed -> item { Failed(b.message) { attempt++ } }
                     is Load.Ready -> b.value.forEach { shelf ->
                         item(key = "h" + shelf.title) { YearHeading(shelf.title.ifBlank { "More" }) }
-                        if (shelf.cards.isNotEmpty()) item(key = "c" + shelf.title) { CardShelf(shelf.cards, onOpen) }
+                        if (shelf.cards.isNotEmpty()) item(key = "c" + shelf.title) { CardShelf(shelf.cards.map { it.card() }, onOpen) }
                         else item(key = "s" + shelf.title) { SongShelf(vm, shelf.songs.take(10)) }
                     }
                 }
@@ -139,8 +145,8 @@ fun AppleMusicScreen(vm: MainViewModel, bottomPadding: Dp, onBack: () -> Unit, o
                 is Load.Failed -> item { Failed(r.message) { attempt++ } }
                 is Load.Ready -> {
                     if (r.value.playlists.isEmpty() && r.value.albums.isEmpty()) item { EmptyState("Nothing found", "Try another search, or paste a music.apple.com link.") }
-                    if (r.value.playlists.isNotEmpty()) { item { YearHeading("Playlists") }; item { CardShelf(r.value.playlists, onOpen) } }
-                    if (r.value.albums.isNotEmpty()) { item { YearHeading("Albums") }; item { CardShelf(r.value.albums, onOpen) } }
+                    if (r.value.playlists.isNotEmpty()) { item { YearHeading("Playlists") }; item { CardShelf(r.value.playlists.map { it.card() }, onOpen) } }
+                    if (r.value.albums.isNotEmpty()) { item { YearHeading("Albums") }; item { CardShelf(r.value.albums.map { it.card() }, onOpen) } }
                 }
             }
         }
@@ -185,11 +191,17 @@ private fun Failed(message: String, onRetry: () -> Unit) {
 }
 
 @Composable
-private fun CardShelf(cards: List<AmCard>, onOpen: (String) -> Unit) {
+private fun CardShelf(cards: List<ServiceCard>, onOpen: (String) -> Unit) {
     LazyRow(contentPadding = PaddingValues(horizontal = 16.dp), horizontalArrangement = Arrangement.spacedBy(14.dp)) {
-        items(cards, key = { it.kind + it.id }) { card -> StreamCard(card.artwork, card.name, card.curator, Modifier.width(150.dp)) { onOpen(card.url.ifBlank { "https://music.apple.com/us/${card.kind}/x/${card.id}" }) } }
+        items(cards, key = { it.url }) { card -> StreamCard(card.artwork, card.name, card.subtitle, Modifier.width(150.dp)) { onOpen(card.url) } }
     }
 }
+
+/** A playlist or album card from any service. */
+data class ServiceCard(val name: String, val subtitle: String, val artwork: String, val url: String)
+
+private fun AmCard.card() = ServiceCard(name, curator, artwork, url.ifBlank { "https://music.apple.com/us/$kind/x/$id" })
+private fun SpCard.card() = ServiceCard(name, subtitle, artwork, url)
 
 /** A playlist or album from a streaming service: cover, name, curator. */
 @Composable
@@ -206,21 +218,21 @@ fun StreamCard(art: String, name: String, subtitle: String, modifier: Modifier, 
 private fun SongShelf(vm: MainViewModel, songs: List<AmSong>) {
     val now by vm.nowPlaying.collectAsStateWithLifecycle()
     val library by vm.tracks.collectAsStateWithLifecycle()
-    val songsWithPreviews = remember(songs) { mutableStateOf(songs) }
-    LaunchedEffect(songs) { songsWithPreviews.value = runCatching { vm.appleMusic.withPreviews(songs) }.getOrDefault(songs) }
-    val list = songsWithPreviews.value
+    var list by remember(songs) { mutableStateOf(songs.map { it.toStream() }) }
+    LaunchedEffect(songs) { list = runCatching { vm.appleMusic.withPreviews(songs) }.getOrDefault(songs).map { it.toStream() } }
     val matches = remember(list, library) { list.map { vm.localMatch(it) } }
     Column(Modifier.padding(horizontal = 8.dp).hiveGlass(HiveShape.panel).padding(vertical = 6.dp)) {
-        list.forEachIndexed { i, s -> AppleSongRow(vm, s, matches[i] != null, now.mediaId == (matches[i]?.id?.toString() ?: "am:${s.appleId}"), now.isPlaying, null) { vm.playApple(listOf(s)) } }
+        list.forEachIndexed { i, s -> ServiceSongRow(vm, s, matches[i], now.mediaId, now.isPlaying, null) { vm.playStreams(listOf(s)) } }
     }
 }
 
-/** An Apple Music song with a badge saying how Hive plays it. */
+/** A song from Apple Music or Spotify, with a badge saying how Hive plays it. */
 @Composable
-private fun AppleSongRow(vm: MainViewModel, s: AmSong, inLibrary: Boolean, playing: Boolean, isPlaying: Boolean, number: Int?, onClick: () -> Unit) {
+private fun ServiceSongRow(vm: MainViewModel, s: StreamTrack, local: Track?, nowMediaId: String?, isPlaying: Boolean, number: Int?, onClick: () -> Unit) {
     val c = Hive.colors
     var menu by remember { mutableStateOf(false) }
-    val playable = inLibrary || s.previewUrl.isNotBlank()
+    val playable = local != null || s.previewUrl.isNotBlank()
+    val playing = nowMediaId != null && nowMediaId == (local?.id?.toString() ?: s.key)
     Row(
         Modifier.fillMaxWidth().padding(horizontal = 6.dp).height(62.dp).clip(HiveShape.row)
             .background(if (playing) c.accentSoft.copy(alpha = 0.22f) else Color.Transparent)
@@ -229,16 +241,16 @@ private fun AppleSongRow(vm: MainViewModel, s: AmSong, inLibrary: Boolean, playi
     ) {
         if (number != null) Text("$number", style = HiveText.numbers, color = c.textDimmer, textAlign = TextAlign.Center, modifier = Modifier.width(26.dp).padding(end = 4.dp))
         Box(Modifier.size(42.dp)) {
-            Artwork(s.artwork.ifBlank { null }, Modifier.size(42.dp))
+            Artwork(s.artworkUrl.ifBlank { null } ?: local?.artworkUri, Modifier.size(42.dp))
             if (playing) Box(Modifier.size(42.dp).clip(HiveShape.thumb).background(Color.Black.copy(alpha = 0.45f)), contentAlignment = Alignment.Center) { NowPlayingBars(isPlaying, c.accent) }
         }
         Column(Modifier.weight(1f).padding(horizontal = 12.dp), verticalArrangement = Arrangement.spacedBy(2.dp)) {
             Text(s.title, style = HiveText.row, color = if (playing) c.accent else if (playable) c.text else c.textDim, maxLines = 1, overflow = TextOverflow.Ellipsis)
             Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(6.dp)) {
                 when {
-                    inLibrary -> StreamBadge("In library", accent = true)
+                    local != null -> StreamBadge("In library", accent = true)
                     s.previewUrl.isNotBlank() -> StreamBadge("Preview")
-                    else -> StreamBadge("Apple Music only")
+                    else -> StreamBadge("${s.source} only")
                 }
                 Text(listOf(s.artist, s.album).filter { it.isNotBlank() }.joinToString(" · "), style = HiveText.rowSub, color = c.textDim, maxLines = 1, overflow = TextOverflow.Ellipsis)
             }
@@ -249,22 +261,49 @@ private fun AppleSongRow(vm: MainViewModel, s: AmSong, inLibrary: Boolean, playi
                 Icon(Icons.Rounded.MoreHoriz, "More options", tint = c.textDim, modifier = Modifier.size(18.dp))
             }
             HiveMenu(menu, { menu = false }) {
-                HiveMenuItem("Play next", Icons.AutoMirrored.Rounded.PlaylistPlay) { menu = false; vm.playNextApple(listOf(s)) }
-                HiveMenuItem("Add to queue", Icons.AutoMirrored.Rounded.QueueMusic) { menu = false; vm.addToQueueApple(listOf(s)) }
+                HiveMenuItem("Play next", Icons.AutoMirrored.Rounded.PlaylistPlay) { menu = false; vm.playNextStreams(listOf(s)) }
+                HiveMenuItem("Add to queue", Icons.AutoMirrored.Rounded.QueueMusic) { menu = false; vm.addToQueueStreams(listOf(s)) }
             }
         }
     }
 }
 
+/** What a service's playlist or album page shows. */
+data class ServicePage(
+    val source: String,
+    val kind: String,
+    val name: String,
+    val curator: String,
+    val description: String,
+    val artwork: String,
+    val url: String,
+    val songs: List<StreamTrack>,
+    val more: List<ServiceCard> = emptyList(),
+)
+
+private fun AmCollection.page() = ServicePage("Apple Music", kind, name, curator, description, artwork, url, songs.map { it.toStream() }, more.map { it.card() })
+private fun SpCollection.page() = ServicePage("Spotify", kind, name, owner, "", artwork, url, songs.map { it.toStream() })
+
+@Composable
+fun AppleCollectionScreen(vm: MainViewModel, url: String, bottomPadding: Dp, onBack: () -> Unit, onOpen: (String) -> Unit, onOpenPlaylist: (Long) -> Unit, onToast: (String) -> Unit) =
+    ServiceCollectionScreen(vm, url, "Apple Music", { vm.appleMusic.collection(url).page() }, bottomPadding, onBack, onOpen, onOpenPlaylist, onToast)
+
+@Composable
+fun SpotifyCollectionScreen(vm: MainViewModel, url: String, bottomPadding: Dp, onBack: () -> Unit, onOpenPlaylist: (Long) -> Unit, onToast: (String) -> Unit) =
+    ServiceCollectionScreen(vm, url, "Spotify", { vm.spotify.collection(url).page() }, bottomPadding, onBack, {}, onOpenPlaylist, onToast)
+
 /**
- * An Apple Music playlist or album: its cover over Play / Shuffle / Import,
- * how many of its songs are in the library, then its songs and "More like this".
+ * A service's playlist or album: its cover over Play / Shuffle / Import, how
+ * many of its songs are in the library, then its songs (and "More like this").
  */
 @Composable
-fun AppleCollectionScreen(vm: MainViewModel, url: String, bottomPadding: Dp, onBack: () -> Unit, onOpen: (String) -> Unit, onOpenPlaylist: (Long) -> Unit, onToast: (String) -> Unit) {
+private fun ServiceCollectionScreen(
+    vm: MainViewModel, key: String, service: String, load: suspend () -> ServicePage, bottomPadding: Dp,
+    onBack: () -> Unit, onOpen: (String) -> Unit, onOpenPlaylist: (Long) -> Unit, onToast: (String) -> Unit,
+) {
     val c = Hive.colors
     val context = LocalContext.current
-    var page by remember(url) { mutableStateOf<Load<AmCollection>>(Load.Loading) }
+    var page by remember(key) { mutableStateOf<Load<ServicePage>>(Load.Loading) }
     var attempt by remember { mutableStateOf(0) }
     val library by vm.tracks.collectAsStateWithLifecycle()
     val now by vm.nowPlaying.collectAsStateWithLifecycle()
@@ -272,7 +311,7 @@ fun AppleCollectionScreen(vm: MainViewModel, url: String, bottomPadding: Dp, onB
     val titleAlpha by animateFloatAsState(if (list.firstVisibleItemIndex > 0) 1f else 0f, tween(180), label = "title")
     var importing by remember { mutableStateOf(false) }
     var showAll by remember { mutableStateOf(false) }
-    LaunchedEffect(url, attempt) { page = Load.Loading; page = runCatching { vm.appleMusic.collection(url) }.fold({ Load.Ready(it) }, { Load.Failed(it.friendly("Apple Music")) }) }
+    LaunchedEffect(key, attempt) { page = Load.Loading; page = runCatching { load() }.fold({ Load.Ready(it) }, { Load.Failed(it.friendly(service)) }) }
     val collection = (page as? Load.Ready)?.value
     val matches = remember(collection, library) { collection?.songs?.map { vm.localMatch(it) }.orEmpty() }
 
@@ -288,27 +327,27 @@ fun AppleCollectionScreen(vm: MainViewModel, url: String, bottomPadding: Dp, onB
                     item {
                         Column(Modifier.fillMaxWidth().statusBarsPadding().padding(top = 64.dp, start = 24.dp, end = 24.dp, bottom = 14.dp), horizontalAlignment = Alignment.CenterHorizontally) {
                             Artwork(col.artwork.ifBlank { null }, Modifier.size(220.dp), HiveShape.art, Icons.Rounded.LibraryMusic, elevation = 30.dp)
-                            HiveLabel(if (col.kind == "album") "Album" else "Playlist", Modifier.padding(top = 20.dp))
+                            HiveLabel("${col.source} ${if (col.kind == "album") "album" else if (col.kind == "track") "song" else "playlist"}", Modifier.padding(top = 20.dp))
                             Text(col.name, style = HiveText.heroTitle, color = c.text, textAlign = TextAlign.Center, maxLines = 2, overflow = TextOverflow.Ellipsis, modifier = Modifier.padding(top = 4.dp))
                             Text(listOf(col.curator, countOf(col.songs.size, "song"), "$inLibrary in your library").filter { it.isNotBlank() }.joinToString(" · "), style = HiveText.small, color = c.textDim, textAlign = TextAlign.Center, modifier = Modifier.padding(top = 6.dp))
                             if (col.description.isNotBlank()) Text(col.description, style = HiveText.small, color = c.textDim, textAlign = TextAlign.Center, maxLines = if (showAll) Int.MAX_VALUE else 3, overflow = TextOverflow.Ellipsis,
                                 modifier = Modifier.padding(top = 10.dp).clickable { showAll = !showAll })
                             Row(Modifier.padding(top = 18.dp), horizontalArrangement = Arrangement.spacedBy(12.dp), verticalAlignment = Alignment.CenterVertically) {
-                                ControlButton(Icons.Rounded.Shuffle, "Shuffle", { vm.playApple(col.songs, shuffle = true) }, size = 46.dp)
-                                AccentPlayButton(false, { vm.playApple(col.songs) }, size = 58.dp)
+                                ControlButton(Icons.Rounded.Shuffle, "Shuffle", { vm.playStreams(col.songs, shuffle = true) }, size = 46.dp)
+                                AccentPlayButton(false, { vm.playStreams(col.songs) }, size = 58.dp)
                                 ControlButton(Icons.AutoMirrored.Rounded.PlaylistAdd, "Import as playlist", {
-                                    if (!importing) { importing = true; vm.importApple(col) { id, summary -> importing = false; onToast("Imported “${col.name}”: $summary"); onOpenPlaylist(id) } }
+                                    if (!importing) {
+                                        importing = true
+                                        vm.importStreams(col.name, col.source, col.url, col.artwork, col.songs) { id, summary -> importing = false; onToast("Imported “${col.name}”: $summary"); onOpenPlaylist(id) }
+                                    }
                                 }, size = 46.dp)
                             }
                             Text("Songs you don't own play as 30-second previews.", style = HiveText.small, color = c.textDimmer, modifier = Modifier.padding(top = 12.dp))
                         }
                     }
                     item { PanelTop() }
-                    itemsIndexed(col.songs, key = { i, s -> "$i:${s.appleId}" }) { i, s ->
-                        PanelSlice {
-                            val local = matches.getOrNull(i)
-                            AppleSongRow(vm, s, local != null, now.mediaId == (local?.id?.toString() ?: "am:${s.appleId}"), now.isPlaying, i + 1) { vm.playApple(col.songs, i) }
-                        }
+                    itemsIndexed(col.songs, key = { i, s -> "$i:${s.key}" }) { i, s ->
+                        PanelSlice { ServiceSongRow(vm, s, matches.getOrNull(i), now.mediaId, now.isPlaying, i + 1) { vm.playStreams(col.songs, i) } }
                     }
                     item { PanelBottom() }
                     if (col.more.isNotEmpty()) {
@@ -323,8 +362,60 @@ fun AppleCollectionScreen(vm: MainViewModel, url: String, bottomPadding: Dp, onB
             if (collection != null) Box(Modifier.size(42.dp).hiveGlass(CircleShape).clickable {
                 runCatching { context.startActivity(Intent(Intent.ACTION_VIEW, Uri.parse(collection.url))) }
             }, contentAlignment = Alignment.Center) {
-                Icon(Icons.AutoMirrored.Rounded.OpenInNew, "Open in Apple Music", tint = c.text, modifier = Modifier.size(19.dp))
+                Icon(Icons.AutoMirrored.Rounded.OpenInNew, "Open in ${collection.source}", tint = c.text, modifier = Modifier.size(19.dp))
             }
         }
     })
+}
+
+/**
+ * Hive's Spotify page without an account: Spotify's editorial playlists, and
+ * any shared playlist, album or song by its link.
+ */
+@Composable
+fun SpotifyScreen(vm: MainViewModel, bottomPadding: Dp, onBack: () -> Unit, onOpen: (String) -> Unit) {
+    val c = Hive.colors
+    var query by rememberSaveable { mutableStateOf("") }
+    var hint by remember { mutableStateOf<String?>(null) }
+    var picks by remember { mutableStateOf<Load<List<SpCard>>>(Load.Loading) }
+    var attempt by remember { mutableStateOf(0) }
+    vm.tracks.collectAsStateWithLifecycle() // keeps the library index fresh for matching
+    LaunchedEffect(attempt) { picks = runCatching { vm.spotify.picks() }.fold({ if (it.isEmpty()) Load.Failed("Couldn't load Spotify's playlists.") else Load.Ready(it) }, { Load.Failed(it.friendly("Spotify")) }) }
+    fun submit() {
+        val q = query.trim()
+        if (Spotify.isSpotifyLink(q)) { hint = null; onOpen(q) } else hint = "Paste a Spotify link: Share › Copy link on a playlist, album or song."
+    }
+    Column(Modifier.fillMaxSize()) {
+        PageBar("", 0f, onBack)
+        LazyColumn(Modifier.fillMaxSize(), contentPadding = PaddingValues(bottom = bottomPadding + 24.dp)) {
+            item {
+                Column(Modifier.padding(start = 20.dp, end = 20.dp, top = 2.dp, bottom = 12.dp)) {
+                    HiveLabel("Browse")
+                    Text("Spotify", style = HiveText.viewTitle, color = c.text)
+                    Text("Open any shared playlist, album or song. Songs in your library play from your files; the rest play Spotify's 30-second previews.", style = HiveText.small, color = c.textDim, modifier = Modifier.padding(top = 4.dp))
+                }
+            }
+            item { SearchField(query, { query = it; hint = null }, "Paste a Spotify link", onSubmit = ::submit, onClear = { query = ""; hint = null }) }
+            hint?.let { item { Text(it, style = HiveText.small, color = c.textDim, modifier = Modifier.padding(horizontal = 22.dp, vertical = 8.dp)) } }
+            item { YearHeading("Spotify playlists") }
+            when (val p = picks) {
+                Load.Loading -> item { Busy("Loading Spotify…") }
+                is Load.Failed -> item { Failed(p.message) { attempt++ } }
+                is Load.Ready -> item { CardGrid(p.value.map { it.card() }, onOpen) }
+            }
+        }
+    }
+}
+
+/** Cards two to a row, as Hive's album grid. */
+@Composable
+private fun CardGrid(cards: List<ServiceCard>, onOpen: (String) -> Unit) {
+    Column(Modifier.padding(horizontal = 16.dp), verticalArrangement = Arrangement.spacedBy(18.dp)) {
+        cards.chunked(2).forEach { row ->
+            Row(horizontalArrangement = Arrangement.spacedBy(14.dp)) {
+                row.forEach { card -> StreamCard(card.artwork, card.name, card.subtitle, Modifier.weight(1f)) { onOpen(card.url) } }
+                if (row.size == 1) Spacer(Modifier.weight(1f))
+            }
+        }
+    }
 }

@@ -90,7 +90,7 @@ renderer views) and its state on mobile.
 | Internet radio (search, now playing) | `radio:*` | ❌ |
 | Podcasts (search, feeds, favorites) | `podcast:*`, `podcasts:favorites:*` | ❌ |
 | YouTube Music page, downloads | `ytmusic:*` | ❌ |
-| Spotify page and library | `spotify:*` | ❌ |
+| Spotify page and library | `spotify:*` | 🟡 editorial playlists, any shared playlist/album/song link, previews, library matches, import; no personal library yet |
 | Apple Music page | `applemusic:*` | ✅ Browse shelves, search, playlists and albums, links; library matches play in full, others as previews; import as playlist |
 | Scrobbling: ListenBrainz, Last.fm | `scrobble:*` | ❌ |
 | Discord presence | `discord-presence:*` | ➖ (shown by the PC) |

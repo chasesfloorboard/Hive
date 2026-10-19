@@ -19,8 +19,6 @@ import com.local.hive.mobile.link.DiscoveredHive
 import com.local.hive.mobile.link.HiveLinkClient
 import com.local.hive.mobile.link.TrackMatcher
 import com.local.hive.mobile.playback.toMediaItem
-import com.local.hive.mobile.stream.AmCollection
-import com.local.hive.mobile.stream.AmSong
 import kotlinx.coroutines.flow.Flow
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.SharingStarted
@@ -134,12 +132,13 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
     fun playNextRows(rows: List<PlaylistRow>) = app.player.playNextMedia(rows.mapNotNull(::mediaFor))
     fun addToQueueRows(rows: List<PlaylistRow>) = app.player.addToQueueMedia(rows.mapNotNull(::mediaFor))
 
-    // ---- Apple Music ----
+    // ---- Apple Music and Spotify ----
 
     val appleMusic get() = app.appleMusic
+    val spotify get() = app.spotify
     private var matchIndex: Triple<List<Track>, TrackMatcher.Index, Map<String, Track>>? = null
 
-    /** The library song an Apple Music or Spotify song is, when the phone has it. */
+    /** The library song a streamed song is, when the phone has it. */
     fun localMatch(title: String, artist: String, durationMs: Long): Track? {
         val library = tracks.value
         val index = matchIndex?.takeIf { it.first === library } ?: Triple(
@@ -149,39 +148,34 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
         ).also { matchIndex = it }
         return index.second.match(title, artist, "", durationMs)?.let { index.third[it.key] }
     }
-    fun localMatch(song: AmSong) = localMatch(song.title, song.artist, song.durationMs)
+    fun localMatch(song: StreamTrack) = localMatch(song.title, song.artist, song.durationMs)
 
-    private fun streamOf(song: AmSong) = StreamTrack(
-        key = "am:${song.appleId}", source = "Apple Music", title = song.title, artist = song.artist, album = song.album,
-        durationMs = song.durationMs, artworkUrl = song.artwork, previewUrl = song.previewUrl, url = song.url,
-    )
-
-    /** Library songs play in full from the phone; the rest play Apple's preview, and songs with neither are skipped. */
-    private suspend fun appleMedia(songs: List<AmSong>): List<MediaItem?> {
+    /** Library songs play in full from the phone; the rest play the service's preview, and songs with neither are skipped. */
+    private suspend fun streamMedia(songs: List<StreamTrack>): List<MediaItem?> {
         val matched = songs.map { localMatch(it) to it }
-        dao.upsertStreamTracks(matched.filter { it.first == null && it.second.previewUrl.isNotBlank() }.map { streamOf(it.second) })
-        return matched.map { (local, song) -> local?.toMediaItem() ?: song.previewUrl.ifBlank { null }?.let { streamOf(song).toMediaItem(it) } }
+        dao.upsertStreamTracks(matched.filter { it.first == null && it.second.previewUrl.isNotBlank() }.map { it.second })
+        return matched.map { (local, song) -> local?.toMediaItem() ?: song.previewUrl.ifBlank { null }?.let { song.toMediaItem(it) } }
     }
-    fun playApple(songs: List<AmSong>, index: Int = 0, shuffle: Boolean = false) = viewModelScope.launch {
-        val items = appleMedia(songs)
+    fun playStreams(songs: List<StreamTrack>, index: Int = 0, shuffle: Boolean = false) = viewModelScope.launch {
+        val items = streamMedia(songs)
         app.player.playMedia(items.filterNotNull(), items.take(index).count { it != null }, shuffle)
     }
-    fun playNextApple(songs: List<AmSong>) = viewModelScope.launch { app.player.playNextMedia(appleMedia(songs).filterNotNull()) }
-    fun addToQueueApple(songs: List<AmSong>) = viewModelScope.launch { app.player.addToQueueMedia(appleMedia(songs).filterNotNull()) }
+    fun playNextStreams(songs: List<StreamTrack>) = viewModelScope.launch { app.player.playNextMedia(streamMedia(songs).filterNotNull()) }
+    fun addToQueueStreams(songs: List<StreamTrack>) = viewModelScope.launch { app.player.addToQueueMedia(streamMedia(songs).filterNotNull()) }
 
-    /** Imports an Apple Music playlist or album as a Hive playlist, with library songs where the phone has them. */
-    fun importApple(c: AmCollection, onDone: (Long, String) -> Unit) = viewModelScope.launch {
-        val matched = c.songs.map { localMatch(it) to it }
-        val streams = matched.filter { it.first == null }.map { streamOf(it.second) }
-        val slots = matched.map { (local, song) -> if (local != null) PlaylistEntry(playlistId = 0, trackId = local.id, position = 0) else PlaylistEntry(playlistId = 0, trackId = 0, position = 0, streamKey = "am:${song.appleId}") }
+    /** Imports a service's playlist or album as a Hive playlist, with library songs where the phone has them. */
+    fun importStreams(name: String, source: String, url: String, artwork: String, songs: List<StreamTrack>, onDone: (Long, String) -> Unit) = viewModelScope.launch {
+        val matched = songs.map { localMatch(it) to it }
+        val streams = matched.filter { it.first == null }.map { it.second }
+        val slots = matched.map { (local, song) -> PlaylistEntry(playlistId = 0, trackId = local?.id ?: 0, position = 0, streamKey = if (local == null) song.key else "") }
         val now = System.currentTimeMillis()
         val id = dao.createImportedPlaylist(
-            Playlist(name = c.name.ifBlank { "Apple Music playlist" }, createdAt = now, updatedAt = now, source = "Apple Music", sourceUrl = c.url, imageUrl = c.artwork),
+            Playlist(name = name.ifBlank { "$source playlist" }, createdAt = now, updatedAt = now, source = source, sourceUrl = url, imageUrl = artwork),
             slots, streams,
         )
         val inLibrary = matched.count { it.first != null }
         val previews = streams.count { it.previewUrl.isNotBlank() }
-        onDone(id, listOfNotNull("$inLibrary from your library", previews.takeIf { it > 0 }?.let { "$it previews" }, (streams.size - previews).takeIf { it > 0 }?.let { "$it Apple Music only" }).joinToString(", "))
+        onDone(id, listOfNotNull("$inLibrary from your library", previews.takeIf { it > 0 }?.let { "$it previews" }, (streams.size - previews).takeIf { it > 0 }?.let { "$it $source only" }).joinToString(", "))
     }
 
     val sleep = app.player.sleep
