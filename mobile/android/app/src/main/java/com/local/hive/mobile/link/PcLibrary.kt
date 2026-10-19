@@ -20,6 +20,10 @@ class PcLibrary(context: Context, private val client: HiveLinkClient, private va
     private val file = File(context.filesDir, "pc-library.json")
     private val prefs = context.getSharedPreferences("pc-library", Context.MODE_PRIVATE)
     private val json = Json { ignoreUnknownKeys = true }
+    private val playlistsFile = File(context.filesDir, "pc-playlists.json")
+    private val _playlists = MutableStateFlow<List<PcPlaylist>>(emptyList())
+    /** Hive's own playlists, read only. */
+    val playlists: StateFlow<List<PcPlaylist>> = _playlists.asStateFlow()
     private val _tracks = MutableStateFlow<List<PcTrack>>(emptyList())
     val tracks: StateFlow<List<PcTrack>> = _tracks.asStateFlow()
     private var loaded = false
@@ -29,12 +33,17 @@ class PcLibrary(context: Context, private val client: HiveLinkClient, private va
         if (loaded) return@withContext
         loaded = true
         if (file.exists()) runCatching { _tracks.value = json.decodeFromString(LibraryResponse.serializer(), file.readText()).tracks }
+        if (playlistsFile.exists()) runCatching { _playlists.value = json.decodeFromString(PlaylistsResponse.serializer(), playlistsFile.readText()).playlists }
     }
 
     /** Asks Hive for its library if it changed; true when Hive was reached. */
     suspend fun refresh(): Boolean = withContext(Dispatchers.IO) {
         load()
         val conn = sync.pcConnection() ?: return@withContext false
+        runCatching { client.playlists(conn) }.onSuccess { lists ->
+            _playlists.value = lists
+            playlistsFile.writeText(json.encodeToString(PlaylistsResponse.serializer(), PlaylistsResponse(lists)))
+        }
         val fresh = client.libraryIfChanged(conn, prefs.getString("etag", null).takeIf { file.exists() }) ?: return@withContext true
         file.writeText(json.encodeToString(LibraryResponse.serializer(), fresh.second))
         prefs.edit().putString("etag", fresh.first).apply()
@@ -55,6 +64,9 @@ class PcLibrary(context: Context, private val client: HiveLinkClient, private va
         if (name.isBlank()) return null
         return "http://$host:$port/api/cover?name=$name&t=${android.net.Uri.encode(store.pairing?.token.orEmpty())}"
     }
+
+    /** Where a library song streams from Hive on the PC. */
+    fun trackUrl(id: String): String? = base()?.let { (host, port) -> "http://$host:$port/api/stream/track?id=${android.net.Uri.encode(id)}" }
 
     fun mediaItem(t: PcTrack): MediaItem? {
         val (host, port) = base() ?: return null

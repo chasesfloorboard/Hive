@@ -45,7 +45,7 @@ renderer views) and its state on mobile.
 | Smart / auto playlists | `smart-source` | 🟡 four fixed auto playlists |
 | Import M3U, export M3U | `playlists:chooseImportFile`, `exportM3U` | ✅ import (file name, then artist and title), export as .m3u8 |
 | Import Spotify playlists | `playlists:importSpotify` | ❌ |
-| Playlist sync phone ↔ PC | | ❌ |
+| Playlist sync phone ↔ PC | | 🟡 PC → phone: Hive's playlists read only, played from the phone's copies or through the PC, "Copy to this phone"; phone playlists stay on the phone |
 
 ## Playback
 

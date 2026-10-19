@@ -104,7 +104,7 @@ val PlaylistRow.durationMs: Long get() = track?.durationMs ?: stream?.durationMs
 fun StreamRow(stream: StreamTrack, playing: Boolean, isPlaying: Boolean, full: Boolean, onClick: () -> Unit, onRemove: (() -> Unit)? = null, number: Int? = null) {
     val c = Hive.colors
     var menu by remember { mutableStateOf(false) }
-    val playable = full || stream.previewUrl.isNotBlank()
+    val playable = full || stream.previewUrl.isNotBlank() || stream.key.startsWith("pc:")
     Row(
         Modifier.fillMaxWidth().padding(horizontal = 8.dp).height(64.dp).clip(HiveShape.row)
             .background(if (playing) c.accentSoft.copy(alpha = 0.22f) else Color.Transparent)

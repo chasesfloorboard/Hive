@@ -193,6 +193,7 @@ private fun HiveContent(vm: MainViewModel, openPlayerInitially: Boolean) {
         openFolder = { nav.navigate("folder/${enc(it)}") },
         openPlaylist = { nav.navigate("playlist/${it.name}") },
         openUserPlaylist = { nav.navigate("userplaylist/$it") },
+        openPcPlaylist = { nav.navigate("pcplaylist?id=${enc(it)}") },
         openSearch = { nav.navigate("search") },
         openSettings = { nav.navigate("settings") },
         openSidebar = { scope.launch { drawer.open() } },
@@ -252,6 +253,9 @@ private fun HiveContent(vm: MainViewModel, openPlayerInitially: Boolean) {
                                 vm, entry.arguments?.getString("url").orEmpty(), bottomPadding, onBack = { nav.popBackStack() },
                                 onOpen = { url -> nav.navigate("apple/c?url=${enc(url)}") }, onOpenPlaylist = homeNav.openUserPlaylist, onToast = { toast = it },
                             )
+                        }
+                        composable("pcplaylist?id={id}") { entry ->
+                            PcPlaylistScreen(vm, entry.arguments?.getString("id").orEmpty(), bottomPadding, onBack = { nav.popBackStack() }, onOpenPlaylist = homeNav.openUserPlaylist, onToast = { toast = it })
                         }
                         composable("remote") { RemoteScreen(vm, bottomPadding, onBack = { nav.popBackStack() }, onToast = { toast = it }) }
                         composable("pc") { PcLibraryScreen(vm, bottomPadding, onBack = { nav.popBackStack() }) { key -> nav.navigate("pc/album?key=${enc(key)}") } }

@@ -54,6 +54,11 @@ import java.util.concurrent.TimeUnit
 @Serializable data class HiveAddress(val name: String = "", val address: String, val tailscale: Boolean = false)
 @Serializable data class StreamCaps(val track: Boolean = false, val song: Boolean = false)
 @Serializable data class InfoResponse(val serverId: String, val name: String, val port: Int, val seq: Long, val addresses: List<HiveAddress> = emptyList(), val streams: StreamCaps = StreamCaps(), val remote: Boolean = false)
+/** A song in one of Hive's playlists: a library song ([id]) or a streamed one ([key] with its details). */
+@Serializable data class PcPlaylistSong(val kind: String, val id: String = "", val key: String = "", val title: String = "", val artist: String = "", val album: String = "", val duration: Long = 0, val cover: String = "")
+@Serializable data class PcPlaylist(val id: String, val name: String, val source: String = "", val cover: String = "", val artworkUrl: String = "", val updatedAt: Double = 0.0, val songs: List<PcPlaylistSong> = emptyList())
+@Serializable data class PlaylistsResponse(val playlists: List<PcPlaylist> = emptyList())
+
 /** What Hive on the PC is playing. */
 @Serializable data class RemoteState(
     val playing: Boolean = false,
@@ -149,6 +154,8 @@ class HiveLinkClient(private val http: OkHttpClient = defaultHttp()) {
             json.decodeFromString(LoveResponse.serializer(), read(it))
         }
     }
+
+    suspend fun playlists(conn: Connection): List<PcPlaylist> = get(conn, "/api/playlists", PlaylistsResponse.serializer()).playlists
 
     suspend fun remoteState(conn: Connection): RemoteState = get(conn, "/api/remote", RemoteState.serializer())
 

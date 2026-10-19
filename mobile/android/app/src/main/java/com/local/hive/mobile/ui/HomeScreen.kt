@@ -95,6 +95,7 @@ data class HomeNavigation(
     val openFolder: (String) -> Unit,
     val openPlaylist: (AutoPlaylist) -> Unit,
     val openUserPlaylist: (Long) -> Unit,
+    val openPcPlaylist: (String) -> Unit,
     val openSearch: () -> Unit,
     val openSettings: () -> Unit,
     val openSidebar: () -> Unit,
@@ -406,6 +407,9 @@ private fun PlaylistsPanel(vm: MainViewModel, nav: HomeNavigation, bottom: Dp) {
     val played by vm.recentlyPlayed.collectAsStateWithLifecycle()
     val mine by vm.playlists.collectAsStateWithLifecycle()
     val rated by vm.topRated.collectAsStateWithLifecycle()
+    val onPc by vm.pcPlaylists.collectAsStateWithLifecycle()
+    val link by vm.link.collectAsStateWithLifecycle()
+    LaunchedEffect(link.paired) { if (link.paired) runCatching { vm.pcLibrary.refresh() } }
     var naming by remember { mutableStateOf(false) }
     var note by remember { mutableStateOf<String?>(null) }
     val context = androidx.compose.ui.platform.LocalContext.current
@@ -426,6 +430,12 @@ private fun PlaylistsPanel(vm: MainViewModel, nav: HomeNavigation, bottom: Dp) {
             item { LibraryRow(null, Icons.Rounded.FileOpen, "Import M3U", "A playlist file from Hive, MusicBee or another player") { importer.launch(arrayOf("audio/x-mpegurl", "audio/mpegurl", "application/vnd.apple.mpegurl", "*/*")) } }
             items(mine, key = { it.id }) { p ->
                 LibraryRow(playlistCover(p), Icons.AutoMirrored.Rounded.QueueMusic, p.name, listOfNotNull(countOf(p.trackCount, "track"), p.source.ifBlank { null }).joinToString(" · "), modifier = Modifier.animateItem()) { nav.openUserPlaylist(p.id) }
+            }
+            if (link.paired && onPc.isNotEmpty()) {
+                item { HiveLabel("On ${link.serverName.ifBlank { "your PC" }}", Modifier.padding(start = 18.dp, top = 18.dp, bottom = 6.dp)) }
+                items(onPc, key = { "pc" + it.id }) { p ->
+                    LibraryRow(vm.pcLibrary.coverFor(p.cover) ?: p.artworkUrl.ifBlank { null }, Icons.AutoMirrored.Rounded.QueueMusic, p.name, countOf(p.songs.size, "song")) { nav.openPcPlaylist(p.id) }
+                }
             }
             item { HiveLabel("Smart playlists", Modifier.padding(start = 18.dp, top = 18.dp, bottom = 6.dp)) }
             items(rows) { (kind, tracks) ->

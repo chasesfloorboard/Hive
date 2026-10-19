@@ -186,7 +186,10 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
     val fullSongs = app.sync.streams.map { it?.songs == true }.state(false)
 
     /** A streamed song plays in full through the PC when it can, else its preview. */
-    private fun streamUri(s: StreamTrack): String? = pcStreams.value?.takeIf { it.songs }?.songUrl(s) ?: s.previewUrl.ifBlank { null }
+    private fun streamUri(s: StreamTrack): String? =
+        // A library song of Hive's own, kept in a copied playlist, streams as itself.
+        if (s.key.startsWith("pc:")) app.pcLibrary.trackUrl(s.key.removePrefix("pc:"))
+        else pcStreams.value?.takeIf { it.songs }?.songUrl(s) ?: s.previewUrl.ifBlank { null }
     private var matchIndex: Triple<List<Track>, TrackMatcher.Index, Map<String, Track>>? = null
 
     /** The library song a streamed song is, when the phone has it. */
@@ -276,6 +279,48 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
         app.player.playMedia(listOf(item), startPositionMs = state.position)
         pcRemote("pause")
         onDone(if (local != null) "Playing your copy here" else "Playing here, streamed from your PC")
+    }
+
+    // ---- Hive's playlists from the PC ----
+    val pcPlaylists = app.pcLibrary.playlists
+
+    /** A streamed song from a PC playlist, as the phone keeps such songs. */
+    fun pcStream(s: com.local.hive.mobile.link.PcPlaylistSong) = StreamTrack(
+        key = s.key, source = if (s.key.startsWith("am:")) "Apple Music" else "Spotify", title = s.title, artist = s.artist, album = s.album,
+        durationMs = s.duration, artworkUrl = app.pcLibrary.coverFor(s.cover).orEmpty(), previewUrl = "", url = "",
+    )
+
+    /** The phone's own copy of a PC playlist song, if it has one. */
+    suspend fun localFor(s: com.local.hive.mobile.link.PcPlaylistSong): Track? =
+        if (s.kind == "track") dao.trackForPc(s.id) else localMatch(s.title, s.artist, s.duration)
+
+    private suspend fun pcPlaylistMedia(songs: List<com.local.hive.mobile.link.PcPlaylistSong>): List<MediaItem?> {
+        val byId = app.pcLibrary.tracks.value.associateBy { it.id }
+        return songs.map { s ->
+            localFor(s)?.toMediaItem() ?: if (s.kind == "track") byId[s.id]?.let { app.pcLibrary.mediaItem(it) }
+            else pcStream(s).let { st -> streamUri(st)?.let { st.toMediaItem(it) } }
+        }
+    }
+    fun playPcPlaylist(songs: List<com.local.hive.mobile.link.PcPlaylistSong>, index: Int = 0, shuffle: Boolean = false) = viewModelScope.launch {
+        val items = pcPlaylistMedia(songs)
+        app.player.playMedia(items.filterNotNull(), items.take(index).count { it != null }, shuffle)
+    }
+
+    /** Copies a PC playlist to the phone: the phone's own copies where it has them, the rest kept as streamed songs. */
+    fun copyPcPlaylist(p: com.local.hive.mobile.link.PcPlaylist, onDone: (Long, String) -> Unit) = viewModelScope.launch {
+        val byId = app.pcLibrary.tracks.value.associateBy { it.id }
+        val slots = mutableListOf<PlaylistEntry>(); val streams = mutableListOf<StreamTrack>(); var local = 0
+        for (s in p.songs) {
+            val mine = localFor(s)
+            when {
+                mine != null -> { slots += PlaylistEntry(playlistId = 0, trackId = mine.id, position = 0); local++ }
+                s.kind == "stream" -> { val st = pcStream(s); streams += st; slots += PlaylistEntry(playlistId = 0, trackId = 0, position = 0, streamKey = st.key) }
+                else -> byId[s.id]?.let { t -> val st = StreamTrack("pc:${t.id}", "Hive", t.title, t.artist, t.album, t.duration, app.pcLibrary.coverUrl(t).orEmpty(), "", ""); streams += st; slots += PlaylistEntry(playlistId = 0, trackId = 0, position = 0, streamKey = st.key) }
+            }
+        }
+        val now = System.currentTimeMillis()
+        val id = dao.createImportedPlaylist(Playlist(name = p.name, createdAt = now, updatedAt = now, source = "Hive on your PC"), slots, streams)
+        onDone(id, "$local of ${p.songs.size} songs are on this phone; the rest play through Hive on your PC")
     }
 
     val sleep = app.player.sleep
