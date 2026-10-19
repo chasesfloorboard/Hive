@@ -1,6 +1,5 @@
 package com.local.hive.mobile.ui
 
-import androidx.compose.animation.animateColorAsState
 import androidx.compose.animation.core.RepeatMode
 import androidx.compose.animation.core.animateFloat
 import androidx.compose.animation.core.animateFloatAsState
@@ -11,6 +10,8 @@ import androidx.compose.animation.core.tween
 import androidx.compose.foundation.Canvas
 import androidx.compose.foundation.background
 import androidx.compose.foundation.clickable
+import androidx.compose.foundation.gestures.detectTapGestures
+import androidx.compose.foundation.gestures.detectVerticalDragGestures
 import androidx.compose.foundation.interaction.MutableInteractionSource
 import androidx.compose.foundation.interaction.collectIsPressedAsState
 import androidx.compose.foundation.layout.Arrangement
@@ -19,6 +20,7 @@ import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.PaddingValues
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.Spacer
+import androidx.compose.foundation.layout.fillMaxHeight
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
@@ -27,14 +29,9 @@ import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.material.icons.Icons
-import androidx.compose.material.icons.automirrored.rounded.PlaylistAdd
-import androidx.compose.material.icons.automirrored.rounded.QueueMusic
-import androidx.compose.material.icons.rounded.Album
-import androidx.compose.material.icons.rounded.Favorite
-import androidx.compose.material.icons.rounded.FavoriteBorder
-import androidx.compose.material.icons.rounded.MoreHoriz
+import androidx.compose.material.icons.automirrored.rounded.Sort
+import androidx.compose.material.icons.rounded.MoreVert
 import androidx.compose.material.icons.rounded.MusicNote
-import androidx.compose.material.icons.rounded.Person
 import androidx.compose.material.icons.rounded.PlayArrow
 import androidx.compose.material.icons.rounded.Shuffle
 import androidx.compose.material3.DropdownMenu
@@ -58,6 +55,7 @@ import androidx.compose.ui.geometry.Size
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.Shape
 import androidx.compose.ui.graphics.vector.ImageVector
+import androidx.compose.ui.input.pointer.pointerInput
 import androidx.compose.ui.layout.ContentScale
 import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.text.style.TextOverflow
@@ -65,17 +63,11 @@ import androidx.compose.ui.unit.Dp
 import androidx.compose.ui.unit.dp
 import coil3.compose.SubcomposeAsyncImage
 import com.local.hive.mobile.data.Track
-import com.local.hive.mobile.ui.theme.GlassWeight
-import com.local.hive.mobile.ui.theme.Hive
-import com.local.hive.mobile.ui.theme.HiveType
-import com.local.hive.mobile.ui.theme.Radius
-import com.local.hive.mobile.ui.theme.Space
-import com.local.hive.mobile.ui.theme.glass
-import com.local.hive.mobile.ui.theme.glassEdge
+import com.local.hive.mobile.ui.theme.OneUi
 
 // ---- primitives ----
 
-/** Click with a gentle press-in, instead of a ripple flooding the row. */
+/** Click with a slight press-in, like One UI's list and button feedback. */
 @Composable
 fun Modifier.pressable(onClick: () -> Unit, pressedScale: Float = 0.97f): Modifier {
     val source = remember { MutableInteractionSource() }
@@ -84,22 +76,18 @@ fun Modifier.pressable(onClick: () -> Unit, pressedScale: Float = 0.97f): Modifi
     return scale(scale).clickable(interactionSource = source, indication = null, onClick = onClick)
 }
 
-/**
- * Album art. With [glow], it casts a soft shadow in its own colour, the way
- * a lit cover would on glass.
- */
+/** Album art; songs without art get Samsung's grey tile with a white note. */
 @Composable
 fun Artwork(
     model: Any?,
     modifier: Modifier = Modifier,
-    shape: Shape = Radius.art,
+    shape: Shape = OneUi.Thumb,
     fallback: ImageVector = Icons.Rounded.MusicNote,
     glow: Color? = null,
     elevation: Dp = 0.dp,
 ) {
-    val colors = Hive.colors
     val shadowed = if (elevation > 0.dp) modifier.shadow(elevation, shape, ambientColor = glow ?: Color.Black, spotColor = glow ?: Color.Black) else modifier
-    Box(shadowed.clip(shape).background(colors.panelStrong.copy(alpha = 1f)), contentAlignment = Alignment.Center) {
+    Box(shadowed.clip(shape).background(OneUi.Placeholder), contentAlignment = Alignment.Center) {
         SubcomposeAsyncImage(
             model = model,
             contentDescription = null,
@@ -113,77 +101,57 @@ fun Artwork(
 
 @Composable
 private fun ArtPlaceholder(icon: ImageVector) {
-    val colors = Hive.colors
-    Box(
-        Modifier.fillMaxSize().background(
-            androidx.compose.ui.graphics.Brush.linearGradient(listOf(colors.accentSoft.copy(alpha = 0.18f), colors.panelStrong.copy(alpha = 1f))),
-        ),
-        contentAlignment = Alignment.Center,
-    ) { Icon(icon, null, tint = colors.textDimmer, modifier = Modifier.fillMaxSize(0.36f)) }
+    Box(Modifier.fillMaxSize().background(OneUi.Placeholder), contentAlignment = Alignment.Center) {
+        Icon(icon, null, tint = Color.White, modifier = Modifier.fillMaxSize(0.42f))
+    }
 }
 
-/** Three bars that dance while a song plays and rest when it is paused. */
+/** Samsung's playing indicator: three small bars that move while playing. */
 @Composable
 fun NowPlayingBars(playing: Boolean, color: Color, modifier: Modifier = Modifier) {
     val transition = rememberInfiniteTransition(label = "bars")
     val heights = listOf(0, 1, 2).map { i ->
-        transition.animateFloat(
-            initialValue = 0.25f, targetValue = 1f,
-            animationSpec = infiniteRepeatable(tween(420 + i * 130), RepeatMode.Reverse), label = "bar$i",
-        )
+        transition.animateFloat(0.25f, 1f, infiniteRepeatable(tween(420 + i * 130), RepeatMode.Reverse), label = "bar$i")
     }
     Canvas(modifier) {
         val gap = size.width * 0.18f
         val barW = (size.width - gap * 2) / 3
         heights.forEachIndexed { i, h ->
-            val frac = if (playing) h.value else 0.3f
-            val barH = size.height * frac
+            val barH = size.height * (if (playing) h.value else 0.3f)
             drawRoundRect(color, Offset(i * (barW + gap), size.height - barH), Size(barW, barH), CornerRadius(barW / 2))
         }
     }
 }
 
-/** Small spaced capitals that introduce a section, as on Hive's desktop. */
+/** A round button on the panel, as beside "Name" in every Samsung list. */
 @Composable
-fun SectionLabel(text: String, modifier: Modifier = Modifier, trailing: (@Composable () -> Unit)? = null) {
-    val colors = Hive.colors
-    Row(modifier.fillMaxWidth().padding(horizontal = Space.gutter, vertical = Space.xs), verticalAlignment = Alignment.CenterVertically) {
-        Text(text.uppercase(), style = HiveType.label, color = colors.textDimmer, modifier = Modifier.weight(1f))
+fun CircleButton(icon: ImageVector, label: String, onClick: () -> Unit, size: Dp = 36.dp, background: Color = OneUi.Raised) {
+    Box(Modifier.size(size).clip(CircleShape).background(background).pressable(onClick, 0.9f), contentAlignment = Alignment.Center) {
+        Icon(icon, label, tint = OneUi.Text1, modifier = Modifier.size(size * 0.56f))
+    }
+}
+
+/** A plain icon button in a toolbar. */
+@Composable
+fun BarIcon(icon: ImageVector, label: String, onClick: () -> Unit, tint: Color = OneUi.Text1) {
+    Box(Modifier.size(48.dp).clip(CircleShape).clickable(onClick = onClick), contentAlignment = Alignment.Center) {
+        Icon(icon, label, tint = tint, modifier = Modifier.size(24.dp))
+    }
+}
+
+/** "≡ Name" on the left, Shuffle and Play on the right: the top of every list. */
+@Composable
+fun SortBar(label: String, onShuffle: (() -> Unit)? = null, onPlay: (() -> Unit)? = null, trailing: (@Composable () -> Unit)? = null) {
+    Row(
+        Modifier.fillMaxWidth().height(56.dp).padding(start = 20.dp, end = 14.dp),
+        verticalAlignment = Alignment.CenterVertically,
+    ) {
+        Icon(Icons.AutoMirrored.Rounded.Sort, null, tint = OneUi.Text1, modifier = Modifier.size(20.dp))
+        Spacer(Modifier.width(10.dp))
+        Text(label, style = OneUi.SortLabel, color = OneUi.Text1, modifier = Modifier.weight(1f))
         trailing?.invoke()
-    }
-}
-
-/** A round glass button for secondary actions. */
-@Composable
-fun GlassIconButton(icon: ImageVector, label: String, onClick: () -> Unit, size: Dp = 44.dp, tint: Color? = null) {
-    Box(Modifier.size(size).glass(CircleShape, GlassWeight.Regular).pressable(onClick, 0.9f), contentAlignment = Alignment.Center) {
-        Icon(icon, label, tint = tint ?: Hive.colors.text, modifier = Modifier.size(size * 0.46f))
-    }
-}
-
-/** The primary action: a solid light pill, the one bright shape on screen. */
-@Composable
-fun PrimaryPill(text: String, icon: ImageVector?, onClick: () -> Unit, modifier: Modifier = Modifier) {
-    val colors = Hive.colors
-    Row(
-        modifier.height(44.dp).clip(Radius.pill).background(colors.text).pressable(onClick, 0.95f).padding(start = if (icon != null) 16.dp else 22.dp, end = 22.dp),
-        verticalAlignment = Alignment.CenterVertically,
-    ) {
-        if (icon != null) { Icon(icon, null, tint = colors.bg, modifier = Modifier.size(20.dp)); Spacer(Modifier.width(6.dp)) }
-        Text(text, style = HiveType.tab.copy(fontWeight = androidx.compose.ui.text.font.FontWeight.SemiBold), color = colors.bg)
-    }
-}
-
-/** A quieter companion to [PrimaryPill]. */
-@Composable
-fun GlassPill(text: String, icon: ImageVector?, onClick: () -> Unit, modifier: Modifier = Modifier) {
-    val colors = Hive.colors
-    Row(
-        modifier.height(44.dp).glass(Radius.pill, GlassWeight.Regular).pressable(onClick, 0.95f).padding(start = if (icon != null) 16.dp else 22.dp, end = 22.dp),
-        verticalAlignment = Alignment.CenterVertically,
-    ) {
-        if (icon != null) { Icon(icon, null, tint = colors.text, modifier = Modifier.size(20.dp)); Spacer(Modifier.width(6.dp)) }
-        Text(text, style = HiveType.tab, color = colors.text)
+        if (onShuffle != null) CircleButton(Icons.Rounded.Shuffle, "Shuffle", onShuffle)
+        if (onPlay != null) { Spacer(Modifier.width(10.dp)); CircleButton(Icons.Rounded.PlayArrow, "Play all", onPlay) }
     }
 }
 
@@ -198,9 +166,10 @@ data class TrackActions(
 )
 
 /**
- * One song: art (or its number on an album page), title over artist · album,
- * a small heart when Loved, and a quiet "…" for everything else. The playing
- * song takes the accent and shows dancing bars over its art.
+ * A song as Samsung Music lists it: 48dp art with 11dp corners (or the track
+ * number on album pages), title over artist, the duration on numbered rows,
+ * and ⋮. A hairline divider starts under the text. The playing song turns
+ * One UI blue.
  */
 @Composable
 fun TrackRow(
@@ -210,115 +179,138 @@ fun TrackRow(
     isPlaying: Boolean,
     actions: TrackActions,
     onClick: () -> Unit,
-    subtitle: String = listOf(track.artist, track.album).filter { it.isNotBlank() }.joinToString(" · "),
+    subtitle: String = track.artist.ifBlank { "Unknown" },
     number: Int? = null,
+    showDivider: Boolean = true,
+    endPadding: Dp = 4.dp,
 ) {
-    val colors = Hive.colors
     var menu by remember { mutableStateOf(false) }
-    val titleColor by animateColorAsState(if (playing) colors.accent else colors.text, tween(400), label = "title")
-    Row(
-        Modifier
-            .fillMaxWidth()
-            .pressable(onClick, 0.985f)
-            .padding(start = Space.gutter, end = Space.xs)
-            .height(62.dp),
-        verticalAlignment = Alignment.CenterVertically,
-    ) {
-        Box(Modifier.size(46.dp), contentAlignment = Alignment.Center) {
+    val titleColor = if (playing) OneUi.Primary else OneUi.Text1
+    Box(Modifier.fillMaxWidth().height(if (number != null) 58.dp else OneUi.RowHeight).clickable(onClick = onClick)) {
+        Row(Modifier.fillMaxSize().padding(start = OneUi.Gutter, end = endPadding), verticalAlignment = Alignment.CenterVertically) {
             if (number != null) {
-                if (playing) NowPlayingBars(isPlaying, colors.accent, Modifier.size(16.dp))
-                else Text(if (number > 0) "$number" else "·", style = HiveType.numbers.copy(fontSize = HiveType.secondary.fontSize), color = colors.textDimmer, textAlign = TextAlign.Center)
+                Box(Modifier.width(30.dp), contentAlignment = Alignment.CenterStart) {
+                    if (playing) NowPlayingBars(isPlaying, OneUi.Primary, Modifier.size(14.dp))
+                    else Text(if (number > 0) "$number" else "", style = OneUi.Number, color = OneUi.Text1)
+                }
+                Spacer(Modifier.width(12.dp))
             } else {
-                Artwork(track.artworkUri, Modifier.size(46.dp))
-                if (playing) {
-                    Box(Modifier.size(46.dp).clip(Radius.art).background(Color.Black.copy(alpha = 0.45f)), contentAlignment = Alignment.Center) {
+                Box {
+                    Artwork(track.artworkUri, Modifier.size(OneUi.ThumbSize))
+                    if (playing) Box(Modifier.size(OneUi.ThumbSize).clip(OneUi.Thumb).background(Color.Black.copy(alpha = 0.5f)), contentAlignment = Alignment.Center) {
                         NowPlayingBars(isPlaying, Color.White, Modifier.size(16.dp))
                     }
                 }
+                Spacer(Modifier.width(OneUi.ThumbGap))
             }
-        }
-        Spacer(Modifier.width(Space.md))
-        Column(Modifier.weight(1f), verticalArrangement = Arrangement.spacedBy(2.dp)) {
-            Text(track.title, style = HiveType.body, color = titleColor, maxLines = 1, overflow = TextOverflow.Ellipsis)
-            if (subtitle.isNotBlank()) Text(subtitle, style = HiveType.secondary, color = colors.textDim, maxLines = 1, overflow = TextOverflow.Ellipsis)
-        }
-        if (loved) Icon(Icons.Rounded.Favorite, "Loved", tint = colors.accent.copy(alpha = 0.9f), modifier = Modifier.padding(start = Space.xs).size(14.dp))
-        Box {
-            Box(Modifier.size(44.dp).clip(CircleShape).clickable { menu = true }, contentAlignment = Alignment.Center) {
-                Icon(Icons.Rounded.MoreHoriz, "More options", tint = colors.textDimmer, modifier = Modifier.size(20.dp))
+            Column(Modifier.weight(1f), verticalArrangement = Arrangement.spacedBy(3.dp)) {
+                Text(track.title, style = OneUi.Title, color = titleColor, maxLines = 1, overflow = TextOverflow.Ellipsis)
+                if (number == null && subtitle.isNotBlank()) Text(subtitle, style = OneUi.Sub, color = OneUi.TextSub, maxLines = 1, overflow = TextOverflow.Ellipsis)
             }
-            HiveMenu(menu, onDismiss = { menu = false }) {
-                HiveMenuItem("Play next", Icons.AutoMirrored.Rounded.PlaylistAdd) { menu = false; actions.onPlayNext(track) }
-                HiveMenuItem("Add to queue", Icons.AutoMirrored.Rounded.QueueMusic) { menu = false; actions.onAddToQueue(track) }
-                HiveMenuItem(if (loved) "Remove from Favorites" else "Add to Favorites", if (loved) Icons.Rounded.Favorite else Icons.Rounded.FavoriteBorder) {
-                    menu = false; actions.onToggleLove(track)
+            if (number != null) Text(formatDuration(track.durationMs), style = OneUi.Duration, color = OneUi.TextSub, modifier = Modifier.padding(horizontal = 8.dp))
+            Box {
+                Box(Modifier.size(width = 40.dp, height = 48.dp).clip(CircleShape).clickable { menu = true }, contentAlignment = Alignment.Center) {
+                    Icon(Icons.Rounded.MoreVert, "More options", tint = OneUi.TextSub, modifier = Modifier.size(22.dp))
                 }
-                HiveMenuItem("Go to album", Icons.Rounded.Album) { menu = false; actions.onGoToAlbum(track) }
-                HiveMenuItem("Go to artist", Icons.Rounded.Person) { menu = false; actions.onGoToArtist(track) }
+                TrackMenu(menu, loved, onDismiss = { menu = false }, track = track, actions = actions)
             }
+        }
+        if (showDivider) {
+            Box(
+                Modifier.align(Alignment.BottomStart)
+                    .padding(start = if (number != null) OneUi.Gutter + 42.dp else OneUi.DividerInset, end = OneUi.Gutter)
+                    .fillMaxWidth().height(0.5.dp).background(OneUi.Divider),
+            )
         }
     }
 }
 
-/** A menu in Hive's glass: dark panel, soft corners, hairline rim. */
+/** Samsung's song menu: a rounded grey popup of plain text items. */
 @Composable
-fun HiveMenu(expanded: Boolean, onDismiss: () -> Unit, content: @Composable () -> Unit) {
-    val colors = Hive.colors
+fun TrackMenu(expanded: Boolean, loved: Boolean, onDismiss: () -> Unit, track: Track, actions: TrackActions) {
+    OneUiMenu(expanded, onDismiss) {
+        OneUiMenuItem("Play next") { onDismiss(); actions.onPlayNext(track) }
+        OneUiMenuItem("Add to queue") { onDismiss(); actions.onAddToQueue(track) }
+        OneUiMenuItem(if (loved) "Remove from Favorites" else "Add to Favorites") { onDismiss(); actions.onToggleLove(track) }
+        OneUiMenuItem("Album") { onDismiss(); actions.onGoToAlbum(track) }
+        OneUiMenuItem("Artist") { onDismiss(); actions.onGoToArtist(track) }
+    }
+}
+
+@Composable
+fun OneUiMenu(expanded: Boolean, onDismiss: () -> Unit, content: @Composable () -> Unit) {
     DropdownMenu(
         expanded = expanded,
         onDismissRequest = onDismiss,
-        shape = Radius.card,
-        containerColor = colors.panelStrong.copy(alpha = 0.97f),
+        shape = OneUi.Menu,
+        containerColor = OneUi.Raised,
         tonalElevation = 0.dp,
-        shadowElevation = 18.dp,
-        modifier = Modifier.glassEdge(Radius.card),
-    ) { content() }
+        shadowElevation = 12.dp,
+    ) { Column(Modifier.padding(vertical = 8.dp)) { content() } }
 }
 
 @Composable
-fun HiveMenuItem(label: String, icon: ImageVector, onClick: () -> Unit) {
-    val colors = Hive.colors
+fun OneUiMenuItem(label: String, onClick: () -> Unit) {
     DropdownMenuItem(
-        text = { Text(label, style = HiveType.body.copy(fontWeight = androidx.compose.ui.text.font.FontWeight.Normal)) },
-        leadingIcon = { Icon(icon, null, modifier = Modifier.size(20.dp)) },
+        text = { Text(label, style = OneUi.MenuItem) },
         onClick = onClick,
-        colors = MenuDefaults.itemColors(textColor = colors.text, leadingIconColor = colors.textDim),
-        contentPadding = PaddingValues(horizontal = Space.lg, vertical = Space.xxs),
+        colors = MenuDefaults.itemColors(textColor = OneUi.Text1),
+        contentPadding = PaddingValues(horizontal = 28.dp),
+        modifier = Modifier.height(52.dp),
     )
 }
 
-/** Count on the left, Shuffle and Play on the right: the start of every song list. */
+/**
+ * The A–Z index down the right edge of Samsung Music's lists. Touch or drag
+ * along it to jump to the first item filed under that letter.
+ */
 @Composable
-fun PlayBar(count: Int, noun: String, onShuffle: () -> Unit, onPlay: () -> Unit) {
-    val colors = Hive.colors
-    Row(
-        Modifier.fillMaxWidth().padding(start = Space.gutter, end = Space.gutter, top = Space.xs, bottom = Space.sm),
-        verticalAlignment = Alignment.CenterVertically,
+fun IndexBar(letters: List<Char>, onLetter: (Char) -> Unit, modifier: Modifier = Modifier) {
+    var active by remember { mutableStateOf<Char?>(null) }
+    fun pick(y: Float, height: Int) {
+        if (letters.isEmpty() || height <= 0) return
+        val i = ((y / height) * letters.size).toInt().coerceIn(letters.indices)
+        if (letters[i] != active) { active = letters[i]; onLetter(letters[i]) }
+    }
+    Column(
+        modifier
+            .width(20.dp)
+            .fillMaxHeight()
+            .padding(vertical = 8.dp)
+            .clip(OneUi.Pill)
+            .background(OneUi.Raised.copy(alpha = 0.55f))
+            .pointerInput(letters) {
+                detectTapGestures(onPress = { pick(it.y, size.height); tryAwaitRelease(); active = null })
+            }
+            .pointerInput(letters) {
+                detectVerticalDragGestures(onDragEnd = { active = null }, onDragCancel = { active = null }) { change, _ -> pick(change.position.y, size.height) }
+            },
+        verticalArrangement = Arrangement.SpaceEvenly,
+        horizontalAlignment = Alignment.CenterHorizontally,
     ) {
-        Text(countOf(count, noun).uppercase(), style = HiveType.label, color = colors.textDimmer, modifier = Modifier.weight(1f))
-        GlassIconButton(Icons.Rounded.Shuffle, "Shuffle play", onShuffle, size = 40.dp)
-        Spacer(Modifier.width(Space.xs))
-        Box(Modifier.size(40.dp).clip(CircleShape).background(colors.text).pressable(onPlay, 0.9f), contentAlignment = Alignment.Center) {
-            Icon(Icons.Rounded.PlayArrow, "Play all", tint = colors.bg, modifier = Modifier.size(24.dp))
+        letters.forEach { c ->
+            Text("$c", style = OneUi.Index, color = if (c == active) OneUi.Primary else OneUi.TextSub, textAlign = TextAlign.Center)
         }
     }
 }
 
+/** The index letter a sort key files under; numbers and symbols file under A, as in Samsung Music. */
+fun indexLetter(sortKey: String): Char {
+    val c = sortKey.firstOrNull()?.uppercaseChar() ?: return 'A'
+    return if (c in 'A'..'Z') c else 'A'
+}
+
+val IndexLetters: List<Char> = ('A'..'Z').toList()
+
 @Composable
 fun EmptyState(title: String, body: String, modifier: Modifier = Modifier) {
-    val colors = Hive.colors
-    Column(modifier.fillMaxWidth().padding(horizontal = 40.dp, vertical = 56.dp), horizontalAlignment = Alignment.CenterHorizontally, verticalArrangement = Arrangement.spacedBy(Space.xs)) {
-        Text(title, style = HiveType.headline, color = colors.text, textAlign = TextAlign.Center)
-        if (body.isNotBlank()) Text(body, style = HiveType.secondary, color = colors.textDim, textAlign = TextAlign.Center)
+    Column(modifier.fillMaxWidth().padding(horizontal = 40.dp, vertical = 56.dp), horizontalAlignment = Alignment.CenterHorizontally, verticalArrangement = Arrangement.spacedBy(8.dp)) {
+        Text(title, style = OneUi.Title, color = OneUi.Text1, textAlign = TextAlign.Center)
+        if (body.isNotBlank()) Text(body, style = OneUi.Sub, color = OneUi.TextSub, textAlign = TextAlign.Center)
     }
 }
 
-@Composable
-fun Hairline(modifier: Modifier = Modifier) {
-    Box(modifier.fillMaxWidth().padding(horizontal = Space.gutter).height(0.5.dp).background(Hive.colors.border))
-}
-
-/** "1 song", "2 songs", "1,204 songs". */
+/** "1 track", "2 tracks", "1,204 tracks". */
 fun countOf(n: Int, noun: String) = "%,d %s".format(n, if (n == 1) noun else noun + "s")
 
 fun formatDuration(ms: Long): String {

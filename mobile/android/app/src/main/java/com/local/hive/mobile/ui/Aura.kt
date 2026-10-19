@@ -95,9 +95,9 @@ object ArtColors {
  */
 @Composable
 fun AuraBackground(colors: AuraColors?, progress: Float, intensity: Float, base: Color, modifier: Modifier = Modifier) {
-    val fallback = com.local.hive.mobile.ui.theme.Hive.colors
-    val a by animateColorAsState(colors?.primary ?: fallback.ambientA.copy(alpha = 1f), tween(900), label = "auraA")
-    val b by animateColorAsState(colors?.secondary ?: fallback.ambientB.copy(alpha = 1f), tween(900), label = "auraB")
+    // Before the cover's colours are known, a quiet One UI grey.
+    val a by animateColorAsState(colors?.primary ?: Color(0xFF3A3A3D), tween(900), label = "auraA")
+    val b by animateColorAsState(colors?.secondary ?: Color(0xFF2D2D30), tween(900), label = "auraB")
     val drift = rememberInfiniteTransition(label = "aura")
     val t by drift.animateFloat(0f, (2 * Math.PI).toFloat(), infiniteRepeatable(tween(48_000, easing = LinearEasing), RepeatMode.Restart), label = "t")
     val strength = if (colors == null) intensity * 0.6f else intensity

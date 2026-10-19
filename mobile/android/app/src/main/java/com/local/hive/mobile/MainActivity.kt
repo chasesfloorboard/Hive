@@ -26,7 +26,11 @@ class MainActivity : ComponentActivity() {
 
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
-        enableEdgeToEdge()
+        // Black status and navigation bars, as in Samsung Music's dark mode.
+        enableEdgeToEdge(
+            statusBarStyle = androidx.activity.SystemBarStyle.dark(android.graphics.Color.TRANSPARENT),
+            navigationBarStyle = androidx.activity.SystemBarStyle.dark(android.graphics.Color.BLACK),
+        )
         (application as HiveApp).player.connect()
         val openPlayer = intent?.getBooleanExtra(EXTRA_OPEN_PLAYER, false) == true
         setContent { HiveRoot(vm, openPlayer) }
