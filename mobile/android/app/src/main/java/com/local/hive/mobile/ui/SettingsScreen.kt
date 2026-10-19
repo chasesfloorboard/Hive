@@ -86,6 +86,26 @@ fun SettingsScreen(vm: MainViewModel, bottomPadding: Dp, onOpenEqualiser: () -> 
                 }
             }
             item {
+                Section("Lock screen", "Hive's player over the lock screen while music plays, as Samsung Music has it. Swipe up to unlock.") {
+                    val context = androidx.compose.ui.platform.LocalContext.current
+                    var on by remember { mutableStateOf(com.local.hive.mobile.LockPlayerActivity.enabled(context)) }
+                    // Coming back from Android's permission page, the switch reflects what was allowed.
+                    val lifecycle = androidx.lifecycle.compose.LocalLifecycleOwner.current
+                    var permitted by remember { mutableStateOf(com.local.hive.mobile.LockPlayerActivity.permitted(context)) }
+                    androidx.compose.runtime.DisposableEffect(lifecycle) {
+                        val o = androidx.lifecycle.LifecycleEventObserver { _, e -> if (e == androidx.lifecycle.Lifecycle.Event.ON_RESUME) permitted = com.local.hive.mobile.LockPlayerActivity.permitted(context) }
+                        lifecycle.lifecycle.addObserver(o); onDispose { lifecycle.lifecycle.removeObserver(o) }
+                    }
+                    SettingRow("Show on lock screen", if (on && !permitted) "Allow “Display over other apps” for Hive so Android lets it appear." else "Opens when the screen turns off with music playing.") {
+                        HiveToggle(listOf("Off", "On"), if (on && permitted) 1 else 0, { i ->
+                            on = i == 1
+                            com.local.hive.mobile.LockPlayerActivity.setEnabled(context, on)
+                            if (on && !permitted) context.startActivity(android.content.Intent(android.provider.Settings.ACTION_MANAGE_OVERLAY_PERMISSION, android.net.Uri.parse("package:${context.packageName}")))
+                        })
+                    }
+                }
+            }
+            item {
                 Section("Scrobbling", "Report what you play to ListenBrainz or Last.fm, as Hive on your PC does. Listens made offline go once you're back.") { ScrobbleRows(vm) }
             }
             item {

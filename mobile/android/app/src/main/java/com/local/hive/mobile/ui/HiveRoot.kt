@@ -103,7 +103,11 @@ import kotlinx.coroutines.launch
  * the accent and ambient colours taken from the playing cover, as Hive does.
  */
 @Composable
-fun HiveRoot(vm: MainViewModel, openPlayerInitially: Boolean) {
+fun HiveRoot(vm: MainViewModel, openPlayerInitially: Boolean) = HiveThemed(vm) { HiveContent(vm, openPlayerInitially) }
+
+/** Hive's colours for [content]: the theme, with the accent following the playing cover. */
+@Composable
+fun HiveThemed(vm: MainViewModel, content: @Composable () -> Unit) {
     val theme by vm.colors.collectAsStateWithLifecycle()
     val aura by vm.aura.collectAsStateWithLifecycle()
     val accent by animateColorAsState(accentFor(aura, theme.accent), tween(900), label = "accent")
@@ -122,7 +126,7 @@ fun HiveRoot(vm: MainViewModel, openPlayerInitially: Boolean) {
         }
     }
     CompositionLocalProvider(LocalHiveColors provides colors) {
-        MaterialTheme(colorScheme = scheme) { HiveContent(vm, openPlayerInitially) }
+        MaterialTheme(colorScheme = scheme) { content() }
     }
 }
 

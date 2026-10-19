@@ -75,6 +75,7 @@ class PlaybackService : MediaLibraryService() {
         // Within the last half minute counts as finished.
         store.setProgress(id, if (duration != null && player.currentPosition > duration - 30_000) com.local.hive.mobile.stream.PodcastStore.FINISHED else player.currentPosition)
     }
+    private var screenOff: android.content.BroadcastReceiver? = null
     private val replayGainTags = MutableStateFlow<Map<String, String>>(emptyMap())
     private val queueTick = MutableStateFlow(0)
 
@@ -109,6 +110,11 @@ class PlaybackService : MediaLibraryService() {
             .setWakeMode(C.WAKE_MODE_LOCAL)
             .build()
         player.addListener(PlayCounter(app.playRecorder, app.scrobbler, scope, player))
+        // With music playing, Hive's lock-screen player is opened as the screen goes off, so it's there when it comes on.
+        screenOff = object : android.content.BroadcastReceiver() {
+            override fun onReceive(context: Context, intent: Intent) { if (player.isPlaying) com.local.hive.mobile.LockPlayerActivity.showIfWanted(this@PlaybackService) }
+        }
+        androidx.core.content.ContextCompat.registerReceiver(this, screenOff, android.content.IntentFilter(Intent.ACTION_SCREEN_OFF), androidx.core.content.ContextCompat.RECEIVER_NOT_EXPORTED)
         // Listens that couldn't be sent last time go now.
         scope.launch(Dispatchers.IO) { app.scrobbler.scrobble(null) }
         memory = PlaybackMemory(
@@ -274,6 +280,7 @@ class PlaybackService : MediaLibraryService() {
     }
 
     override fun onDestroy() {
+        screenOff?.let { runCatching { unregisterReceiver(it) } }
         session?.player?.let { memory.saveCursor(it) }
         scope.cancel()
         session?.run {

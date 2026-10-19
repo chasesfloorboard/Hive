@@ -402,7 +402,7 @@ private fun Playbar(vm: MainViewModel, now: NowPlaying, showArt: Boolean, modifi
  * flick) and comes back in from the other side with the new song, or springs
  * back.
  */
-private fun Modifier.songSwipe(shift: Animatable<Float, *>, scope: kotlinx.coroutines.CoroutineScope, onNext: () -> Unit, onPrevious: () -> Unit): Modifier = composed {
+internal fun Modifier.songSwipe(shift: Animatable<Float, *>, scope: kotlinx.coroutines.CoroutineScope, onNext: () -> Unit, onPrevious: () -> Unit): Modifier = composed {
     val next by rememberUpdatedState(onNext)
     val previous by rememberUpdatedState(onPrevious)
     val haptics = androidx.compose.ui.platform.LocalHapticFeedback.current
@@ -615,7 +615,7 @@ private fun FormatChips(t: Track) {
 }
 
 @Composable
-private fun TransportButton(icon: ImageVector, label: String, iconSize: Dp, active: Boolean? = null, tint: Color? = null, onClick: () -> Unit) {
+internal fun TransportButton(icon: ImageVector, label: String, iconSize: Dp, active: Boolean? = null, tint: Color? = null, onClick: () -> Unit) {
     val c = Hive.colors
     val shown by animateColorAsState(tint ?: when (active) { null -> c.text; true -> c.accent; false -> c.textDim }, tween(150), label = "tint")
     Box(Modifier.size(56.dp).clip(CircleShape).pressable(onClick, 0.86f), contentAlignment = Alignment.Center) {
@@ -626,7 +626,7 @@ private fun TransportButton(icon: ImageVector, label: String, iconSize: Dp, acti
 
 /** Hive's seek row: the control track, accent progress, a thumb that grows under the finger, tabular times. */
 @Composable
-private fun SeekBar(now: NowPlaying, onSeek: (Long) -> Unit) {
+internal fun SeekBar(now: NowPlaying, onSeek: (Long) -> Unit) {
     val c = Hive.colors
     if (now.isLive) { LiveBar(now); return }
     var scrub by remember { mutableStateOf<Float?>(null) }
