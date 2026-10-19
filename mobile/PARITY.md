@@ -11,7 +11,7 @@ renderer views) and its state on mobile.
 | Feature | Hive (desktop) | Mobile |
 |---|---|---|
 | Scan library, watch for changes | `library:scan`, `scanChanged`, directory watcher | ✅ MediaStore scan + observer |
-| Albums grid | album cards, sort | ✅ |
+| Albums grid | album cards, sort | ✅ sort by year (sections), A–Z, artist, added |
 | Albums grouped by year with dividers | `album-year-section` | ✅ (Years: on/off) |
 | Inline album expansion (cover + tracklist in the grid) | `inline-album-dropdown` | ✅ |
 | Tracks table: sortable columns, column chooser | `song-header`, column drag | 🟡 one sort, no columns |

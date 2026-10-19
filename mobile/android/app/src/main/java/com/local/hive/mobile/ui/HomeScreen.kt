@@ -97,6 +97,8 @@ data class HomeNavigation(
 )
 
 private enum class MusicView(val label: String) { Albums("Albums"), Tracks("Tracks"), Artists("Artists") }
+private enum class AlbumSort(val label: String) { Year("Year"), Name("A–Z"), Artist("Artist"), Added("Added") }
+private enum class ArtistSort(val label: String) { Name("A–Z"), Songs("Most songs") }
 
 /**
  * Hive's main window, folded for a phone: the brand and search in the top
@@ -168,18 +170,24 @@ internal fun PanelHeader(title: String, controls: @Composable () -> Unit = {}) {
 @Composable
 private fun MusicPanel(vm: MainViewModel, nav: HomeNavigation, actions: TrackActions, bottom: Dp) {
     var view by rememberSaveable { mutableStateOf(MusicView.Albums) }
-    var years by rememberSaveable { mutableStateOf(true) }
+    var albumSort by rememberSaveable { mutableStateOf(AlbumSort.Year) }
+    var artistSort by rememberSaveable { mutableStateOf(ArtistSort.Name) }
     Column(Modifier.fillMaxSize()) {
         PanelHeader(view.label)
-        Row(Modifier.fillMaxWidth().padding(horizontal = 14.dp, vertical = 4.dp), verticalAlignment = Alignment.CenterVertically) {
-            HiveToggle(MusicView.entries.map { it.label }, view.ordinal, { view = MusicView.entries[it] })
-            Spacer(Modifier.weight(1f))
-            if (view == MusicView.Albums) HivePill(if (years) "Years: on" else "Years: off", years) { years = !years }
+        HiveToggle(MusicView.entries.map { it.label }, view.ordinal, { view = MusicView.entries[it] }, Modifier.padding(horizontal = 14.dp, vertical = 4.dp))
+        // Sort pills as Hive's column header offers them.
+        if (view != MusicView.Tracks) androidx.compose.foundation.lazy.LazyRow(contentPadding = PaddingValues(horizontal = 14.dp, vertical = 6.dp), horizontalArrangement = Arrangement.spacedBy(6.dp), verticalAlignment = Alignment.CenterVertically) {
+            item { HiveLabel("Sort", Modifier.padding(end = 4.dp)) }
+            if (view == MusicView.Albums) items(AlbumSort.entries) { s -> HivePill(s.label, albumSort == s) { albumSort = s } }
+            else items(ArtistSort.entries) { s -> HivePill(s.label, artistSort == s) { artistSort = s } }
         }
         when (view) {
-            MusicView.Albums -> AlbumsView(vm, nav, actions, years, bottom)
+            MusicView.Albums -> AlbumsView(vm, nav, actions, albumSort, bottom)
             MusicView.Tracks -> TracksView(vm, actions, bottom)
-            MusicView.Artists -> ArtistsView(vm.artists.collectAsStateWithLifecycle().value, nav.openArtist, bottom)
+            MusicView.Artists -> {
+                val artists by vm.artists.collectAsStateWithLifecycle()
+                ArtistsView(remember(artists, artistSort) { if (artistSort == ArtistSort.Songs) artists.sortedByDescending { it.trackCount } else artists }, nav.openArtist, bottom)
+            }
         }
     }
 }
@@ -190,12 +198,16 @@ private fun MusicPanel(vm: MainViewModel, nav: HomeNavigation, actions: TrackAct
  * the grid (Hive's inline album), below its row; tapping again closes it.
  */
 @Composable
-private fun AlbumsView(vm: MainViewModel, nav: HomeNavigation, actions: TrackActions, byYear: Boolean, bottom: Dp) {
+private fun AlbumsView(vm: MainViewModel, nav: HomeNavigation, actions: TrackActions, sort: AlbumSort, bottom: Dp) {
     val albums by vm.albums.collectAsStateWithLifecycle()
     var open by rememberSaveable { mutableStateOf<Long?>(null) }
-    val sections = remember(albums, byYear) {
-        if (byYear) albums.groupBy { it.year }.toSortedMap(compareByDescending { it }).map { (y, list) -> (if (y > 0) "$y" else "Unknown year") to list }
-        else listOf("" to albums)
+    val sections = remember(albums, sort) {
+        when (sort) {
+            AlbumSort.Year -> albums.groupBy { it.year }.toSortedMap(compareByDescending { it }).map { (y, list) -> (if (y > 0) "$y" else "Unknown year") to list }
+            AlbumSort.Name -> listOf("" to albums)
+            AlbumSort.Artist -> listOf("" to albums.sortedWith(compareBy<AlbumSummary, String>(LibrarySort.collator) { LibrarySort.key(it.artist) }.thenBy { it.year }))
+            AlbumSort.Added -> listOf("" to albums.sortedByDescending { it.added })
+        }
     }
     LazyColumn(Modifier.fillMaxSize(), contentPadding = PaddingValues(bottom = bottom + 12.dp)) {
         if (albums.isEmpty()) item { EmptyState("No albums yet", "Albums appear once Hive finds music on this phone.") }

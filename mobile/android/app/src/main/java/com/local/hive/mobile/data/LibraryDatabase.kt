@@ -153,6 +153,8 @@ data class AlbumSummary(
     val artist: String,
     val year: Int,
     val trackCount: Int,
+    /** When the album's newest song arrived on the phone. */
+    val added: Long = 0,
 )
 
 data class ArtistSummary(
@@ -205,7 +207,7 @@ interface LibraryDao {
     @Query(
         "SELECT albumId, album, " +
             "CASE WHEN MAX(albumArtist) != '' THEN MAX(albumArtist) ELSE MAX(artist) END AS artist, " +
-            "MAX(year) AS year, COUNT(*) AS trackCount " +
+            "MAX(year) AS year, COUNT(*) AS trackCount, MAX(dateAdded) AS added " +
             "FROM tracks GROUP BY albumId ORDER BY album COLLATE NOCASE"
     )
     fun albums(): Flow<List<AlbumSummary>>
