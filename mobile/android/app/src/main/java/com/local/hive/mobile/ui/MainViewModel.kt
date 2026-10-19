@@ -136,6 +136,8 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
 
     val appleMusic get() = app.appleMusic
     val spotify get() = app.spotify
+    val spotifyAccount get() = app.spotifyAccount
+    val spotifyUser = app.spotifyAccount.user
     private var matchIndex: Triple<List<Track>, TrackMatcher.Index, Map<String, Track>>? = null
 
     /** The library song a streamed song is, when the phone has it. */

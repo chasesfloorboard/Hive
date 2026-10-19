@@ -48,6 +48,7 @@ class HiveApp : Application() {
     val database by lazy { LibraryDatabase.open(this) }
     val appleMusic by lazy { com.local.hive.mobile.stream.AppleMusic() }
     val spotify by lazy { com.local.hive.mobile.stream.Spotify() }
+    val spotifyAccount by lazy { com.local.hive.mobile.stream.SpotifyAccount(this) }
     val linkStore by lazy { LinkStore(this) }
     val sync by lazy { SyncEngine(database.dao(), linkStore, HiveLinkClient(), scope) }
     val player by lazy { PlayerConnection(this, scope) }

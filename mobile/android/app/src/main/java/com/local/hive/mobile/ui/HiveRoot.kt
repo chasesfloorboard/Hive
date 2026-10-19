@@ -216,7 +216,7 @@ private fun HiveContent(vm: MainViewModel, openPlayerInitially: Boolean) {
                             )
                         }
                         composable("spotify") {
-                            SpotifyScreen(vm, bottomPadding, onBack = { nav.popBackStack() }) { url -> nav.navigate("spotify/c?url=${enc(url)}") }
+                            SpotifyScreen(vm, bottomPadding, onBack = { nav.popBackStack() }, onOpenSettings = homeNav.openSettings) { url -> nav.navigate("spotify/c?url=${enc(url)}") }
                         }
                         composable("spotify/c?url={url}") { entry ->
                             SpotifyCollectionScreen(vm, entry.arguments?.getString("url").orEmpty(), bottomPadding, onBack = { nav.popBackStack() }, onOpenPlaylist = homeNav.openUserPlaylist, onToast = { toast = it })

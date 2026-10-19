@@ -13,6 +13,7 @@ import androidx.activity.viewModels
 import androidx.core.content.ContextCompat
 import com.local.hive.mobile.ui.HiveRoot
 import com.local.hive.mobile.ui.MainViewModel
+import kotlinx.coroutines.launch
 
 class MainActivity : ComponentActivity() {
     private val vm: MainViewModel by viewModels()
@@ -41,11 +42,21 @@ class MainActivity : ComponentActivity() {
         }
         val missing = wanted.filter { ContextCompat.checkSelfPermission(this, it) != PackageManager.PERMISSION_GRANTED }
         if (missing.isNotEmpty()) permissions.launch(missing.toTypedArray())
+        handleSpotifyReturn(intent)
     }
 
     override fun onNewIntent(intent: Intent) {
         super.onNewIntent(intent)
         setIntent(intent)
+        handleSpotifyReturn(intent)
+    }
+
+    private fun handleSpotifyReturn(intent: Intent?) {
+        val data = intent?.data ?: return
+        if (data.scheme == "hive-mobile" && data.host == "spotify-auth") {
+            val app = application as HiveApp
+            app.scope.launch { app.spotifyAccount.complete(data) }
+        }
     }
 
     companion object {

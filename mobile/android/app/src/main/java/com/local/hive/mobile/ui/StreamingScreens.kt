@@ -288,9 +288,20 @@ private fun SpCollection.page() = ServicePage("Spotify", kind, name, owner, "", 
 fun AppleCollectionScreen(vm: MainViewModel, url: String, bottomPadding: Dp, onBack: () -> Unit, onOpen: (String) -> Unit, onOpenPlaylist: (Long) -> Unit, onToast: (String) -> Unit) =
     ServiceCollectionScreen(vm, url, "Apple Music", { vm.appleMusic.collection(url).page() }, bottomPadding, onBack, onOpen, onOpenPlaylist, onToast)
 
+const val LIKED_SONGS_URL = "https://open.spotify.com/collection/tracks"
+
 @Composable
 fun SpotifyCollectionScreen(vm: MainViewModel, url: String, bottomPadding: Dp, onBack: () -> Unit, onOpenPlaylist: (Long) -> Unit, onToast: (String) -> Unit) =
-    ServiceCollectionScreen(vm, url, "Spotify", { vm.spotify.collection(url).page() }, bottomPadding, onBack, {}, onOpenPlaylist, onToast)
+    ServiceCollectionScreen(vm, url, "Spotify", {
+        val signedIn = vm.spotifyUser.value.signedIn
+        if (url == LIKED_SONGS_URL) {
+            ServicePage("Spotify", "playlist", "Liked Songs", vm.spotifyUser.value.name, "", "", url, vm.spotifyAccount.likedSongs().map { it.toStream() })
+        } else runCatching { vm.spotify.collection(url).page() }.getOrElse { failure ->
+            // Private playlists aren't on Spotify's public pages; the signed-in API has them (without previews).
+            val ref = Spotify.parseLink(url)
+            if (signedIn && ref?.first == "playlist") vm.spotifyAccount.playlist(ref.second).page() else throw failure
+        }
+    }, bottomPadding, onBack, {}, onOpenPlaylist, onToast)
 
 /**
  * A service's playlist or album: its cover over Play / Shuffle / Import, how
@@ -373,35 +384,89 @@ private fun ServiceCollectionScreen(
  * any shared playlist, album or song by its link.
  */
 @Composable
-fun SpotifyScreen(vm: MainViewModel, bottomPadding: Dp, onBack: () -> Unit, onOpen: (String) -> Unit) {
+fun SpotifyScreen(vm: MainViewModel, bottomPadding: Dp, onBack: () -> Unit, onOpenSettings: () -> Unit, onOpen: (String) -> Unit) {
     val c = Hive.colors
+    val user by vm.spotifyUser.collectAsStateWithLifecycle()
+    val now by vm.nowPlaying.collectAsStateWithLifecycle()
+    val library by vm.tracks.collectAsStateWithLifecycle()
     var query by rememberSaveable { mutableStateOf("") }
+    var submitted by rememberSaveable { mutableStateOf("") }
     var hint by remember { mutableStateOf<String?>(null) }
     var picks by remember { mutableStateOf<Load<List<SpCard>>>(Load.Loading) }
+    var mine by remember { mutableStateOf<Load<List<SpCard>>?>(null) }
+    var results by remember { mutableStateOf<Load<com.local.hive.mobile.stream.SpotifyAccount.Results>?>(null) }
     var attempt by remember { mutableStateOf(0) }
-    vm.tracks.collectAsStateWithLifecycle() // keeps the library index fresh for matching
     LaunchedEffect(attempt) { picks = runCatching { vm.spotify.picks() }.fold({ if (it.isEmpty()) Load.Failed("Couldn't load Spotify's playlists.") else Load.Ready(it) }, { Load.Failed(it.friendly("Spotify")) }) }
+    LaunchedEffect(user.signedIn, attempt) {
+        mine = if (!user.signedIn) null else { mine = Load.Loading; runCatching { vm.spotifyAccount.playlists() }.fold({ Load.Ready(it) }, { Load.Failed(it.friendly("Spotify")) }) }
+    }
+    LaunchedEffect(submitted, attempt) {
+        results = if (submitted.isBlank() || !user.signedIn) null else { results = Load.Loading; runCatching { vm.spotifyAccount.search(submitted) }.fold({ Load.Ready(it) }, { Load.Failed(it.friendly("Spotify")) }) }
+    }
     fun submit() {
         val q = query.trim()
-        if (Spotify.isSpotifyLink(q)) { hint = null; onOpen(q) } else hint = "Paste a Spotify link: Share › Copy link on a playlist, album or song."
+        when {
+            q.isEmpty() -> Unit
+            Spotify.isSpotifyLink(q) -> { hint = null; onOpen(q) }
+            user.signedIn -> { hint = null; submitted = q }
+            else -> hint = "Paste a Spotify link (Share › Copy link), or sign in to Spotify in Settings to search."
+        }
     }
     Column(Modifier.fillMaxSize()) {
         PageBar("", 0f, onBack)
         LazyColumn(Modifier.fillMaxSize(), contentPadding = PaddingValues(bottom = bottomPadding + 24.dp)) {
             item {
                 Column(Modifier.padding(start = 20.dp, end = 20.dp, top = 2.dp, bottom = 12.dp)) {
-                    HiveLabel("Browse")
+                    HiveLabel(if (user.signedIn) "Signed in as ${user.name}" else "Browse")
                     Text("Spotify", style = HiveText.viewTitle, color = c.text)
-                    Text("Open any shared playlist, album or song. Songs in your library play from your files; the rest play Spotify's 30-second previews.", style = HiveText.small, color = c.textDim, modifier = Modifier.padding(top = 4.dp))
+                    Text("Songs in your library play from your files; the rest play Spotify's 30-second previews where Spotify shares them.", style = HiveText.small, color = c.textDim, modifier = Modifier.padding(top = 4.dp))
                 }
             }
-            item { SearchField(query, { query = it; hint = null }, "Paste a Spotify link", onSubmit = ::submit, onClear = { query = ""; hint = null }) }
+            item { SearchField(query, { query = it; hint = null }, if (user.signedIn) "Search Spotify, or paste a link" else "Paste a Spotify link", onSubmit = ::submit, onClear = { query = ""; submitted = ""; hint = null }) }
             hint?.let { item { Text(it, style = HiveText.small, color = c.textDim, modifier = Modifier.padding(horizontal = 22.dp, vertical = 8.dp)) } }
-            item { YearHeading("Spotify playlists") }
-            when (val p = picks) {
-                Load.Loading -> item { Busy("Loading Spotify…") }
-                is Load.Failed -> item { Failed(p.message) { attempt++ } }
-                is Load.Ready -> item { CardGrid(p.value.map { it.card() }, onOpen) }
+            when (val r = results) {
+                null -> {
+                    if (user.signedIn) {
+                        item { YearHeading("Your library") }
+                        when (val m = mine) {
+                            null, Load.Loading -> item { Busy("Loading your playlists…") }
+                            is Load.Failed -> item { Failed(m.message) { attempt++ } }
+                            is Load.Ready -> item { CardGrid(listOf(ServiceCard("Liked Songs", user.name, "", LIKED_SONGS_URL)) + m.value.map { it.card() }, onOpen) }
+                        }
+                    } else item {
+                        Row(Modifier.padding(horizontal = 14.dp, vertical = 10.dp).fillMaxWidth().hiveGlass(HiveShape.panel).clickable(onClick = onOpenSettings).padding(16.dp), verticalAlignment = Alignment.CenterVertically) {
+                            Column(Modifier.weight(1f)) {
+                                Text("Your Spotify library", style = HiveText.rowStrong, color = c.text)
+                                Text("Sign in in Settings to see your playlists and Liked Songs.", style = HiveText.small, color = c.textDim)
+                            }
+                            Icon(Icons.AutoMirrored.Rounded.OpenInNew, null, tint = c.textDim, modifier = Modifier.size(18.dp))
+                        }
+                    }
+                    item { YearHeading("Spotify playlists") }
+                    when (val p = picks) {
+                        Load.Loading -> item { Busy("Loading Spotify…") }
+                        is Load.Failed -> item { Failed(p.message) { attempt++ } }
+                        is Load.Ready -> item { CardGrid(p.value.map { it.card() }, onOpen) }
+                    }
+                }
+                Load.Loading -> item { Busy("Searching Spotify…") }
+                is Load.Failed -> item { Failed(r.message) { attempt++ } }
+                is Load.Ready -> {
+                    val res = r.value
+                    if (res.songs.isEmpty() && res.playlists.isEmpty() && res.albums.isEmpty()) item { EmptyState("Nothing found", "Try another search, or paste a Spotify link.") }
+                    if (res.songs.isNotEmpty()) {
+                        item { YearHeading("Songs") }
+                        item {
+                            val streams = remember(res) { res.songs.take(10).map { it.toStream() } }
+                            val matches = remember(streams, library) { streams.map { vm.localMatch(it) } }
+                            Column(Modifier.padding(horizontal = 8.dp).hiveGlass(HiveShape.panel).padding(vertical = 6.dp)) {
+                                streams.forEachIndexed { i, s -> ServiceSongRow(vm, s, matches[i], now.mediaId, now.isPlaying, null) { vm.playStreams(streams, i) } }
+                            }
+                        }
+                    }
+                    if (res.playlists.isNotEmpty()) { item { YearHeading("Playlists") }; item { CardShelf(res.playlists.map { it.card() }, onOpen) } }
+                    if (res.albums.isNotEmpty()) { item { YearHeading("Albums") }; item { CardShelf(res.albums.map { it.card() }, onOpen) } }
+                }
             }
         }
     }

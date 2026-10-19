@@ -35,6 +35,13 @@
                 <action android:name="android.intent.action.MUSIC_PLAYER" />
                 <category android:name="android.intent.category.DEFAULT" />
             </intent-filter>
+            <!-- Spotify sign-in returns here from the browser. -->
+            <intent-filter>
+                <action android:name="android.intent.action.VIEW" />
+                <category android:name="android.intent.category.DEFAULT" />
+                <category android:name="android.intent.category.BROWSABLE" />
+                <data android:scheme="hive-mobile" android:host="spotify-auth" />
+            </intent-filter>
         </activity>
 
         <service

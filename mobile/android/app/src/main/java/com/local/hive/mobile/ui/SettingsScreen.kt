@@ -61,6 +61,9 @@ fun SettingsScreen(vm: MainViewModel, bottomPadding: Dp, onBack: () -> Unit) {
                 }
             }
             item {
+                Section("Spotify", "Sign in to see your playlists and Liked Songs, and to search Spotify. Shared links work without signing in.") { SpotifyRows(vm) }
+            }
+            item {
                 Section("Library", "The music stored on this phone, kept up to date as files change.") {
                     SettingRow(countOf(tracks.size, "track"), "Read from this phone's music.") {
                         SmallButton(if (scanning) "Scanning…" else "Rescan", enabled = !scanning) { vm.rescan() }
@@ -187,4 +190,30 @@ private fun Field(value: String, onChange: (String) -> Unit, label: String, type
         HiveLabel(label)
         BasicTextField(value, onChange, singleLine = true, textStyle = HiveText.row.copy(color = c.text), cursorBrush = SolidColor(c.accent), keyboardOptions = KeyboardOptions(keyboardType = type), modifier = Modifier.fillMaxWidth().padding(top = 2.dp))
     }
+}
+
+@Composable
+private fun SpotifyRows(vm: MainViewModel) {
+    val c = Hive.colors
+    val context = androidx.compose.ui.platform.LocalContext.current
+    val user by vm.spotifyUser.collectAsStateWithLifecycle()
+    var clientId by remember(user.clientId) { mutableStateOf(user.clientId) }
+    if (user.signedIn) {
+        SettingRow("Signed in as ${user.name.ifBlank { "you" }}", "Your playlists and Liked Songs appear on the Spotify page.") { SmallButton("Sign out") { vm.spotifyAccount.signOut() } }
+    } else {
+        Text(
+            "Once: create an app at developer.spotify.com/dashboard, add the redirect URI ${com.local.hive.mobile.stream.SpotifyAccount.REDIRECT}, add your Spotify account under User Management, then paste the app's Client ID here.",
+            style = HiveText.small, color = c.textDim, modifier = Modifier.padding(horizontal = 18.dp, vertical = 6.dp),
+        )
+        Box(Modifier.padding(horizontal = 14.dp, vertical = 4.dp)) {
+            Field(clientId, { clientId = it.trim() }, "Client ID", KeyboardType.Ascii, Modifier.fillMaxWidth())
+        }
+        Row(Modifier.padding(horizontal = 14.dp, vertical = 8.dp)) {
+            SmallButton("Sign in with Spotify", enabled = clientId.length >= 16, primary = true) {
+                vm.spotifyAccount.setClientId(clientId)
+                runCatching { context.startActivity(android.content.Intent(android.content.Intent.ACTION_VIEW, vm.spotifyAccount.authorizeUrl())) }
+            }
+        }
+    }
+    user.error?.let { Text(it, style = HiveText.small, color = Color(0xFFFF8A8A), modifier = Modifier.padding(horizontal = 18.dp, vertical = 4.dp)) }
 }
