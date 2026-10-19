@@ -257,6 +257,9 @@ class SyncEngine(
     }
 
     /** The first reachable address of the paired Hive, rediscovering it if the PC's address changed. */
+    /** A working connection to Hive on the PC, if it can be reached. */
+    suspend fun pcConnection(): HiveLinkClient.Connection? = connection()
+
     private suspend fun connection(): HiveLinkClient.Connection? {
         val pairing = store.pairing ?: return null
         val candidates = listOfNotNull(activeHost) + pairing.hosts

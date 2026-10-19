@@ -221,6 +221,16 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
     /** Plays an episode, then the older ones after it, as a podcast app does. */
     fun playEpisodes(episodes: List<com.local.hive.mobile.stream.Episode>, index: Int) = app.player.playMedia(episodes.drop(index).map { it.toMediaItem() })
 
+    // ---- Hive on the PC: its library, streamed ----
+    val pcLibrary get() = app.pcLibrary
+    val pcTracks = app.pcLibrary.tracks
+    fun playPc(tracks: List<com.local.hive.mobile.link.PcTrack>, index: Int = 0, shuffle: Boolean = false) {
+        val items = tracks.map { app.pcLibrary.mediaItem(it) }
+        app.player.playMedia(items.filterNotNull(), items.take(index).count { it != null }, shuffle)
+    }
+    fun playNextPc(tracks: List<com.local.hive.mobile.link.PcTrack>) = app.player.playNextMedia(tracks.mapNotNull { app.pcLibrary.mediaItem(it) })
+    fun addToQueuePc(tracks: List<com.local.hive.mobile.link.PcTrack>) = app.player.addToQueueMedia(tracks.mapNotNull { app.pcLibrary.mediaItem(it) })
+
     val sleep = app.player.sleep
     fun setSleepTimer(minutes: Int) = app.player.setSleepTimer(minutes)
     fun sleepAtEndOfSong() = app.player.sleepAtEndOfSong()

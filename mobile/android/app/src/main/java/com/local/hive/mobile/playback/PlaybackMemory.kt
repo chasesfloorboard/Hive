@@ -10,7 +10,7 @@ import com.local.hive.mobile.data.LibraryDao
  * position, shuffle and repeat, kept so a relaunch picks up where it left off.
  * The queue is written only when it changes; the cursor every few seconds.
  */
-class PlaybackMemory(context: Context, private val dao: LibraryDao) {
+class PlaybackMemory(context: Context, private val dao: LibraryDao, private val pcItems: suspend (List<String>) -> Map<String, MediaItem> = { emptyMap() }) {
     private val prefs = context.getSharedPreferences("playback-state", Context.MODE_PRIVATE)
 
     data class Restored(val items: List<MediaItem>, val index: Int, val positionMs: Long, val shuffle: Boolean, val repeatMode: Int)
@@ -39,7 +39,8 @@ class PlaybackMemory(context: Context, private val dao: LibraryDao) {
         val local = ids.mapNotNull { it.toLongOrNull() }.distinct().chunked(900).flatMap { dao.tracks(it) }.associate { it.id.toString() to it.toMediaItem() }
         val streamed = ids.filter { it.toLongOrNull() == null }.distinct().chunked(900).flatMap { dao.streamTracks(it) }
             .filter { it.previewUrl.isNotBlank() }.associate { it.key to it.toMediaItem(it.previewUrl) }
-        val playable = local + streamed
+        val fromPc = pcItems(ids.filter { it.startsWith("pc:") }.distinct())
+        val playable = local + streamed + fromPc
         val kept = ids.filter { it in playable }
         if (kept.isEmpty()) return null
         val current = prefs.getString(KEY_CURRENT, null)

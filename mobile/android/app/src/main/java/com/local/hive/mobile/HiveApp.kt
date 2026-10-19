@@ -59,6 +59,7 @@ class HiveApp : Application() {
     val linkStore by lazy { LinkStore(this) }
     val sync by lazy { SyncEngine(database.dao(), linkStore, HiveLinkClient(), scope) }
     val player by lazy { PlayerConnection(this, scope) }
+    val pcLibrary by lazy { com.local.hive.mobile.link.PcLibrary(this, HiveLinkClient(), linkStore, sync) }
     val themes by lazy { ThemeStore(this) }
     val playRecorder = PlayRecorder { trackId, listenedMs ->
         scope.launch { database.dao().insertPlay(Play(trackId = trackId, playedAt = System.currentTimeMillis(), listenedMs = listenedMs)) }

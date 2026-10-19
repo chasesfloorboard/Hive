@@ -37,6 +37,12 @@ import java.util.concurrent.TimeUnit
     val loved: Boolean = false,
     val rating: Double = 0.0,
     val playCount: Long = 0,
+    val track: Int = 0,
+    val disc: Int = 0,
+    val year: String = "",
+    val genre: String = "",
+    val file: String = "",
+    val cover: String = "",
 )
 @Serializable data class LibraryResponse(val seq: Long, val tracks: List<PcTrack>)
 @Serializable data class LoveEvent(val seq: Long, val id: String, val loved: Boolean, val at: Long, val origin: String = "")
@@ -110,6 +116,16 @@ class HiveLinkClient(private val http: OkHttpClient = defaultHttp()) {
     suspend fun info(conn: Connection): InfoResponse = get(conn, "/api/info", InfoResponse.serializer())
 
     suspend fun library(conn: Connection): LibraryResponse = get(conn, "/api/library", LibraryResponse.serializer())
+
+    /** The library as sent, with its ETag, or null when it hasn't changed since [etag]. */
+    suspend fun libraryIfChanged(conn: Connection, etag: String?): Pair<String, LibraryResponse>? = withContext(Dispatchers.IO) {
+        val request = authed(conn, "/api/library").apply { if (etag != null) header("If-None-Match", etag) }.build()
+        http.newCall(request).execute().use { res ->
+            if (res.code == 304) return@use null
+            val text = read(res)
+            (res.header("ETag").orEmpty()) to json.decodeFromString(LibraryResponse.serializer(), text)
+        }
+    }
 
     suspend fun loveChanges(conn: Connection, since: Long): ChangesResponse =
         get(conn, "/api/love/changes?since=$since", ChangesResponse.serializer())

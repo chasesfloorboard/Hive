@@ -100,7 +100,7 @@ class PlaybackService : MediaSessionService() {
         player.addListener(PlayCounter(app.playRecorder, app.scrobbler, scope, player))
         // Listens that couldn't be sent last time go now.
         scope.launch(Dispatchers.IO) { app.scrobbler.scrobble(null) }
-        memory = PlaybackMemory(this, app.database.dao())
+        memory = PlaybackMemory(this, app.database.dao()) { ids -> app.pcLibrary.mediaItems(ids) }
         player.addListener(object : Player.Listener {
             // A song streamed through the PC that fails (PC gone, no match) falls back to its preview.
             override fun onPlayerError(error: androidx.media3.common.PlaybackException) {
