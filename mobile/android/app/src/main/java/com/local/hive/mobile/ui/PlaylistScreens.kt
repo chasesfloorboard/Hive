@@ -119,7 +119,7 @@ fun StreamRow(stream: StreamTrack, playing: Boolean, isPlaying: Boolean, full: B
         Column(Modifier.weight(1f).padding(horizontal = 12.dp), verticalArrangement = Arrangement.spacedBy(2.dp)) {
             Text(stream.title, style = HiveText.row, color = if (playing) c.accent else if (playable) c.text else c.textDim, maxLines = 1, overflow = TextOverflow.Ellipsis)
             Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(6.dp)) {
-                StreamBadge(when { full -> "Via Hive"; playable -> "Preview"; else -> "${stream.source} only" })
+                if (!full) StreamBadge(if (playable) "Preview" else "${stream.source} only")
                 Text(listOf(stream.artist, stream.album).filter { it.isNotBlank() }.joinToString(" · "), style = HiveText.rowSub, color = c.textDim, maxLines = 1, overflow = TextOverflow.Ellipsis)
             }
         }

@@ -63,6 +63,14 @@ fun SettingsScreen(vm: MainViewModel, bottomPadding: Dp, onOpenEqualiser: () -> 
                 }
             }
             item {
+                Section("Streaming", "Apple Music and Spotify songs that aren't on this phone.") {
+                    val yt by vm.youTubeMusic.enabled.collectAsStateWithLifecycle()
+                    SettingRow("Full songs from YouTube Music", if (yt) "Found on YouTube Music, as Hive on your PC does. Through your PC when it's on." else "Off: they play as 30-second previews.") {
+                        HiveToggle(listOf("Off", "On"), if (yt) 1 else 0, { i -> vm.youTubeMusic.setEnabled(i == 1) })
+                    }
+                }
+            }
+            item {
                 Section("Spotify", "Sign in to see your playlists and Liked Songs, and to search Spotify. Shared links work without signing in.") { SpotifyRows(vm) }
             }
             item {

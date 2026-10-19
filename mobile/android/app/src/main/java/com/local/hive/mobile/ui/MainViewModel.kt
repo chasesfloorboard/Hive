@@ -183,13 +183,18 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
     val spotifyUser = app.spotifyAccount.user
     /** Hive on the PC, while reachable; with it, songs the phone lacks play in full. */
     val pcStreams = app.sync.streams
-    val fullSongs = app.sync.streams.map { it?.songs == true }.state(false)
+    val youTubeMusic get() = app.youTubeMusic
+    /** Whether songs the phone lacks play in full: through the PC, or from YouTube Music directly. */
+    val fullSongs = combine(app.sync.streams, app.youTubeMusic.enabled) { pc, yt -> pc?.songs == true || yt }.state(false)
 
-    /** A streamed song plays in full through the PC when it can, else its preview. */
-    private fun streamUri(s: StreamTrack): String? =
+    /** A streamed song plays in full through the PC when it can, else from YouTube Music, else its preview. */
+    private fun streamUri(s: StreamTrack): String? = when {
         // A library song of Hive's own, kept in a copied playlist, streams as itself.
-        if (s.key.startsWith("pc:")) app.pcLibrary.trackUrl(s.key.removePrefix("pc:"))
-        else pcStreams.value?.takeIf { it.songs }?.songUrl(s) ?: s.previewUrl.ifBlank { null }
+        s.key.startsWith("pc:") -> app.pcLibrary.trackUrl(s.key.removePrefix("pc:"))
+        pcStreams.value?.songs == true -> pcStreams.value!!.songUrl(s)
+        app.youTubeMusic.enabled.value -> com.local.hive.mobile.stream.YouTubeMusic.uriFor(com.local.hive.mobile.stream.WantedSong(s.key, s.title, s.artist, s.album, s.durationMs))
+        else -> s.previewUrl.ifBlank { null }
+    }
     private var matchIndex: Triple<List<Track>, TrackMatcher.Index, Map<String, Track>>? = null
 
     /** The library song a streamed song is, when the phone has it. */

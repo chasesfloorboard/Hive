@@ -83,6 +83,13 @@ class PlaybackService : MediaLibraryService() {
         val app = application as HiveApp
         // Streams from Hive on the PC carry the pairing token; nothing else does.
         val dataSources = ResolvingDataSource.Factory(DefaultDataSource.Factory(this, DefaultHttpDataSource.Factory().setUserAgent("HiveMobile"))) { spec ->
+            // A song from YouTube Music is looked up as it opens (this runs on the loading thread).
+            com.local.hive.mobile.stream.YouTubeMusic.wantedFrom(spec.uri)?.let { song ->
+                val url = app.youTubeMusic.resolve(song)
+                // YouTube slows down requests without a range, so one is always given.
+                val end = if (spec.length != C.LENGTH_UNSET.toLong()) "${spec.position + spec.length - 1}" else ""
+                return@Factory spec.withUri(android.net.Uri.parse(url)).withAdditionalHeaders(mapOf("Range" to "bytes=${spec.position}-$end"))
+            }
             val pairing = app.linkStore.pairing
             val toPc = pairing != null && spec.uri.scheme == "http" && spec.uri.port == pairing.port && spec.uri.host in pairing.hosts
             if (toPc) spec.withAdditionalHeaders(mapOf("Authorization" to "Bearer ${pairing!!.token}")) else spec
@@ -106,14 +113,35 @@ class PlaybackService : MediaLibraryService() {
         scope.launch(Dispatchers.IO) { app.scrobbler.scrobble(null) }
         memory = PlaybackMemory(this, app.database.dao()) { ids -> app.pcLibrary.mediaItems(ids) }
         player.addListener(object : Player.Listener {
-            // A song streamed through the PC that fails (PC gone, no match) falls back to its preview.
+            private var retried: String? = null
+
+            // A full song that fails tries again: through the PC, then YouTube Music
+            // directly (once with a fresh link), and last its preview.
             override fun onPlayerError(error: androidx.media3.common.PlaybackException) {
                 val item = player.currentMediaItem ?: return
+                val uri = item.localConfiguration?.uri ?: return
+                val position = player.currentPosition
+                fun retry(next: android.net.Uri, from: Long = position) {
+                    player.replaceMediaItem(player.currentMediaItemIndex, item.buildUpon().setUri(next).build())
+                    player.seekTo(player.currentMediaItemIndex, from)
+                    player.prepare()
+                    player.play()
+                }
+                val ytm = com.local.hive.mobile.stream.YouTubeMusic.wantedFrom(uri)
+                if (ytm != null && retried != item.mediaId) {
+                    retried = item.mediaId
+                    app.youTubeMusic.invalidate(ytm.key)
+                    return retry(uri)
+                }
+                val fromPc = app.sync.streams.value?.isFor(uri) == true || uri.path == "/api/stream/song"
+                if (fromPc && app.youTubeMusic.enabled.value) {
+                    val m = item.mediaMetadata
+                    val song = com.local.hive.mobile.stream.WantedSong(item.mediaId, m.title?.toString().orEmpty(), m.artist?.toString().orEmpty(), m.albumTitle?.toString().orEmpty(), m.durationMs ?: 0)
+                    return retry(android.net.Uri.parse(com.local.hive.mobile.stream.YouTubeMusic.uriFor(song)))
+                }
                 val preview = item.requestMetadata.extras?.getString(EXTRA_PREVIEW)?.takeIf { it.isNotBlank() } ?: return
-                if (item.localConfiguration?.uri?.toString() == preview) return
-                player.replaceMediaItem(player.currentMediaItemIndex, item.buildUpon().setUri(preview).build())
-                player.prepare()
-                player.play()
+                if (uri.toString() == preview) return
+                retry(android.net.Uri.parse(preview), 0)
             }
             override fun onMediaMetadataChanged(mediaMetadata: androidx.media3.common.MediaMetadata) { genre.value = mediaMetadata.genre?.toString().orEmpty() }
             override fun onTracksChanged(tracks: androidx.media3.common.Tracks) { replayGainTags.value = ReplayGain.tagsOf(tracks); queueTick.value++ }
