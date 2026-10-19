@@ -48,7 +48,13 @@ data class AmCollection(
     val more: List<AmCard>,
 )
 
-data class AmSearch(val playlists: List<AmCard>, val albums: List<AmCard>)
+data class AmSearch(val playlists: List<AmCard>, val albums: List<AmCard>, val songs: List<AmSong> = emptyList(), val artists: List<AmArtistCard> = emptyList())
+
+/** An artist as a search result or a "similar artists" bubble. */
+data class AmArtistCard(val id: String, val name: String, val artwork: String, val url: String)
+
+/** An artist's page: top songs, then shelves of albums, singles, playlists and similar artists. */
+data class AmArtist(val name: String, val artwork: String, val url: String, val songs: List<AmSong>, val shelves: List<AmShelf>, val similar: List<AmArtistCard>)
 
 /**
  * Hive's Apple Music browser, as on the PC: Apple Music's public web pages
@@ -72,6 +78,13 @@ class AppleMusic(private val http: OkHttpClient = defaultHttp()) {
         val q = term.trim().take(100)
         if (q.isEmpty()) return AmSearch(emptyList(), emptyList())
         return parseSearch(getText("https://music.apple.com/${storefrontOf(storefront)}/search?term=${URLEncoder.encode(q, "UTF-8")}"))
+    }
+
+    /** An artist by their music.apple.com link. */
+    suspend fun artist(url: String): AmArtist {
+        val m = Regex("""^https://music\.apple\.com/([a-z]{2})/artist/(?:[^/?#]+/)?(\d+)""", RegexOption.IGNORE_CASE).find(url.trim()) ?: throw IOException("Enter a music.apple.com artist link.")
+        val (sf, id) = m.destructured
+        return parseArtist(getText("https://music.apple.com/${sf.lowercase()}/artist/x/$id"), "https://music.apple.com/${sf.lowercase()}/artist/$id") ?: throw IOException("Apple Music didn't share this artist.")
     }
 
     /** A playlist or album by its music.apple.com link, with previews filled in. */
@@ -176,16 +189,55 @@ class AppleMusic(private val http: OkHttpClient = defaultHttp()) {
             )
         }
 
+        private fun artistCard(item: JsonObject): AmArtistCard? {
+            val cd = item["contentDescriptor"]?.obj ?: return null
+            val id = cd["identifiers"]?.obj?.str("storeAdamID").orEmpty()
+            if (id.isEmpty() || cd.str("kind") != "artist") return null
+            return AmArtistCard(id, item.str("title") ?: linkTitles(item["titleLinks"]).firstOrNull().orEmpty(), artworkUrl(item["artwork"], 600), cd.str("url").orEmpty())
+        }
+
+        fun parseArtist(html: String, url: String): AmArtist? {
+            val sections = sections(html)
+            val header = sections.firstOrNull { it.str("itemKind") == "artistDetailHeader" }?.get("items")?.arr?.firstOrNull()?.obj
+            val name = header?.str("title").orEmpty()
+            val songs = sections.flatMap { s ->
+                val items = s["items"]?.arr.orEmpty().mapNotNull { it.obj }
+                when (s.str("itemKind")) {
+                    "artistFeaturedContentAndTracks" -> items.flatMap { it["tracks"]?.arr.orEmpty().mapNotNull { t -> t.obj } }
+                    "trackLockup" -> items
+                    else -> emptyList()
+                }
+            }.mapNotNull { item ->
+                // On an artist's page a song's second line is its album and year, not its artist.
+                song(item, requireSongKind = true)?.copy(artist = name, album = linkTitles(item["subtitleLinks"]).firstOrNull().orEmpty().replace(Regex("""\s*·\s*\d{4}$"""), ""))
+            }.distinctBy { it.appleId }.take(20)
+            val shelves = sections.filter { it.str("itemKind") == "squareLockup" }.mapNotNull { s ->
+                val title = s["header"]?.obj?.get("item")?.obj?.get("titleLink")?.obj?.str("title").orEmpty()
+                s["items"]?.arr.orEmpty().mapNotNull { it.obj?.let(::card) }.distinctBy { it.id }.takeIf { it.isNotEmpty() }?.let { AmShelf(title, cards = it) }
+            }
+            val similar = sections.filter { it.str("itemKind") == "bubbleLockup" }.flatMap { s -> s["items"]?.arr.orEmpty().mapNotNull { it.obj?.let(::artistCard) } }.distinctBy { it.id }
+            if (header == null && songs.isEmpty() && shelves.isEmpty()) return null
+            return AmArtist(name, artworkUrl(header?.get("artwork"), 1000), url, songs, shelves, similar)
+        }
+
+        /** Search finds artists, songs, albums and playlists, as music.apple.com does. */
         fun parseSearch(html: String): AmSearch {
             val playlists = mutableListOf<AmCard>()
             val albums = mutableListOf<AmCard>()
+            val songs = mutableListOf<AmSong>()
+            val artists = mutableListOf<AmArtistCard>()
             for (section in sections(html)) for (item in section["items"]?.arr.orEmpty()) {
+                val o = item.obj ?: continue
+                when (section.str("itemKind")) {
+                    "trackLockup" -> { song(o, requireSongKind = true)?.let { if (songs.none { x -> x.appleId == it.appleId }) songs += it }; continue }
+                    "bubbleLockup" -> { artistCard(o)?.let { if (artists.none { x -> x.id == it.id }) artists += it }; continue }
+                }
                 val c = item.obj?.let(::card) ?: continue
                 val list = if (c.kind == "playlist") playlists else albums
                 val seen = list.indexOfFirst { it.id == c.id }
                 if (seen < 0) list += c else if (list[seen].curator.isBlank() && c.curator.isNotBlank()) list[seen] = c
             }
-            return AmSearch(playlists, albums)
+            return AmSearch(playlists, albums, songs, artists)
         }
 
         fun parseBrowse(html: String): List<AmShelf> = sections(html).mapNotNull { section ->

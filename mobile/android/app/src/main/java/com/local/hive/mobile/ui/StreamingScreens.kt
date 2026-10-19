@@ -30,6 +30,8 @@ import androidx.compose.foundation.text.BasicTextField
 import androidx.compose.foundation.text.KeyboardActions
 import androidx.compose.foundation.text.KeyboardOptions
 import androidx.compose.material.icons.Icons
+import androidx.compose.material.icons.rounded.PlayArrow
+import androidx.compose.material.icons.rounded.Person
 import androidx.compose.material.icons.automirrored.rounded.OpenInNew
 import androidx.compose.material.icons.automirrored.rounded.PlaylistAdd
 import androidx.compose.material.icons.automirrored.rounded.PlaylistPlay
@@ -93,7 +95,7 @@ private fun Throwable.friendly(service: String) = when (this) {
 
 /**
  * Hive's Apple Music page: Apple Music's Browse shelves, then search for
- * playlists and albums, or paste a music.apple.com link.
+ * anything (artists, songs, albums, playlists), or paste a music.apple.com link.
  */
 @Composable
 fun AppleMusicScreen(vm: MainViewModel, bottomPadding: Dp, onBack: () -> Unit, onOpen: (String) -> Unit) {
@@ -129,7 +131,7 @@ fun AppleMusicScreen(vm: MainViewModel, bottomPadding: Dp, onBack: () -> Unit, o
                 }
             }
             item {
-                SearchField(query, { query = it }, "Search playlists and albums, or paste a link", onSubmit = ::submit, onClear = { query = ""; submitted = "" })
+                SearchField(query, { query = it }, "Search artists, songs, albums, playlists", onSubmit = ::submit, onClear = { query = ""; submitted = "" })
             }
             when (val r = results) {
                 null -> when (val b = browse) {
@@ -144,9 +146,66 @@ fun AppleMusicScreen(vm: MainViewModel, bottomPadding: Dp, onBack: () -> Unit, o
                 Load.Loading -> item { Busy("Searching Apple Music…") }
                 is Load.Failed -> item { Failed(r.message) { attempt++ } }
                 is Load.Ready -> {
-                    if (r.value.playlists.isEmpty() && r.value.albums.isEmpty()) item { EmptyState("Nothing found", "Try another search, or paste a music.apple.com link.") }
-                    if (r.value.playlists.isNotEmpty()) { item { YearHeading("Playlists") }; item { CardShelf(r.value.playlists.map { it.card() }, onOpen) } }
-                    if (r.value.albums.isNotEmpty()) { item { YearHeading("Albums") }; item { CardShelf(r.value.albums.map { it.card() }, onOpen) } }
+                    val v = r.value
+                    if (v.playlists.isEmpty() && v.albums.isEmpty() && v.songs.isEmpty() && v.artists.isEmpty()) item { EmptyState("Nothing found", "Try another search, or paste a music.apple.com link.") }
+                    if (v.artists.isNotEmpty()) { item { YearHeading("Artists") }; item { ArtistShelf(v.artists, onOpen) } }
+                    if (v.songs.isNotEmpty()) { item { YearHeading("Songs") }; item { SongShelf(vm, v.songs.take(10)) } }
+                    if (v.albums.isNotEmpty()) { item { YearHeading("Albums") }; item { CardShelf(v.albums.map { it.card() }, onOpen) } }
+                    if (v.playlists.isNotEmpty()) { item { YearHeading("Playlists") }; item { CardShelf(v.playlists.map { it.card() }, onOpen) } }
+                }
+            }
+        }
+    }
+}
+
+/** Artists in round pictures, as Apple Music shows them; each opens the artist's page. */
+@Composable
+private fun ArtistShelf(artists: List<com.local.hive.mobile.stream.AmArtistCard>, onOpen: (String) -> Unit) {
+    val c = Hive.colors
+    LazyRow(contentPadding = PaddingValues(horizontal = 16.dp), horizontalArrangement = Arrangement.spacedBy(14.dp)) {
+        items(artists, key = { it.id }) { a ->
+            Column(Modifier.width(112.dp).pressable({ onOpen(a.url) }), horizontalAlignment = Alignment.CenterHorizontally) {
+                Artwork(a.artwork.ifBlank { null }, Modifier.size(112.dp), CircleShape, Icons.Rounded.Person, elevation = 10.dp)
+                Text(a.name, style = HiveText.cardTitle, color = c.text, maxLines = 2, overflow = TextOverflow.Ellipsis, textAlign = TextAlign.Center, modifier = Modifier.padding(top = 8.dp))
+            }
+        }
+    }
+}
+
+/** An Apple Music artist: their picture and name, Play and Shuffle, top songs, then their albums and similar artists. */
+@Composable
+fun AppleArtistScreen(vm: MainViewModel, url: String, bottomPadding: Dp, onBack: () -> Unit, onOpen: (String) -> Unit) {
+    val c = Hive.colors
+    var attempt by remember { mutableStateOf(0) }
+    val page by androidx.compose.runtime.produceState<Load<com.local.hive.mobile.stream.AmArtist>>(Load.Loading, url, attempt) {
+        value = runCatching { vm.appleMusic.artist(url) }.fold({ Load.Ready(it) }, { Load.Failed(it.friendly("Apple Music")) })
+    }
+    vm.tracks.collectAsStateWithLifecycle()
+    Column(Modifier.fillMaxSize()) {
+        PageBar("", 0f, onBack)
+        LazyColumn(Modifier.fillMaxSize(), contentPadding = PaddingValues(bottom = bottomPadding + 24.dp)) {
+            when (val p = page) {
+                Load.Loading -> item { Busy("Loading the artist…") }
+                is Load.Failed -> item { Failed(p.message) { attempt++ } }
+                is Load.Ready -> {
+                    val a = p.value
+                    item {
+                        Column(Modifier.fillMaxWidth().padding(horizontal = 24.dp, vertical = 8.dp), horizontalAlignment = Alignment.CenterHorizontally) {
+                            Artwork(a.artwork.ifBlank { null }, Modifier.fillMaxWidth(0.6f).aspectRatio(1f), CircleShape, Icons.Rounded.Person, elevation = 26.dp)
+                            Text(a.name, style = HiveText.heroTitle, color = c.text, textAlign = TextAlign.Center, modifier = Modifier.padding(top = 18.dp))
+                            Text("Artist", style = HiveText.small, color = c.textDim)
+                            if (a.songs.isNotEmpty()) Row(Modifier.fillMaxWidth().padding(top = 18.dp), horizontalArrangement = Arrangement.spacedBy(10.dp)) {
+                                PillButton("Play", Icons.Rounded.PlayArrow, accent = true, modifier = Modifier.weight(1f)) { vm.playStreams(a.songs.map { it.toStream() }) }
+                                PillButton("Shuffle", Icons.Rounded.Shuffle, accent = false, modifier = Modifier.weight(1f)) { vm.playStreams(a.songs.map { it.toStream() }.shuffled()) }
+                            }
+                        }
+                    }
+                    if (a.songs.isNotEmpty()) { item { YearHeading("Top songs") }; item { SongShelf(vm, a.songs.take(10)) } }
+                    a.shelves.forEach { shelf ->
+                        item(key = "h" + shelf.title) { YearHeading(shelf.title.ifBlank { "More" }) }
+                        item(key = "c" + shelf.title) { CardShelf(shelf.cards.map { it.card() }, onOpen) }
+                    }
+                    if (a.similar.isNotEmpty()) { item { YearHeading("Similar artists") }; item { ArtistShelf(a.similar, onOpen) } }
                 }
             }
         }

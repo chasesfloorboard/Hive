@@ -173,6 +173,8 @@ private fun HiveContent(vm: MainViewModel, openPlayerInitially: Boolean) {
     val route by nav.currentBackStackEntryAsState()
 
     fun enc(s: String) = Uri.encode(s)
+    // An Apple Music link opens the artist page for an artist, the collection page otherwise.
+    fun appleRoute(url: String) = if ("/artist/" in url) "apple/a?url=${enc(url)}" else "apple/c?url=${enc(url)}"
     fun go(path: String) { nav.navigate(path) { launchSingleTop = true } }
     var toast by remember { mutableStateOf<String?>(null) }
     var addTarget by remember { mutableStateOf<List<Track>?>(null) }
@@ -261,12 +263,15 @@ private fun HiveContent(vm: MainViewModel, openPlayerInitially: Boolean) {
                             SongsScreen(vm, name.trimEnd('/').substringAfterLast('/').ifBlank { name }, vm.folderTracks(name), actions, bottomPadding) { nav.popBackStack() }
                         }
                         page("apple") {
-                            AppleMusicScreen(vm, bottomPadding, onBack = { nav.popBackStack() }) { url -> nav.navigate("apple/c?url=${enc(url)}") }
+                            AppleMusicScreen(vm, bottomPadding, onBack = { nav.popBackStack() }) { url -> nav.navigate(appleRoute(url)) }
+                        }
+                        page("apple/a?url={url}") { entry ->
+                            AppleArtistScreen(vm, entry.arguments?.getString("url").orEmpty(), bottomPadding, onBack = { nav.popBackStack() }) { url -> nav.navigate(appleRoute(url)) }
                         }
                         page("apple/c?url={url}") { entry ->
                             AppleCollectionScreen(
                                 vm, entry.arguments?.getString("url").orEmpty(), bottomPadding, onBack = { nav.popBackStack() },
-                                onOpen = { url -> nav.navigate("apple/c?url=${enc(url)}") }, onOpenPlaylist = homeNav.openUserPlaylist, onToast = { toast = it },
+                                onOpen = { url -> nav.navigate(appleRoute(url)) }, onOpenPlaylist = homeNav.openUserPlaylist, onToast = { toast = it },
                             )
                         }
                         page("pcplaylist?id={id}") { entry ->
