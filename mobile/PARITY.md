@@ -53,7 +53,7 @@ renderer views) and its state on mobile.
 |---|---|---|
 | Playback engine | GStreamer, gapless | ✅ Media3 ExoPlayer, gapless |
 | Queue: view, jump, remove | `#queue-list` | ✅ |
-| Queue: drag to reorder, multi-select | queue drop targets | ❌ |
+| Queue: drag to reorder, multi-select | queue drop targets | 🟡 drag to reorder, remove; no multi-select |
 | Shuffle, repeat | | ✅ |
 | Playback state restored on launch | `playback-state:*` | ✅ queue, track, position, shuffle, repeat; Bluetooth resume |
 | Equaliser with presets, import presets | `equaliser:*` | ❌ |

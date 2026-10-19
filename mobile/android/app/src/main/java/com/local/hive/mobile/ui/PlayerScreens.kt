@@ -103,6 +103,10 @@ import com.local.hive.mobile.ui.theme.HiveShape
 import com.local.hive.mobile.ui.theme.HiveText
 import com.local.hive.mobile.ui.theme.Motion
 import com.local.hive.mobile.ui.theme.hiveGlass
+import androidx.compose.runtime.mutableIntStateOf
+import androidx.compose.foundation.gestures.detectDragGestures
+import androidx.compose.ui.zIndex
+import androidx.compose.material.icons.rounded.DragHandle
 import androidx.compose.runtime.produceState
 import com.local.hive.mobile.playback.SleepTimer
 import androidx.compose.material.icons.rounded.MusicNote
@@ -537,6 +541,13 @@ fun QueueScreen(vm: MainViewModel, onClose: () -> Unit) {
     val aura by vm.aura.collectAsStateWithLifecycle()
     var tracks by remember { mutableStateOf<List<Track>>(emptyList()) }
     LaunchedEffect(now.queue) { tracks = vm.tracksById(now.queue) }
+    // Stable row keys (song and occurrence), so a reordered queue coming back from the player doesn't flicker.
+    val keys = remember(tracks) { val seen = HashMap<Long, Int>(); tracks.map { t -> val n = seen.merge(t.id, 1, Int::plus)!!; "${t.id}#$n" } }
+    var order by remember(keys) { mutableStateOf(keys) }
+    var dragKey by remember { mutableStateOf<String?>(null) }
+    var dragFrom by remember { mutableIntStateOf(-1) }
+    var dragOffset by remember { mutableFloatStateOf(0f) }
+    val rowPx = with(LocalDensity.current) { QueueRow.toPx() }
     val listState = rememberLazyListState()
     LaunchedEffect(now.queueIndex, tracks.size) { if (now.queueIndex in tracks.indices) listState.scrollToItem((now.queueIndex - 2).coerceAtLeast(0)) }
 
@@ -557,26 +568,57 @@ fun QueueScreen(vm: MainViewModel, onClose: () -> Unit) {
                 }
             }
             LazyColumn(state = listState, contentPadding = PaddingValues(bottom = 20.dp)) {
-                itemsIndexed(tracks) { i, t ->
+                itemsIndexed(order, key = { _, k -> k }) { _, k ->
+                    val i = keys.indexOf(k)
+                    val t = tracks[i]
                     val playing = i == now.queueIndex
                     val past = i < now.queueIndex
+                    val lifted = dragKey == k
                     Row(
-                        Modifier.fillMaxWidth().padding(horizontal = 8.dp).height(58.dp).clip(HiveShape.row)
-                            .background(if (playing) c.accentSoft.copy(alpha = 0.3f) else Color.Transparent)
-                            .clickable { vm.player.skipToQueueIndex(i) }.alpha(if (past) 0.5f else 1f).padding(start = 8.dp),
+                        Modifier.then(if (lifted) Modifier.zIndex(1f).graphicsLayer { translationY = dragOffset; scaleX = 1.02f; scaleY = 1.02f } else Modifier.animateItem())
+                            .fillMaxWidth().padding(horizontal = 8.dp).height(QueueRow)
+                            .then(if (lifted) Modifier.shadow(16.dp, HiveShape.row, ambientColor = c.accentGlow) else Modifier)
+                            .clip(HiveShape.row)
+                            .background(when { lifted -> c.control; playing -> c.accentSoft.copy(alpha = 0.3f); else -> Color.Transparent })
+                            .clickable { vm.player.skipToQueueIndex(i) }.alpha(if (past && !lifted) 0.5f else 1f).padding(start = 8.dp),
                         verticalAlignment = Alignment.CenterVertically,
                     ) {
                         Box(Modifier.size(6.dp).clip(CircleShape).background(if (playing) c.accent else Color.Transparent))
                         Spacer(Modifier.width(8.dp))
                         Artwork(t.artworkUri, Modifier.size(40.dp).then(if (playing) Modifier.border(1.dp, c.accentSoft, HiveShape.thumb) else Modifier))
                         Column(Modifier.weight(1f).padding(horizontal = 12.dp), verticalArrangement = Arrangement.spacedBy(1.dp)) {
-                            Text(t.title, style = HiveText.row, color = if (playing) c.text else c.text, maxLines = 1, overflow = TextOverflow.Ellipsis)
+                            Text(t.title, style = HiveText.row, color = c.text, maxLines = 1, overflow = TextOverflow.Ellipsis)
                             Text(t.artist, style = HiveText.rowSub, color = c.textDim, maxLines = 1, overflow = TextOverflow.Ellipsis)
                         }
                         Text(formatDuration(t.durationMs), style = HiveText.numbers, color = c.textDimmer)
-                        if (!playing) Box(Modifier.size(44.dp).clip(CircleShape).clickable { vm.player.removeFromQueue(i) }, contentAlignment = Alignment.Center) {
+                        if (!playing) Box(Modifier.size(40.dp).clip(CircleShape).clickable { vm.player.removeFromQueue(i) }, contentAlignment = Alignment.Center) {
                             Icon(Icons.Rounded.Close, "Remove from queue", tint = c.textDimmer, modifier = Modifier.size(17.dp))
-                        } else Spacer(Modifier.width(44.dp))
+                        } else Spacer(Modifier.width(40.dp))
+                        // Drag the handle to move the song; neighbours make room as it passes half a row.
+                        Box(
+                            Modifier.size(44.dp).pointerInput(k) {
+                                detectDragGestures(
+                                    onDragStart = { dragKey = k; dragFrom = order.indexOf(k); dragOffset = 0f },
+                                    onDrag = { change, amount ->
+                                        change.consume()
+                                        dragOffset += amount.y
+                                        val pos = order.indexOf(k)
+                                        val target = when {
+                                            dragOffset > rowPx / 2 && pos < order.lastIndex -> pos + 1
+                                            dragOffset < -rowPx / 2 && pos > 0 -> pos - 1
+                                            else -> null
+                                        }
+                                        if (target != null) {
+                                            order = order.toMutableList().apply { add(target, removeAt(pos)) }
+                                            dragOffset -= (target - pos) * rowPx
+                                        }
+                                    },
+                                    onDragEnd = { val to = order.indexOf(k); if (to != dragFrom && dragFrom >= 0) vm.player.moveInQueue(dragFrom, to); dragKey = null; dragOffset = 0f },
+                                    onDragCancel = { order = keys; dragKey = null; dragOffset = 0f },
+                                )
+                            },
+                            contentAlignment = Alignment.Center,
+                        ) { Icon(Icons.Rounded.DragHandle, "Drag to reorder", tint = if (lifted) c.accent else c.textDimmer, modifier = Modifier.size(20.dp)) }
                     }
                 }
             }
@@ -594,3 +636,5 @@ private fun sleepLabel(sleep: SleepTimer?): String {
         else -> "Sleep timer · ${((sleep.endsAt!! - now + 59_999) / 60_000).coerceAtLeast(1)} min left"
     }
 }
+
+private val QueueRow = 58.dp
