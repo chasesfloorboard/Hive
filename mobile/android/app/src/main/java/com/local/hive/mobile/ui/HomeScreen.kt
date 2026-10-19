@@ -33,6 +33,8 @@ import androidx.compose.foundation.lazy.rememberLazyListState
 import androidx.compose.foundation.pager.HorizontalPager
 import androidx.compose.foundation.pager.rememberPagerState
 import androidx.compose.material.icons.Icons
+import androidx.compose.material.icons.automirrored.rounded.QueueMusic
+import androidx.compose.material.icons.rounded.Add
 import androidx.compose.material.icons.rounded.Favorite
 import androidx.compose.material.icons.rounded.FavoriteBorder
 import androidx.compose.material.icons.rounded.KeyboardArrowDown
@@ -88,6 +90,7 @@ data class HomeNavigation(
     val openGenre: (String) -> Unit,
     val openFolder: (String) -> Unit,
     val openPlaylist: (AutoPlaylist) -> Unit,
+    val openUserPlaylist: (Long) -> Unit,
     val openSearch: () -> Unit,
     val openSettings: () -> Unit,
     val openSidebar: () -> Unit,
@@ -357,10 +360,10 @@ private fun ArtistsView(artists: List<ArtistSummary>, open: (String) -> Unit, bo
 
 /** A row for things that aren't songs: art, name, detail line. */
 @Composable
-fun LibraryRow(art: Any?, fallback: androidx.compose.ui.graphics.vector.ImageVector, title: String, subtitle: String, round: Boolean = false, trailing: String? = null, onClick: () -> Unit) {
+fun LibraryRow(art: Any?, fallback: androidx.compose.ui.graphics.vector.ImageVector, title: String, subtitle: String, round: Boolean = false, trailing: String? = null, modifier: Modifier = Modifier, onClick: () -> Unit) {
     val c = Hive.colors
     Row(
-        Modifier.fillMaxWidth().padding(horizontal = 8.dp).height(66.dp).clip(HiveShape.row).clickable(onClick = onClick).padding(horizontal = 10.dp),
+        modifier.fillMaxWidth().padding(horizontal = 8.dp).height(66.dp).clip(HiveShape.row).clickable(onClick = onClick).padding(horizontal = 10.dp),
         verticalAlignment = Alignment.CenterVertically,
     ) {
         Artwork(art, Modifier.size(46.dp), if (round) androidx.compose.foundation.shape.CircleShape else HiveShape.thumb, fallback)
@@ -381,13 +384,24 @@ private fun PlaylistsPanel(vm: MainViewModel, nav: HomeNavigation, bottom: Dp) {
     val recent by vm.recentlyAdded.collectAsStateWithLifecycle()
     val most by vm.mostPlayed.collectAsStateWithLifecycle()
     val played by vm.recentlyPlayed.collectAsStateWithLifecycle()
+    val mine by vm.playlists.collectAsStateWithLifecycle()
+    var naming by remember { mutableStateOf(false) }
     val rows = listOf(AutoPlaylist.Favorites to favorites, AutoPlaylist.RecentlyAdded to recent, AutoPlaylist.MostPlayed to most.take(25), AutoPlaylist.RecentlyPlayed to played)
     LazyColumn(Modifier.fillMaxSize(), contentPadding = PaddingValues(bottom = bottom + 12.dp)) {
         item { PanelHeader("Playlists") }
-        item { HiveLabel("Smart playlists", Modifier.padding(start = 18.dp, top = 6.dp, bottom = 6.dp)) }
+        item { HiveLabel("Your playlists", Modifier.padding(start = 18.dp, top = 6.dp, bottom = 6.dp)) }
+        item { LibraryRow(null, Icons.Rounded.Add, "New playlist", if (mine.isEmpty()) "Make one, or add songs from any ⋯ menu" else "") { naming = true } }
+        items(mine, key = { it.id }) { p ->
+            LibraryRow(playlistCover(p), Icons.AutoMirrored.Rounded.QueueMusic, p.name, listOfNotNull(countOf(p.trackCount, "track"), p.source.ifBlank { null }).joinToString(" · "), modifier = Modifier.animateItem()) { nav.openUserPlaylist(p.id) }
+        }
+        item { HiveLabel("Smart playlists", Modifier.padding(start = 18.dp, top = 18.dp, bottom = 6.dp)) }
         items(rows) { (kind, tracks) ->
             LibraryRow(tracks.firstOrNull()?.artworkUri, if (kind == AutoPlaylist.Favorites) Icons.Rounded.Favorite else Icons.Rounded.LibraryMusic, kind.title, countOf(tracks.size, "track")) { nav.openPlaylist(kind) }
         }
+    }
+    if (naming) NameDialog("New playlist", "", "Create", onDismiss = { naming = false }) { name ->
+        naming = false
+        vm.createPlaylist(name, onCreated = nav.openUserPlaylist)
     }
 }
 

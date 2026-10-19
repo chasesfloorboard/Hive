@@ -8,6 +8,8 @@ import com.local.hive.mobile.data.AlbumSummary
 import com.local.hive.mobile.data.ArtistSummary
 import com.local.hive.mobile.data.FavoriteAlbum
 import com.local.hive.mobile.data.NamedCount
+import com.local.hive.mobile.data.Playlist
+import com.local.hive.mobile.data.PlaylistSummary
 import com.local.hive.mobile.data.Track
 import com.local.hive.mobile.link.DiscoveredHive
 import com.local.hive.mobile.link.HiveLinkClient
@@ -95,6 +97,25 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
         if (key in favoriteAlbumKeys.value) dao.deleteFavoriteAlbum(key)
         else dao.upsertFavoriteAlbum(FavoriteAlbum(key, album, artist, System.currentTimeMillis()))
     }
+    // ---- playlists ----
+
+    val playlists: StateFlow<List<PlaylistSummary>> = dao.playlists().state(emptyList())
+    fun playlist(id: Long) = dao.playlist(id)
+    fun playlistTracks(id: Long) = dao.playlistTracks(id)
+
+    /** Creates a playlist (optionally with songs) and reports its id. */
+    fun createPlaylist(name: String, tracks: List<Track> = emptyList(), source: String = "", sourceUrl: String = "", imageUrl: String = "", onCreated: (Long) -> Unit = {}) =
+        viewModelScope.launch {
+            val now = System.currentTimeMillis()
+            val id = dao.createPlaylist(Playlist(name = name.trim().ifBlank { "New playlist" }, createdAt = now, updatedAt = now, source = source, sourceUrl = sourceUrl, imageUrl = imageUrl), tracks.map { it.id })
+            onCreated(id)
+        }
+    fun addToPlaylist(id: Long, tracks: List<Track>) = viewModelScope.launch { dao.addToPlaylist(id, tracks.map { it.id }, System.currentTimeMillis()) }
+    fun renamePlaylist(id: Long, name: String) = viewModelScope.launch { if (name.isNotBlank()) dao.renamePlaylist(id, name.trim(), System.currentTimeMillis()) }
+    fun deletePlaylist(id: Long) = viewModelScope.launch { dao.deletePlaylist(id) }
+    /** Saves a playlist in a new order, or without a song; [tracks] is the whole playlist as it should be. */
+    fun setPlaylistOrder(id: Long, tracks: List<Track>) = viewModelScope.launch { dao.setPlaylistOrder(id, tracks.map { it.id }, System.currentTimeMillis()) }
+
     val sleep = app.player.sleep
     fun setSleepTimer(minutes: Int) = app.player.setSleepTimer(minutes)
     fun sleepAtEndOfSong() = app.player.sleepAtEndOfSong()

@@ -40,8 +40,8 @@ renderer views) and its state on mobile.
 
 | Feature | Hive | Mobile |
 |---|---|---|
-| Playlists: create, edit, reorder, delete, custom image | `playlists:*`, `playlist:chooseImage` | ❌ |
-| Playlist info page (header, stats) | `playlist-info` | ❌ |
+| Playlists: create, edit, reorder, delete, custom image | `playlists:*`, `playlist:chooseImage` | 🟡 create, add (song, album, artist, playlist), reorder, remove, rename, delete; no custom image |
+| Playlist info page (header, stats) | `playlist-info` | ✅ |
 | Smart / auto playlists | `smart-source` | 🟡 four fixed auto playlists |
 | Import M3U, export M3U | `playlists:chooseImportFile`, `exportM3U` | ❌ |
 | Import Spotify playlists | `playlists:importSpotify` | ❌ |

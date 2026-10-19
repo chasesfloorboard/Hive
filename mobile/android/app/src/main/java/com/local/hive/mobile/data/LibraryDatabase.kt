@@ -68,6 +68,38 @@ data class FavoriteAlbum(
     }
 }
 
+/** A playlist made on the phone. [source] notes where an imported one came from (Apple Music, Spotify, M3U). */
+@Entity(tableName = "playlists")
+data class Playlist(
+    @PrimaryKey(autoGenerate = true) val id: Long = 0,
+    val name: String,
+    val createdAt: Long,
+    val updatedAt: Long,
+    val source: String = "",
+    val sourceUrl: String = "",
+    val imageUrl: String = "",
+)
+
+/** One slot in a playlist; a song may appear more than once. */
+@Entity(tableName = "playlist_entries", indices = [Index("playlistId"), Index("trackId")])
+data class PlaylistEntry(
+    @PrimaryKey(autoGenerate = true) val rowId: Long = 0,
+    val playlistId: Long,
+    val trackId: Long,
+    val position: Int,
+)
+
+data class PlaylistSummary(
+    val id: Long,
+    val name: String,
+    val updatedAt: Long,
+    val source: String,
+    val imageUrl: String,
+    val trackCount: Int,
+    /** The first song's album, for a cover when the playlist has no image. */
+    val coverAlbumId: Long?,
+)
+
 /** Which Hive (PC) track a phone track is the same song as. */
 @Entity(tableName = "pc_match", indices = [Index("pcId")])
 data class PcMatch(
@@ -210,6 +242,72 @@ interface LibraryDao {
     @Upsert
     suspend fun upsertLove(states: List<LoveState>)
 
+    // ---- playlists ----
+
+    @Query(
+        "SELECT p.id, p.name, p.updatedAt, p.source, p.imageUrl, COUNT(t.id) AS trackCount, " +
+            "(SELECT t2.albumId FROM playlist_entries e2 JOIN tracks t2 ON t2.id = e2.trackId WHERE e2.playlistId = p.id ORDER BY e2.position LIMIT 1) AS coverAlbumId " +
+            "FROM playlists p LEFT JOIN playlist_entries e ON e.playlistId = p.id LEFT JOIN tracks t ON t.id = e.trackId " +
+            "GROUP BY p.id ORDER BY p.updatedAt DESC"
+    )
+    fun playlists(): Flow<List<PlaylistSummary>>
+
+    @Query("SELECT * FROM playlists WHERE id = :id")
+    fun playlist(id: Long): Flow<Playlist?>
+
+    /** A playlist's songs in order; entries for songs no longer on the phone are skipped. */
+    @Query("SELECT t.* FROM playlist_entries e JOIN tracks t ON t.id = e.trackId WHERE e.playlistId = :id ORDER BY e.position")
+    fun playlistTracks(id: Long): Flow<List<Track>>
+
+    @Query("SELECT e.* FROM playlist_entries e JOIN tracks t ON t.id = e.trackId WHERE e.playlistId = :id ORDER BY e.position")
+    suspend fun playlistEntries(id: Long): List<PlaylistEntry>
+
+    @Query("SELECT COALESCE(MAX(position), -1) FROM playlist_entries WHERE playlistId = :id")
+    suspend fun lastPosition(id: Long): Int
+
+    @androidx.room.Insert
+    suspend fun insertPlaylist(playlist: Playlist): Long
+
+    @Upsert
+    suspend fun upsertEntries(entries: List<PlaylistEntry>)
+
+    @Query("UPDATE playlists SET name = :name, updatedAt = :at WHERE id = :id")
+    suspend fun renamePlaylist(id: Long, name: String, at: Long)
+
+    @Query("UPDATE playlists SET updatedAt = :at WHERE id = :id")
+    suspend fun touchPlaylist(id: Long, at: Long)
+
+    @Query("DELETE FROM playlists WHERE id = :id")
+    suspend fun deletePlaylistRow(id: Long)
+
+    @Query("DELETE FROM playlist_entries WHERE playlistId = :id")
+    suspend fun clearPlaylist(id: Long)
+
+    @Transaction
+    suspend fun deletePlaylist(id: Long) { clearPlaylist(id); deletePlaylistRow(id) }
+
+    @Transaction
+    suspend fun addToPlaylist(id: Long, trackIds: List<Long>, at: Long) {
+        val start = lastPosition(id) + 1
+        upsertEntries(trackIds.mapIndexed { i, t -> PlaylistEntry(playlistId = id, trackId = t, position = start + i) })
+        touchPlaylist(id, at)
+    }
+
+    /** Rewrites the playlist in the given order (moves and removals). */
+    @Transaction
+    suspend fun setPlaylistOrder(id: Long, trackIds: List<Long>, at: Long) {
+        clearPlaylist(id)
+        upsertEntries(trackIds.mapIndexed { i, t -> PlaylistEntry(playlistId = id, trackId = t, position = i) })
+        touchPlaylist(id, at)
+    }
+
+    @Transaction
+    suspend fun createPlaylist(playlist: Playlist, trackIds: List<Long>): Long {
+        val id = insertPlaylist(playlist)
+        upsertEntries(trackIds.mapIndexed { i, t -> PlaylistEntry(playlistId = id, trackId = t, position = i) })
+        return id
+    }
+
     // ---- favorite albums ----
 
     @Query("SELECT * FROM favorite_albums ORDER BY addedAt DESC")
@@ -257,10 +355,10 @@ interface LibraryDao {
 }
 
 @Database(
-    entities = [Track::class, LoveState::class, PcMatch::class, Play::class, FavoriteAlbum::class],
-    version = 2,
+    entities = [Track::class, LoveState::class, PcMatch::class, Play::class, FavoriteAlbum::class, Playlist::class, PlaylistEntry::class],
+    version = 3,
     exportSchema = true,
-    autoMigrations = [AutoMigration(from = 1, to = 2)],
+    autoMigrations = [AutoMigration(from = 1, to = 2), AutoMigration(from = 2, to = 3)],
 )
 abstract class LibraryDatabase : RoomDatabase() {
     abstract fun dao(): LibraryDao

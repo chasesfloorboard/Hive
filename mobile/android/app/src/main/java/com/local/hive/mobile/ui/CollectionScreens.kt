@@ -31,6 +31,9 @@ import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.text.BasicTextField
 import androidx.compose.foundation.text.KeyboardOptions
 import androidx.compose.material.icons.Icons
+import androidx.compose.material.icons.automirrored.rounded.PlaylistAdd
+import androidx.compose.material.icons.automirrored.rounded.QueueMusic
+import androidx.compose.material.icons.automirrored.rounded.PlaylistPlay
 import androidx.compose.material.icons.automirrored.rounded.ArrowBack
 import androidx.compose.material.icons.rounded.Close
 import androidx.compose.material.icons.rounded.Favorite
@@ -146,13 +149,13 @@ fun AlbumScreen(
             item { PanelBottom() }
         }
     }, overlay = {
-        PageBar(title, titleAlpha, onBack) { CollectionMenu(tracks, vm) }
+        PageBar(title, titleAlpha, onBack) { CollectionMenu(tracks, vm, actions) }
     })
 }
 
 /** The page lit by its album's colours, as Hive's ambient backdrop is lit by the playing cover. */
 @Composable
-private fun AlbumBackdrop(colors: AuraColors?) {
+internal fun AlbumBackdrop(colors: AuraColors?) {
     val c = Hive.colors
     com.local.hive.mobile.ui.theme.HiveAmbient(
         colors?.primary?.copy(alpha = 0.55f) ?: c.ambientA,
@@ -163,34 +166,35 @@ private fun AlbumBackdrop(colors: AuraColors?) {
 
 // A glass panel built from list items, so long tracklists stay lazy.
 @Composable
-private fun PanelTop() {
+internal fun PanelTop() {
     Box(Modifier.fillMaxWidth().padding(horizontal = 8.dp).height(14.dp).clip(androidx.compose.foundation.shape.RoundedCornerShape(topStart = 20.dp, topEnd = 20.dp)).background(panelFill()))
 }
 
 @Composable
-private fun PanelSlice(content: @Composable () -> Unit) {
+internal fun PanelSlice(content: @Composable () -> Unit) {
     Box(Modifier.fillMaxWidth().padding(horizontal = 8.dp).background(panelFill())) { content() }
 }
 
 @Composable
-private fun PanelBottom() {
+internal fun PanelBottom() {
     Box(Modifier.fillMaxWidth().padding(horizontal = 8.dp).height(14.dp).clip(androidx.compose.foundation.shape.RoundedCornerShape(bottomStart = 20.dp, bottomEnd = 20.dp)).background(panelFill()))
 }
 
 @Composable
-private fun panelFill() = Hive.colors.let { mix(it.accent, it.panelStrong, 0.07f) }
+internal fun panelFill() = Hive.colors.let { mix(it.accent, it.panelStrong, 0.07f) }
 
-/** ⋯ on collection pages: queue the whole page. */
+/** ⋯ on collection pages: queue the whole page, or add it to a playlist. */
 @Composable
-private fun CollectionMenu(tracks: List<Track>, vm: MainViewModel) {
+private fun CollectionMenu(tracks: List<Track>, vm: MainViewModel, actions: TrackActions) {
     var open by remember { mutableStateOf(false) }
     Box {
         Box(Modifier.size(42.dp).hiveGlass(CircleShape).clickable { open = true }, contentAlignment = Alignment.Center) {
             Icon(Icons.Rounded.MoreHoriz, "More options", tint = Hive.colors.text, modifier = Modifier.size(20.dp))
         }
         HiveMenu(open, { open = false }) {
-            HiveMenuItem("Play next", Icons.Rounded.LibraryMusic) { open = false; vm.playNext(tracks) }
-            HiveMenuItem("Add to queue", Icons.Rounded.LibraryMusic) { open = false; vm.addToQueue(tracks) }
+            HiveMenuItem("Play next", Icons.AutoMirrored.Rounded.PlaylistPlay) { open = false; vm.playNext(tracks) }
+            HiveMenuItem("Add to queue", Icons.AutoMirrored.Rounded.QueueMusic) { open = false; vm.addToQueue(tracks) }
+            HiveMenuItem("Add to playlist", Icons.AutoMirrored.Rounded.PlaylistAdd) { open = false; actions.onAddToPlaylist(tracks) }
         }
     }
 }
@@ -252,7 +256,7 @@ fun ArtistScreen(
                 }
             }
         }
-    }, overlay = { PageBar(name, titleAlpha, onBack) { CollectionMenu(tracks, vm) } })
+    }, overlay = { PageBar(name, titleAlpha, onBack) { CollectionMenu(tracks, vm, actions) } })
 }
 
 /** A genre, folder or smart playlist: its title, then its songs in a glass panel. */
@@ -267,7 +271,7 @@ fun SongsScreen(
 ) {
     val tracks by tracksFlow.collectAsStateWithLifecycle(emptyList())
     Column(Modifier.fillMaxSize()) {
-        PageBar("", 0f, onBack) { CollectionMenu(tracks, vm) }
+        PageBar("", 0f, onBack) { CollectionMenu(tracks, vm, actions) }
         Box(Modifier.fillMaxSize().padding(horizontal = 8.dp).hiveGlass(HiveShape.panel)) {
             TrackList(vm, tracks, actions, bottomPadding, "Nothing here yet", "", header = { PanelHeader(title) })
         }

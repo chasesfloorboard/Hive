@@ -1,5 +1,9 @@
 package com.local.hive.mobile.ui
 
+import androidx.compose.runtime.remember
+import androidx.compose.runtime.LaunchedEffect
+import androidx.compose.ui.draw.shadow
+import com.local.hive.mobile.data.Track
 import androidx.compose.foundation.border
 import com.local.hive.mobile.ui.theme.hiveGlassBorder
 import android.net.Uri
@@ -134,12 +138,15 @@ private fun HiveContent(vm: MainViewModel, openPlayerInitially: Boolean) {
 
     fun enc(s: String) = Uri.encode(s)
     fun go(path: String) { scope.launch { drawer.close() }; nav.navigate(path) { launchSingleTop = true } }
+    var addTarget by remember { mutableStateOf<List<Track>?>(null) }
+    var toast by remember { mutableStateOf<String?>(null) }
     val actions = TrackActions(
         onPlayNext = { vm.playNext(listOf(it)) },
         onAddToQueue = { vm.addToQueue(listOf(it)) },
         onToggleLove = { vm.toggleLoved(it.id) },
         onGoToAlbum = { nav.navigate("album/${it.albumId}") },
         onGoToArtist = { nav.navigate("artist/${enc(it.artist)}") },
+        onAddToPlaylist = { addTarget = it },
     )
     val homeNav = HomeNavigation(
         openAlbum = { nav.navigate("album/$it") },
@@ -147,6 +154,7 @@ private fun HiveContent(vm: MainViewModel, openPlayerInitially: Boolean) {
         openGenre = { nav.navigate("genre/${enc(it)}") },
         openFolder = { nav.navigate("folder/${enc(it)}") },
         openPlaylist = { nav.navigate("playlist/${it.name}") },
+        openUserPlaylist = { nav.navigate("userplaylist/$it") },
         openSearch = { nav.navigate("search") },
         openSettings = { nav.navigate("settings") },
         openSidebar = { scope.launch { drawer.open() } },
@@ -196,6 +204,9 @@ private fun HiveContent(vm: MainViewModel, openPlayerInitially: Boolean) {
                             val name = entry.arguments?.getString("name").orEmpty()
                             SongsScreen(vm, name.trimEnd('/').substringAfterLast('/').ifBlank { name }, vm.folderTracks(name), actions, bottomPadding) { nav.popBackStack() }
                         }
+                        composable("userplaylist/{id}", listOf(navArgument("id") { type = NavType.LongType })) { entry ->
+                            PlaylistScreen(vm, entry.arguments?.getLong("id") ?: 0L, actions, bottomPadding) { nav.popBackStack() }
+                        }
                         composable("playlist/{kind}") { entry ->
                             val kind = runCatching { AutoPlaylist.valueOf(entry.arguments?.getString("kind").orEmpty()) }.getOrDefault(AutoPlaylist.Favorites)
                             val flow = when (kind) {
@@ -219,12 +230,14 @@ private fun HiveContent(vm: MainViewModel, openPlayerInitially: Boolean) {
                             onOpenArtist = { playerOpen = false; nav.navigate("artist/${enc(it.artist)}") },
                         )
                     }
+                    HiveToast(toast, Modifier.align(Alignment.BottomCenter).navigationBarsPadding().padding(bottom = bottomPadding + 16.dp)) { toast = null }
                     AnimatedVisibility(queueOpen, enter = slideInVertically(Motion.open()) { it } + fadeIn(Motion.underFade()), exit = slideOutVertically(Motion.close()) { it } + fadeOut(Motion.close())) {
                         QueueScreen(vm) { queueOpen = false }
                     }
                 },
             )
         }
+        addTarget?.let { tracks -> AddToPlaylistSheet(vm, tracks, onDismiss = { addTarget = null }) { name -> toast = "Added to $name" } }
         BackHandler(enabled = playerOpen || queueOpen || drawer.isOpen) {
             when {
                 drawer.isOpen -> scope.launch { drawer.close() }
@@ -320,5 +333,21 @@ private fun NamedListScreen(
                 }
             }
         }
+    }
+}
+
+/** A brief Hive note above the playbar, e.g. "Added to Road trip". */
+@Composable
+private fun HiveToast(message: String?, modifier: Modifier, onDone: () -> Unit) {
+    val c = Hive.colors
+    var shown by remember { mutableStateOf("") }
+    if (message != null) shown = message
+    LaunchedEffect(message) { if (message != null) { kotlinx.coroutines.delay(2_200); onDone() } }
+    AnimatedVisibility(message != null, modifier, enter = fadeIn(tween(160)) + slideInVertically(Motion.open()) { it / 2 }, exit = fadeOut(tween(200))) {
+        Text(
+            shown, style = HiveText.pill, color = c.text,
+            modifier = Modifier.shadow(18.dp, HiveShape.pill, ambientColor = c.accentGlow).clip(HiveShape.pill).background(c.control)
+                .border(1.dp, hiveGlassBorder(), HiveShape.pill).padding(horizontal = 18.dp, vertical = 11.dp),
+        )
     }
 }

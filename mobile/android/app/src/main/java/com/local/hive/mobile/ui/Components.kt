@@ -41,6 +41,7 @@ import androidx.compose.foundation.layout.widthIn
 import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.automirrored.rounded.PlaylistAdd
+import androidx.compose.material.icons.automirrored.rounded.PlaylistPlay
 import androidx.compose.material.icons.automirrored.rounded.QueueMusic
 import androidx.compose.material.icons.rounded.Album
 import androidx.compose.material.icons.rounded.Favorite
@@ -50,6 +51,7 @@ import androidx.compose.material.icons.rounded.MoreHoriz
 import androidx.compose.material.icons.rounded.MusicNote
 import androidx.compose.material.icons.rounded.Pause
 import androidx.compose.material.icons.rounded.Person
+import androidx.compose.material.icons.rounded.RemoveCircleOutline
 import androidx.compose.material.icons.rounded.PlayArrow
 import androidx.compose.material3.Icon
 import androidx.compose.material3.Text
@@ -275,6 +277,9 @@ data class TrackActions(
     val onGoToAlbum: (Track) -> Unit,
     val onGoToArtist: (Track) -> Unit,
     val onInfo: (Track) -> Unit = {},
+    val onAddToPlaylist: (List<Track>) -> Unit = {},
+    /** Set only where the song sits in a playlist the user can edit. */
+    val onRemoveFromPlaylist: ((Track) -> Unit)? = null,
 )
 
 /**
@@ -347,13 +352,18 @@ fun TrackRow(
 @Composable
 fun TrackMenu(expanded: Boolean, loved: Boolean, onDismiss: () -> Unit, track: Track, actions: TrackActions) {
     HiveMenu(expanded, onDismiss) {
-        HiveMenuItem("Play next", Icons.AutoMirrored.Rounded.PlaylistAdd) { onDismiss(); actions.onPlayNext(track) }
+        HiveMenuItem("Play next", Icons.AutoMirrored.Rounded.PlaylistPlay) { onDismiss(); actions.onPlayNext(track) }
         HiveMenuItem("Add to queue", Icons.AutoMirrored.Rounded.QueueMusic) { onDismiss(); actions.onAddToQueue(track) }
+        HiveMenuItem("Add to playlist", Icons.AutoMirrored.Rounded.PlaylistAdd) { onDismiss(); actions.onAddToPlaylist(listOf(track)) }
         HiveMenuItem(if (loved) "Remove from Favorites" else "Add to Favorites", if (loved) Icons.Rounded.Favorite else Icons.Rounded.FavoriteBorder) { onDismiss(); actions.onToggleLove(track) }
         HiveMenuDivider()
         HiveMenuItem("Go to album", Icons.Rounded.Album) { onDismiss(); actions.onGoToAlbum(track) }
         HiveMenuItem("Go to artist", Icons.Rounded.Person) { onDismiss(); actions.onGoToArtist(track) }
         HiveMenuItem("Track info", Icons.Rounded.Info) { onDismiss(); actions.onInfo(track) }
+        actions.onRemoveFromPlaylist?.let { remove ->
+            HiveMenuDivider()
+            HiveMenuItem("Remove from playlist", Icons.Rounded.RemoveCircleOutline, destructive = true) { onDismiss(); remove(track) }
+        }
     }
 }
 
