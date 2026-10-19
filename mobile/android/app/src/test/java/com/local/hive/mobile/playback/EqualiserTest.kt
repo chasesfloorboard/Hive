@@ -56,3 +56,23 @@ class EqualiserTest {
         assertEquals(p, EqState.parseSde(EqState.serializeSde(p), "Rock"))
     }
 }
+
+@androidx.annotation.OptIn(androidx.media3.common.util.UnstableApi::class)
+class ReplayGainTest {
+    private val tags = mapOf("REPLAYGAIN_TRACK_GAIN" to "-6.02 dB", "REPLAYGAIN_TRACK_PEAK" to "0.98", "REPLAYGAIN_ALBUM_GAIN" to "+3.00 dB", "REPLAYGAIN_ALBUM_PEAK" to "0.5")
+
+    @Test fun offAndUntaggedLeaveVolumeAlone() {
+        assertEquals(1f, ReplayGain.linear(tags, "off", true), 0f)
+        assertEquals(1f, ReplayGain.linear(emptyMap(), "track", true), 0f)
+    }
+
+    @Test fun trackGainIsApplied() = assertEquals(0.5f, ReplayGain.linear(tags, "track", true), 0.005f)
+
+    @Test fun albumGainIsHeldUnderThePeak() {
+        assertEquals(1.413f, ReplayGain.linear(tags, "album", false), 0.005f)
+        assertEquals(1.413f, ReplayGain.linear(tags, "album", true), 0.005f) // 1/0.5 = 2 allows it
+        assertEquals(1.0f, ReplayGain.linear(tags + ("REPLAYGAIN_ALBUM_PEAK" to "1.0"), "album", true), 0.005f)
+    }
+
+    @Test fun albumFallsBackToTrackGain() = assertEquals(0.5f, ReplayGain.linear(tags.filterKeys { !it.startsWith("REPLAYGAIN_ALBUM") }, "album", true), 0.005f)
+}

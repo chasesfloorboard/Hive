@@ -57,7 +57,7 @@ renderer views) and its state on mobile.
 | Shuffle, repeat | | ✅ |
 | Playback state restored on launch | `playback-state:*` | ✅ queue, track, position, shuffle, repeat; Bluetooth resume |
 | Equaliser with presets, import presets | `equaliser:*` | ✅ 10 bands + preamp, MusicBee presets, auto by genre, save/delete; no .sde import UI yet |
-| ReplayGain | `replaygain:analyse` | ❌ (reading tags) / 🖥️ (analysis) |
+| ReplayGain | `replaygain:analyse` | ✅ reading tags: Off/Track/Album/Smart, clipping guard, as on the PC · 🖥️ analysis stays on the PC |
 | Audio output selection | `audio-output:*` | ➖ Android's output switcher |
 | Lock screen, notification, Bluetooth controls | MPRIS, tray | ✅ MediaSession |
 | Mini player window | `miniplayer:*` | ✅ mini player bar |

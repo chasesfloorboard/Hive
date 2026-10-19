@@ -29,6 +29,10 @@ data class EqState(
     val preset: String = "Flat",
     val manual: EqPreset = EqPreset(MANUAL, 0f, List(10) { 0f }),
     val custom: List<EqPreset> = emptyList(),
+    /** ReplayGain as Hive does it: "off", "track", "album" or "smart" (album while an album plays in order). */
+    val replayGain: String = "off",
+    /** Never raise a song past its own peak. */
+    val clippingGuard: Boolean = true,
 ) {
     val presets: List<EqPreset> get() = BUILT_IN + custom
 
@@ -171,6 +175,7 @@ class EqualiserProcessor : BaseAudioProcessor() {
     private class Biquad(val b0: Float, val b1: Float, val b2: Float, val a1: Float, val a2: Float)
 
     @Volatile private var target: EqPreset? = null
+    @Volatile private var songGain = 1f
     @Volatile private var dirty = true
     private var filters: Array<Biquad> = emptyArray()
     private var preampGain = 1f
@@ -184,6 +189,9 @@ class EqualiserProcessor : BaseAudioProcessor() {
     /** The curve to apply, or null for off. */
     fun setCurve(preset: EqPreset?) { target = preset; dirty = true }
 
+    /** The song's ReplayGain as a linear factor (1 for none). */
+    fun setSongGain(linear: Float) { songGain = linear; dirty = true }
+
     override fun onConfigure(inputAudioFormat: AudioProcessor.AudioFormat): AudioProcessor.AudioFormat {
         if (inputAudioFormat.encoding != C.ENCODING_PCM_16BIT && inputAudioFormat.encoding != C.ENCODING_PCM_FLOAT) throw AudioProcessor.UnhandledAudioFormatException(inputAudioFormat)
         channels = inputAudioFormat.channelCount
@@ -196,8 +204,8 @@ class EqualiserProcessor : BaseAudioProcessor() {
     private fun rebuild() {
         dirty = false
         val p = target
-        if (p == null || (p.preamp == 0f && p.gains.all { it == 0f })) { filters = emptyArray(); preampGain = 1f; return }
-        preampGain = 10f.pow(p.preamp / 20f)
+        if (p == null || (p.preamp == 0f && p.gains.all { it == 0f })) { filters = emptyArray(); preampGain = songGain; return }
+        preampGain = 10f.pow(p.preamp / 20f) * songGain
         filters = EqState.FREQUENCIES.indices.mapNotNull { i ->
             val f0 = EqState.FREQUENCIES[i]
             val db = p.gains.getOrElse(i) { 0f }

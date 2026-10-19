@@ -67,6 +67,12 @@ fun SettingsScreen(vm: MainViewModel, bottomPadding: Dp, onOpenEqualiser: () -> 
                 Section("Sound", "Hive's equaliser runs inside the player, so it works on speakers, headphones and Bluetooth alike.") {
                     val eq by vm.equaliser.state.collectAsStateWithLifecycle()
                     SettingRow("Equaliser", if (eq.enabled) eq.preset else "Off") { SmallButton("Open") { onOpenEqualiser() } }
+                    val modes = listOf("off", "track", "album", "smart")
+                    SettingRow("ReplayGain", "Evens out loudness from the songs' ReplayGain tags. Smart uses album gain while an album plays in order.") {}
+                    HiveToggle(listOf("Off", "Track", "Album", "Smart"), modes.indexOf(eq.replayGain).coerceAtLeast(0), { i -> vm.equaliser.update { it.copy(replayGain = modes[i]) } }, Modifier.padding(horizontal = 16.dp))
+                    SettingRow("Prevent clipping", "Never raise a song past its own peak.") {
+                        HiveToggle(listOf("Off", "On"), if (eq.clippingGuard) 1 else 0, { i -> vm.equaliser.update { it.copy(clippingGuard = i == 1) } })
+                    }
                 }
             }
             item {

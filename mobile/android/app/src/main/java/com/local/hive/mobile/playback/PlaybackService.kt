@@ -16,6 +16,7 @@ import androidx.media3.common.audio.AudioProcessor
 import android.content.Context
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.combine
+import kotlinx.coroutines.flow.distinctUntilChanged
 import androidx.media3.exoplayer.source.DefaultMediaSourceFactory
 import androidx.media3.session.MediaSession
 import androidx.media3.session.MediaSessionService
@@ -44,6 +45,8 @@ class PlaybackService : MediaSessionService() {
     private lateinit var memory: PlaybackMemory
     private val equaliser = EqualiserProcessor()
     private val genre = MutableStateFlow("")
+    private val replayGainTags = MutableStateFlow<Map<String, String>>(emptyMap())
+    private val queueTick = MutableStateFlow(0)
 
     override fun onCreate() {
         super.onCreate()
@@ -81,6 +84,7 @@ class PlaybackService : MediaSessionService() {
                 player.play()
             }
             override fun onMediaMetadataChanged(mediaMetadata: androidx.media3.common.MediaMetadata) { genre.value = mediaMetadata.genre?.toString().orEmpty() }
+            override fun onTracksChanged(tracks: androidx.media3.common.Tracks) { replayGainTags.value = ReplayGain.tagsOf(tracks); queueTick.value++ }
             override fun onTimelineChanged(timeline: androidx.media3.common.Timeline, reason: Int) {
                 if (reason == Player.TIMELINE_CHANGE_REASON_PLAYLIST_CHANGED) memory.saveQueue(player)
             }
@@ -95,6 +99,15 @@ class PlaybackService : MediaSessionService() {
         // The curve follows the settings, and for "Auto-Select by Genre" the playing song's genre.
         scope.launch {
             combine(app.equaliser.state, genre) { eq, g -> if (eq.enabled) eq.curve(g) else null }.collect { equaliser.setCurve(it) }
+        }
+        scope.launch {
+            combine(app.equaliser.state, replayGainTags, queueTick) { eq, tags, _ ->
+                val mode = if (eq.replayGain == "smart") (if (ReplayGain.smartUsesAlbum(player)) "album" else "track") else eq.replayGain
+                ReplayGain.linear(tags, mode, eq.clippingGuard)
+            }.distinctUntilChanged().collect { gain ->
+                android.util.Log.i("HiveSound", "ReplayGain ${app.equaliser.state.value.replayGain}: x%.3f".format(gain))
+                equaliser.setSongGain(gain)
+            }
         }
         // Pick up where the last session left off, paused, unless something was queued meanwhile.
         scope.launch {
