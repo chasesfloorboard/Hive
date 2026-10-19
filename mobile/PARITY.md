@@ -15,7 +15,7 @@ renderer views) and its state on mobile.
 | Albums grouped by year with dividers | `album-year-section` | ✅ (Years: on/off) |
 | Inline album expansion (cover + tracklist in the grid) | `inline-album-dropdown` | ✅ |
 | Tracks table: sortable columns, column chooser | `song-header`, column drag | 🟡 one sort, no columns |
-| Artists, artist images, artist info | `artist:info`, `artwork:artistImage` | 🟡 list, no images or bio |
+| Artists, artist images, artist info | `artist:info`, `artwork:artistImage` | 🟡 list and pages with artist photos (Deezer, exact match, as on the PC); no bio |
 | Similar artists | `music:similarArtists` | ❌ |
 | Genres, folders | | ✅ |
 | Column browser (genre › artist › album) | `column-browser` | ❌ |

@@ -85,6 +85,7 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
     fun folderTracks(folder: String) = dao.folderTracks(folder)
     suspend fun search(query: String): List<Track> = if (query.isBlank()) emptyList() else dao.search("%${query.trim()}%")
     suspend fun playStats(trackId: Long) = dao.playStats(trackId)
+    suspend fun artistImage(name: String) = app.artistImages.lookup(name)
 
     /** Years with plays on this phone, newest first. */
     suspend fun wrapYears(): List<Int> {

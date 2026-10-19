@@ -47,6 +47,7 @@ import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
+import androidx.compose.runtime.produceState
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.rememberCoroutineScope
 import androidx.compose.runtime.saveable.rememberSaveable
@@ -186,7 +187,7 @@ private fun MusicPanel(vm: MainViewModel, nav: HomeNavigation, actions: TrackAct
             MusicView.Tracks -> TracksView(vm, actions, bottom)
             MusicView.Artists -> {
                 val artists by vm.artists.collectAsStateWithLifecycle()
-                ArtistsView(remember(artists, artistSort) { if (artistSort == ArtistSort.Songs) artists.sortedByDescending { it.trackCount } else artists }, nav.openArtist, bottom)
+                ArtistsView(vm, remember(artists, artistSort) { if (artistSort == ArtistSort.Songs) artists.sortedByDescending { it.trackCount } else artists }, nav.openArtist, bottom)
             }
         }
     }
@@ -361,11 +362,13 @@ fun TrackList(
 }
 
 @Composable
-private fun ArtistsView(artists: List<ArtistSummary>, open: (String) -> Unit, bottom: Dp) {
+private fun ArtistsView(vm: MainViewModel, artists: List<ArtistSummary>, open: (String) -> Unit, bottom: Dp) {
     LazyColumn(Modifier.fillMaxSize(), contentPadding = PaddingValues(top = 4.dp, bottom = bottom + 12.dp)) {
         if (artists.isEmpty()) item { EmptyState("No artists yet", "") }
         items(artists, key = { it.artist }) { a ->
-            LibraryRow(Uri.parse("content://media/external/audio/albumart/${a.albumId}"), Icons.Rounded.Person, a.artist, "${countOf(a.albumCount, "album")} · ${countOf(a.trackCount, "track")}", round = true) { open(a.artist) }
+            // Hive's artist photo once found, the artist's album cover until then.
+            val photo by produceState<String?>(null, a.artist) { value = vm.artistImage(a.artist) }
+            LibraryRow(photo ?: Uri.parse("content://media/external/audio/albumart/${a.albumId}"), Icons.Rounded.Person, a.artist, "${countOf(a.albumCount, "album")} · ${countOf(a.trackCount, "track")}", round = true) { open(a.artist) }
         }
     }
 }
