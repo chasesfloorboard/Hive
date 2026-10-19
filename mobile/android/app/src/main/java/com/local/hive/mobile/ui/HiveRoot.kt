@@ -39,6 +39,7 @@ import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.verticalScroll
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.rounded.Explore
+import androidx.compose.material.icons.rounded.AutoAwesome
 import androidx.compose.material.icons.rounded.Radio
 import androidx.compose.material.icons.rounded.Podcasts
 import androidx.compose.material.icons.rounded.GraphicEq
@@ -250,6 +251,7 @@ private fun HiveContent(vm: MainViewModel, openPlayerInitially: Boolean) {
                                 onOpen = { url -> nav.navigate("apple/c?url=${enc(url)}") }, onOpenPlaylist = homeNav.openUserPlaylist, onToast = { toast = it },
                             )
                         }
+                        composable("wrap") { YearlyWrapScreen(vm, bottomPadding) { nav.popBackStack() } }
                         composable("podcasts") { PodcastsScreen(vm, bottomPadding, onBack = { nav.popBackStack() }) { url -> nav.navigate("podcast?feed=${enc(url)}") } }
                         composable("podcast?feed={feed}") { entry -> PodcastShowScreen(vm, entry.arguments?.getString("feed").orEmpty(), bottomPadding) { nav.popBackStack() } }
                         composable("radio") { RadioScreen(vm, bottomPadding, onBack = { nav.popBackStack() }, onToast = { toast = it }) }
@@ -342,6 +344,7 @@ private fun Sidebar(vm: MainViewModel, current: String, go: (String) -> Unit) {
         SidebarItem("History", Icons.Rounded.History, current == "playlist/{kind}RecentlyPlayed") { go("playlist/${AutoPlaylist.RecentlyPlayed.name}") }
         SidebarItem("Top 25 Most Played", Icons.Rounded.TrendingUp, current == "playlist/{kind}MostPlayed") { go("playlist/${AutoPlaylist.MostPlayed.name}") }
         SidebarItem("Recently Added", Icons.Rounded.NewReleases, current == "playlist/{kind}RecentlyAdded") { go("playlist/${AutoPlaylist.RecentlyAdded.name}") }
+        SidebarItem("Yearly Wrap", Icons.Rounded.AutoAwesome, current == "wrap") { go("wrap") }
         SidebarDivider("Streaming")
         SidebarItem("Apple Music", Icons.Rounded.Explore, current == "apple" || current.startsWith("apple/")) { go("apple") }
         SidebarItem("Spotify", Icons.Rounded.GraphicEq, current == "spotify" || current.startsWith("spotify/")) { go("spotify") }

@@ -99,7 +99,7 @@ renderer views) and its state on mobile.
 
 | Feature | Hive | Mobile |
 |---|---|---|
-| Yearly Wrap views, export image | `yearly-wrap:*` | ❌ |
+| Yearly Wrap views, export image | `yearly-wrap:*` | ✅ from phone plays: the PC's seven slides, year picker, share a slide as a picture |
 | MusicBee Wrapped import | `yearly-wrap:importMusicBee` | 🖥️ |
 | Phone plays counted toward Wrapped | | ❌ |
 

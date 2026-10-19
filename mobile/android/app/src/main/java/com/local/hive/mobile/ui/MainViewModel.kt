@@ -85,6 +85,19 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
     fun folderTracks(folder: String) = dao.folderTracks(folder)
     suspend fun search(query: String): List<Track> = if (query.isBlank()) emptyList() else dao.search("%${query.trim()}%")
     suspend fun playStats(trackId: Long) = dao.playStats(trackId)
+
+    /** Years with plays on this phone, newest first. */
+    suspend fun wrapYears(): List<Int> {
+        val first = dao.firstPlay() ?: return listOf(java.time.Year.now().value)
+        val from = java.time.Instant.ofEpochMilli(first).atZone(java.time.ZoneId.systemDefault()).year
+        return (java.time.Year.now().value downTo from).toList()
+    }
+    suspend fun wrap(year: Int): Wrap {
+        val zone = java.time.ZoneId.systemDefault()
+        val from = java.time.LocalDate.of(year, 1, 1).atStartOfDay(zone).toInstant().toEpochMilli()
+        val to = java.time.LocalDate.of(year + 1, 1, 1).atStartOfDay(zone).toInstant().toEpochMilli()
+        return kotlinx.coroutines.withContext(kotlinx.coroutines.Dispatchers.Default) { Wrap.from(year, dao.playsBetween(from, to)) }
+    }
     suspend fun lyrics(now: com.local.hive.mobile.playback.NowPlaying) = app.lyrics.find(now.artist, now.title, now.album, now.durationMs)
     suspend fun tracksById(ids: List<Long>): List<Track> = dao.tracks(ids).associateBy { it.id }.let { map -> ids.mapNotNull { map[it] } }
 

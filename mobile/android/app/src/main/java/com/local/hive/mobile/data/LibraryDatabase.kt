@@ -167,6 +167,9 @@ data class NamedCount(val name: String, val trackCount: Int)
 
 data class PlayStats(val plays: Int, val lastPlayed: Long?)
 
+/** A play with the song it was, for Yearly Wrap. */
+data class PlayRow(val trackId: Long, val playedAt: Long, val listenedMs: Long, val title: String, val artist: String, val album: String, val albumArtist: String, val albumId: Long, val genre: String)
+
 @Dao
 interface LibraryDao {
     @Query("SELECT * FROM tracks ORDER BY title COLLATE NOCASE")
@@ -385,6 +388,15 @@ interface LibraryDao {
 
     @Upsert
     suspend fun insertPlay(play: Play)
+
+    @Query(
+        "SELECT p.trackId, p.playedAt, p.listenedMs, t.title, t.artist, t.album, t.albumArtist, t.albumId, t.genre " +
+            "FROM plays p JOIN tracks t ON t.id = p.trackId WHERE p.playedAt >= :from AND p.playedAt < :to"
+    )
+    suspend fun playsBetween(from: Long, to: Long): List<PlayRow>
+
+    @Query("SELECT MIN(playedAt) FROM plays")
+    suspend fun firstPlay(): Long?
 
     @Query("SELECT COUNT(*) AS plays, MAX(playedAt) AS lastPlayed FROM plays WHERE trackId = :trackId")
     suspend fun playStats(trackId: Long): PlayStats
