@@ -9,6 +9,11 @@ import androidx.compose.animation.fadeIn
 import androidx.compose.animation.fadeOut
 import androidx.compose.animation.shrinkVertically
 import androidx.compose.foundation.background
+import androidx.compose.foundation.layout.aspectRatio
+import androidx.compose.material.icons.rounded.MoreVert
+import androidx.compose.material.icons.rounded.PlayArrow
+import androidx.compose.material.icons.rounded.Share
+import androidx.compose.ui.draw.shadow
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
@@ -97,9 +102,10 @@ fun PageBar(title: String, titleAlpha: Float, onBack: () -> Unit, actions: @Comp
 }
 
 /**
- * An album page: lit by its own cover's colours, the cover over Hive's bold
- * title, artist and details, Play / Shuffle / ♥, then the tracklist in a
- * glass panel.
+ * An album page, built as Samsung Music builds it and lit as Hive lights it:
+ * the album's own colours behind, the cover (the same cover that was tapped,
+ * grown into place), the name, artist and details, Play and Shuffle, then
+ * the numbered tracklist with lengths.
  */
 @Composable
 fun AlbumScreen(
@@ -128,29 +134,43 @@ fun AlbumScreen(
         AlbumBackdrop(colors)
         LazyColumn(Modifier.fillMaxSize(), state = list, contentPadding = PaddingValues(bottom = bottomPadding + 16.dp)) {
             item {
-                Column(Modifier.fillMaxWidth().statusBarsPadding().padding(top = 64.dp, start = 24.dp, end = 24.dp, bottom = 18.dp), horizontalAlignment = Alignment.CenterHorizontally) {
-                    Artwork(cover, Modifier.size(232.dp), HiveShape.art, Icons.Rounded.LibraryMusic, glow = colors?.primary, elevation = 30.dp)
+                Column(Modifier.fillMaxWidth().statusBarsPadding().padding(top = 60.dp, start = 24.dp, end = 24.dp, bottom = 8.dp), horizontalAlignment = Alignment.CenterHorizontally) {
+                    Artwork(cover, Modifier.sharedCover("album-$albumId").fillMaxWidth(0.72f).aspectRatio(1f), HiveShape.art, Icons.Rounded.LibraryMusic, glow = colors?.primary, elevation = 30.dp)
                     Text(title, style = HiveText.heroTitle, color = c.text, textAlign = TextAlign.Center, maxLines = 2, overflow = TextOverflow.Ellipsis, modifier = Modifier.padding(top = 22.dp))
-                    if (artist.isNotBlank()) Text(artist, style = HiveText.rowStrong, color = c.accent, modifier = Modifier.padding(top = 6.dp).clickable { onOpenArtist(artist) })
+                    if (artist.isNotBlank()) Text(artist, style = HiveText.rowStrong, color = c.accent, modifier = Modifier.padding(top = 6.dp).clip(HiveShape.pill).clickable { onOpenArtist(artist) }.padding(horizontal = 8.dp, vertical = 2.dp))
                     Text(listOfNotNull(year.takeIf { it > 0 }?.toString(), countOf(tracks.size, "track"), formatLength(tracks.sumOf { it.durationMs })).joinToString(" · "), style = HiveText.small, color = c.textDim, modifier = Modifier.padding(top = 4.dp))
-                    Row(Modifier.padding(top = 18.dp), horizontalArrangement = Arrangement.spacedBy(12.dp), verticalAlignment = Alignment.CenterVertically) {
-                        ControlButton(Icons.Rounded.Shuffle, "Shuffle", { vm.shuffle(tracks) }, size = 46.dp)
-                        AccentPlayButton(false, { vm.play(tracks) }, size = 58.dp)
+                    Row(Modifier.fillMaxWidth().padding(top = 20.dp), horizontalArrangement = Arrangement.spacedBy(10.dp), verticalAlignment = Alignment.CenterVertically) {
+                        PillButton("Play", Icons.Rounded.PlayArrow, accent = true, modifier = Modifier.weight(1f)) { vm.play(tracks) }
+                        PillButton("Shuffle", Icons.Rounded.Shuffle, accent = false, modifier = Modifier.weight(1f)) { vm.shuffle(tracks) }
                         ControlButton(if (favorite) Icons.Rounded.Favorite else Icons.Rounded.FavoriteBorder, if (favorite) "Remove album from Favorites" else "Add album to Favorites", { vm.toggleFavoriteAlbum(title, artist) }, size = 46.dp, tint = if (favorite) c.accent else null)
                     }
                 }
             }
-            item { PanelTop() }
             itemsIndexed(tracks, key = { _, t -> t.id }) { i, t ->
-                PanelSlice {
-                    TrackRow(t, t.id in loved, now.trackId == t.id, now.isPlaying, actions, onClick = { vm.play(tracks, i) }, subtitle = if (t.artist != artist) t.artist else "", number = t.trackNumber.takeIf { it > 0 } ?: (i + 1))
-                }
+                TrackRow(t, t.id in loved, now.trackId == t.id, now.isPlaying, actions, onClick = { vm.play(tracks, i) }, subtitle = if (t.artist != artist) t.artist else "", number = t.trackNumber.takeIf { it > 0 } ?: (i + 1))
             }
-            item { PanelBottom() }
         }
     }, overlay = {
         PageBar(title, titleAlpha, onBack) { CollectionMenu(tracks, vm, actions) }
     })
+}
+
+/** A wide button with a label, as Samsung Music's Play and Shuffle: the accent for the main one, glass for the other. */
+@Composable
+fun PillButton(label: String, icon: androidx.compose.ui.graphics.vector.ImageVector, accent: Boolean, modifier: Modifier = Modifier, onClick: () -> Unit) {
+    val c = Hive.colors
+    val base = modifier.height(46.dp)
+    Row(
+        (if (accent) base.shadow(14.dp, HiveShape.pill, ambientColor = c.accentGlow, spotColor = c.accent).clip(HiveShape.pill).background(c.accent)
+        else base.hiveGlass(HiveShape.pill, strength = 0.2f)).pressable(onClick, 0.96f),
+        horizontalArrangement = Arrangement.Center,
+        verticalAlignment = Alignment.CenterVertically,
+    ) {
+        val tint = if (accent) readableOn(c.accent) else c.text
+        Icon(icon, null, tint = tint, modifier = Modifier.size(20.dp))
+        Spacer(Modifier.width(6.dp))
+        Text(label, style = HiveText.rowStrong, color = tint)
+    }
 }
 
 /** The page lit by its album's colours, as Hive's ambient backdrop is lit by the playing cover. */
@@ -187,14 +207,16 @@ internal fun panelFill() = Hive.colors.let { mix(it.accent, it.panelStrong, 0.07
 @Composable
 private fun CollectionMenu(tracks: List<Track>, vm: MainViewModel, actions: TrackActions) {
     var open by remember { mutableStateOf(false) }
+    val context = androidx.compose.ui.platform.LocalContext.current
     Box {
         Box(Modifier.size(42.dp).hiveGlass(CircleShape).clickable { open = true }, contentAlignment = Alignment.Center) {
-            Icon(Icons.Rounded.MoreHoriz, "More options", tint = Hive.colors.text, modifier = Modifier.size(20.dp))
+            Icon(Icons.Rounded.MoreVert, "More options", tint = Hive.colors.text, modifier = Modifier.size(20.dp))
         }
         HiveMenu(open, { open = false }) {
             HiveMenuItem("Play next", Icons.AutoMirrored.Rounded.PlaylistPlay) { open = false; vm.playNext(tracks) }
             HiveMenuItem("Add to queue", Icons.AutoMirrored.Rounded.QueueMusic) { open = false; vm.addToQueue(tracks) }
             HiveMenuItem("Add to playlist", Icons.AutoMirrored.Rounded.PlaylistAdd) { open = false; actions.onAddToPlaylist(tracks) }
+            HiveMenuItem("Share", Icons.Rounded.Share) { open = false; Share.tracks(context, tracks) }
         }
     }
 }
@@ -218,7 +240,6 @@ fun ArtistScreen(
     val albums = remember(tracks) {
         tracks.groupBy { it.albumId }.map { (id, t) -> AlbumSummary(id, t.first().album, t.first().displayAlbumArtist, t.maxOf { it.year }, t.size) }.sortedByDescending { it.year }
     }
-    var open by rememberSaveable { mutableStateOf<Long?>(null) }
     val firstAlbum = albums.firstOrNull()?.albumId
     val colors by produceState<AuraColors?>(null, firstAlbum) { value = firstAlbum?.let { vm.albumColors(it) } }
     val list = rememberLazyListState()
@@ -233,9 +254,9 @@ fun ArtistScreen(
                     Artwork(photo ?: firstAlbum?.let { Uri.parse("content://media/external/audio/albumart/$it") }, Modifier.size(168.dp), CircleShape, Icons.Rounded.Person, glow = colors?.primary, elevation = 24.dp)
                     Text(name.ifBlank { "Unknown artist" }, style = HiveText.heroTitle, color = c.text, textAlign = TextAlign.Center, modifier = Modifier.padding(top = 18.dp, start = 24.dp, end = 24.dp))
                     Text("${countOf(albums.size, "album")} · ${countOf(tracks.size, "track")}", style = HiveText.small, color = c.textDim, modifier = Modifier.padding(top = 4.dp))
-                    Row(Modifier.padding(top = 16.dp), horizontalArrangement = Arrangement.spacedBy(12.dp), verticalAlignment = Alignment.CenterVertically) {
-                        ControlButton(Icons.Rounded.Shuffle, "Shuffle", { vm.shuffle(tracks) }, size = 46.dp)
-                        AccentPlayButton(false, { vm.play(tracks) }, size = 58.dp)
+                    Row(Modifier.fillMaxWidth().padding(top = 18.dp, start = 24.dp, end = 24.dp), horizontalArrangement = Arrangement.spacedBy(10.dp)) {
+                        PillButton("Play", Icons.Rounded.PlayArrow, accent = true, modifier = Modifier.weight(1f)) { vm.play(tracks) }
+                        PillButton("Shuffle", Icons.Rounded.Shuffle, accent = false, modifier = Modifier.weight(1f)) { vm.shuffle(tracks) }
                     }
                 }
             }
@@ -243,15 +264,9 @@ fun ArtistScreen(
                 item(key = "y$y") { YearHeading(if (y > 0) "$y" else "Unknown year") }
                 list2.chunked(2).forEach { row ->
                     item(key = "r${row.first().albumId}") {
-                        Row(Modifier.fillMaxWidth().padding(horizontal = 14.dp, vertical = 8.dp), horizontalArrangement = Arrangement.spacedBy(14.dp)) {
-                            row.forEach { a -> AlbumCard(a, a.albumId == open, Modifier.weight(1f)) { open = if (open == a.albumId) null else a.albumId } }
+                        Row(Modifier.fillMaxWidth().padding(horizontal = 16.dp, vertical = 8.dp), horizontalArrangement = Arrangement.spacedBy(14.dp)) {
+                            row.forEach { a -> AlbumCard(a, false, Modifier.weight(1f)) { onOpenAlbum(a.albumId) } }
                             if (row.size == 1) Spacer(Modifier.weight(1f))
-                        }
-                    }
-                    val inRow = row.firstOrNull { it.albumId == open }
-                    item(key = "i${row.first().albumId}") {
-                        AnimatedVisibility(inRow != null, enter = expandVertically(tween(220)) + fadeIn(tween(220)), exit = shrinkVertically(tween(180)) + fadeOut(tween(140))) {
-                            inRow?.let { InlineAlbum(vm, it, actions, onOpenPage = { onOpenAlbum(it.albumId) }) }
                         }
                     }
                 }
@@ -273,9 +288,7 @@ fun SongsScreen(
     val tracks by tracksFlow.collectAsStateWithLifecycle(emptyList())
     Column(Modifier.fillMaxSize()) {
         PageBar("", 0f, onBack) { CollectionMenu(tracks, vm, actions) }
-        Box(Modifier.fillMaxSize().padding(horizontal = 8.dp).hiveGlass(HiveShape.panel)) {
-            TrackList(vm, tracks, actions, bottomPadding, "Nothing here yet", "", header = { PanelHeader(title) })
-        }
+        TrackList(vm, tracks, actions, bottomPadding, "Nothing here yet", "", header = { PanelHeader(title) })
     }
 }
 
@@ -315,7 +328,7 @@ fun SearchScreen(vm: MainViewModel, actions: TrackActions, bottomPadding: Dp, on
             }
         }
         Spacer(Modifier.height(8.dp))
-        Box(Modifier.fillMaxSize().padding(horizontal = 8.dp).hiveGlass(HiveShape.panel)) {
+        Box(Modifier.fillMaxSize()) {
             LazyColumn(Modifier.fillMaxSize(), contentPadding = PaddingValues(top = 8.dp, bottom = bottomPadding + 12.dp)) {
                 if (q.isEmpty()) item { EmptyState("Search your library", "Songs, albums and artists on this phone.") }
                 else if (results.isEmpty() && albumHits.isEmpty() && artistHits.isEmpty()) item { EmptyState("No results", "Nothing matches “$q”.") }

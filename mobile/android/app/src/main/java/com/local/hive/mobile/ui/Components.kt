@@ -50,6 +50,8 @@ import androidx.compose.material.icons.rounded.Favorite
 import androidx.compose.material.icons.rounded.FavoriteBorder
 import androidx.compose.material.icons.rounded.Info
 import androidx.compose.material.icons.rounded.MoreHoriz
+import androidx.compose.material.icons.rounded.MoreVert
+import androidx.compose.material.icons.rounded.Share
 import androidx.compose.material.icons.rounded.MusicNote
 import androidx.compose.material.icons.rounded.Pause
 import androidx.compose.material.icons.rounded.Person
@@ -119,21 +121,35 @@ fun Artwork(
 ) {
     val c = Hive.colors
     val shadowed = if (elevation > 0.dp) modifier.shadow(elevation, shape, ambientColor = glow ?: Color.Black, spotColor = glow ?: Color.Black) else modifier
+    val context = androidx.compose.ui.platform.LocalContext.current
+    // A cover already on screen at another size stands in while this size loads, so it never blinks.
+    val request = remember(model) {
+        coil3.request.ImageRequest.Builder(context).data(model).placeholderMemoryCacheKey(model?.toString()?.let { ShownCovers[it] }).build()
+    }
     Box(shadowed.clip(shape).background(mix(c.panelStrong.copy(alpha = 1f), c.bg, 0.6f)), contentAlignment = Alignment.Center) {
         SubcomposeAsyncImage(
-            model = model,
+            model = request,
             contentDescription = null,
             contentScale = ContentScale.Crop,
             modifier = Modifier.fillMaxSize(),
-            loading = { ArtPlaceholder(fallback) },
+            loading = { state ->
+                val stand = state.painter
+                if (stand != null) androidx.compose.foundation.Image(stand, null, Modifier.fillMaxSize(), contentScale = ContentScale.Crop) else ArtPlaceholder(fallback)
+            },
             error = { ArtPlaceholder(fallback) },
             success = { state ->
-                val alpha by animateFloatAsState(1f, tween(260), label = "artIn")
+                val key = state.result.memoryCacheKey
+                androidx.compose.runtime.SideEffect { if (key != null && model != null) ShownCovers[model.toString()] = key }
+                // Only a cover that wasn't standing in fades up.
+                val alpha by animateFloatAsState(1f, if (request.placeholderMemoryCacheKey != null) androidx.compose.animation.core.snap() else tween(260), label = "artIn")
                 androidx.compose.foundation.Image(state.painter, null, Modifier.fillMaxSize().alpha(alpha), contentScale = ContentScale.Crop)
             },
         )
     }
 }
+
+/** The last memory-cache entry each cover was drawn from. */
+private val ShownCovers = java.util.concurrent.ConcurrentHashMap<String, coil3.memory.MemoryCache.Key>()
 
 @Composable
 private fun ArtPlaceholder(icon: ImageVector) {
@@ -314,7 +330,8 @@ fun TrackRow(
     onClick: () -> Unit,
     subtitle: String = listOf(track.artist, track.album).filter { it.isNotBlank() }.joinToString(" · "),
     number: Int? = null,
-    trailing: String? = formatDuration(track.durationMs),
+    // Lengths show where the order matters (an album's tracklist), as in Samsung Music.
+    trailing: String? = if (number != null) formatDuration(track.durationMs) else null,
     showArt: Boolean = number == null,
 ) {
     val c = Hive.colors
@@ -363,8 +380,8 @@ fun TrackRow(
             if (loved) Icon(Icons.Rounded.Favorite, "Loved", tint = c.accent, modifier = Modifier.padding(start = 8.dp).size(13.dp))
             if (trailing != null) Text(trailing, style = HiveText.numbers, color = c.textDimmer, modifier = Modifier.padding(start = 10.dp))
             Box {
-                Box(Modifier.size(width = 40.dp, height = 48.dp).clip(CircleShape).clickable { menu = true }, contentAlignment = Alignment.Center) {
-                    Icon(Icons.Rounded.MoreHoriz, "More options", tint = c.textDim, modifier = Modifier.size(20.dp))
+                Box(Modifier.size(width = 44.dp, height = 48.dp).clip(CircleShape).clickable { menu = true }, contentAlignment = Alignment.Center) {
+                    Icon(Icons.Rounded.MoreVert, "More options", tint = c.textDim, modifier = Modifier.size(20.dp))
                 }
                 TrackMenu(menu, loved, onDismiss = { menu = false }, track = track, actions = actions)
             }
@@ -374,20 +391,22 @@ fun TrackRow(
 
 @Composable
 fun TrackMenu(expanded: Boolean, loved: Boolean, onDismiss: () -> Unit, track: Track, actions: TrackActions) {
+    val context = androidx.compose.ui.platform.LocalContext.current
     HiveMenu(expanded, onDismiss) {
         HiveMenuItem("Play next", Icons.AutoMirrored.Rounded.PlaylistPlay) { onDismiss(); actions.onPlayNext(track) }
         HiveMenuItem("Add to queue", Icons.AutoMirrored.Rounded.QueueMusic) { onDismiss(); actions.onAddToQueue(track) }
         HiveMenuItem("Add to playlist", Icons.AutoMirrored.Rounded.PlaylistAdd) { onDismiss(); actions.onAddToPlaylist(listOf(track)) }
         HiveMenuItem(if (loved) "Remove from Favorites" else "Add to Favorites", if (loved) Icons.Rounded.Favorite else Icons.Rounded.FavoriteBorder) { onDismiss(); actions.onToggleLove(track) }
+        HiveMenuItem("Share", Icons.Rounded.Share) { onDismiss(); Share.tracks(context, listOf(track)) }
         HiveMenuDivider()
         HiveMenuItem("Go to album", Icons.Rounded.Album) { onDismiss(); actions.onGoToAlbum(track) }
         HiveMenuItem("Go to artist", Icons.Rounded.Person) { onDismiss(); actions.onGoToArtist(track) }
-        HiveMenuItem("Track info", Icons.Rounded.Info) { onDismiss(); actions.onInfo(track) }
-        HiveMenuItem("Delete from phone", Icons.Rounded.Delete, destructive = true) { onDismiss(); actions.onDelete(listOf(track)) }
+        HiveMenuItem("Track details", Icons.Rounded.Info) { onDismiss(); actions.onInfo(track) }
+        HiveMenuDivider()
         actions.onRemoveFromPlaylist?.let { remove ->
-            HiveMenuDivider()
             HiveMenuItem("Remove from playlist", Icons.Rounded.RemoveCircleOutline, destructive = true) { onDismiss(); remove(track) }
         }
+        HiveMenuItem("Delete from phone", Icons.Rounded.Delete, destructive = true) { onDismiss(); actions.onDelete(listOf(track)) }
     }
 }
 

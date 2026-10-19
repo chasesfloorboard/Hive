@@ -111,7 +111,14 @@ class PlaybackService : MediaLibraryService() {
         player.addListener(PlayCounter(app.playRecorder, app.scrobbler, scope, player))
         // Listens that couldn't be sent last time go now.
         scope.launch(Dispatchers.IO) { app.scrobbler.scrobble(null) }
-        memory = PlaybackMemory(this, app.database.dao()) { ids -> app.pcLibrary.mediaItems(ids) }
+        memory = PlaybackMemory(
+            this, app.database.dao(),
+            // A restored Apple Music or Spotify song plays in full again, not as its preview.
+            streamUri = { s ->
+                if (app.youTubeMusic.enabled.value) com.local.hive.mobile.stream.YouTubeMusic.uriFor(com.local.hive.mobile.stream.WantedSong(s.key, s.title, s.artist, s.album, s.durationMs))
+                else s.previewUrl.ifBlank { null }
+            },
+        ) { ids -> app.pcLibrary.mediaItems(ids) }
         player.addListener(object : Player.Listener {
             private var retried: String? = null
 

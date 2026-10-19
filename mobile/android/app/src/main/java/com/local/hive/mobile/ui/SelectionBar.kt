@@ -23,6 +23,7 @@ import androidx.compose.material.icons.rounded.Close
 import androidx.compose.material.icons.rounded.Delete
 import androidx.compose.material.icons.rounded.Favorite
 import androidx.compose.material.icons.rounded.PlayArrow
+import androidx.compose.material.icons.rounded.Share
 import androidx.compose.material3.Icon
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
@@ -44,6 +45,7 @@ fun SelectionBar(vm: MainViewModel, selection: Selection, modifier: Modifier, on
     val c = Hive.colors
     AnimatedVisibility(selection.active, modifier, enter = slideInVertically { it } + fadeIn(), exit = slideOutVertically { it } + fadeOut()) {
         val picked = selection.tracks.toList()
+        val context = androidx.compose.ui.platform.LocalContext.current
         fun done(message: String) { selection.clear(); onToast(message) }
         Column(Modifier.padding(horizontal = 10.dp).fillMaxWidth().shadow(22.dp, HiveShape.menu, ambientColor = c.accentGlow).hiveGlass(HiveShape.menu, strength = 0.3f).padding(horizontal = 6.dp, vertical = 6.dp)) {
             Row(Modifier.fillMaxWidth().padding(start = 10.dp), verticalAlignment = Alignment.CenterVertically) {
@@ -56,11 +58,11 @@ fun SelectionBar(vm: MainViewModel, selection: Selection, modifier: Modifier, on
                 }
             }
             Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.SpaceEvenly) {
-                Action("Play", Icons.Rounded.PlayArrow) { vm.play(picked); selection.clear() }
                 Action("Play next", Icons.AutoMirrored.Rounded.PlaylistPlay) { vm.playNext(picked); done("${countOf(picked.size, "song")} play next") }
                 Action("Queue", Icons.AutoMirrored.Rounded.QueueMusic) { vm.addToQueue(picked); done("Added ${countOf(picked.size, "song")} to the queue") }
                 Action("Playlist", Icons.AutoMirrored.Rounded.PlaylistAdd) { onAddToPlaylist(picked); selection.clear() }
                 Action("Favorite", Icons.Rounded.Favorite) { vm.setLoved(picked, true); done("Added ${countOf(picked.size, "song")} to Favorites") }
+                Action("Share", Icons.Rounded.Share) { Share.tracks(context, picked); selection.clear() }
             }
         }
     }

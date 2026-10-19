@@ -9,6 +9,7 @@ import com.local.hive.mobile.ui.theme.hiveGlassBorder
 import android.net.Uri
 import androidx.activity.compose.BackHandler
 import androidx.compose.animation.AnimatedVisibility
+import androidx.compose.animation.SharedTransitionLayout
 import androidx.compose.animation.animateColorAsState
 import androidx.compose.animation.core.LinearEasing
 import androidx.compose.animation.core.tween
@@ -138,6 +139,22 @@ private val closeExit = slideOutHorizontally(Motion.close()) { it }
 private val followEnter = slideInHorizontally(tween(Motion.CLOSE_MS, easing = LinearEasing)) { -it / UNDER_DRIFT } + fadeIn(tween(Motion.CLOSE_MS, easing = LinearEasing))
 private val followExit = slideOutHorizontally(tween(Motion.CLOSE_MS, easing = LinearEasing)) { it }
 
+private const val ALBUM = "album/{id}"
+// An album opened from its cover: the page fades up behind the cover as it grows into place, and fades away as it shrinks back.
+// The page underneath clears first (One UI's 150 ms under-fade), so the cover flies over a clean backdrop,
+// and the new page's words arrive as the cover lands.
+private val coverEnter = fadeIn(tween(240, delayMillis = 170, easing = Motion.SineInOut60))
+private val coverExitUnder = fadeOut(tween(Motion.UNDER_FADE_MS, easing = LinearEasing))
+private val coverPopEnter = fadeIn(tween(240, delayMillis = 150, easing = Motion.SineInOut60))
+private val coverPopExit = fadeOut(tween(Motion.UNDER_FADE_MS, easing = LinearEasing))
+
+/** A page that knows its own transition, so its covers can be shared with the page before it. */
+private fun androidx.navigation.NavGraphBuilder.page(
+    route: String,
+    arguments: List<androidx.navigation.NamedNavArgument> = emptyList(),
+    content: @Composable (androidx.navigation.NavBackStackEntry) -> Unit,
+) = composable(route, arguments) { entry -> CompositionLocalProvider(LocalPageScope provides this) { content(entry) } }
+
 @Composable
 private fun HiveContent(vm: MainViewModel, openPlayerInitially: Boolean) {
     val c = Hive.colors
@@ -147,14 +164,12 @@ private fun HiveContent(vm: MainViewModel, openPlayerInitially: Boolean) {
     var playerOpen by rememberSaveable { mutableStateOf(openPlayerInitially) }
     var queueOpen by rememberSaveable { mutableStateOf(false) }
     var lyricsOpen by rememberSaveable { mutableStateOf(false) }
-    val drawer = rememberDrawerState(DrawerValue.Closed)
-    val scope = rememberCoroutineScope()
     val hasMedia = now.mediaId != null
     val bottomPadding = if (hasMedia) 82.dp else 0.dp
     val route by nav.currentBackStackEntryAsState()
 
     fun enc(s: String) = Uri.encode(s)
-    fun go(path: String) { scope.launch { drawer.close() }; nav.navigate(path) { launchSingleTop = true } }
+    fun go(path: String) { nav.navigate(path) { launchSingleTop = true } }
     var toast by remember { mutableStateOf<String?>(null) }
     var addTarget by remember { mutableStateOf<List<Track>?>(null) }
     val context = androidx.compose.ui.platform.LocalContext.current
@@ -195,34 +210,32 @@ private fun HiveContent(vm: MainViewModel, openPlayerInitially: Boolean) {
         openUserPlaylist = { nav.navigate("userplaylist/$it") },
         openPcPlaylist = { nav.navigate("pcplaylist?id=${enc(it)}") },
         openSearch = { nav.navigate("search") },
-        openSettings = { nav.navigate("settings") },
-        openSidebar = { scope.launch { drawer.open() } },
+        openSettings = { go("settings") },
+        open = { go(it) },
     )
 
-    ModalNavigationDrawer(
-        drawerState = drawer,
-        // An edge swipe on a page means back; the sidebar only swipes open from Home.
-        gesturesEnabled = drawer.isOpen || route?.destination?.route == "home",
-        scrimColor = Color.Black.copy(alpha = 0.45f),
-        drawerContent = { Sidebar(vm, route?.destination?.route.orEmpty() + (route?.arguments?.getString("kind") ?: ""), ::go) },
-    ) {
+    Box(Modifier.fillMaxSize()) {
         Box(Modifier.fillMaxSize().background(c.bg)) {
             HiveAmbient(aura?.primary?.copy(alpha = 0.32f) ?: c.ambientA, aura?.secondary?.copy(alpha = 0.26f) ?: c.ambientB, Modifier.fillMaxSize())
             HiveGlassLayers(
                 Modifier.fillMaxSize(),
                 content = {
                     CompositionLocalProvider(LocalSelection provides selection) {
+                    SharedTransitionLayout {
+                    CompositionLocalProvider(LocalSharedScope provides this) {
                     NavHost(
                         nav, startDestination = "home", modifier = Modifier.fillMaxSize().navigationBarsPadding(),
-                        enterTransition = { openEnter }, exitTransition = { openExit },
-                        popEnterTransition = { closeEnter }, popExitTransition = { closeExit },
+                        enterTransition = { if (targetState.destination.route == ALBUM) coverEnter else openEnter },
+                        exitTransition = { if (targetState.destination.route == ALBUM) coverExitUnder else openExit },
+                        popEnterTransition = { if (initialState.destination.route == ALBUM) coverPopEnter else closeEnter },
+                        popExitTransition = { if (initialState.destination.route == ALBUM) coverPopExit else closeExit },
                         predictivePopEnterTransition = { followEnter }, predictivePopExitTransition = { followExit },
                     ) {
-                        composable("home") { HomeScreen(vm, homeNav, actions, bottomPadding) }
-                        composable("search") { SearchScreen(vm, actions, bottomPadding, { nav.popBackStack() }, homeNav.openAlbum, homeNav.openArtist) }
-                        composable("settings") { SettingsScreen(vm, bottomPadding, onOpenEqualiser = { nav.navigate("equaliser") }) { nav.popBackStack() } }
-                        composable("equaliser") { EqualiserScreen(vm, bottomPadding) { nav.popBackStack() } }
-                        composable("album/{id}", listOf(navArgument("id") { type = NavType.LongType })) { entry ->
+                        page("home") { HomeScreen(vm, homeNav, actions, bottomPadding) }
+                        page("search") { SearchScreen(vm, actions, bottomPadding, { nav.popBackStack() }, homeNav.openAlbum, homeNav.openArtist) }
+                        page("settings") { SettingsScreen(vm, bottomPadding, onOpenEqualiser = { nav.navigate("equaliser") }) { nav.popBackStack() } }
+                        page("equaliser") { EqualiserScreen(vm, bottomPadding) { nav.popBackStack() } }
+                        page(ALBUM, listOf(navArgument("id") { type = NavType.LongType })) { entry ->
                             val id = entry.arguments?.getLong("id") ?: 0L
                             val albums by vm.albums.collectAsStateWithLifecycle()
                             val album = albums.firstOrNull { it.albumId == id }
@@ -231,49 +244,47 @@ private fun HiveContent(vm: MainViewModel, openPlayerInitially: Boolean) {
                                 vm.albumTracks(id), actions, bottomPadding, onBack = { nav.popBackStack() }, onOpenArtist = homeNav.openArtist,
                             )
                         }
-                        composable("artist/{name}") { entry ->
+                        page("artist/{name}") { entry ->
                             val name = entry.arguments?.getString("name").orEmpty()
                             ArtistScreen(vm, name, vm.artistTracks(name), actions, bottomPadding, onBack = { nav.popBackStack() }, onOpenAlbum = homeNav.openAlbum)
                         }
-                        composable("genres") { NamedListScreen("Genres", vm.genres, Icons.Rounded.Category, bottomPadding, { nav.popBackStack() }) { homeNav.openGenre(it) } }
-                        composable("folders") { NamedListScreen("Folders", vm.folders, Icons.Rounded.Folder, bottomPadding, { nav.popBackStack() }) { homeNav.openFolder(it) } }
-                        composable("genre/{name}") { entry ->
+                        page("genre/{name}") { entry ->
                             val name = entry.arguments?.getString("name").orEmpty()
                             SongsScreen(vm, name, vm.genreTracks(name), actions, bottomPadding) { nav.popBackStack() }
                         }
-                        composable("folder/{name}") { entry ->
+                        page("folder/{name}") { entry ->
                             val name = entry.arguments?.getString("name").orEmpty()
                             SongsScreen(vm, name.trimEnd('/').substringAfterLast('/').ifBlank { name }, vm.folderTracks(name), actions, bottomPadding) { nav.popBackStack() }
                         }
-                        composable("apple") {
+                        page("apple") {
                             AppleMusicScreen(vm, bottomPadding, onBack = { nav.popBackStack() }) { url -> nav.navigate("apple/c?url=${enc(url)}") }
                         }
-                        composable("apple/c?url={url}") { entry ->
+                        page("apple/c?url={url}") { entry ->
                             AppleCollectionScreen(
                                 vm, entry.arguments?.getString("url").orEmpty(), bottomPadding, onBack = { nav.popBackStack() },
                                 onOpen = { url -> nav.navigate("apple/c?url=${enc(url)}") }, onOpenPlaylist = homeNav.openUserPlaylist, onToast = { toast = it },
                             )
                         }
-                        composable("pcplaylist?id={id}") { entry ->
+                        page("pcplaylist?id={id}") { entry ->
                             PcPlaylistScreen(vm, entry.arguments?.getString("id").orEmpty(), bottomPadding, onBack = { nav.popBackStack() }, onOpenPlaylist = homeNav.openUserPlaylist, onToast = { toast = it })
                         }
-                        composable("remote") { RemoteScreen(vm, bottomPadding, onBack = { nav.popBackStack() }, onToast = { toast = it }) }
-                        composable("pc") { PcLibraryScreen(vm, bottomPadding, onBack = { nav.popBackStack() }) { key -> nav.navigate("pc/album?key=${enc(key)}") } }
-                        composable("pc/album?key={key}") { entry -> PcAlbumScreen(vm, entry.arguments?.getString("key").orEmpty(), bottomPadding) { nav.popBackStack() } }
-                        composable("wrap") { YearlyWrapScreen(vm, bottomPadding) { nav.popBackStack() } }
-                        composable("podcasts") { PodcastsScreen(vm, bottomPadding, onBack = { nav.popBackStack() }) { url -> nav.navigate("podcast?feed=${enc(url)}") } }
-                        composable("podcast?feed={feed}") { entry -> PodcastShowScreen(vm, entry.arguments?.getString("feed").orEmpty(), bottomPadding) { nav.popBackStack() } }
-                        composable("radio") { RadioScreen(vm, bottomPadding, onBack = { nav.popBackStack() }, onToast = { toast = it }) }
-                        composable("spotify") {
+                        page("remote") { RemoteScreen(vm, bottomPadding, onBack = { nav.popBackStack() }, onToast = { toast = it }) }
+                        page("pc") { PcLibraryScreen(vm, bottomPadding, onBack = { nav.popBackStack() }) { key -> nav.navigate("pc/album?key=${enc(key)}") } }
+                        page("pc/album?key={key}") { entry -> PcAlbumScreen(vm, entry.arguments?.getString("key").orEmpty(), bottomPadding) { nav.popBackStack() } }
+                        page("wrap") { YearlyWrapScreen(vm, bottomPadding) { nav.popBackStack() } }
+                        page("podcasts") { PodcastsScreen(vm, bottomPadding, onBack = { nav.popBackStack() }) { url -> nav.navigate("podcast?feed=${enc(url)}") } }
+                        page("podcast?feed={feed}") { entry -> PodcastShowScreen(vm, entry.arguments?.getString("feed").orEmpty(), bottomPadding) { nav.popBackStack() } }
+                        page("radio") { RadioScreen(vm, bottomPadding, onBack = { nav.popBackStack() }, onToast = { toast = it }) }
+                        page("spotify") {
                             SpotifyScreen(vm, bottomPadding, onBack = { nav.popBackStack() }, onOpenSettings = homeNav.openSettings) { url -> nav.navigate("spotify/c?url=${enc(url)}") }
                         }
-                        composable("spotify/c?url={url}") { entry ->
+                        page("spotify/c?url={url}") { entry ->
                             SpotifyCollectionScreen(vm, entry.arguments?.getString("url").orEmpty(), bottomPadding, onBack = { nav.popBackStack() }, onOpenPlaylist = homeNav.openUserPlaylist, onToast = { toast = it })
                         }
-                        composable("userplaylist/{id}", listOf(navArgument("id") { type = NavType.LongType })) { entry ->
+                        page("userplaylist/{id}", listOf(navArgument("id") { type = NavType.LongType })) { entry ->
                             PlaylistScreen(vm, entry.arguments?.getLong("id") ?: 0L, actions, bottomPadding) { nav.popBackStack() }
                         }
-                        composable("playlist/{kind}") { entry ->
+                        page("playlist/{kind}") { entry ->
                             val kind = runCatching { AutoPlaylist.valueOf(entry.arguments?.getString("kind").orEmpty()) }.getOrDefault(AutoPlaylist.Favorites)
                             val flow = when (kind) {
                                 AutoPlaylist.Favorites -> vm.favorites
@@ -286,14 +297,17 @@ private fun HiveContent(vm: MainViewModel, openPlayerInitially: Boolean) {
                         }
                     }
                     }
+                    }
+                    }
                 },
                 overlay = {
                     if (hasMedia) {
                         PlayerSheet(
                             vm,
                             open = playerOpen,
-                            onOpenChange = { playerOpen = it },
-                            onOpenQueue = { queueOpen = true },
+                            onOpenChange = { playerOpen = it; if (!it) queueOpen = false },
+                            queueOpen = queueOpen,
+                            onQueueChange = { queueOpen = it; if (it) playerOpen = true },
                             onOpenAlbum = { playerOpen = false; nav.navigate("album/${it.albumId}") },
                             onOpenArtist = { playerOpen = false; nav.navigate("artist/${enc(it.artist)}") },
                             onInfo = { infoTarget = it },
@@ -304,9 +318,6 @@ private fun HiveContent(vm: MainViewModel, openPlayerInitially: Boolean) {
                     }
                     SelectionBar(vm, selection, Modifier.align(Alignment.BottomCenter).navigationBarsPadding().padding(bottom = bottomPadding + 8.dp), onAddToPlaylist = { addTarget = it }, onDelete = { deleteRequest(it) }, onToast = { toast = it })
                     HiveToast(toast, Modifier.align(Alignment.BottomCenter).navigationBarsPadding().padding(bottom = bottomPadding + 16.dp)) { toast = null }
-                    AnimatedVisibility(queueOpen, enter = slideInVertically(Motion.open()) { it } + fadeIn(Motion.underFade()), exit = slideOutVertically(Motion.close()) { it } + fadeOut(Motion.close())) {
-                        QueueScreen(vm) { queueOpen = false }
-                    }
                     AnimatedVisibility(lyricsOpen, enter = slideInVertically(Motion.open()) { it } + fadeIn(Motion.underFade()), exit = slideOutVertically(Motion.close()) { it } + fadeOut(Motion.close())) {
                         LyricsScreen(vm) { lyricsOpen = false }
                     }
@@ -316,114 +327,11 @@ private fun HiveContent(vm: MainViewModel, openPlayerInitially: Boolean) {
         infoTarget?.let { t -> TrackInfoSheet(vm, t, onDismiss = { infoTarget = null }) { playerOpen = false; nav.navigate("album/${it.albumId}") } }
         addTarget?.let { tracks -> AddToPlaylistSheet(vm, tracks, onDismiss = { addTarget = null }) { name -> toast = "Added to $name" } }
         BackHandler(enabled = selection.active) { selection.clear() }
-        BackHandler(enabled = playerOpen || queueOpen || lyricsOpen || drawer.isOpen) {
+        BackHandler(enabled = playerOpen || queueOpen || lyricsOpen) {
             when {
-                drawer.isOpen -> scope.launch { drawer.close() }
                 lyricsOpen -> lyricsOpen = false
                 queueOpen -> queueOpen = false
                 else -> playerOpen = false
-            }
-        }
-    }
-}
-
-/**
- * Hive's sidebar as a drawer: the brand, the library views, the phone's
- * folders and genres, then Settings. The current view is lit the way Hive
- * lights `.sidebar-item.active`: an accent-soft wash from the left with a 2dp
- * accent bar.
- */
-@Composable
-private fun Sidebar(vm: MainViewModel, current: String, go: (String) -> Unit) {
-    val c = Hive.colors
-    val favorites by vm.favorites.collectAsStateWithLifecycle()
-    val link by vm.link.collectAsStateWithLifecycle()
-    // The drawer sits above the blur layer, so it is Hive's strong panel made solid rather than glass.
-    val shape = androidx.compose.foundation.shape.RoundedCornerShape(topEnd = 24.dp, bottomEnd = 24.dp)
-    Column(Modifier.fillMaxHeight().width(290.dp).clip(shape).background(c.control).border(1.dp, hiveGlassBorder(), shape).statusBarsPadding().navigationBarsPadding()) {
-        Row(Modifier.padding(start = 20.dp, bottom = 12.dp, top = 18.dp), verticalAlignment = Alignment.CenterVertically) {
-            Image(painterResource(R.drawable.hive_logo), null, Modifier.size(30.dp))
-            Spacer(Modifier.width(10.dp))
-            Text("Hive", style = HiveText.brand.copy(fontSize = HiveText.viewTitle.fontSize), color = c.text)
-        }
-        Column(Modifier.weight(1f).verticalScroll(rememberScrollState()).padding(horizontal = 12.dp)) {
-            SidebarItem("Music", Icons.Rounded.LibraryMusic, current == "home") { go("home") }
-            SidebarItem("Favorites", Icons.Rounded.Favorite, current == "playlist/{kind}Favorites", countOf(favorites.size, "track")) { go("playlist/${AutoPlaylist.Favorites.name}") }
-            SidebarDivider("Library")
-            SidebarItem("History", Icons.Rounded.History, current == "playlist/{kind}RecentlyPlayed") { go("playlist/${AutoPlaylist.RecentlyPlayed.name}") }
-            SidebarItem("Top 25 Most Played", Icons.Rounded.TrendingUp, current == "playlist/{kind}MostPlayed") { go("playlist/${AutoPlaylist.MostPlayed.name}") }
-            SidebarItem("Recently Added", Icons.Rounded.NewReleases, current == "playlist/{kind}RecentlyAdded") { go("playlist/${AutoPlaylist.RecentlyAdded.name}") }
-            SidebarItem("Yearly Wrap", Icons.Rounded.AutoAwesome, current == "wrap") { go("wrap") }
-            // Shown once the phone is paired with Hive on the PC.
-            if (link.paired) {
-                SidebarDivider(link.serverName.ifBlank { "Hive on your PC" })
-                SidebarItem("PC library", Icons.Rounded.Computer, current == "pc" || current.startsWith("pc/")) { go("pc") }
-                SidebarItem("Playing on your PC", Icons.Rounded.Devices, current == "remote") { go("remote") }
-            }
-            SidebarDivider("Streaming")
-            SidebarItem("Apple Music", Icons.Rounded.Explore, current == "apple" || current.startsWith("apple/")) { go("apple") }
-            SidebarItem("Spotify", Icons.Rounded.GraphicEq, current == "spotify" || current.startsWith("spotify/")) { go("spotify") }
-            SidebarItem("Radio", Icons.Rounded.Radio, current == "radio") { go("radio") }
-            SidebarItem("Podcasts", Icons.Rounded.Podcasts, current == "podcasts" || current.startsWith("podcast?")) { go("podcasts") }
-            SidebarDivider("This phone")
-            SidebarItem("Genres", Icons.Rounded.Category, current == "genres") { go("genres") }
-            SidebarItem("Folders", Icons.Rounded.Folder, current == "folders") { go("folders") }
-            Spacer(Modifier.height(10.dp))
-        }
-        // Settings stays in reach however long the list grows.
-        Box(Modifier.fillMaxWidth().height(1.dp).background(c.border))
-        Box(Modifier.padding(horizontal = 12.dp, vertical = 8.dp)) { SidebarItem("Settings", Icons.Rounded.Settings, current == "settings") { go("settings") } }
-    }
-}
-
-@Composable
-private fun SidebarItem(label: String, icon: ImageVector, active: Boolean, detail: String? = null, onClick: () -> Unit) {
-    val c = Hive.colors
-    Row(
-        Modifier.fillMaxWidth().height(46.dp).clip(HiveShape.row)
-            .drawBehind {
-                if (active) {
-                    drawRect(Brush.horizontalGradient(listOf(c.accentSoft, Color.Transparent)))
-                    drawRect(c.accent, size = Size(2.dp.toPx(), size.height))
-                }
-            }
-            .clickable(onClick = onClick).padding(horizontal = 12.dp),
-        verticalAlignment = Alignment.CenterVertically,
-        horizontalArrangement = Arrangement.spacedBy(12.dp),
-    ) {
-        Icon(icon, null, tint = if (active) c.accent else c.textDim, modifier = Modifier.size(19.dp))
-        Text(label, style = HiveText.body, color = if (active) c.text else c.textDim, modifier = Modifier.weight(1f))
-        if (detail != null) Text(detail, style = HiveText.small, color = c.textDimmer)
-    }
-}
-
-@Composable
-private fun SidebarDivider(label: String) {
-    HiveLabel(label, Modifier.padding(start = 12.dp, top = 18.dp, bottom = 6.dp))
-}
-
-/** Genres or folders as a list. */
-@Composable
-private fun NamedListScreen(
-    title: String,
-    source: kotlinx.coroutines.flow.StateFlow<List<com.local.hive.mobile.data.NamedCount>>,
-    icon: ImageVector,
-    bottomPadding: androidx.compose.ui.unit.Dp,
-    onBack: () -> Unit,
-    open: (String) -> Unit,
-) {
-    val items by source.collectAsStateWithLifecycle()
-    Column(Modifier.fillMaxSize()) {
-        PageBar("", 0f, onBack)
-        Box(Modifier.fillMaxSize().padding(horizontal = 8.dp).hiveGlass(HiveShape.panel)) {
-            androidx.compose.foundation.lazy.LazyColumn(Modifier.fillMaxSize(), contentPadding = androidx.compose.foundation.layout.PaddingValues(bottom = bottomPadding + 12.dp)) {
-                item { PanelHeader(title) }
-                if (items.isEmpty()) item { EmptyState("Nothing here yet", "") }
-                items(items.size, key = { items[it].name }) { i ->
-                    val g = items[i]
-                    val name = g.name.trimEnd('/').substringAfterLast('/').ifBlank { g.name.ifBlank { "Music" } }
-                    LibraryRow(null, icon, name, if (g.name.contains('/')) "${countOf(g.trackCount, "track")} · /${g.name}" else countOf(g.trackCount, "track")) { open(g.name) }
-                }
             }
         }
     }
