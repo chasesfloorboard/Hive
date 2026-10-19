@@ -64,6 +64,12 @@
     poll = setInterval(() => { renderDevices(); if (++polls > 60) clearInterval(poll); }, 5000);
   });
 
+  const remote = document.getElementById('hive-link-remote');
+  if (remote && api.hiveLinkRemoteControl) {
+    api.hiveLinkRemoteControl().then(on => { remote.checked = !!on; }).catch(() => {});
+    remote.addEventListener('change', () => { api.hiveLinkRemoteControl(remote.checked).catch(() => {}); });
+  }
+
   document.getElementById('settings-tab-connections')?.addEventListener('click', renderDevices);
   renderDevices();
 })();

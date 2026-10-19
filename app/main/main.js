@@ -2435,6 +2435,8 @@ ipcMain.handle('discord-presence:restart', async () => {
 
 ipcMain.handle('library:clearCacheNow', async () => clearLibraryCacheData({ clearCovers: true }));
 
+// The latest playback state the player reported, for Hive Mobile's remote control.
+let lastPlaybackState = null;
 ipcMain.handle('mpris:update', async (_evt, payload = {}) => {
   const p = payload || {};
   const track = p.track || null;
@@ -2469,6 +2471,12 @@ ipcMain.handle('mpris:update', async (_evt, payload = {}) => {
         track: String(track.path),
         candidates: coverCandidates,
         coversDir: COVERS_DIR(),
+    // Remote control from the phone (off until allowed in Settings): Hive's own
+    // MPRIS command channel, and the state the player reports to it.
+    remote: {
+      state: () => lastPlaybackState,
+      command: command => { try { if (mainWindow && !mainWindow.isDestroyed()) mainWindow.webContents.send('mpris:command', String(command)); } catch {} }
+    },
         artworkPath
       });
     }
@@ -2486,6 +2494,7 @@ ipcMain.handle('mpris:update', async (_evt, payload = {}) => {
     artworkUrl:String(p.artworkUrl||''),
     artworkPath
   };
+  lastPlaybackState = updatePayload;
   updateHiveTrayState(updatePayload);
   try { void discordPresence.update(updatePayload); } catch (err) { startupDebug('DISCORD PRESENCE UPDATE FAILED', { message: err?.message || String(err) }); }
   return mpris.update(updatePayload);
@@ -7926,6 +7935,10 @@ async function showHiveLinkPairing() {
 
 ipcMain.handle('hiveLink:pair', async () => hiveLink?.startPairing() || null);
 ipcMain.handle('hiveLink:devices', async () => hiveLink?.devices() || []);
+ipcMain.handle('hiveLink:remoteControl', async (_evt, on) => {
+  if (typeof on === 'boolean') hiveLink?.setRemoteControl(on);
+  return !!hiveLink?.remoteControl();
+});
 ipcMain.handle('hiveLink:unpair', async (_evt, deviceId) => !!hiveLink?.unpair(String(deviceId || '')));
 
 async function readFlacMusicBeeLove(filePath) {

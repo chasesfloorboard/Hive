@@ -7,6 +7,7 @@ contextBridge.exposeInMainWorld('beehive', {
   hiveLinkPair: () => ipcRenderer.invoke('hiveLink:pair'),
   hiveLinkDevices: () => ipcRenderer.invoke('hiveLink:devices'),
   hiveLinkUnpair: (deviceId) => ipcRenderer.invoke('hiveLink:unpair', deviceId),
+  hiveLinkRemoteControl: (on) => ipcRenderer.invoke('hiveLink:remoteControl', on),
   startupDebugEnabled: process.argv.includes('--startup-debug') || process.env.BEEHIVE_STARTUP_DEBUG === '1',
   performanceDebugEnabled: process.argv.includes('--scroll-debug') || process.argv.includes('--startup-debug') || process.env.BEEHIVE_SCROLL_DEBUG === '1' || process.env.BEEHIVE_STARTUP_DEBUG === '1',
   startupDebugLog: (label, details) => ipcRenderer.invoke('startup:debugLog', { label, details }),

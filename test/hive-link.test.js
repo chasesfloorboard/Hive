@@ -17,7 +17,7 @@ const { createHiveLink, trackIdFor } = require('../app/main/hive-link');
 
 let nextPort = 48100 + Math.floor(Math.random() * 500) * 2;
 
-function setup({ acceptPhoneChanges = true, streamSong = null, coversDir = null } = {}) {
+function setup({ acceptPhoneChanges = true, streamSong = null, coversDir = null, remote = null } = {}) {
   const dataDir = fs.mkdtempSync(path.join(os.tmpdir(), 'hive-link-'));
   const tracks = [
     { id: 'a1', path: '/music/Pearl Jam - Black.mp3', title: 'Black', artist: 'Pearl Jam', album: 'Ten', duration: '343.2', loved: false },
@@ -33,6 +33,7 @@ function setup({ acceptPhoneChanges = true, streamSong = null, coversDir = null 
     acceptPhoneChanges,
     streamSong,
     coversDir,
+    remote,
     getTracks: async () => tracks,
     setLove: async (trackPath, loved) => {
       setLoveCalls.push([trackPath, loved]);
@@ -211,6 +212,27 @@ test('covers come only from the covers folder, with the token in the address all
   assert.equal((await rawGet(ctx.port, `/api/cover?name=../hive-link.json`, token)).status, 404);
   // The address token is for covers only.
   assert.equal((await rawGet(ctx.port, `/api/library?t=${token}`)).status, 401);
+});
+
+test('remote control is off until allowed, then reports and commands playback', async t => {
+  const commands = [];
+  const ctx = setup({ remote: { state: () => ({ track: { path: '/music/Huge.mp3', title: 'Huge', artist: 'Boris', album: 'Heavy Rocks' }, position: 12.5, duration: 201, paused: false, volume: 0.8 }), command: c => commands.push(c) } });
+  t.after(() => ctx.link.stop());
+  await waitListening(ctx.port);
+  const token = await pair(ctx);
+  assert.equal((await request(ctx.port, 'GET', '/api/remote', { token })).status, 403);
+  assert.equal((await request(ctx.port, 'POST', '/api/remote', { token, body: { command: 'next' } })).status, 403);
+  assert.deepEqual(commands, []);
+
+  ctx.link.setRemoteControl(true);
+  const s = (await request(ctx.port, 'GET', '/api/remote', { token })).body;
+  assert.deepEqual([s.playing, s.id, s.title, s.position, s.duration], [true, 'b2', 'Huge', 12500, 201000]);
+  await request(ctx.port, 'POST', '/api/remote', { token, body: { command: 'toggle' } });
+  await request(ctx.port, 'POST', '/api/remote', { token, body: { command: 'seek', positionMs: 30000 } });
+  await request(ctx.port, 'POST', '/api/remote', { token, body: { command: 'volume', volume: 2 } });
+  assert.equal((await request(ctx.port, 'POST', '/api/remote', { token, body: { command: 'rm -rf' } })).status, 400);
+  assert.deepEqual(commands, ['PLAYPAUSE', 'SEEK\t30', 'VOLUME\t1']);
+  assert.equal((await request(ctx.port, 'GET', '/api/info', { token })).body.remote, true);
 });
 
 test('songs Hive lacks stream through the injected resolver', async t => {
