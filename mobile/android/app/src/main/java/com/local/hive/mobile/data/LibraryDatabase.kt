@@ -165,6 +165,8 @@ data class ArtistSummary(
 
 data class NamedCount(val name: String, val trackCount: Int)
 
+data class PlayStats(val plays: Int, val lastPlayed: Long?)
+
 @Dao
 interface LibraryDao {
     @Query("SELECT * FROM tracks ORDER BY title COLLATE NOCASE")
@@ -383,6 +385,9 @@ interface LibraryDao {
 
     @Upsert
     suspend fun insertPlay(play: Play)
+
+    @Query("SELECT COUNT(*) AS plays, MAX(playedAt) AS lastPlayed FROM plays WHERE trackId = :trackId")
+    suspend fun playStats(trackId: Long): PlayStats
 
     @Query(
         "SELECT tracks.* FROM tracks JOIN (SELECT trackId, COUNT(*) AS c, MAX(playedAt) AS lastPlayed FROM plays GROUP BY trackId) p " +

@@ -71,7 +71,7 @@ renderer views) and its state on mobile.
 | Accent colour from the cover | `colorExtract.js`, 900 ms glide | ✅ aura + accent |
 | Lyrics (search, synced, edit) | `lyrics:search`, `lyrics-editor` | ❌ |
 | Visualiser plugin (Monstercat) | `plugins:*` | ❌ |
-| Track info popup | `hivebee:trackPopup` | ❌ |
+| Track info popup | `hivebee:trackPopup` | ✅ tags, format/bitrate/sample rate from the file, plays, size, location, share |
 
 ## Metadata and artwork
 

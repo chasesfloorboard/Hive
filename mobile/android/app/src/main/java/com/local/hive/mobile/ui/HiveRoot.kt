@@ -141,6 +141,7 @@ private fun HiveContent(vm: MainViewModel, openPlayerInitially: Boolean) {
     fun enc(s: String) = Uri.encode(s)
     fun go(path: String) { scope.launch { drawer.close() }; nav.navigate(path) { launchSingleTop = true } }
     var addTarget by remember { mutableStateOf<List<Track>?>(null) }
+    var infoTarget by remember { mutableStateOf<Track?>(null) }
     var toast by remember { mutableStateOf<String?>(null) }
     val actions = TrackActions(
         onPlayNext = { vm.playNext(listOf(it)) },
@@ -149,6 +150,7 @@ private fun HiveContent(vm: MainViewModel, openPlayerInitially: Boolean) {
         onGoToAlbum = { nav.navigate("album/${it.albumId}") },
         onGoToArtist = { nav.navigate("artist/${enc(it.artist)}") },
         onAddToPlaylist = { addTarget = it },
+        onInfo = { infoTarget = it },
     )
     val homeNav = HomeNavigation(
         openAlbum = { nav.navigate("album/$it") },
@@ -245,6 +247,8 @@ private fun HiveContent(vm: MainViewModel, openPlayerInitially: Boolean) {
                             onOpenQueue = { queueOpen = true },
                             onOpenAlbum = { playerOpen = false; nav.navigate("album/${it.albumId}") },
                             onOpenArtist = { playerOpen = false; nav.navigate("artist/${enc(it.artist)}") },
+                            onInfo = { infoTarget = it },
+                            onAddToPlaylist = { addTarget = listOf(it) },
                         )
                     }
                     HiveToast(toast, Modifier.align(Alignment.BottomCenter).navigationBarsPadding().padding(bottom = bottomPadding + 16.dp)) { toast = null }
@@ -254,6 +258,7 @@ private fun HiveContent(vm: MainViewModel, openPlayerInitially: Boolean) {
                 },
             )
         }
+        infoTarget?.let { t -> TrackInfoSheet(vm, t, onDismiss = { infoTarget = null }) { playerOpen = false; nav.navigate("album/${it.albumId}") } }
         addTarget?.let { tracks -> AddToPlaylistSheet(vm, tracks, onDismiss = { addTarget = null }) { name -> toast = "Added to $name" } }
         BackHandler(enabled = playerOpen || queueOpen || drawer.isOpen) {
             when {

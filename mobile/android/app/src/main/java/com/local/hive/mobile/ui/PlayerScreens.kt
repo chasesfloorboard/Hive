@@ -103,6 +103,8 @@ import com.local.hive.mobile.ui.theme.HiveShape
 import com.local.hive.mobile.ui.theme.HiveText
 import com.local.hive.mobile.ui.theme.Motion
 import com.local.hive.mobile.ui.theme.hiveGlass
+import androidx.compose.material.icons.rounded.Info
+import androidx.compose.material.icons.automirrored.rounded.PlaylistAdd
 import androidx.compose.runtime.mutableIntStateOf
 import androidx.compose.foundation.gestures.detectDragGestures
 import androidx.compose.ui.zIndex
@@ -142,6 +144,8 @@ fun PlayerSheet(
     onOpenQueue: () -> Unit,
     onOpenAlbum: (Track) -> Unit,
     onOpenArtist: (Track) -> Unit,
+    onInfo: (Track) -> Unit,
+    onAddToPlaylist: (Track) -> Unit,
 ) {
     val c = Hive.colors
     val now by vm.nowPlaying.collectAsStateWithLifecycle()
@@ -238,6 +242,8 @@ fun PlayerSheet(
                         onClose = { onOpenChange(false) },
                         onOpenQueue = onOpenQueue,
                         onOpenAlbum = onOpenAlbum,
+                        onInfo = onInfo,
+                        onAddToPlaylist = onAddToPlaylist,
                         onOpenArtist = onOpenArtist,
                         onArtPlaced = { artTarget = it },
                     )
@@ -372,6 +378,8 @@ private fun FullPlayerContent(
     onOpenQueue: () -> Unit,
     onOpenAlbum: (Track) -> Unit,
     onOpenArtist: (Track) -> Unit,
+    onInfo: (Track) -> Unit,
+    onAddToPlaylist: (Track) -> Unit,
     onArtPlaced: (Rect) -> Unit,
 ) {
     val c = Hive.colors
@@ -413,6 +421,8 @@ private fun FullPlayerContent(
                             if (current != null) {
                                 HiveMenuItem("Go to album", Icons.Rounded.Album) { menu = false; current?.let(onOpenAlbum) }
                                 HiveMenuItem("Go to artist", Icons.Rounded.Person) { menu = false; current?.let(onOpenArtist) }
+                                HiveMenuItem("Add to playlist", Icons.AutoMirrored.Rounded.PlaylistAdd) { menu = false; current?.let(onAddToPlaylist) }
+                                HiveMenuItem("Track info", Icons.Rounded.Info) { menu = false; current?.let(onInfo) }
                             }
                             HiveMenuItem("Playing tracks", Icons.AutoMirrored.Rounded.QueueMusic) { menu = false; onOpenQueue() }
                             HiveMenuDivider()
