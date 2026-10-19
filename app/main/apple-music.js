@@ -41,9 +41,26 @@ function lockupToCollection(item) {
   };
 }
 
+// An artist as a search result or a "similar artists" bubble.
+function artistFromLockup(item) {
+  const cd = item?.contentDescriptor || {};
+  const id = String(cd.identifiers?.storeAdamID || '');
+  if (!id || cd.kind !== 'artist') return null;
+  return { kind: 'artist', id, name: String(item.title || linkTitles(item.titleLinks)[0] || ''), artwork: artworkUrl(item.artwork, 400), url: String(cd.url || '') };
+}
+
+// Search finds artists, songs, albums and playlists, as music.apple.com does.
 function parseSearch(html) {
-  const out = { playlists: [], albums: [] };
+  const out = { playlists: [], albums: [], songs: [], artists: [] };
   for (const section of sectionsOf(serverData(html))) {
+    if (section.itemKind === 'trackLockup') {
+      for (const item of section.items || []) { const t = trackFromLockup(item); if (t && !out.songs.some(x => x.appleId === t.appleId)) out.songs.push(t); }
+      continue;
+    }
+    if (section.itemKind === 'bubbleLockup') {
+      for (const item of section.items || []) { const a = artistFromLockup(item); if (a && !out.artists.some(x => x.id === a.id)) out.artists.push(a); }
+      continue;
+    }
     for (const item of section.items || []) {
       const c = lockupToCollection(item);
       if (!c) continue;
@@ -139,6 +156,38 @@ function parseBrowse(html) {
   return shelves;
 }
 
+// An artist's page: who they are, their top songs, then their albums,
+// singles, playlists and similar artists as shelves.
+function parseArtist(html) {
+  const sections = sectionsOf(serverData(html));
+  const header = sections.find(s => s.itemKind === 'artistDetailHeader')?.items?.[0];
+  const songs = [];
+  for (const s of sections) {
+    const lists = s.itemKind === 'artistFeaturedContentAndTracks' ? (s.items || []).flatMap(i => i?.tracks || []) : s.itemKind === 'trackLockup' ? (s.items || []) : [];
+    for (const item of lists) {
+      const t = trackFromLockup(item);
+      if (!t || songs.some(x => x.appleId === t.appleId)) continue;
+      // On an artist's page a song's second line is its album and year, not its artist.
+      t.album = (linkTitles(item.subtitleLinks)[0] || t.album).replace(/\s*·\s*\d{4}$/, '');
+      t.artist = String(header?.title || '') || t.artist;
+      songs.push(t);
+    }
+  }
+  const shelves = [];
+  for (const s of sections) {
+    const title = s.header?.item?.titleLink?.title || '';
+    if (s.itemKind === 'squareLockup') {
+      const items = (s.items || []).map(lockupToCollection).filter(Boolean);
+      if (items.length) shelves.push({ title, kind: 'collections', items });
+    } else if (s.itemKind === 'bubbleLockup') {
+      const items = (s.items || []).map(artistFromLockup).filter(Boolean);
+      if (items.length) shelves.push({ title: title || 'Similar artists', kind: 'artists', items });
+    }
+  }
+  if (!header && !songs.length && !shelves.length) return null;
+  return { name: String(header?.title || ''), artwork: artworkUrl(header?.artwork, 600), songs: songs.slice(0, 20), shelves };
+}
+
 // https://music.apple.com/<storefront>/<playlist|album>/<slug>/<id>
 function parseAppleMusicUrl(input) {
   const m = String(input || '').trim().match(/^https:\/\/(?:embed\.)?music\.apple\.com\/([a-z]{2})\/(playlist|album)\/(?:[^/?#]+\/)?((?:pl\.[A-Za-z0-9.-]+)|\d+)/i);
@@ -154,9 +203,12 @@ function create({ net }) {
 
   async function search(term, storefront = 'us') {
     const q = String(term || '').trim().slice(0, 100);
-    if (!q) return { playlists: [], albums: [] };
+    if (!q) return { playlists: [], albums: [], songs: [], artists: [] };
     const sf = /^[a-z]{2}$/i.test(storefront) ? storefront.toLowerCase() : 'us';
-    return parseSearch(await getText(`https://music.apple.com/${sf}/search?term=${encodeURIComponent(q)}`));
+    const found = parseSearch(await getText(`https://music.apple.com/${sf}/search?term=${encodeURIComponent(q)}`));
+    // Search lists songs without their album or length; the lookup fills them in.
+    await addPreviews(found.songs, sf);
+    return found;
   }
 
   // Fill previewUrl from the public iTunes lookup API (up to 150 ids a call).
@@ -175,6 +227,7 @@ function create({ net }) {
           if (!t.album && r.collectionName) t.album = String(r.collectionName);
           if (r.releaseDate) t.year = String(r.releaseDate).slice(0, 4);
           if (r.primaryGenreName) t.genre = String(r.primaryGenreName);
+          if (!t.duration && r.trackTimeMillis) t.duration = Number(r.trackTimeMillis) / 1000;
         }
       } catch { /* previews are optional */ }
     }
@@ -188,6 +241,15 @@ function create({ net }) {
     if (!page) throw new Error('Apple Music did not share this playlist publicly.');
     await addPreviews(page.tracks, ref.storefront);
     return { ...page, ...ref, url: `https://music.apple.com/${ref.storefront}/${ref.kind}/${ref.id}` };
+  }
+
+  async function artist(input) {
+    const m = String(input || '').match(/^https:\/\/music\.apple\.com\/([a-z]{2})\/artist\/(?:[^/?#]+\/)?(\d+)/i);
+    if (!m) throw new Error('Enter a music.apple.com artist link.');
+    const page = parseArtist(await getText(`https://music.apple.com/${m[1].toLowerCase()}/artist/x/${m[2]}`));
+    if (!page) throw new Error('Apple Music did not share this artist.');
+    await addPreviews(page.songs, m[1].toLowerCase());
+    return { ...page, id: m[2], url: `https://music.apple.com/${m[1].toLowerCase()}/artist/${m[2]}` };
   }
 
   let browseCache = null;
@@ -207,7 +269,7 @@ function create({ net }) {
     return page?.artwork || '';
   }
 
-  return { search, getCollection, browse, collectionArtwork };
+  return { search, getCollection, browse, collectionArtwork, artist };
 }
 
-module.exports = { create, parseSearch, parseCollection, parseBrowse, parseAppleMusicUrl, artworkUrl };
+module.exports = { parseArtist, create, parseSearch, parseCollection, parseBrowse, parseAppleMusicUrl, artworkUrl };

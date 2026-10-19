@@ -2014,6 +2014,7 @@ const appleMusic = require('./apple-music').create({ net });
 ipcMain.handle('applemusic:search', async (_evt, term) => appleMusic.search(term));
 ipcMain.handle('applemusic:collection', async (_evt, url) => appleMusic.getCollection(url));
 ipcMain.handle('applemusic:browse', async () => appleMusic.browse());
+ipcMain.handle('applemusic:artist', async (_evt, url) => appleMusic.artist(url));
 ipcMain.handle('applemusic:artwork', async (_evt, url) => appleMusic.collectionArtwork(url));
 
 // Hive 2.0 YouTube Music streaming for Apple Music / Spotify playlists.
@@ -7682,9 +7683,19 @@ function findSpotifyTrackList(value) {
 }
 
 const spotifyOembedArtCache = new Map();
-ipcMain.handle('playlists:importSpotify', async (_evt, input) => {
-  const id = spotifyPlaylistId(input);
+ipcMain.handle('playlists:importSpotify', async (_evt, input) => importSpotifyPlaylistFrom(input));
+
+// A Spotify playlist's songs: from the signed-in Spotify app when its bridge
+// is running (private playlists, the whole list), else Spotify's public page.
+// Browsing asks for the public page only, so it never waits on the app.
+async function importSpotifyPlaylistFrom(input, { useBridge = true } = {}) {
+  // An album (from search) reads from its own public page, the same way.
+  const albumId = String(input || '').match(/(?:open\.spotify\.com\/(?:embed\/)?album\/|^spotify:album:)([A-Za-z0-9]{22})/i)?.[1] || '';
+  const kind = albumId ? 'album' : 'playlist';
+  const id = albumId || spotifyPlaylistId(input);
   if (!id) throw new Error('Enter a valid Spotify playlist URL.');
+  let bridgeError = '';
+  if (useBridge && !albumId) {
 
   // Prefer the Spicetify session. This lets Hive import private playlists and
   // the user's complete playlist without asking Hive to own Spotify credentials.
@@ -7694,7 +7705,6 @@ ipcMain.handle('playlists:importSpotify', async (_evt, input) => {
   const bridgeLive = () => Date.now() - spotifyBridgeLastPollAt < 3000;
   const startedLive = bridgeLive();
   const deadline = Date.now() + (startedLive ? 120000 : 3500);
-  let bridgeError = '';
   while (Date.now() < deadline) {
     const current = spotifyBridgeState;
     if (current?.playlist?.commandId === commandId) {
@@ -7705,10 +7715,11 @@ ipcMain.handle('playlists:importSpotify', async (_evt, input) => {
     if (startedLive && !bridgeLive()) break; // Spotify was closed mid-import
     await new Promise(resolve => setTimeout(resolve, 100));
   }
+  }
 
   // Public fallback keeps the button useful even before the Spicetify extension
   // has been applied. Private playlists intentionally require the Spotify client.
-  const url = `https://open.spotify.com/embed/playlist/${id}`;
+  const url = `https://open.spotify.com/embed/${kind}/${id}`;
   const response = await net.fetch(url, { headers: { 'User-Agent': 'Mozilla/5.0' } });
   if (!response.ok) throw new Error(`Spotify returned HTTP ${response.status}. Open Spotify and sign in, then try again.`);
   const html = await response.text();
@@ -7763,7 +7774,57 @@ ipcMain.handle('playlists:importSpotify', async (_evt, input) => {
   const entitySources = Array.isArray(entity?.coverArt?.sources) ? entity.coverArt.sources : [];
   const largest = entitySources.slice().sort((a, b) => (Number(b?.width) || 0) - (Number(a?.width) || 0))[0]?.url || '';
   const cover = (/^https?:\/\//i.test(String(largest)) ? String(largest) : '') || tracks.find(t => /^https?:\/\//i.test(String(t.cover || t.artworkUrl || '')))?.cover || '';
-  return { id, name, sourceUrl: `https://open.spotify.com/playlist/${id}`, cover, artworkUrl:cover, tracks, likelyTruncated: rows.length >= 100, source: 'spotify' };
+  // An album page lists its songs without the album's name or cover; they come from the album.
+  if (albumId) for (const t of tracks) { if (!t.album) t.album = name; if (!t.cover && cover) { t.cover = cover; t.artworkUrl = cover; } }
+  return { id, kind, name, sourceUrl: `https://open.spotify.com/${kind}/${id}`, cover, artworkUrl:cover, tracks, likelyTruncated: rows.length >= 100, source: 'spotify' };
+}
+
+// Search Spotify through the signed-in Spotify app (Hive's add-on), starting
+// the app in the background when it isn't running. Without it, nothing:
+// Spotify has no search for visitors who aren't signed in.
+ipcMain.handle('spotify:search', async (_evt, query) => {
+  if (SPOTIFY_DEVELOPMENT_PAUSED) return { connected: false };
+  const q = String(query || '').trim();
+  if (!q) return { connected: true, data: { tracks: [], albums: [], artists: [], playlists: [] } };
+  if (Date.now() - spotifyBridgeLastPollAt > 3000) {
+    try { await launchSpotifyOrLogin(); } catch {}
+    for (let i = 0; i < 40 && Date.now() - spotifyBridgeLastPollAt > 3000; i++) await new Promise(r => setTimeout(r, 500));
+  }
+  return askSpotifyBridge({ type: 'search', query: q }, 20000);
+});
+
+// Spotify's own playlists, the same set Hive Mobile shows: no account or app
+// needed, read from Spotify's public link previews. Plus today's Top 50 as a
+// song list, as the Apple Music page shows its new songs. Kept for 6 hours.
+const SPOTIFY_EDITORIAL = [
+  '37i9dQZF1DXcBWIGoYBM5M', '37i9dQZF1DX4JAvHpjipBk', '37i9dQZEVXbMDoHDwVN2tF', '37i9dQZEVXbLRQDuF5jeBp',
+  '37i9dQZF1DX0XUsuxWHRQd', '37i9dQZF1DX10zKzsJ2jva', '37i9dQZF1DX1lVhptIYRda', '37i9dQZF1DX4dyzvuaRJ0n',
+  '37i9dQZF1DWXRqgorJj26U', '37i9dQZF1DX5Ejj0EkURtP', '37i9dQZF1DWWMOmoXKqHTD', '37i9dQZF1DX4sWSpwq3LiO',
+];
+// Spotify's 300 px images as their 640 px versions (album and editorial covers).
+const largerSpotifyImage = url => String(url || '')
+  .replace(/^https:\/\/image-cdn-[a-z]+\.spotifycdn\.com\/image\//, 'https://i.scdn.co/image/')
+  .replace('ab67616d00001e02', 'ab67616d0000b273').replace('ab67616d00004851', 'ab67616d0000b273')
+  .replace('ab67706f00000002', 'ab67706f00000003');
+let spotifyBrowseCache = null;
+ipcMain.handle('spotify:browse', async () => {
+  if (spotifyBrowseCache && Date.now() - spotifyBrowseCache.at < 6 * 60 * 60 * 1000) return spotifyBrowseCache.shelves;
+  const cards = (await Promise.all(SPOTIFY_EDITORIAL.map(async id => {
+    try {
+      const res = await net.fetch(`https://open.spotify.com/oembed?url=${encodeURIComponent(`https://open.spotify.com/playlist/${id}`)}`, { headers: { 'User-Agent': 'Hive/2.0 (music player)' } });
+      const info = res.ok ? await res.json() : null;
+      if (!info?.title) return null;
+      return { id, name: String(info.title), subtitle: 'Spotify', cover: largerSpotifyImage(info.thumbnail_url), url: `https://open.spotify.com/playlist/${id}` };
+    } catch { return null; }
+  }))).filter(Boolean);
+  const shelves = [];
+  if (cards.length) shelves.push({ title: 'Spotify playlists', kind: 'playlists', items: cards });
+  try {
+    const top = await importSpotifyPlaylistFrom('https://open.spotify.com/playlist/37i9dQZEVXbMDoHDwVN2tF', { useBridge: false });
+    if (top?.tracks?.length) shelves.push({ title: 'Top songs worldwide', kind: 'songs', items: top.tracks.slice(0, 20).map(t => ({ ...t, cover: largerSpotifyImage(t.cover), artworkUrl: largerSpotifyImage(t.artworkUrl) })) });
+  } catch {}
+  if (shelves.length) spotifyBrowseCache = { at: Date.now(), shelves };
+  return shelves;
 });
 
 ipcMain.handle('playlists:delete', async (_evt, id) => withJsonFileLock(PLAYLISTS_PATH(), async () => {
