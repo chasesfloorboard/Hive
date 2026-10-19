@@ -10,7 +10,12 @@
 //   GET  /api/library              compact track list (gzip) for matching
 //   GET  /api/love/changes?since=  Love changes after a sequence number
 //   POST /api/love                 apply Love changes made on the phone
+//                                  (answered "held" while acceptPhoneChanges is off)
 //   GET  /api/events               server-sent events (live Love changes)
+//   GET  /api/stream/track?id=     a library song's file, with Range support
+//   GET  /api/stream/song?key=…    a song Hive doesn't have (Apple Music,
+//                                  Spotify), streamed from YouTube Music
+//                                  through Hive, as Hive itself plays them
 //
 // Love itself stays where Hive keeps it: in the music files. Phone changes
 // go through the same setLove path as the heart button, so the embedded tag,
@@ -19,6 +24,10 @@
 // Each change carries the time it was made. When both sides change the same
 // track, the newer change wins; an older one is answered with the current
 // state so the phone can correct itself.
+//
+// While acceptPhoneChanges is off, PC Love still reaches the phone but phone
+// changes are not applied: each is answered "held" and the phone keeps it
+// queued for later.
 
 const crypto = require('crypto');
 const dgram = require('dgram');
@@ -26,6 +35,7 @@ const fs = require('fs');
 const http = require('http');
 const os = require('os');
 const path = require('path');
+const { Readable } = require('stream');
 const zlib = require('zlib');
 
 const PROTOCOL_VERSION = 1;
@@ -53,7 +63,7 @@ function lanAddresses() {
   return out;
 }
 
-function createHiveLink({ dataDir, getTracks, setLove, onPaired, log = () => {}, port = DEFAULT_PORT, discoveryPort = DISCOVERY_PORT }) {
+function createHiveLink({ dataDir, getTracks, setLove, onPaired, streamSong = null, log = () => {}, port = DEFAULT_PORT, discoveryPort = DISCOVERY_PORT, acceptPhoneChanges = false }) {
   const statePath = path.join(dataDir, 'hive-link.json');
   let state = loadState();
   let server = null;
@@ -102,7 +112,8 @@ function createHiveLink({ dataDir, getTracks, setLove, onPaired, log = () => {},
       name: serverName(),
       port,
       seq: state.seq,
-      addresses: lanAddresses()
+      addresses: lanAddresses(),
+      streams: { track: true, song: !!streamSong }
     };
   }
 
@@ -198,6 +209,10 @@ function createHiveLink({ dataDir, getTracks, setLove, onPaired, log = () => {},
   }
 
   async function applyLoveChanges(device, changes) {
+    if (!acceptPhoneChanges) {
+      const held = Array.isArray(changes) ? changes.slice(0, 500) : [];
+      return { seq: state.seq, results: held.map(c => ({ clientChangeId: c?.clientChangeId ?? null, id: String(c?.id || ''), status: 'held' })) };
+    }
     const tracks = await getTracks();
     const byId = new Map(tracks.map(t => [trackIdFor(t), t]));
     const results = [];
@@ -331,6 +346,10 @@ function createHiveLink({ dataDir, getTracks, setLove, onPaired, log = () => {},
         const body = await readJson(req);
         return send(res, 200, await applyLoveChanges(device, body?.changes));
       }
+      case 'GET /api/stream/track':
+        return streamTrack(req, res, String(url.searchParams.get('id') || ''));
+      case 'GET /api/stream/song':
+        return streamExternalSong(req, res, url.searchParams);
       case 'GET /api/events':
         return openEvents(req, res, device);
       case 'POST /api/unpair':
@@ -339,6 +358,54 @@ function createHiveLink({ dataDir, getTracks, setLove, onPaired, log = () => {},
       default:
         return send(res, 404, { error: 'Unknown endpoint.' });
     }
+  }
+
+  // ---- streaming -----------------------------------------------------------
+
+  const AUDIO_TYPES = { '.mp3': 'audio/mpeg', '.flac': 'audio/flac', '.m4a': 'audio/mp4', '.aac': 'audio/aac', '.ogg': 'audio/ogg', '.opus': 'audio/ogg', '.wav': 'audio/wav' };
+
+  // A library song's file, by its Hive Link id. Only files Hive lists are served.
+  async function streamTrack(req, res, id) {
+    const track = (await getTracks()).find(t => t && t.path && trackIdFor(t) === id);
+    if (!track || /^[a-z]+:/i.test(String(track.path))) return send(res, 404, { error: 'No such song.' });
+    const file = path.resolve(String(track.path));
+    let size;
+    try { size = (await fs.promises.stat(file)).size; } catch { return send(res, 404, { error: 'The file is gone.' }); }
+    const type = AUDIO_TYPES[path.extname(file).toLowerCase()] || 'application/octet-stream';
+    const m = /bytes=(\d*)-(\d*)/.exec(String(req.headers.range || ''));
+    let start = 0, end = size - 1;
+    if (m) {
+      if (m[1]) { start = Number(m[1]); if (m[2]) end = Math.min(size - 1, Number(m[2])); }
+      else if (m[2]) start = Math.max(0, size - Number(m[2]));
+      if (start > end || start >= size) { res.writeHead(416, { 'Content-Range': `bytes */${size}` }); return res.end(); }
+    }
+    res.writeHead(m ? 206 : 200, {
+      'Content-Type': type, 'Accept-Ranges': 'bytes', 'Content-Length': end - start + 1,
+      ...(m ? { 'Content-Range': `bytes ${start}-${end}/${size}` } : {})
+    });
+    const body = fs.createReadStream(file, { start, end });
+    res.on('close', () => body.destroy());
+    body.pipe(res);
+  }
+
+  // A song from Apple Music or Spotify that Hive doesn't have: found on
+  // YouTube Music and streamed through Hive, so the phone needs nothing more.
+  async function streamExternalSong(req, res, params) {
+    if (!streamSong) return send(res, 404, { error: 'This Hive cannot stream songs it does not have.' });
+    const song = {
+      key: String(params.get('key') || ''), title: String(params.get('title') || ''), artist: String(params.get('artist') || ''),
+      album: String(params.get('album') || ''), duration: num(params.get('duration'))
+    };
+    if (!/^(am|sp):[A-Za-z0-9._-]{1,64}$/.test(song.key) || !song.title) return send(res, 400, { error: 'Which song?' });
+    let r;
+    try { r = await streamSong(song, req.headers.range || ''); }
+    catch (err) { return send(res, 502, { error: err?.message || String(err) }); }
+    res.writeHead(r.status || 206, r.headers || {});
+    const body = r.body && typeof r.body.getReader === 'function' ? Readable.fromWeb(r.body) : r.body;
+    if (!body) return res.end();
+    res.on('close', () => { try { body.destroy(); } catch {} });
+    body.on('error', () => { try { res.destroy(); } catch {} });
+    body.pipe(res);
   }
 
   // ---- discovery -----------------------------------------------------------

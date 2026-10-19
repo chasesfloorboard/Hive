@@ -7890,6 +7890,19 @@ function startHiveLink() {
       await setLoveForSingleTrack(sender ? { sender } : null, trackPath, loved);
       try { sender?.send('library:scanTrack', [{ path: trackPath, loved: !!loved, loveHydrated: true }]); } catch {}
     },
+    // Hive Mobile is not ready to change the PC library yet: phone Love stays on the phone.
+    acceptPhoneChanges: false,
+    // Apple Music and Spotify songs Hive Mobile lacks play from YouTube Music
+    // through Hive, sharing Hive's own matches (ytm:apple:…, ytm:spotify:…).
+    streamSong: async (song, range) => {
+      const [service, id] = [song.key.slice(0, 2), song.key.slice(3)];
+      const r = await youtubeMusic.resolve({ path: `ytm:${service === 'am' ? 'apple' : 'spotify'}:${id}`, title: song.title, artist: song.artist, album: song.album, duration: song.duration });
+      const s = await youtubeMusic.streamRange(r.videoId, range);
+      return {
+        status: 206, body: s.body,
+        headers: { 'Accept-Ranges': 'bytes', 'Content-Type': s.contentType, 'Content-Length': String(s.end - s.start + 1), 'Content-Range': `bytes ${s.start}-${s.end}/${s.total || '*'}` }
+      };
+    },
     onPaired: device => scanLog('Hive Link paired', { device: device.name }),
     log: (...args) => scanLog(args.map(String).join(' '))
   });

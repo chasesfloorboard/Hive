@@ -17,7 +17,7 @@ const { createHiveLink, trackIdFor } = require('../app/main/hive-link');
 
 let nextPort = 48100 + Math.floor(Math.random() * 500) * 2;
 
-function setup() {
+function setup({ acceptPhoneChanges = true, streamSong = null } = {}) {
   const dataDir = fs.mkdtempSync(path.join(os.tmpdir(), 'hive-link-'));
   const tracks = [
     { id: 'a1', path: '/music/Pearl Jam - Black.mp3', title: 'Black', artist: 'Pearl Jam', album: 'Ten', duration: '343.2', loved: false },
@@ -30,6 +30,8 @@ function setup() {
     dataDir,
     port,
     discoveryPort: port + 1,
+    acceptPhoneChanges,
+    streamSong,
     getTracks: async () => tracks,
     setLove: async (trackPath, loved) => {
       setLoveCalls.push([trackPath, loved]);
@@ -40,6 +42,18 @@ function setup() {
   });
   link.start();
   return { link, tracks, setLoveCalls, port, dataDir };
+}
+
+function rawGet(port, urlPath, token, headers = {}) {
+  return new Promise((resolve, reject) => {
+    const req = http.request({ host: '127.0.0.1', port, path: urlPath, method: 'GET', headers: { ...(token ? { Authorization: `Bearer ${token}` } : {}), ...headers } }, res => {
+      const chunks = [];
+      res.on('data', c => chunks.push(c));
+      res.on('end', () => resolve({ status: res.statusCode, headers: res.headers, body: Buffer.concat(chunks) }));
+    });
+    req.on('error', reject);
+    req.end();
+  });
 }
 
 function request(port, method, urlPath, { body, token, raw = false } = {}) {
@@ -145,6 +159,60 @@ test('a phone Love goes through setLove and is logged with the phone as origin',
   const changes = await request(ctx.port, 'GET', '/api/love/changes?since=0', { token });
   assert.equal(changes.body.reset, false);
   assert.deepEqual(changes.body.changes.map(c => [c.id, c.loved, c.at, c.origin]), [['a1', true, 1000, deviceId]]);
+});
+
+test('while phone changes are off, phone Love is held and nothing is written', async t => {
+  const ctx = setup({ acceptPhoneChanges: false });
+  t.after(() => ctx.link.stop());
+  await waitListening(ctx.port);
+  const token = await pair(ctx);
+
+  const res = await request(ctx.port, 'POST', '/api/love', { token, body: { changes: [{ clientChangeId: 1, id: 'a1', loved: true, at: 1000 }] } });
+  assert.deepEqual(res.body.results.map(r => r.status), ['held']);
+  assert.equal(ctx.setLoveCalls.length, 0);
+  assert.equal(ctx.tracks[0].loved, false);
+  const changes = await request(ctx.port, 'GET', '/api/love/changes?since=0', { token });
+  assert.deepEqual(changes.body.changes, []);
+});
+
+test('a library song streams with Range support, and only listed files are served', async t => {
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'hive-link-audio-'));
+  const file = path.join(dir, 'song.mp3');
+  fs.writeFileSync(file, Buffer.from('0123456789'));
+  const ctx = setup();
+  ctx.tracks.push({ id: 'c3', path: file, title: 'Song', artist: 'A', duration: '1', loved: false });
+  t.after(() => ctx.link.stop());
+  await waitListening(ctx.port);
+  const token = await pair(ctx);
+
+  const part = await rawGet(ctx.port, '/api/stream/track?id=c3', token, { Range: 'bytes=2-5' });
+  assert.equal(part.status, 206);
+  assert.equal(part.headers['content-range'], 'bytes 2-5/10');
+  assert.equal(part.body.toString(), '2345');
+  const whole = await rawGet(ctx.port, '/api/stream/track?id=c3', token);
+  assert.equal(whole.status, 200);
+  assert.equal(whole.body.toString(), '0123456789');
+  assert.equal((await rawGet(ctx.port, '/api/stream/track?id=nope', token)).status, 404);
+  assert.equal((await rawGet(ctx.port, '/api/stream/track?id=c3')).status, 401);
+});
+
+test('songs Hive lacks stream through the injected resolver', async t => {
+  const calls = [];
+  const ctx = setup({ streamSong: async (song, range) => {
+    calls.push([song.key, song.title, range]);
+    return { status: 206, headers: { 'Content-Type': 'audio/webm', 'Content-Range': 'bytes 0-2/3' }, body: new ReadableStream({ start(c) { c.enqueue(new TextEncoder().encode('abc')); c.close(); } }) };
+  } });
+  t.after(() => ctx.link.stop());
+  await waitListening(ctx.port);
+  const token = await pair(ctx);
+
+  const r = await rawGet(ctx.port, '/api/stream/song?key=am%3A123&title=Song&artist=A&duration=200', token, { Range: 'bytes=0-' });
+  assert.equal(r.status, 206);
+  assert.equal(r.body.toString(), 'abc');
+  assert.deepEqual(calls, [['am:123', 'Song', 'bytes=0-']]);
+  assert.equal((await rawGet(ctx.port, '/api/stream/song?key=../etc&title=x', token)).status, 400);
+  const info = await request(ctx.port, 'GET', '/api/info', { token });
+  assert.deepEqual(info.body.streams, { track: true, song: true });
 });
 
 test('an older phone change loses to a newer PC change', async t => {
