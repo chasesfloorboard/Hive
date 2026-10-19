@@ -85,6 +85,7 @@ enum class AutoPlaylist(val title: String) {
     RecentlyAdded("Recently Added"),
     MostPlayed("Top 25 Most Played"),
     RecentlyPlayed("History"),
+    TopRated("Top Rated"),
 }
 
 data class HomeNavigation(
@@ -402,6 +403,7 @@ private fun PlaylistsPanel(vm: MainViewModel, nav: HomeNavigation, bottom: Dp) {
     val most by vm.mostPlayed.collectAsStateWithLifecycle()
     val played by vm.recentlyPlayed.collectAsStateWithLifecycle()
     val mine by vm.playlists.collectAsStateWithLifecycle()
+    val rated by vm.topRated.collectAsStateWithLifecycle()
     var naming by remember { mutableStateOf(false) }
     var note by remember { mutableStateOf<String?>(null) }
     val context = androidx.compose.ui.platform.LocalContext.current
@@ -413,7 +415,7 @@ private fun PlaylistsPanel(vm: MainViewModel, nav: HomeNavigation, bottom: Dp) {
         if (text == null) note = "Couldn't read that file." else vm.importM3u(name, text) { id, message -> note = message; id?.let(nav.openUserPlaylist) }
     }
     LaunchedEffect(note) { if (note != null) { kotlinx.coroutines.delay(4_000); note = null } }
-    val rows = listOf(AutoPlaylist.Favorites to favorites, AutoPlaylist.RecentlyAdded to recent, AutoPlaylist.MostPlayed to most.take(25), AutoPlaylist.RecentlyPlayed to played)
+    val rows = listOf(AutoPlaylist.Favorites to favorites, AutoPlaylist.RecentlyAdded to recent, AutoPlaylist.MostPlayed to most.take(25), AutoPlaylist.RecentlyPlayed to played, AutoPlaylist.TopRated to rated)
     Box(Modifier.fillMaxSize()) {
         LazyColumn(Modifier.fillMaxSize(), contentPadding = PaddingValues(bottom = bottom + 12.dp)) {
             item { PanelHeader("Playlists") }

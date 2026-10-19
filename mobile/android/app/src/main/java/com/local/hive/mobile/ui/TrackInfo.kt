@@ -25,6 +25,9 @@ import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.rounded.Album
 import androidx.compose.material.icons.rounded.LibraryMusic
 import androidx.compose.material.icons.rounded.Share
+import androidx.compose.material.icons.automirrored.rounded.StarHalf
+import androidx.compose.material.icons.rounded.StarBorder
+import androidx.compose.material.icons.rounded.Star
 import androidx.compose.material3.ExperimentalMaterial3Api
 import androidx.compose.material3.Icon
 import androidx.compose.material3.ModalBottomSheet
@@ -98,6 +101,8 @@ fun TrackInfoSheet(vm: MainViewModel, track: Track, onDismiss: () -> Unit, onOpe
                     Text(track.artist, style = HiveText.small, color = c.textDim, maxLines = 1, overflow = TextOverflow.Ellipsis)
                 }
             }
+            val ratings by vm.ratings.collectAsStateWithLifecycle()
+            Stars(ratings[track.id] ?: 0f, Modifier.padding(horizontal = 18.dp, vertical = 4.dp)) { vm.rate(track.id, it) }
             Row(Modifier.padding(horizontal = 16.dp, vertical = 10.dp), horizontalArrangement = Arrangement.spacedBy(8.dp)) {
                 InfoAction("Go to album", Icons.Rounded.Album) { onDismiss(); onOpenAlbum(track) }
                 InfoAction("Share", Icons.Rounded.Share) {
@@ -157,5 +162,24 @@ private fun InfoRow(label: String, value: String?) {
     Row(Modifier.fillMaxWidth().padding(horizontal = 16.dp, vertical = 7.dp), verticalAlignment = Alignment.Top) {
         Text(label, style = HiveText.small, color = c.textDim, modifier = Modifier.width(132.dp))
         Text(value, style = HiveText.body, color = c.text, modifier = Modifier.weight(1f))
+    }
+}
+
+/** Five stars, as Hive rates songs: tap a star to set it, tap it again to clear. */
+@Composable
+fun Stars(stars: Float, modifier: Modifier = Modifier, onRate: (Float) -> Unit) {
+    val c = Hive.colors
+    Row(modifier, verticalAlignment = Alignment.CenterVertically) {
+        (1..5).forEach { n ->
+            val filled = stars >= n
+            val half = !filled && stars >= n - 0.5f
+            Box(Modifier.size(40.dp).clip(androidx.compose.foundation.shape.CircleShape).clickable { onRate(if (stars == n.toFloat()) 0f else n.toFloat()) }, contentAlignment = Alignment.Center) {
+                Icon(
+                    when { filled -> Icons.Rounded.Star; half -> Icons.AutoMirrored.Rounded.StarHalf; else -> Icons.Rounded.StarBorder },
+                    "$n star" + if (n > 1) "s" else "", tint = if (filled || half) c.accent else c.textDimmer, modifier = Modifier.size(26.dp),
+                )
+            }
+        }
+        if (stars > 0) Text(if (stars % 1f == 0f) "${stars.toInt()} of 5" else "$stars of 5", style = HiveText.small, color = c.textDim, modifier = Modifier.padding(start = 6.dp))
     }
 }

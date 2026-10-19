@@ -130,6 +130,18 @@ data class PlaylistSummary(
     val coverAlbumId: Long?,
 )
 
+/**
+ * A song's star rating (0.5 to 5). [fromPc] marks a rating taken from Hive on
+ * the PC, which the PC may update; the user's own ratings on the phone stay.
+ */
+@Entity(tableName = "ratings")
+data class Rating(
+    @PrimaryKey val trackId: Long,
+    val stars: Float,
+    val changedAt: Long,
+    val fromPc: Boolean = false,
+)
+
 /** Which Hive (PC) track a phone track is the same song as. */
 @Entity(tableName = "pc_match", indices = [Index("pcId")])
 data class PcMatch(
@@ -358,6 +370,23 @@ interface LibraryDao {
         return id
     }
 
+    // ---- ratings ----
+
+    @Query("SELECT * FROM ratings")
+    fun ratings(): Flow<List<Rating>>
+
+    @Query("SELECT * FROM ratings")
+    suspend fun allRatings(): List<Rating>
+
+    @Upsert
+    suspend fun upsertRatings(ratings: List<Rating>)
+
+    @Query("DELETE FROM ratings WHERE trackId = :trackId")
+    suspend fun clearRating(trackId: Long)
+
+    @Query("SELECT t.* FROM tracks t JOIN ratings r ON r.trackId = t.id WHERE r.stars >= :min ORDER BY r.stars DESC, t.title COLLATE NOCASE")
+    fun ratedAtLeast(min: Float): Flow<List<Track>>
+
     // ---- favorite albums ----
 
     @Query("SELECT * FROM favorite_albums ORDER BY addedAt DESC")
@@ -421,10 +450,10 @@ interface LibraryDao {
 }
 
 @Database(
-    entities = [Track::class, LoveState::class, PcMatch::class, Play::class, FavoriteAlbum::class, Playlist::class, PlaylistEntry::class, StreamTrack::class],
-    version = 3,
+    entities = [Track::class, LoveState::class, PcMatch::class, Play::class, FavoriteAlbum::class, Playlist::class, PlaylistEntry::class, StreamTrack::class, Rating::class],
+    version = 4,
     exportSchema = true,
-    autoMigrations = [AutoMigration(from = 1, to = 2), AutoMigration(from = 2, to = 3)],
+    autoMigrations = [AutoMigration(from = 1, to = 2), AutoMigration(from = 2, to = 3), AutoMigration(from = 3, to = 4)],
 )
 abstract class LibraryDatabase : RoomDatabase() {
     abstract fun dao(): LibraryDao

@@ -276,6 +276,7 @@ private fun HiveContent(vm: MainViewModel, openPlayerInitially: Boolean) {
                                 AutoPlaylist.RecentlyAdded -> vm.recentlyAdded
                                 AutoPlaylist.MostPlayed -> vm.topMostPlayed
                                 AutoPlaylist.RecentlyPlayed -> vm.recentlyPlayed
+                                AutoPlaylist.TopRated -> vm.topRated
                             }
                             SongsScreen(vm, kind.title, flow, actions, bottomPadding) { nav.popBackStack() }
                         }

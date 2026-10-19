@@ -32,7 +32,7 @@ renderer views) and its state on mobile.
 | Love written into the phone's own files | | ❌ |
 | Album Favorites (separate from loving songs, as in Samsung Music) | | ✅ phone only |
 | Phone Love applied on the PC | `acceptPhoneChanges` | ⏸️ held on purpose until Hive Mobile is stable; PC → phone works |
-| Star ratings (POPM) | `track:setRating`, `tracks:setRatings` | ❌ |
+| Star ratings (POPM) | `track:setRating`, `tracks:setRatings` | 🟡 rate on the phone (Track info), PC ratings come to matched songs, Top Rated playlist; not written into files |
 | Play counts and skip counts | `track:recordPlay`, `stats:*` | 🟡 counted locally, not synced |
 | Favorites sync phone ↔ PC | Hive Link | ✅ |
 

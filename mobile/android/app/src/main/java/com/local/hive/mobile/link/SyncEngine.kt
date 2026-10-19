@@ -3,6 +3,7 @@ package com.local.hive.mobile.link
 import android.os.Build
 import com.local.hive.mobile.data.LibraryDao
 import com.local.hive.mobile.data.LoveState
+import com.local.hive.mobile.data.Rating
 import com.local.hive.mobile.data.PcMatch
 import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.CoroutineScope
@@ -165,6 +166,14 @@ class SyncEngine(
             else LoveState(m.trackId, pcLoved, mine?.changedAt ?: 0, pending = false)
         }
         dao.upsertLove(adopt)
+        // PC ratings come to the phone's copies; a rating made on the phone stays.
+        val mine = dao.allRatings().associateBy { it.trackId }
+        val now = System.currentTimeMillis()
+        dao.upsertRatings(matches.mapNotNull { m ->
+            val stars = (pcById[m.pcId]?.rating ?: 0.0).toFloat()
+            val current = mine[m.trackId]
+            if (stars <= 0f || (current != null && (!current.fromPc || current.stars == stars))) null else Rating(m.trackId, stars, now, fromPc = true)
+        })
         step("adopt ${adopt.size} love states")
         store.lastSeq = library.seq
         store.fullSyncDone = true

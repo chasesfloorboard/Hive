@@ -86,6 +86,14 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
     fun folderTracks(folder: String) = dao.folderTracks(folder)
     suspend fun search(query: String): List<Track> = if (query.isBlank()) emptyList() else dao.search("%${query.trim()}%")
     suspend fun playStats(trackId: Long) = dao.playStats(trackId)
+
+    // ---- ratings ----
+    val ratings: StateFlow<Map<Long, Float>> = dao.ratings().map { list -> list.associate { it.trackId to it.stars } }.state(emptyMap())
+    val topRated = dao.ratedAtLeast(4f).state(emptyList())
+    /** Sets a song's stars; 0 clears it. */
+    fun rate(trackId: Long, stars: Float) = viewModelScope.launch {
+        if (stars <= 0f) dao.clearRating(trackId) else dao.upsertRatings(listOf(com.local.hive.mobile.data.Rating(trackId, stars, System.currentTimeMillis())))
+    }
     suspend fun artistImage(name: String) = app.artistImages.lookup(name)
 
     /** Years with plays on this phone, newest first. */
