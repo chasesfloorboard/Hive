@@ -198,6 +198,15 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
     fun toggleStation(s: com.local.hive.mobile.stream.Station) = app.radioStore.toggle(s)
     fun playStation(s: com.local.hive.mobile.stream.Station) = app.player.playMedia(listOf(s.toMediaItem()))
 
+    // ---- podcasts ----
+    val podcasts get() = app.podcasts
+    val podcastSubscriptions = app.podcastStore.subscriptions
+    val podcastProgress = app.podcastStore.progress
+    fun togglePodcast(p: com.local.hive.mobile.stream.Podcast) = app.podcastStore.toggle(p)
+    fun markEpisode(e: com.local.hive.mobile.stream.Episode, played: Boolean) = app.podcastStore.setProgress(e.mediaId, if (played) com.local.hive.mobile.stream.PodcastStore.FINISHED else 0)
+    /** Plays an episode, then the older ones after it, as a podcast app does. */
+    fun playEpisodes(episodes: List<com.local.hive.mobile.stream.Episode>, index: Int) = app.player.playMedia(episodes.drop(index).map { it.toMediaItem() })
+
     val sleep = app.player.sleep
     fun setSleepTimer(minutes: Int) = app.player.setSleepTimer(minutes)
     fun sleepAtEndOfSong() = app.player.sleepAtEndOfSong()

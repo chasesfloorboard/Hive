@@ -49,6 +49,7 @@ data class NowPlaying(
     val isLive: Boolean = false,
     /** For a station, its name. */
     val station: String = "",
+    val speed: Float = 1f,
     val queueIndex: Int = -1,
 )
 
@@ -151,6 +152,7 @@ class PlayerConnection(private val context: Context, private val scope: Coroutin
         _sleep.value = null
     }
 
+    fun setSpeed(speed: Float) = withController { it.setPlaybackSpeed(speed) }
     fun toggleShuffle() = withController { it.shuffleModeEnabled = !it.shuffleModeEnabled }
     fun cycleRepeat() = withController {
         it.repeatMode = when (it.repeatMode) {
@@ -176,6 +178,7 @@ class PlayerConnection(private val context: Context, private val scope: Coroutin
             artist = if (radio) liveArtist.ifBlank { if (liveTitle.isNotBlank()) stationName else "Live radio" } else meta?.artist?.toString().orEmpty(),
             isLive = radio || c.isCurrentMediaItemLive,
             station = stationName,
+            speed = c.playbackParameters.speed,
             album = meta?.albumTitle?.toString().orEmpty(),
             artworkUri = meta?.artworkUri?.toString(),
             isPlaying = c.isPlaying,

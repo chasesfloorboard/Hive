@@ -157,13 +157,14 @@ fun AppleMusicScreen(vm: MainViewModel, bottomPadding: Dp, onBack: () -> Unit, o
 @Composable
 fun SearchField(value: String, onChange: (String) -> Unit, placeholder: String, onSubmit: () -> Unit, onClear: () -> Unit) {
     val c = Hive.colors
+    val keyboard = androidx.compose.ui.platform.LocalSoftwareKeyboardController.current
     Row(Modifier.padding(horizontal = 14.dp).fillMaxWidth().height(48.dp).hiveGlass(HiveShape.pill).padding(start = 16.dp, end = 4.dp), verticalAlignment = Alignment.CenterVertically) {
         Icon(Icons.Rounded.Search, null, tint = c.textDim, modifier = Modifier.size(19.dp))
         Spacer(Modifier.width(10.dp))
         Box(Modifier.weight(1f)) {
             if (value.isEmpty()) Text(placeholder, style = HiveText.row, color = c.textDimmer, maxLines = 1, overflow = TextOverflow.Ellipsis)
             BasicTextField(value, onChange, singleLine = true, textStyle = HiveText.row.copy(color = c.text), cursorBrush = SolidColor(c.accent),
-                keyboardOptions = KeyboardOptions(imeAction = ImeAction.Search), keyboardActions = KeyboardActions(onSearch = { onSubmit() }), modifier = Modifier.fillMaxWidth())
+                keyboardOptions = KeyboardOptions(imeAction = ImeAction.Search), keyboardActions = KeyboardActions(onSearch = { keyboard?.hide(); onSubmit() }), modifier = Modifier.fillMaxWidth())
         }
         if (value.isNotEmpty()) Box(Modifier.size(40.dp).clip(CircleShape).clickable(onClick = onClear), contentAlignment = Alignment.Center) {
             Icon(Icons.Rounded.Close, "Clear search", tint = c.textDim, modifier = Modifier.size(18.dp))

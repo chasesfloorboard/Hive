@@ -103,6 +103,8 @@ import com.local.hive.mobile.ui.theme.HiveShape
 import com.local.hive.mobile.ui.theme.HiveText
 import com.local.hive.mobile.ui.theme.Motion
 import com.local.hive.mobile.ui.theme.hiveGlass
+import androidx.compose.material.icons.rounded.Check
+import androidx.compose.material.icons.rounded.Speed
 import androidx.compose.material.icons.rounded.Radio
 import androidx.compose.animation.core.animateFloat
 import androidx.compose.material.icons.rounded.GraphicEq
@@ -399,6 +401,7 @@ private fun FullPlayerContent(
     val upNext = now.queue.getOrNull(now.queueIndex + 1)
     var menu by remember { mutableStateOf(false) }
     var sleepMenu by remember { mutableStateOf(false) }
+    var speedMenu by remember { mutableStateOf(false) }
     val sleep by vm.sleep.collectAsStateWithLifecycle()
     LaunchedEffect(now.trackId, now.queueIndex, now.queue.size) {
         current = now.trackId?.let { vm.tracksById(listOf(it)).firstOrNull() }
@@ -437,8 +440,12 @@ private fun FullPlayerContent(
                             }
                             HiveMenuItem("Playing tracks", Icons.AutoMirrored.Rounded.QueueMusic) { menu = false; onOpenQueue() }
                             HiveMenuDivider()
+                            if (now.mediaId?.startsWith("pod:") == true) HiveMenuItem("Speed · ${"%.2g".format(now.speed)}×", Icons.Rounded.Speed) { menu = false; speedMenu = true }
                             HiveMenuItem("Equaliser", Icons.Rounded.GraphicEq) { menu = false; onOpenEqualiser() }
                             HiveMenuItem(sleepLabel(sleep), Icons.Rounded.Bedtime) { menu = false; sleepMenu = true }
+                        }
+                        HiveMenu(speedMenu, { speedMenu = false }) {
+                            listOf(0.8f, 1f, 1.2f, 1.5f, 1.75f, 2f).forEach { x -> HiveMenuItem("${"%.2g".format(x)}×", if (now.speed == x) Icons.Rounded.Check else null) { speedMenu = false; vm.player.setSpeed(x) } }
                         }
                         HiveMenu(sleepMenu, { sleepMenu = false }) {
                             listOf(15, 30, 45, 60, 90).forEach { m -> HiveMenuItem("$m minutes", Icons.Rounded.Timer) { sleepMenu = false; vm.setSleepTimer(m) } }

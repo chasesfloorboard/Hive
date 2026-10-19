@@ -45,6 +45,15 @@ class PlaybackService : MediaSessionService() {
     private lateinit var memory: PlaybackMemory
     private val equaliser = EqualiserProcessor()
     private val genre = MutableStateFlow("")
+    private var lastPodcast: String? = null
+
+    private fun savePodcast(player: Player, id: String) {
+        val store = (application as HiveApp).podcastStore
+        if (store.progress.value[id] == com.local.hive.mobile.stream.PodcastStore.FINISHED) return
+        val duration = player.duration.takeIf { it > 0 }
+        // Within the last half minute counts as finished.
+        store.setProgress(id, if (duration != null && player.currentPosition > duration - 30_000) com.local.hive.mobile.stream.PodcastStore.FINISHED else player.currentPosition)
+    }
     private val replayGainTags = MutableStateFlow<Map<String, String>>(emptyMap())
     private val queueTick = MutableStateFlow(0)
 
@@ -85,6 +94,22 @@ class PlaybackService : MediaSessionService() {
             }
             override fun onMediaMetadataChanged(mediaMetadata: androidx.media3.common.MediaMetadata) { genre.value = mediaMetadata.genre?.toString().orEmpty() }
             override fun onTracksChanged(tracks: androidx.media3.common.Tracks) { replayGainTags.value = ReplayGain.tagsOf(tracks); queueTick.value++ }
+            // Podcast episodes pick up where they were left, and are marked done when played through.
+            override fun onMediaItemTransition(mediaItem: androidx.media3.common.MediaItem?, reason: Int) {
+                if (reason == Player.MEDIA_ITEM_TRANSITION_REASON_AUTO) lastPodcast?.let { app.podcastStore.setProgress(it, com.local.hive.mobile.stream.PodcastStore.FINISHED) }
+                val id = mediaItem?.mediaId?.takeIf { it.startsWith("pod:") }
+                lastPodcast = id
+                val saved = id?.let { app.podcastStore.progress.value[it] } ?: 0
+                if (saved > 5_000) player.seekTo(saved)
+                // Playing a finished episode again starts it over.
+                else if (id != null && saved == com.local.hive.mobile.stream.PodcastStore.FINISHED) app.podcastStore.setProgress(id, 0)
+            }
+            override fun onIsPlayingChanged(isPlaying: Boolean) {
+                if (!isPlaying) lastPodcast?.let { savePodcast(player, it) }
+            }
+            override fun onPlaybackStateChanged(state: Int) {
+                if (state == Player.STATE_ENDED) lastPodcast?.let { app.podcastStore.setProgress(it, com.local.hive.mobile.stream.PodcastStore.FINISHED) }
+            }
             override fun onTimelineChanged(timeline: androidx.media3.common.Timeline, reason: Int) {
                 if (reason == Player.TIMELINE_CHANGE_REASON_PLAYLIST_CHANGED) memory.saveQueue(player)
             }
@@ -94,7 +119,10 @@ class PlaybackService : MediaSessionService() {
             }
         })
         scope.launch {
-            while (isActive) { delay(5_000); if (player.isPlaying) memory.saveCursor(player) }
+            while (isActive) {
+                delay(5_000)
+                if (player.isPlaying) { memory.saveCursor(player); lastPodcast?.let { savePodcast(player, it) } }
+            }
         }
         // The curve follows the settings, and for "Auto-Select by Genre" the playing song's genre.
         scope.launch {
