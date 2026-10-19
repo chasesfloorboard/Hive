@@ -1,0 +1,6 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!-- Hive Link talks to the PC by its LAN or Tailscale address over plain
+     HTTP; Tailscale already encrypts its traffic end to end. -->
+<network-security-config>
+    <base-config cleartextTrafficPermitted="true" />
+</network-security-config>

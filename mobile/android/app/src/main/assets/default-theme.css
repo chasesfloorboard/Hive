@@ -1,0 +1,16 @@
+:root {
+  --bg: #090a0d;
+  --panel: rgba(19,20,25,.72);
+  --panel-strong: rgba(15,16,21,.88);
+  --border: rgba(255,255,255,.09);
+  --text: #f0eff3;
+  --text-dim: #a3a1ad;
+  --text-dimmer: #6e6c77;
+  --accent: #b9bac2;
+  --accent-soft: rgba(205,207,220,.35);
+  --accent-glow: rgba(190,195,215,.24);
+  --ambient-a: rgba(110,115,145,.18);
+  --ambient-b: rgba(55,65,95,.15);
+  --radius: 14px;
+  --blur: 24px;
+}
