@@ -347,7 +347,8 @@ private fun Playbar(vm: MainViewModel, now: NowPlaying, showArt: Boolean, modifi
                     if (artist.isNotBlank()) Text(artist, style = HiveText.rowSub, color = c.textDim, maxLines = 1, overflow = TextOverflow.Ellipsis)
                 }
             }
-            BarIcon(if (isLoved) Icons.Rounded.Favorite else Icons.Rounded.FavoriteBorder, if (isLoved) "Remove from Favorites" else "Add to Favorites", { now.trackId?.let { vm.toggleLoved(it) } }, tint = if (isLoved) c.accent else c.textDim)
+            // Love belongs to library songs; a streamed preview has none.
+            if (now.trackId != null) BarIcon(if (isLoved) Icons.Rounded.Favorite else Icons.Rounded.FavoriteBorder, if (isLoved) "Remove from Favorites" else "Add to Favorites", { now.trackId?.let { vm.toggleLoved(it) } }, tint = if (isLoved) c.accent else c.textDim)
             Spacer(Modifier.width(2.dp))
             AccentPlayButton(now.isPlaying, { vm.player.togglePlay() }, size = 42.dp)
             BarIcon(Icons.Rounded.SkipNext, "Next", { vm.player.next() })
@@ -376,13 +377,12 @@ private fun FullPlayerContent(
     val c = Hive.colors
     val loved by vm.lovedIds.collectAsStateWithLifecycle()
     var current by remember { mutableStateOf<Track?>(null) }
-    var upNext by remember { mutableStateOf<Track?>(null) }
+    val upNext = now.queue.getOrNull(now.queueIndex + 1)
     var menu by remember { mutableStateOf(false) }
     var sleepMenu by remember { mutableStateOf(false) }
     val sleep by vm.sleep.collectAsStateWithLifecycle()
     LaunchedEffect(now.trackId, now.queueIndex, now.queue.size) {
         current = now.trackId?.let { vm.tracksById(listOf(it)).firstOrNull() }
-        upNext = now.queue.getOrNull(now.queueIndex + 1)?.let { vm.tracksById(listOf(it)).firstOrNull() }
     }
 
     HiveGlassLayers(Modifier.fillMaxSize(), content = {
@@ -410,8 +410,10 @@ private fun FullPlayerContent(
                             Icon(Icons.Rounded.MoreHoriz, "More options", tint = c.text, modifier = Modifier.size(22.dp))
                         }
                         HiveMenu(menu, { menu = false }) {
-                            HiveMenuItem("Go to album", Icons.Rounded.Album) { menu = false; current?.let(onOpenAlbum) }
-                            HiveMenuItem("Go to artist", Icons.Rounded.Person) { menu = false; current?.let(onOpenArtist) }
+                            if (current != null) {
+                                HiveMenuItem("Go to album", Icons.Rounded.Album) { menu = false; current?.let(onOpenAlbum) }
+                                HiveMenuItem("Go to artist", Icons.Rounded.Person) { menu = false; current?.let(onOpenArtist) }
+                            }
                             HiveMenuItem("Playing tracks", Icons.AutoMirrored.Rounded.QueueMusic) { menu = false; onOpenQueue() }
                             HiveMenuDivider()
                             HiveMenuItem(sleepLabel(sleep), Icons.Rounded.Bedtime) { menu = false; sleepMenu = true }
@@ -445,7 +447,7 @@ private fun FullPlayerContent(
                         }
                     }
                     val isLoved = now.trackId != null && now.trackId in loved
-                    ControlButton(if (isLoved) Icons.Rounded.Favorite else Icons.Rounded.FavoriteBorder, if (isLoved) "Remove from Favorites" else "Add to Favorites", { now.trackId?.let { vm.toggleLoved(it) } }, size = 46.dp, tint = if (isLoved) c.accent else null)
+                    if (now.trackId != null) ControlButton(if (isLoved) Icons.Rounded.Favorite else Icons.Rounded.FavoriteBorder, if (isLoved) "Remove from Favorites" else "Add to Favorites", { now.trackId?.let { vm.toggleLoved(it) } }, size = 46.dp, tint = if (isLoved) c.accent else null)
                 }
 
                 SeekBar(now, onSeek = { vm.player.seekTo(it) })
@@ -539,10 +541,9 @@ fun QueueScreen(vm: MainViewModel, onClose: () -> Unit) {
     val c = Hive.colors
     val now by vm.nowPlaying.collectAsStateWithLifecycle()
     val aura by vm.aura.collectAsStateWithLifecycle()
-    var tracks by remember { mutableStateOf<List<Track>>(emptyList()) }
-    LaunchedEffect(now.queue) { tracks = vm.tracksById(now.queue) }
+    val tracks = now.queue
     // Stable row keys (song and occurrence), so a reordered queue coming back from the player doesn't flicker.
-    val keys = remember(tracks) { val seen = HashMap<Long, Int>(); tracks.map { t -> val n = seen.merge(t.id, 1, Int::plus)!!; "${t.id}#$n" } }
+    val keys = remember(tracks) { val seen = HashMap<String, Int>(); tracks.map { t -> val n = seen.merge(t.mediaId, 1, Int::plus)!!; "${t.mediaId}#$n" } }
     var order by remember(keys) { mutableStateOf(keys) }
     var dragKey by remember { mutableStateOf<String?>(null) }
     var dragFrom by remember { mutableIntStateOf(-1) }

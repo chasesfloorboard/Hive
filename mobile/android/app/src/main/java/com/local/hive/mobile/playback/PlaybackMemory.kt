@@ -16,8 +16,8 @@ class PlaybackMemory(context: Context, private val dao: LibraryDao) {
     data class Restored(val items: List<MediaItem>, val index: Int, val positionMs: Long, val shuffle: Boolean, val repeatMode: Int)
 
     fun saveQueue(player: Player) {
-        val ids = (0 until player.mediaItemCount).mapNotNull { player.getMediaItemAt(it).mediaId.toLongOrNull() }
-        prefs.edit().putString(KEY_QUEUE, ids.joinToString(",")).apply()
+        val ids = (0 until player.mediaItemCount).map { player.getMediaItemAt(it).mediaId }
+        prefs.edit().putString(KEY_QUEUE, ids.joinToString(SEPARATOR)).apply()
         saveCursor(player)
     }
 
@@ -34,22 +34,25 @@ class PlaybackMemory(context: Context, private val dao: LibraryDao) {
 
     /** The saved queue as playable items, skipping songs no longer on the phone. */
     suspend fun restore(): Restored? {
-        val ids = prefs.getString(KEY_QUEUE, null)?.split(',')?.mapNotNull { it.toLongOrNull() }.orEmpty()
+        val ids = prefs.getString(KEY_QUEUE, null)?.split(SEPARATOR)?.filter { it.isNotBlank() }.orEmpty()
         if (ids.isEmpty()) return null
-        val byId = ids.chunked(900).flatMap { dao.tracks(it) }.associateBy { it.id }
-        val kept = ids.filter { it in byId }
+        val local = ids.mapNotNull { it.toLongOrNull() }.distinct().chunked(900).flatMap { dao.tracks(it) }.associate { it.id.toString() to it.toMediaItem() }
+        val streamed = ids.filter { it.toLongOrNull() == null }.distinct().chunked(900).flatMap { dao.streamTracks(it) }
+            .filter { it.previewUrl.isNotBlank() }.associate { it.key to it.toMediaItem(it.previewUrl) }
+        val playable = local + streamed
+        val kept = ids.filter { it in playable }
         if (kept.isEmpty()) return null
-        val current = prefs.getString(KEY_CURRENT, null)?.toLongOrNull()
+        val current = prefs.getString(KEY_CURRENT, null)
         val savedIndex = prefs.getInt(KEY_INDEX, 0)
         // The same song can sit in the queue twice; prefer the saved slot if it still holds it.
         val index = when {
             current == null -> 0
-            ids.getOrNull(savedIndex) == current -> ids.take(savedIndex).count { it in byId }
+            ids.getOrNull(savedIndex) == current -> ids.take(savedIndex).count { it in playable }
             else -> kept.indexOf(current)
         }
         val position = if (index >= 0) prefs.getLong(KEY_POSITION, 0) else 0
         return Restored(
-            items = kept.map { byId.getValue(it).toMediaItem() },
+            items = kept.map { playable.getValue(it) },
             index = index.coerceAtLeast(0),
             positionMs = position,
             shuffle = prefs.getBoolean(KEY_SHUFFLE, false),
@@ -58,6 +61,7 @@ class PlaybackMemory(context: Context, private val dao: LibraryDao) {
     }
 
     private companion object {
+        const val SEPARATOR = "\n"
         const val KEY_QUEUE = "queue"
         const val KEY_CURRENT = "current"
         const val KEY_INDEX = "index"

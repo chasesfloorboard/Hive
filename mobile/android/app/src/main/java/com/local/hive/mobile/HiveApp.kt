@@ -46,6 +46,7 @@ import java.util.concurrent.TimeUnit
 class HiveApp : Application() {
     val scope = CoroutineScope(SupervisorJob() + Dispatchers.Default)
     val database by lazy { LibraryDatabase.open(this) }
+    val appleMusic by lazy { com.local.hive.mobile.stream.AppleMusic() }
     val linkStore by lazy { LinkStore(this) }
     val sync by lazy { SyncEngine(database.dao(), linkStore, HiveLinkClient(), scope) }
     val player by lazy { PlayerConnection(this, scope) }

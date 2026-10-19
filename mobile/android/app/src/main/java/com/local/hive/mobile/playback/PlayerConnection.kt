@@ -8,6 +8,7 @@ import androidx.media3.common.MediaMetadata
 import androidx.media3.common.Player
 import androidx.media3.session.MediaController
 import androidx.media3.session.SessionToken
+import com.local.hive.mobile.data.StreamTrack
 import com.local.hive.mobile.data.Track
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
@@ -19,7 +20,20 @@ import kotlinx.coroutines.flow.asStateFlow
 import kotlinx.coroutines.isActive
 import kotlinx.coroutines.launch
 
+/** One song in the player's queue, described by what the player holds, so streamed songs show too. */
+data class QueueItem(
+    val mediaId: String,
+    /** Set for songs in the library. */
+    val trackId: Long?,
+    val title: String,
+    val artist: String,
+    val artworkUri: String?,
+    val durationMs: Long,
+)
+
 data class NowPlaying(
+    val mediaId: String? = null,
+    /** Set when the song is in the library (Love, album, artist apply). */
     val trackId: Long? = null,
     val title: String = "",
     val artist: String = "",
@@ -30,7 +44,7 @@ data class NowPlaying(
     val durationMs: Long = 0,
     val shuffle: Boolean = false,
     val repeatMode: Int = Player.REPEAT_MODE_OFF,
-    val queue: List<Long> = emptyList(),
+    val queue: List<QueueItem> = emptyList(),
     val queueIndex: Int = -1,
 )
 
@@ -80,22 +94,27 @@ class PlayerConnection(private val context: Context, private val scope: Coroutin
         if (c != null) block(c) else { pending += block; connect() }
     }
 
-    fun play(tracks: List<Track>, startIndex: Int = 0, shuffle: Boolean = false) = withController { c ->
-        if (tracks.isEmpty()) return@withController
+    fun play(tracks: List<Track>, startIndex: Int = 0, shuffle: Boolean = false) = playMedia(tracks.map { it.toMediaItem() }, startIndex, shuffle)
+    fun playNext(tracks: List<Track>) = playNextMedia(tracks.map { it.toMediaItem() })
+    fun addToQueue(tracks: List<Track>) = addToQueueMedia(tracks.map { it.toMediaItem() })
+
+    /** Plays library songs and streamed songs alike. */
+    fun playMedia(items: List<MediaItem>, startIndex: Int = 0, shuffle: Boolean = false) = withController { c ->
+        if (items.isEmpty()) return@withController
         c.shuffleModeEnabled = shuffle
-        c.setMediaItems(tracks.map { it.toMediaItem() }, if (shuffle) (tracks.indices).random() else startIndex.coerceIn(tracks.indices), 0L)
+        c.setMediaItems(items, if (shuffle) items.indices.random() else startIndex.coerceIn(items.indices), 0L)
         c.prepare()
         c.play()
     }
 
-    fun playNext(tracks: List<Track>) = withController { c ->
-        if (c.mediaItemCount == 0) { play(tracks); return@withController }
-        c.addMediaItems(c.currentMediaItemIndex + 1, tracks.map { it.toMediaItem() })
+    fun playNextMedia(items: List<MediaItem>) = withController { c ->
+        if (c.mediaItemCount == 0) { playMedia(items); return@withController }
+        c.addMediaItems(c.currentMediaItemIndex + 1, items)
     }
 
-    fun addToQueue(tracks: List<Track>) = withController { c ->
-        if (c.mediaItemCount == 0) { play(tracks); return@withController }
-        c.addMediaItems(tracks.map { it.toMediaItem() })
+    fun addToQueueMedia(items: List<MediaItem>) = withController { c ->
+        if (c.mediaItemCount == 0) { playMedia(items); return@withController }
+        c.addMediaItems(items)
     }
 
     fun togglePlay() = withController { if (it.isPlaying) it.pause() else { if (it.playbackState == Player.STATE_IDLE) it.prepare(); it.play() } }
@@ -142,6 +161,7 @@ class PlayerConnection(private val context: Context, private val scope: Coroutin
         val item = c.currentMediaItem
         val meta = item?.mediaMetadata
         _state.value = NowPlaying(
+            mediaId = item?.mediaId,
             trackId = item?.mediaId?.toLongOrNull(),
             title = meta?.title?.toString().orEmpty(),
             artist = meta?.artist?.toString().orEmpty(),
@@ -152,11 +172,37 @@ class PlayerConnection(private val context: Context, private val scope: Coroutin
             durationMs = c.duration.coerceAtLeast(0),
             shuffle = c.shuffleModeEnabled,
             repeatMode = c.repeatMode,
-            queue = (0 until c.mediaItemCount).mapNotNull { c.getMediaItemAt(it).mediaId.toLongOrNull() },
+            queue = (0 until c.mediaItemCount).map { c.getMediaItemAt(it).toQueueItem() },
             queueIndex = c.currentMediaItemIndex,
         )
     }
 }
+
+private fun MediaItem.toQueueItem() = QueueItem(
+    mediaId = mediaId,
+    trackId = mediaId.toLongOrNull(),
+    title = mediaMetadata.title?.toString().orEmpty(),
+    artist = mediaMetadata.artist?.toString().orEmpty(),
+    artworkUri = mediaMetadata.artworkUri?.toString(),
+    durationMs = mediaMetadata.durationMs ?: 0,
+)
+
+/** A streamed song (Apple Music, Spotify) played from [uri]: its preview, or the full song through Hive on the PC. */
+fun StreamTrack.toMediaItem(uri: String): MediaItem = MediaItem.Builder()
+    .setMediaId(key)
+    .setUri(uri)
+    .setMediaMetadata(
+        MediaMetadata.Builder()
+            .setTitle(title)
+            .setArtist(artist)
+            .setAlbumTitle(album.ifBlank { null })
+            .setArtworkUri(artworkUrl.ifBlank { null }?.let(android.net.Uri::parse))
+            .setDurationMs(durationMs.takeIf { it > 0 })
+            .setIsPlayable(true)
+            .setIsBrowsable(false)
+            .build(),
+    )
+    .build()
 
 fun Track.toMediaItem(): MediaItem = MediaItem.Builder()
     .setMediaId(id.toString())
@@ -169,6 +215,7 @@ fun Track.toMediaItem(): MediaItem = MediaItem.Builder()
             .setAlbumArtist(albumArtist.ifBlank { null })
             .setTrackNumber(trackNumber.takeIf { it > 0 })
             .setArtworkUri(artworkUri)
+            .setDurationMs(durationMs.takeIf { it > 0 })
             .setIsPlayable(true)
             .setIsBrowsable(false)
             .build(),

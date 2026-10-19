@@ -2,7 +2,7 @@
   "formatVersion": 1,
   "database": {
     "version": 3,
-    "identityHash": "7873cf6934d324c3c5a7976f1000a364",
+    "identityHash": "dab52373b6907f315434ef50234733ed",
     "entities": [
       {
         "tableName": "tracks",
@@ -342,7 +342,7 @@
       },
       {
         "tableName": "playlist_entries",
-        "createSql": "CREATE TABLE IF NOT EXISTS `${TABLE_NAME}` (`rowId` INTEGER PRIMARY KEY AUTOINCREMENT NOT NULL, `playlistId` INTEGER NOT NULL, `trackId` INTEGER NOT NULL, `position` INTEGER NOT NULL)",
+        "createSql": "CREATE TABLE IF NOT EXISTS `${TABLE_NAME}` (`rowId` INTEGER PRIMARY KEY AUTOINCREMENT NOT NULL, `playlistId` INTEGER NOT NULL, `trackId` INTEGER NOT NULL, `position` INTEGER NOT NULL, `streamKey` TEXT NOT NULL)",
         "fields": [
           {
             "fieldPath": "rowId",
@@ -366,6 +366,12 @@
             "fieldPath": "position",
             "columnName": "position",
             "affinity": "INTEGER",
+            "notNull": true
+          },
+          {
+            "fieldPath": "streamKey",
+            "columnName": "streamKey",
+            "affinity": "TEXT",
             "notNull": true
           }
         ],
@@ -393,13 +399,88 @@
             ],
             "orders": [],
             "createSql": "CREATE INDEX IF NOT EXISTS `index_playlist_entries_trackId` ON `${TABLE_NAME}` (`trackId`)"
+          },
+          {
+            "name": "index_playlist_entries_streamKey",
+            "unique": false,
+            "columnNames": [
+              "streamKey"
+            ],
+            "orders": [],
+            "createSql": "CREATE INDEX IF NOT EXISTS `index_playlist_entries_streamKey` ON `${TABLE_NAME}` (`streamKey`)"
           }
         ]
+      },
+      {
+        "tableName": "stream_tracks",
+        "createSql": "CREATE TABLE IF NOT EXISTS `${TABLE_NAME}` (`key` TEXT NOT NULL, `source` TEXT NOT NULL, `title` TEXT NOT NULL, `artist` TEXT NOT NULL, `album` TEXT NOT NULL, `durationMs` INTEGER NOT NULL, `artworkUrl` TEXT NOT NULL, `previewUrl` TEXT NOT NULL, `url` TEXT NOT NULL, PRIMARY KEY(`key`))",
+        "fields": [
+          {
+            "fieldPath": "key",
+            "columnName": "key",
+            "affinity": "TEXT",
+            "notNull": true
+          },
+          {
+            "fieldPath": "source",
+            "columnName": "source",
+            "affinity": "TEXT",
+            "notNull": true
+          },
+          {
+            "fieldPath": "title",
+            "columnName": "title",
+            "affinity": "TEXT",
+            "notNull": true
+          },
+          {
+            "fieldPath": "artist",
+            "columnName": "artist",
+            "affinity": "TEXT",
+            "notNull": true
+          },
+          {
+            "fieldPath": "album",
+            "columnName": "album",
+            "affinity": "TEXT",
+            "notNull": true
+          },
+          {
+            "fieldPath": "durationMs",
+            "columnName": "durationMs",
+            "affinity": "INTEGER",
+            "notNull": true
+          },
+          {
+            "fieldPath": "artworkUrl",
+            "columnName": "artworkUrl",
+            "affinity": "TEXT",
+            "notNull": true
+          },
+          {
+            "fieldPath": "previewUrl",
+            "columnName": "previewUrl",
+            "affinity": "TEXT",
+            "notNull": true
+          },
+          {
+            "fieldPath": "url",
+            "columnName": "url",
+            "affinity": "TEXT",
+            "notNull": true
+          }
+        ],
+        "primaryKey": {
+          "autoGenerate": false,
+          "columnNames": [
+            "key"
+          ]
+        }
       }
     ],
     "setupQueries": [
       "CREATE TABLE IF NOT EXISTS room_master_table (id INTEGER PRIMARY KEY,identity_hash TEXT)",
-      "INSERT OR REPLACE INTO room_master_table (id,identity_hash) VALUES(42, '7873cf6934d324c3c5a7976f1000a364')"
+      "INSERT OR REPLACE INTO room_master_table (id,identity_hash) VALUES(42, 'dab52373b6907f315434ef50234733ed')"
     ]
   }
 }

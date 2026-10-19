@@ -80,13 +80,43 @@ data class Playlist(
     val imageUrl: String = "",
 )
 
-/** One slot in a playlist; a song may appear more than once. */
-@Entity(tableName = "playlist_entries", indices = [Index("playlistId"), Index("trackId")])
+/**
+ * One slot in a playlist; a song may appear more than once. A slot holds a
+ * song on the phone ([trackId]) or, for imports, a song that isn't
+ * ([streamKey], with [trackId] 0).
+ */
+@Entity(tableName = "playlist_entries", indices = [Index("playlistId"), Index("trackId"), Index("streamKey")])
 data class PlaylistEntry(
     @PrimaryKey(autoGenerate = true) val rowId: Long = 0,
     val playlistId: Long,
     val trackId: Long,
     val position: Int,
+    val streamKey: String = "",
+)
+
+/**
+ * A song from Apple Music or Spotify that isn't in the library: what Hive
+ * knows about it, and its 30-second preview when the service offers one.
+ * [key] is "am:<Apple id>" or "sp:<Spotify id>".
+ */
+@Entity(tableName = "stream_tracks")
+data class StreamTrack(
+    @PrimaryKey val key: String,
+    val source: String,
+    val title: String,
+    val artist: String,
+    val album: String,
+    val durationMs: Long,
+    val artworkUrl: String,
+    val previewUrl: String,
+    val url: String,
+)
+
+/** A playlist slot with the song it holds; one of [track] and [stream] is set. */
+data class PlaylistRow(
+    @androidx.room.Embedded val entry: PlaylistEntry,
+    @androidx.room.Relation(parentColumn = "trackId", entityColumn = "id") val track: Track?,
+    @androidx.room.Relation(parentColumn = "streamKey", entityColumn = "key") val stream: StreamTrack?,
 )
 
 data class PlaylistSummary(
@@ -245,7 +275,7 @@ interface LibraryDao {
     // ---- playlists ----
 
     @Query(
-        "SELECT p.id, p.name, p.updatedAt, p.source, p.imageUrl, COUNT(t.id) AS trackCount, " +
+        "SELECT p.id, p.name, p.updatedAt, p.source, p.imageUrl, COUNT(CASE WHEN t.id IS NOT NULL OR e.streamKey != '' THEN 1 END) AS trackCount, " +
             "(SELECT t2.albumId FROM playlist_entries e2 JOIN tracks t2 ON t2.id = e2.trackId WHERE e2.playlistId = p.id ORDER BY e2.position LIMIT 1) AS coverAlbumId " +
             "FROM playlists p LEFT JOIN playlist_entries e ON e.playlistId = p.id LEFT JOIN tracks t ON t.id = e.trackId " +
             "GROUP BY p.id ORDER BY p.updatedAt DESC"
@@ -255,12 +285,16 @@ interface LibraryDao {
     @Query("SELECT * FROM playlists WHERE id = :id")
     fun playlist(id: Long): Flow<Playlist?>
 
-    /** A playlist's songs in order; entries for songs no longer on the phone are skipped. */
-    @Query("SELECT t.* FROM playlist_entries e JOIN tracks t ON t.id = e.trackId WHERE e.playlistId = :id ORDER BY e.position")
-    fun playlistTracks(id: Long): Flow<List<Track>>
+    /** Every slot, local and streamed, in order. */
+    @Transaction
+    @Query("SELECT * FROM playlist_entries WHERE playlistId = :id ORDER BY position")
+    fun playlistRows(id: Long): Flow<List<PlaylistRow>>
 
-    @Query("SELECT e.* FROM playlist_entries e JOIN tracks t ON t.id = e.trackId WHERE e.playlistId = :id ORDER BY e.position")
-    suspend fun playlistEntries(id: Long): List<PlaylistEntry>
+    @Upsert
+    suspend fun upsertStreamTracks(tracks: List<StreamTrack>)
+
+    @Query("SELECT * FROM stream_tracks WHERE `key` IN (:keys)")
+    suspend fun streamTracks(keys: List<String>): List<StreamTrack>
 
     @Query("SELECT COALESCE(MAX(position), -1) FROM playlist_entries WHERE playlistId = :id")
     suspend fun lastPosition(id: Long): Int
@@ -293,11 +327,11 @@ interface LibraryDao {
         touchPlaylist(id, at)
     }
 
-    /** Rewrites the playlist in the given order (moves and removals). */
+    /** Rewrites the playlist with these slots, in this order (moves and removals). */
     @Transaction
-    suspend fun setPlaylistOrder(id: Long, trackIds: List<Long>, at: Long) {
+    suspend fun setPlaylistEntries(id: Long, slots: List<PlaylistEntry>, at: Long) {
         clearPlaylist(id)
-        upsertEntries(trackIds.mapIndexed { i, t -> PlaylistEntry(playlistId = id, trackId = t, position = i) })
+        upsertEntries(slots.mapIndexed { i, e -> PlaylistEntry(playlistId = id, trackId = e.trackId, position = i, streamKey = e.streamKey) })
         touchPlaylist(id, at)
     }
 
@@ -305,6 +339,15 @@ interface LibraryDao {
     suspend fun createPlaylist(playlist: Playlist, trackIds: List<Long>): Long {
         val id = insertPlaylist(playlist)
         upsertEntries(trackIds.mapIndexed { i, t -> PlaylistEntry(playlistId = id, trackId = t, position = i) })
+        return id
+    }
+
+    /** An import: library songs where they match, the service's songs where they don't. */
+    @Transaction
+    suspend fun createImportedPlaylist(playlist: Playlist, slots: List<PlaylistEntry>, streams: List<StreamTrack>): Long {
+        upsertStreamTracks(streams)
+        val id = insertPlaylist(playlist)
+        upsertEntries(slots.mapIndexed { i, e -> PlaylistEntry(playlistId = id, trackId = e.trackId, position = i, streamKey = e.streamKey) })
         return id
     }
 
@@ -355,7 +398,7 @@ interface LibraryDao {
 }
 
 @Database(
-    entities = [Track::class, LoveState::class, PcMatch::class, Play::class, FavoriteAlbum::class, Playlist::class, PlaylistEntry::class],
+    entities = [Track::class, LoveState::class, PcMatch::class, Play::class, FavoriteAlbum::class, Playlist::class, PlaylistEntry::class, StreamTrack::class],
     version = 3,
     exportSchema = true,
     autoMigrations = [AutoMigration(from = 1, to = 2), AutoMigration(from = 2, to = 3)],

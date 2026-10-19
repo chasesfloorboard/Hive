@@ -53,6 +53,8 @@ dependencies {
     implementation(libs.okhttp)
     implementation(libs.okhttp.sse)
     implementation(libs.coil.compose)
+    // Covers from Apple Music and Spotify.
+    implementation(libs.coil.network)
     implementation(libs.haze)
     implementation(libs.palette)
     implementation(libs.serialization.json)

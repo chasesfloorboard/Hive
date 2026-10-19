@@ -38,6 +38,7 @@ import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.verticalScroll
 import androidx.compose.material.icons.Icons
+import androidx.compose.material.icons.rounded.Explore
 import androidx.compose.material.icons.rounded.Category
 import androidx.compose.material.icons.rounded.Favorite
 import androidx.compose.material.icons.rounded.Folder
@@ -132,7 +133,7 @@ private fun HiveContent(vm: MainViewModel, openPlayerInitially: Boolean) {
     var queueOpen by rememberSaveable { mutableStateOf(false) }
     val drawer = rememberDrawerState(DrawerValue.Closed)
     val scope = rememberCoroutineScope()
-    val hasMedia = now.trackId != null
+    val hasMedia = now.mediaId != null
     val bottomPadding = if (hasMedia) 82.dp else 0.dp
     val route by nav.currentBackStackEntryAsState()
 
@@ -203,6 +204,15 @@ private fun HiveContent(vm: MainViewModel, openPlayerInitially: Boolean) {
                         composable("folder/{name}") { entry ->
                             val name = entry.arguments?.getString("name").orEmpty()
                             SongsScreen(vm, name.trimEnd('/').substringAfterLast('/').ifBlank { name }, vm.folderTracks(name), actions, bottomPadding) { nav.popBackStack() }
+                        }
+                        composable("apple") {
+                            AppleMusicScreen(vm, bottomPadding, onBack = { nav.popBackStack() }) { url -> nav.navigate("apple/c?url=${enc(url)}") }
+                        }
+                        composable("apple/c?url={url}") { entry ->
+                            AppleCollectionScreen(
+                                vm, entry.arguments?.getString("url").orEmpty(), bottomPadding, onBack = { nav.popBackStack() },
+                                onOpen = { url -> nav.navigate("apple/c?url=${enc(url)}") }, onOpenPlaylist = homeNav.openUserPlaylist, onToast = { toast = it },
+                            )
                         }
                         composable("userplaylist/{id}", listOf(navArgument("id") { type = NavType.LongType })) { entry ->
                             PlaylistScreen(vm, entry.arguments?.getLong("id") ?: 0L, actions, bottomPadding) { nav.popBackStack() }
@@ -275,6 +285,8 @@ private fun Sidebar(vm: MainViewModel, current: String, go: (String) -> Unit) {
         SidebarItem("History", Icons.Rounded.History, current == "playlist/{kind}RecentlyPlayed") { go("playlist/${AutoPlaylist.RecentlyPlayed.name}") }
         SidebarItem("Top 25 Most Played", Icons.Rounded.TrendingUp, current == "playlist/{kind}MostPlayed") { go("playlist/${AutoPlaylist.MostPlayed.name}") }
         SidebarItem("Recently Added", Icons.Rounded.NewReleases, current == "playlist/{kind}RecentlyAdded") { go("playlist/${AutoPlaylist.RecentlyAdded.name}") }
+        SidebarDivider("Streaming")
+        SidebarItem("Apple Music", Icons.Rounded.Explore, current == "apple" || current.startsWith("apple/")) { go("apple") }
         SidebarDivider("This phone")
         SidebarItem("Genres", Icons.Rounded.Category, current == "genres") { go("genres") }
         SidebarItem("Folders", Icons.Rounded.Folder, current == "folders") { go("folders") }
