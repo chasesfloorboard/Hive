@@ -87,6 +87,8 @@ import com.local.hive.mobile.ui.theme.HiveGlassLayers
 import com.local.hive.mobile.ui.theme.HiveShape
 import com.local.hive.mobile.ui.theme.HiveText
 import com.local.hive.mobile.ui.theme.hiveGlass
+import kotlinx.coroutines.launch
+import androidx.compose.material.icons.rounded.SaveAlt
 import com.local.hive.mobile.ui.theme.hiveGlassBorder
 
 val PlaylistRow.title: String get() = track?.title ?: stream?.title.orEmpty()
@@ -294,6 +296,14 @@ fun PlaylistScreen(vm: MainViewModel, id: Long, actions: TrackActions, bottomPad
     var renaming by remember { mutableStateOf(false) }
     var deleting by remember { mutableStateOf(false) }
     var menu by remember { mutableStateOf(false) }
+    val context = androidx.compose.ui.platform.LocalContext.current
+    val scope = androidx.compose.runtime.rememberCoroutineScope()
+    val exporter = androidx.activity.compose.rememberLauncherForActivityResult(androidx.activity.result.contract.ActivityResultContracts.CreateDocument("audio/x-mpegurl")) { uri ->
+        if (uri != null) scope.launch {
+            val text = vm.m3uFor(id)
+            kotlinx.coroutines.withContext(kotlinx.coroutines.Dispatchers.IO) { context.contentResolver.openOutputStream(uri)?.use { it.write(text.toByteArray()) } }
+        }
+    }
 
     // While editing, a local order of slots, saved when done.
     val keys = remember(rows) { rows.map { it.entry.rowId.toString() } }
@@ -396,6 +406,7 @@ fun PlaylistScreen(vm: MainViewModel, id: Long, actions: TrackActions, bottomPad
                     HiveMenuItem("Add to queue", Icons.AutoMirrored.Rounded.QueueMusic) { menu = false; vm.addToQueueRows(shown) }
                     HiveMenuItem("Add to another playlist", Icons.AutoMirrored.Rounded.PlaylistAdd) { menu = false; actions.onAddToPlaylist(shown.mapNotNull { it.track }) }
                     HiveMenuDivider()
+                    HiveMenuItem("Export as M3U", Icons.Rounded.SaveAlt) { menu = false; exporter.launch("$name.m3u8") }
                     HiveMenuItem("Rename", Icons.Rounded.Edit) { menu = false; renaming = true }
                     HiveMenuItem("Delete playlist", Icons.Rounded.Delete, destructive = true) { menu = false; deleting = true }
                 }

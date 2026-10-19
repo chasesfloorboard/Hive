@@ -35,6 +35,7 @@ import androidx.compose.foundation.pager.rememberPagerState
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.automirrored.rounded.QueueMusic
 import androidx.compose.material.icons.rounded.Add
+import androidx.compose.material.icons.rounded.FileOpen
 import androidx.compose.material.icons.rounded.Favorite
 import androidx.compose.material.icons.rounded.FavoriteBorder
 import androidx.compose.material.icons.rounded.KeyboardArrowDown
@@ -45,6 +46,7 @@ import androidx.compose.material.icons.rounded.Shuffle
 import androidx.compose.material3.Icon
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.produceState
@@ -401,17 +403,33 @@ private fun PlaylistsPanel(vm: MainViewModel, nav: HomeNavigation, bottom: Dp) {
     val played by vm.recentlyPlayed.collectAsStateWithLifecycle()
     val mine by vm.playlists.collectAsStateWithLifecycle()
     var naming by remember { mutableStateOf(false) }
+    var note by remember { mutableStateOf<String?>(null) }
+    val context = androidx.compose.ui.platform.LocalContext.current
+    // Import an M3U: matched to this phone's songs by file name, then by artist and title.
+    val importer = androidx.activity.compose.rememberLauncherForActivityResult(androidx.activity.result.contract.ActivityResultContracts.OpenDocument()) { uri ->
+        if (uri == null) return@rememberLauncherForActivityResult
+        val name = runCatching { context.contentResolver.query(uri, arrayOf(android.provider.OpenableColumns.DISPLAY_NAME), null, null, null)?.use { if (it.moveToFirst()) it.getString(0) else null } }.getOrNull()?.substringBeforeLast('.') ?: "Imported playlist"
+        val text = runCatching { context.contentResolver.openInputStream(uri)?.bufferedReader()?.readText() }.getOrNull()
+        if (text == null) note = "Couldn't read that file." else vm.importM3u(name, text) { id, message -> note = message; id?.let(nav.openUserPlaylist) }
+    }
+    LaunchedEffect(note) { if (note != null) { kotlinx.coroutines.delay(4_000); note = null } }
     val rows = listOf(AutoPlaylist.Favorites to favorites, AutoPlaylist.RecentlyAdded to recent, AutoPlaylist.MostPlayed to most.take(25), AutoPlaylist.RecentlyPlayed to played)
-    LazyColumn(Modifier.fillMaxSize(), contentPadding = PaddingValues(bottom = bottom + 12.dp)) {
-        item { PanelHeader("Playlists") }
-        item { HiveLabel("Your playlists", Modifier.padding(start = 18.dp, top = 6.dp, bottom = 6.dp)) }
-        item { LibraryRow(null, Icons.Rounded.Add, "New playlist", if (mine.isEmpty()) "Make one, or add songs from any ⋯ menu" else "") { naming = true } }
-        items(mine, key = { it.id }) { p ->
-            LibraryRow(playlistCover(p), Icons.AutoMirrored.Rounded.QueueMusic, p.name, listOfNotNull(countOf(p.trackCount, "track"), p.source.ifBlank { null }).joinToString(" · "), modifier = Modifier.animateItem()) { nav.openUserPlaylist(p.id) }
+    Box(Modifier.fillMaxSize()) {
+        LazyColumn(Modifier.fillMaxSize(), contentPadding = PaddingValues(bottom = bottom + 12.dp)) {
+            item { PanelHeader("Playlists") }
+            item { HiveLabel("Your playlists", Modifier.padding(start = 18.dp, top = 6.dp, bottom = 6.dp)) }
+            item { LibraryRow(null, Icons.Rounded.Add, "New playlist", if (mine.isEmpty()) "Make one, or add songs from any ⋯ menu" else "") { naming = true } }
+            item { LibraryRow(null, Icons.Rounded.FileOpen, "Import M3U", "A playlist file from Hive, MusicBee or another player") { importer.launch(arrayOf("audio/x-mpegurl", "audio/mpegurl", "application/vnd.apple.mpegurl", "*/*")) } }
+            items(mine, key = { it.id }) { p ->
+                LibraryRow(playlistCover(p), Icons.AutoMirrored.Rounded.QueueMusic, p.name, listOfNotNull(countOf(p.trackCount, "track"), p.source.ifBlank { null }).joinToString(" · "), modifier = Modifier.animateItem()) { nav.openUserPlaylist(p.id) }
+            }
+            item { HiveLabel("Smart playlists", Modifier.padding(start = 18.dp, top = 18.dp, bottom = 6.dp)) }
+            items(rows) { (kind, tracks) ->
+                LibraryRow(tracks.firstOrNull()?.artworkUri, if (kind == AutoPlaylist.Favorites) Icons.Rounded.Favorite else Icons.Rounded.LibraryMusic, kind.title, countOf(tracks.size, "track")) { nav.openPlaylist(kind) }
+            }
         }
-        item { HiveLabel("Smart playlists", Modifier.padding(start = 18.dp, top = 18.dp, bottom = 6.dp)) }
-        items(rows) { (kind, tracks) ->
-            LibraryRow(tracks.firstOrNull()?.artworkUri, if (kind == AutoPlaylist.Favorites) Icons.Rounded.Favorite else Icons.Rounded.LibraryMusic, kind.title, countOf(tracks.size, "track")) { nav.openPlaylist(kind) }
+        note?.let {
+            Text(it, style = HiveText.pill, color = Hive.colors.text, modifier = Modifier.align(Alignment.BottomCenter).padding(bottom = bottom + 20.dp).clip(HiveShape.pill).background(Hive.colors.control).padding(horizontal = 18.dp, vertical = 10.dp))
         }
     }
     if (naming) NameDialog("New playlist", "", "Create", onDismiss = { naming = false }) { name ->

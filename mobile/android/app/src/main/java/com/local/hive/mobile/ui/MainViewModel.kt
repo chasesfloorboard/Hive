@@ -26,6 +26,7 @@ import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
 import kotlinx.coroutines.flow.distinctUntilChanged
 import kotlinx.coroutines.flow.combine
+import kotlinx.coroutines.flow.first
 import kotlinx.coroutines.flow.map
 import kotlinx.coroutines.flow.mapLatest
 import kotlinx.coroutines.flow.stateIn
@@ -134,6 +135,24 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
         }
     fun addToPlaylist(id: Long, tracks: List<Track>) = viewModelScope.launch { dao.addToPlaylist(id, tracks.map { it.id }, System.currentTimeMillis()) }
     fun renamePlaylist(id: Long, name: String) = viewModelScope.launch { if (name.isNotBlank()) dao.renamePlaylist(id, name.trim(), System.currentTimeMillis()) }
+    /** Imports an M3U as a playlist; reports how many of its songs the phone has. */
+    fun importM3u(name: String, text: String, onDone: (Long?, String) -> Unit) = viewModelScope.launch {
+        val entries = com.local.hive.mobile.data.M3u.parse(text)
+        if (entries.isEmpty()) { onDone(null, "That file has no songs in it."); return@launch }
+        val library = dao.allTracks()
+        // Built only if some entry has to be matched by its tags.
+        val index by lazy { TrackMatcher.Index(library.map { TrackMatcher.Candidate(it.id.toString(), it.title, it.artist, it.albumArtist, it.durationMs) }) }
+        val byId by lazy { library.associateBy { it.id.toString() } }
+        val found = com.local.hive.mobile.data.M3u.match(entries, library) { e ->
+            if (e.title.isBlank()) null else index.match(e.title, e.artist, "", if (e.seconds > 0) e.seconds * 1000L else 0)?.let { byId[it.key] }
+        }.filterNotNull()
+        if (found.isEmpty()) { onDone(null, "None of its songs are on this phone."); return@launch }
+        val now = System.currentTimeMillis()
+        val id = dao.createPlaylist(Playlist(name = name.ifBlank { "Imported playlist" }, createdAt = now, updatedAt = now, source = "M3U"), found.map { it.id })
+        onDone(id, "Imported ${found.size} of ${entries.size} songs")
+    }
+    suspend fun m3uFor(id: Long): String = com.local.hive.mobile.data.M3u.write(dao.playlistRows(id).first().mapNotNull { it.track })
+
     fun deletePlaylist(id: Long) = viewModelScope.launch { dao.deletePlaylist(id) }
     /** Saves a playlist in a new order, or without a song; [entries] is the whole playlist as it should be. */
     fun setPlaylistEntries(id: Long, entries: List<PlaylistEntry>) = viewModelScope.launch { dao.setPlaylistEntries(id, entries, System.currentTimeMillis()) }
