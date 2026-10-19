@@ -132,6 +132,7 @@ private fun HiveContent(vm: MainViewModel, openPlayerInitially: Boolean) {
     val aura by vm.aura.collectAsStateWithLifecycle()
     var playerOpen by rememberSaveable { mutableStateOf(openPlayerInitially) }
     var queueOpen by rememberSaveable { mutableStateOf(false) }
+    var lyricsOpen by rememberSaveable { mutableStateOf(false) }
     val drawer = rememberDrawerState(DrawerValue.Closed)
     val scope = rememberCoroutineScope()
     val hasMedia = now.mediaId != null
@@ -249,20 +250,25 @@ private fun HiveContent(vm: MainViewModel, openPlayerInitially: Boolean) {
                             onOpenArtist = { playerOpen = false; nav.navigate("artist/${enc(it.artist)}") },
                             onInfo = { infoTarget = it },
                             onAddToPlaylist = { addTarget = listOf(it) },
+                            onOpenLyrics = { lyricsOpen = true },
                         )
                     }
                     HiveToast(toast, Modifier.align(Alignment.BottomCenter).navigationBarsPadding().padding(bottom = bottomPadding + 16.dp)) { toast = null }
                     AnimatedVisibility(queueOpen, enter = slideInVertically(Motion.open()) { it } + fadeIn(Motion.underFade()), exit = slideOutVertically(Motion.close()) { it } + fadeOut(Motion.close())) {
                         QueueScreen(vm) { queueOpen = false }
                     }
+                    AnimatedVisibility(lyricsOpen, enter = slideInVertically(Motion.open()) { it } + fadeIn(Motion.underFade()), exit = slideOutVertically(Motion.close()) { it } + fadeOut(Motion.close())) {
+                        LyricsScreen(vm) { lyricsOpen = false }
+                    }
                 },
             )
         }
         infoTarget?.let { t -> TrackInfoSheet(vm, t, onDismiss = { infoTarget = null }) { playerOpen = false; nav.navigate("album/${it.albumId}") } }
         addTarget?.let { tracks -> AddToPlaylistSheet(vm, tracks, onDismiss = { addTarget = null }) { name -> toast = "Added to $name" } }
-        BackHandler(enabled = playerOpen || queueOpen || drawer.isOpen) {
+        BackHandler(enabled = playerOpen || queueOpen || lyricsOpen || drawer.isOpen) {
             when {
                 drawer.isOpen -> scope.launch { drawer.close() }
+                lyricsOpen -> lyricsOpen = false
                 queueOpen -> queueOpen = false
                 else -> playerOpen = false
             }

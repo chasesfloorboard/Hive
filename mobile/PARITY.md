@@ -69,7 +69,7 @@ renderer views) and its state on mobile.
 |---|---|---|
 | Now playing art, track details panel | `now-playing-card` | 🟡 |
 | Accent colour from the cover | `colorExtract.js`, 900 ms glide | ✅ aura + accent |
-| Lyrics (search, synced, edit) | `lyrics:search`, `lyrics-editor` | ❌ |
+| Lyrics (search, synced, edit) | `lyrics:search`, `lyrics-editor` | 🟡 LRCLIB synced (exact, then search) and Genius plain, highlighted and tap-to-seek; no editor, no embedded lyrics |
 | Visualiser plugin (Monstercat) | `plugins:*` | ❌ |
 | Track info popup | `hivebee:trackPopup` | ✅ tags, format/bitrate/sample rate from the file, plays, size, location, share |
 

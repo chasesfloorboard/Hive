@@ -85,6 +85,7 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
     fun folderTracks(folder: String) = dao.folderTracks(folder)
     suspend fun search(query: String): List<Track> = if (query.isBlank()) emptyList() else dao.search("%${query.trim()}%")
     suspend fun playStats(trackId: Long) = dao.playStats(trackId)
+    suspend fun lyrics(now: com.local.hive.mobile.playback.NowPlaying) = app.lyrics.find(now.artist, now.title, now.album, now.durationMs)
     suspend fun tracksById(ids: List<Long>): List<Track> = dao.tracks(ids).associateBy { it.id }.let { map -> ids.mapNotNull { map[it] } }
 
     // ---- playback ----

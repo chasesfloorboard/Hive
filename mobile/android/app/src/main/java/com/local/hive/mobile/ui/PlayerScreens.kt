@@ -103,6 +103,7 @@ import com.local.hive.mobile.ui.theme.HiveShape
 import com.local.hive.mobile.ui.theme.HiveText
 import com.local.hive.mobile.ui.theme.Motion
 import com.local.hive.mobile.ui.theme.hiveGlass
+import androidx.compose.material.icons.rounded.Lyrics
 import androidx.compose.material.icons.rounded.Info
 import androidx.compose.material.icons.automirrored.rounded.PlaylistAdd
 import androidx.compose.runtime.mutableIntStateOf
@@ -146,6 +147,7 @@ fun PlayerSheet(
     onOpenArtist: (Track) -> Unit,
     onInfo: (Track) -> Unit,
     onAddToPlaylist: (Track) -> Unit,
+    onOpenLyrics: () -> Unit,
 ) {
     val c = Hive.colors
     val now by vm.nowPlaying.collectAsStateWithLifecycle()
@@ -244,6 +246,7 @@ fun PlayerSheet(
                         onOpenAlbum = onOpenAlbum,
                         onInfo = onInfo,
                         onAddToPlaylist = onAddToPlaylist,
+                        onOpenLyrics = onOpenLyrics,
                         onOpenArtist = onOpenArtist,
                         onArtPlaced = { artTarget = it },
                     )
@@ -380,6 +383,7 @@ private fun FullPlayerContent(
     onOpenArtist: (Track) -> Unit,
     onInfo: (Track) -> Unit,
     onAddToPlaylist: (Track) -> Unit,
+    onOpenLyrics: () -> Unit,
     onArtPlaced: (Rect) -> Unit,
 ) {
     val c = Hive.colors
@@ -470,8 +474,12 @@ private fun FullPlayerContent(
                     TransportButton(if (now.repeatMode == Player.REPEAT_MODE_ONE) Icons.Rounded.RepeatOne else Icons.Rounded.Repeat, "Repeat", 24.dp, active = now.repeatMode != Player.REPEAT_MODE_OFF) { vm.player.cycleRepeat() }
                 }
 
+                Row(Modifier.padding(horizontal = 12.dp).padding(bottom = 12.dp).fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                Box(Modifier.size(58.dp).hiveGlass(HiveShape.menu).clickable(onClick = onOpenLyrics), contentAlignment = Alignment.Center) {
+                    Icon(Icons.Rounded.Lyrics, "Lyrics", tint = c.accent, modifier = Modifier.size(22.dp))
+                }
                 Row(
-                    Modifier.padding(horizontal = 12.dp).padding(bottom = 12.dp).fillMaxWidth().height(58.dp).hiveGlass(HiveShape.menu).clickable(onClick = onOpenQueue).padding(horizontal = 12.dp),
+                    Modifier.weight(1f).height(58.dp).hiveGlass(HiveShape.menu).clickable(onClick = onOpenQueue).padding(horizontal = 12.dp),
                     verticalAlignment = Alignment.CenterVertically,
                 ) {
                     Icon(Icons.AutoMirrored.Rounded.QueueMusic, null, tint = c.accent, modifier = Modifier.size(20.dp))
@@ -480,6 +488,7 @@ private fun FullPlayerContent(
                         Text(upNext?.let { "Next: " + listOf(it.title, it.artist).filter { s -> s.isNotBlank() }.joinToString(" · ") } ?: "${now.queueIndex + 1} of ${now.queue.size}", style = HiveText.small, color = c.text, maxLines = 1, overflow = TextOverflow.Ellipsis)
                     }
                     Icon(Icons.Rounded.KeyboardArrowUp, null, tint = c.textDim)
+                }
                 }
             }
         }
