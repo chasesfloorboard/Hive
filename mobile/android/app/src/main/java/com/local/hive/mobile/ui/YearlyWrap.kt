@@ -4,6 +4,10 @@ import androidx.compose.foundation.background
 import androidx.compose.foundation.border
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.Arrangement
+import androidx.compose.foundation.layout.IntrinsicSize
+import androidx.compose.foundation.layout.aspectRatio
+import androidx.compose.foundation.gestures.detectTapGestures
+import androidx.compose.ui.input.pointer.pointerInput
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.Row
@@ -141,17 +145,26 @@ fun YearlyWrapScreen(vm: MainViewModel, bottomPadding: Dp, onBack: () -> Unit) {
                 EmptyState("Not enough listening yet", "Hive builds your Wrap from the songs you play on this phone. Play some music and come back.")
             }
             else -> HorizontalPager(pager, Modifier.fillMaxSize().drawWithContent { layer.record { this@drawWithContent.drawContent() }; drawLayer(layer) }) { page ->
-                Column(Modifier.fillMaxSize().statusBarsPadding().navigationBarsPadding().padding(start = 28.dp, end = 28.dp, top = 76.dp, bottom = bottomPadding + 70.dp), verticalArrangement = Arrangement.Center) {
+                // A story slide: the words start a third of the way down and fill the width, as a phone holds them.
+                Column(
+                    Modifier.fillMaxSize().statusBarsPadding().navigationBarsPadding()
+                        .pointerInput(Unit) {
+                            detectTapGestures { at -> scope.launch { pager.animateScrollToPage((pager.currentPage + if (at.x > size.width / 3) 1 else -1).coerceIn(0, 6)) } }
+                        }
+                        .padding(start = 24.dp, end = 24.dp, top = 84.dp, bottom = bottomPadding + 28.dp),
+                ) {
+                    Spacer(Modifier.weight(0.35f))
                     when (page) {
                         0 -> { Eyebrow("Hive · Yearly Wrap"); Big("${w.year}"); Title("Your year in music."); Sub("A look at what you actually listened to on this phone, kept on this phone.") }
                         1 -> { Eyebrow("Listening time"); Big(hours(w.listenedMs)); Sub("spent with music"); Cards(listOf("Plays" to "%,d".format(w.plays), "Artists" to "%,d".format(w.artists), "Albums" to "%,d".format(w.albums), "Longest streak" to countOf(w.longestStreak, "day"))) }
                         2 -> w.topTrack?.let { t ->
-                            Artwork(art(t.albumId), Modifier.size(230.dp), HiveShape.art, Icons.Rounded.LibraryMusic, elevation = 30.dp)
+                            Artwork(art(t.albumId), Modifier.fillMaxWidth(0.8f).aspectRatio(1f), HiveShape.art, Icons.Rounded.LibraryMusic, elevation = 30.dp)
                             Spacer(Modifier.height(24.dp)); Eyebrow("Your top track"); Title(t.name); Sub(t.sub); Cards(listOf("Played" to countOf(t.plays, "time")))
                         }
                         3 -> w.topArtists.firstOrNull()?.let { a ->
-                            Eyebrow("The artist who shaped your year"); Title(a.name); Sub(countOf(a.plays, "play"))
-                            Spacer(Modifier.height(22.dp)); Artwork(art(a.albumId), Modifier.size(200.dp), CircleShape, Icons.Rounded.LibraryMusic, elevation = 30.dp)
+                            val photo by produceState<String?>(null, a.name) { value = vm.artistImage(a.name) }
+                            Artwork(photo ?: art(a.albumId), Modifier.fillMaxWidth(0.72f).aspectRatio(1f), CircleShape, Icons.Rounded.LibraryMusic, elevation = 30.dp)
+                            Spacer(Modifier.height(26.dp)); Eyebrow("The artist who shaped your year"); Title(a.name); Cards(listOf("Plays" to "%,d".format(a.plays), "Of your year" to "${(a.plays * 100 / w.plays.coerceAtLeast(1))}%"))
                         }
                         4 -> { Eyebrow("The records you returned to"); Title("Your top albums."); Spacer(Modifier.height(14.dp)); w.topAlbums.forEachIndexed { i, a -> Rank(i + 1, a) } }
                         5 -> {
@@ -168,6 +181,7 @@ fun YearlyWrapScreen(vm: MainViewModel, bottomPadding: Dp, onBack: () -> Unit) {
                             Sub("Hive keeps this on your phone. No account is needed.")
                         }
                     }
+                    Spacer(Modifier.weight(0.65f))
                 }
             }
         }
@@ -190,9 +204,9 @@ fun YearlyWrapScreen(vm: MainViewModel, bottomPadding: Dp, onBack: () -> Unit) {
                 }
             }, contentAlignment = Alignment.Center) { Icon(Icons.Rounded.Share, "Share this slide", tint = c.text, modifier = Modifier.size(19.dp)) }
         }
-        // Where you are in the slides.
-        if ((wrap?.plays ?: 0) > 0) Row(Modifier.align(Alignment.BottomCenter).navigationBarsPadding().padding(bottom = bottomPadding + 24.dp), horizontalArrangement = Arrangement.spacedBy(6.dp)) {
-            repeat(7) { i -> Box(Modifier.size(if (i == pager.currentPage) 20.dp else 7.dp, 7.dp).clip(HiveShape.pill).background(if (i == pager.currentPage) c.accent else c.text.copy(alpha = 0.25f))) }
+        // Where you are in the slides, as a story shows it: a segment per slide under the bar.
+        if ((wrap?.plays ?: 0) > 0) Row(Modifier.fillMaxWidth().statusBarsPadding().padding(start = 16.dp, end = 16.dp, top = 60.dp), horizontalArrangement = Arrangement.spacedBy(4.dp)) {
+            repeat(7) { i -> Box(Modifier.weight(1f).height(3.dp).clip(HiveShape.pill).background(if (i <= pager.currentPage) c.accent else c.text.copy(alpha = 0.18f))) }
         }
     }
 }
@@ -205,16 +219,18 @@ fun YearlyWrapScreen(vm: MainViewModel, bottomPadding: Dp, onBack: () -> Unit) {
 @Composable
 private fun Cards(items: List<Pair<String, String>>) {
     val c = Hive.colors
-    Column(Modifier.padding(top = 22.dp), verticalArrangement = Arrangement.spacedBy(10.dp)) {
+    // Boxes fill the width two to a row, both as tall as the taller; a lone box takes the whole row.
+    Column(Modifier.fillMaxWidth().padding(top = 22.dp), verticalArrangement = Arrangement.spacedBy(10.dp)) {
         items.chunked(2).forEach { row ->
-            Row(horizontalArrangement = Arrangement.spacedBy(10.dp)) {
+            Row(Modifier.fillMaxWidth().height(IntrinsicSize.Min), horizontalArrangement = Arrangement.spacedBy(10.dp)) {
                 row.forEach { (label, value) ->
-                    Column(Modifier.weight(1f).hiveGlass(RoundedCornerShape(16.dp)).padding(14.dp)) {
+                    Column(Modifier.weight(1f).fillMaxHeight().hiveGlass(RoundedCornerShape(18.dp)).padding(horizontal = 16.dp, vertical = 16.dp)) {
                         HiveLabel(label)
-                        Text(value, style = HiveText.year.copy(fontSize = 19.sp), color = c.text, maxLines = 2, overflow = TextOverflow.Ellipsis, modifier = Modifier.padding(top = 4.dp))
+                        // Names run long; they take a smaller size rather than losing their end.
+                        val long = value.length > 12
+                        Text(value, style = HiveText.year.copy(fontSize = if (long) 19.sp else 24.sp, lineHeight = if (long) 23.sp else 28.sp, fontWeight = FontWeight.Bold), color = c.text, maxLines = 3, overflow = TextOverflow.Ellipsis, modifier = Modifier.padding(top = 6.dp))
                     }
                 }
-                if (row.size == 1) Spacer(Modifier.weight(1f))
             }
         }
     }
