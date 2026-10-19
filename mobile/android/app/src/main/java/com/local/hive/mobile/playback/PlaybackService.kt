@@ -20,7 +20,11 @@ import androidx.compose.ui.graphics.toArgb
 import kotlinx.coroutines.flow.distinctUntilChanged
 import androidx.media3.exoplayer.source.DefaultMediaSourceFactory
 import androidx.media3.session.MediaSession
-import androidx.media3.session.MediaSessionService
+import androidx.media3.session.LibraryResult
+import androidx.media3.session.MediaLibraryService
+import androidx.media3.session.MediaLibraryService.LibraryParams
+import androidx.media3.session.MediaLibraryService.MediaLibrarySession
+import androidx.media3.common.MediaItem
 import androidx.media3.session.MediaSession.MediaItemsWithStartPosition
 import com.google.common.util.concurrent.ListenableFuture
 import com.google.common.util.concurrent.SettableFuture
@@ -40,8 +44,8 @@ import kotlinx.coroutines.withContext
  * ExoPlayer plays queued local files back to back without a gap.
  */
 @androidx.annotation.OptIn(androidx.media3.common.util.UnstableApi::class)
-class PlaybackService : MediaSessionService() {
-    private var session: MediaSession? = null
+class PlaybackService : MediaLibraryService() {
+    private var session: MediaLibrarySession? = null
     private val scope = MainScope()
     private lateinit var memory: PlaybackMemory
     private val equaliser = EqualiserProcessor()
@@ -171,21 +175,61 @@ class PlaybackService : MediaSessionService() {
             Intent(this, MainActivity::class.java).putExtra(MainActivity.EXTRA_OPEN_PLAYER, true),
             PendingIntent.FLAG_IMMUTABLE or PendingIntent.FLAG_UPDATE_CURRENT,
         )
-        session = MediaSession.Builder(this, player).setSessionActivity(open).setCallback(object : MediaSession.Callback {
+        libraryBrowser = LibraryBrowser(app.database.dao())
+        fun <T> future(block: suspend () -> T): ListenableFuture<T> = SettableFuture.create<T>().also { f ->
+            scope.launch { runCatching { withContext(Dispatchers.IO) { block() } }.fold({ f.set(it) }, { f.setException(it) }) }
+        }
+        session = MediaLibrarySession.Builder(this, player, object : MediaLibrarySession.Callback {
             // Bluetooth play or the system's media controls after a reboot resume the saved queue.
-            override fun onPlaybackResumption(mediaSession: MediaSession, controller: MediaSession.ControllerInfo): ListenableFuture<MediaItemsWithStartPosition> {
-                val future = SettableFuture.create<MediaItemsWithStartPosition>()
-                scope.launch {
-                    val saved = withContext(Dispatchers.IO) { memory.restore() }
-                    if (saved == null) future.setException(UnsupportedOperationException("Nothing to resume"))
-                    else future.set(MediaItemsWithStartPosition(saved.items, saved.index, saved.positionMs))
+            override fun onPlaybackResumption(mediaSession: MediaSession, controller: MediaSession.ControllerInfo): ListenableFuture<MediaItemsWithStartPosition> =
+                future { memory.restore()?.let { MediaItemsWithStartPosition(it.items, it.index, it.positionMs) } ?: throw UnsupportedOperationException("Nothing to resume") }
+
+            // Android Auto and other browsers: Hive's library as a tree.
+            override fun onGetLibraryRoot(session: MediaLibrarySession, browser: MediaSession.ControllerInfo, params: LibraryParams?): ListenableFuture<LibraryResult<MediaItem>> =
+                com.google.common.util.concurrent.Futures.immediateFuture(LibraryResult.ofItem(this@PlaybackService.libraryBrowser.root(), params))
+
+            override fun onGetChildren(session: MediaLibrarySession, browser: MediaSession.ControllerInfo, parentId: String, page: Int, pageSize: Int, params: LibraryParams?): ListenableFuture<LibraryResult<com.google.common.collect.ImmutableList<MediaItem>>> =
+                future {
+                    val all = this@PlaybackService.libraryBrowser.children(parentId)
+                    LibraryResult.ofItemList(all.drop(page * pageSize).take(pageSize), params)
                 }
-                return future
+
+            override fun onGetItem(session: MediaLibrarySession, browser: MediaSession.ControllerInfo, mediaId: String): ListenableFuture<LibraryResult<MediaItem>> =
+                future {
+                    val item = this@PlaybackService.libraryBrowser.resolve(listOf(MediaItem.Builder().setMediaId(mediaId).build())).first.firstOrNull()
+                    if (item != null) LibraryResult.ofItem(item, null) else LibraryResult.ofError(androidx.media3.session.SessionError.ERROR_BAD_VALUE)
+                }
+
+            override fun onSearch(session: MediaLibrarySession, browser: MediaSession.ControllerInfo, query: String, params: LibraryParams?): ListenableFuture<LibraryResult<Void>> {
+                scope.launch {
+                    val found = withContext(Dispatchers.IO) { this@PlaybackService.libraryBrowser.search(query) }
+                    lastSearch = found
+                    session.notifySearchResultChanged(browser, query, found.size, params)
+                }
+                return com.google.common.util.concurrent.Futures.immediateFuture(LibraryResult.ofVoid())
             }
-        }).build()
+
+            override fun onGetSearchResult(session: MediaLibrarySession, browser: MediaSession.ControllerInfo, query: String, page: Int, pageSize: Int, params: LibraryParams?): ListenableFuture<LibraryResult<com.google.common.collect.ImmutableList<MediaItem>>> =
+                future { LibraryResult.ofItemList((lastSearch.ifEmpty { this@PlaybackService.libraryBrowser.search(query) }).drop(page * pageSize).take(pageSize), params) }
+
+            // A song picked in a browser plays its list from there; items from Hive itself pass straight through.
+            override fun onAddMediaItems(mediaSession: MediaSession, controller: MediaSession.ControllerInfo, mediaItems: MutableList<MediaItem>): ListenableFuture<MutableList<MediaItem>> =
+                if (mediaItems.all { it.localConfiguration != null }) com.google.common.util.concurrent.Futures.immediateFuture(mediaItems)
+                else future { this@PlaybackService.libraryBrowser.resolve(mediaItems).first.toMutableList() }
+
+            override fun onSetMediaItems(mediaSession: MediaSession, controller: MediaSession.ControllerInfo, mediaItems: MutableList<MediaItem>, startIndex: Int, startPositionMs: Long): ListenableFuture<MediaItemsWithStartPosition> =
+                if (mediaItems.all { it.localConfiguration != null }) com.google.common.util.concurrent.Futures.immediateFuture(MediaItemsWithStartPosition(mediaItems, startIndex, startPositionMs))
+                else future {
+                    val (queue, start) = this@PlaybackService.libraryBrowser.resolve(mediaItems)
+                    MediaItemsWithStartPosition(queue, if (mediaItems.size == 1) start else startIndex.coerceIn(0, (queue.size - 1).coerceAtLeast(0)), startPositionMs)
+                }
+        }).setSessionActivity(open).build()
     }
 
-    override fun onGetSession(controllerInfo: MediaSession.ControllerInfo): MediaSession? = session
+    override fun onGetSession(controllerInfo: MediaSession.ControllerInfo): MediaLibrarySession? = session
+
+    private lateinit var libraryBrowser: LibraryBrowser
+    private var lastSearch: List<MediaItem> = emptyList()
 
     override fun onTaskRemoved(rootIntent: Intent?) {
         val player = session?.player

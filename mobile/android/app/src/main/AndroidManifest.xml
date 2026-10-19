@@ -44,6 +44,11 @@
             </intent-filter>
         </activity>
 
+        <!-- Android Auto: Hive is a media app with a browsable library. -->
+        <meta-data
+            android:name="com.google.android.gms.car.application"
+            android:resource="@xml/automotive_app_desc" />
+
         <!-- Shares Yearly Wrap pictures. -->
         <provider
             android:name="androidx.core.content.FileProvider"
@@ -72,6 +77,7 @@
             android:exported="true"
             android:foregroundServiceType="mediaPlayback">
             <intent-filter>
+                <action android:name="androidx.media3.session.MediaLibraryService" />
                 <action android:name="androidx.media3.session.MediaSessionService" />
                 <action android:name="android.media.browse.MediaBrowserService" />
             </intent-filter>
