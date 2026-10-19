@@ -44,6 +44,18 @@
             </intent-filter>
         </activity>
 
+        <receiver
+            android:name=".widget.HiveWidgetReceiver"
+            android:exported="true"
+            android:label="Hive">
+            <intent-filter>
+                <action android:name="android.appwidget.action.APPWIDGET_UPDATE" />
+            </intent-filter>
+            <meta-data
+                android:name="android.appwidget.provider"
+                android:resource="@xml/hive_widget" />
+        </receiver>
+
         <service
             android:name=".playback.PlaybackService"
             android:exported="true"

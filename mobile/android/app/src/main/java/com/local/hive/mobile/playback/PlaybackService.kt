@@ -16,6 +16,7 @@ import androidx.media3.common.audio.AudioProcessor
 import android.content.Context
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.combine
+import androidx.compose.ui.graphics.toArgb
 import kotlinx.coroutines.flow.distinctUntilChanged
 import androidx.media3.exoplayer.source.DefaultMediaSourceFactory
 import androidx.media3.session.MediaSession
@@ -46,6 +47,22 @@ class PlaybackService : MediaSessionService() {
     private val equaliser = EqualiserProcessor()
     private val genre = MutableStateFlow("")
     private var lastPodcast: String? = null
+    private var widgetJob: kotlinx.coroutines.Job? = null
+
+    /** Redraws the home-screen widget, at most a few times a second. */
+    private fun refreshWidget(player: Player) {
+        val m = player.mediaMetadata
+        val item = player.currentMediaItem?.mediaMetadata
+        val state = com.local.hive.mobile.widget.WidgetState(
+            title = (m.title ?: item?.station)?.toString().orEmpty(),
+            artist = (m.artist ?: item?.station)?.toString().orEmpty(),
+            art = (item?.artworkUri ?: m.artworkUri)?.toString(),
+            playing = player.isPlaying,
+            accent = (application as HiveApp).themes.colors.value.accent.toArgb(),
+        )
+        widgetJob?.cancel()
+        widgetJob = scope.launch { delay(250); com.local.hive.mobile.widget.HiveWidget.update(this@PlaybackService, state) }
+    }
 
     private fun savePodcast(player: Player, id: String) {
         val store = (application as HiveApp).podcastStore
@@ -114,6 +131,7 @@ class PlaybackService : MediaSessionService() {
                 if (reason == Player.TIMELINE_CHANGE_REASON_PLAYLIST_CHANGED) memory.saveQueue(player)
             }
             override fun onEvents(player: Player, events: Player.Events) {
+                if (events.containsAny(Player.EVENT_MEDIA_ITEM_TRANSITION, Player.EVENT_IS_PLAYING_CHANGED, Player.EVENT_MEDIA_METADATA_CHANGED)) refreshWidget(player)
                 if (events.containsAny(Player.EVENT_MEDIA_ITEM_TRANSITION, Player.EVENT_IS_PLAYING_CHANGED, Player.EVENT_POSITION_DISCONTINUITY,
                         Player.EVENT_SHUFFLE_MODE_ENABLED_CHANGED, Player.EVENT_REPEAT_MODE_CHANGED)) memory.saveCursor(player)
             }

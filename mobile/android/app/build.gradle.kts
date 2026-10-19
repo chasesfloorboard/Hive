@@ -55,6 +55,9 @@ dependencies {
     implementation(libs.coil.compose)
     // Covers from Apple Music and Spotify.
     implementation(libs.coil.network)
+    // The home-screen widget.
+    implementation(libs.glance.appwidget)
+    implementation(libs.glance.material3)
     implementation(libs.haze)
     implementation(libs.palette)
     implementation(libs.serialization.json)
