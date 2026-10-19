@@ -54,6 +54,7 @@ class HiveApp : Application(), coil3.SingletonImageLoader.Factory {
     val appleMusic by lazy { com.local.hive.mobile.stream.AppleMusic() }
     val spotify by lazy { com.local.hive.mobile.stream.Spotify() }
     val youTubeMusic by lazy { com.local.hive.mobile.stream.YouTubeMusic(this) }
+    val likedAlbums by lazy { com.local.hive.mobile.data.LikedAlbums(this, database.dao()) }
     val spotifyAccount by lazy { com.local.hive.mobile.stream.SpotifyAccount(this) }
     val lyrics by lazy { com.local.hive.mobile.stream.LyricsProvider(this) }
     val equaliser by lazy { com.local.hive.mobile.playback.EqualiserStore(this) }
@@ -94,6 +95,7 @@ class HiveApp : Application(), coil3.SingletonImageLoader.Factory {
             },
         )
         requestRescan(delayMs = 0)
+        likedAlbums.start(scope)
         // Live Hive Link updates while Hive is on screen; the periodic worker
         // covers the rest of the time.
         ProcessLifecycleOwner.get().lifecycle.addObserver(object : DefaultLifecycleObserver {

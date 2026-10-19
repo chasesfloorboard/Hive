@@ -50,10 +50,10 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
     val lovedIds: StateFlow<Set<Long>> = dao.loveStates().map { list -> list.filter { it.loved }.mapTo(HashSet()) { it.trackId } }.state(emptySet())
     val favoriteAlbumKeys: StateFlow<Set<String>> = dao.favoriteAlbums().map { list -> list.mapTo(HashSet()) { it.key } }.state(emptySet())
     val albums: StateFlow<List<AlbumSummary>> = dao.albums().map { list -> list.sortedWith(compareBy(LibrarySort.collator) { LibrarySort.key(it.album) }) }.state(emptyList())
-    /** Favorite albums that are on this phone, newest first. */
+    /** Favorite albums that are on this phone, the ones added to the library most recently first. */
     val favoriteAlbums: StateFlow<List<AlbumSummary>> = combine(albums, dao.favoriteAlbums()) { all, favs ->
         val byKey = all.associateBy { FavoriteAlbum.keyOf(it.album, it.artist) }
-        favs.mapNotNull { byKey[it.key] }
+        favs.mapNotNull { byKey[it.key] }.distinctBy { it.albumId }.sortedByDescending { it.added }
     }.state(emptyList())
     val artists: StateFlow<List<ArtistSummary>> = dao.artists().map { list -> list.sortedWith(compareBy(LibrarySort.collator) { LibrarySort.key(it.artist) }) }.state(emptyList())
     val genres: StateFlow<List<NamedCount>> = dao.genres().state(emptyList())
@@ -125,8 +125,9 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
     /** Album Favorites stay on this phone and never change the songs' Love. */
     fun toggleFavoriteAlbum(album: String, artist: String) = viewModelScope.launch {
         val key = FavoriteAlbum.keyOf(album, artist)
-        if (key in favoriteAlbumKeys.value) dao.deleteFavoriteAlbum(key)
-        else dao.upsertFavoriteAlbum(FavoriteAlbum(key, album, artist, System.currentTimeMillis()))
+        // Taken out by hand, an album stays out even though it has liked songs.
+        if (key in favoriteAlbumKeys.value) { dao.deleteFavoriteAlbum(key); app.likedAlbums.setDismissed(key, true) }
+        else { dao.upsertFavoriteAlbum(FavoriteAlbum(key, album, artist, System.currentTimeMillis())); app.likedAlbums.setDismissed(key, false) }
     }
     // ---- playlists ----
 
