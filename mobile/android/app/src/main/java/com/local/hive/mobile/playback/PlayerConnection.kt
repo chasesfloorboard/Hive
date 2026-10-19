@@ -104,10 +104,10 @@ class PlayerConnection(private val context: Context, private val scope: Coroutin
     fun addToQueue(tracks: List<Track>) = addToQueueMedia(tracks.map { it.toMediaItem() })
 
     /** Plays library songs and streamed songs alike. */
-    fun playMedia(items: List<MediaItem>, startIndex: Int = 0, shuffle: Boolean = false) = withController { c ->
+    fun playMedia(items: List<MediaItem>, startIndex: Int = 0, shuffle: Boolean = false, startPositionMs: Long = 0) = withController { c ->
         if (items.isEmpty()) return@withController
         c.shuffleModeEnabled = shuffle
-        c.setMediaItems(items, if (shuffle) items.indices.random() else startIndex.coerceIn(items.indices), 0L)
+        c.setMediaItems(items, if (shuffle) items.indices.random() else startIndex.coerceIn(items.indices), startPositionMs)
         c.prepare()
         c.play()
     }

@@ -131,8 +131,8 @@ renderer views) and its state on mobile.
 | Pair over Wi-Fi with a code | ✅ |
 | Favorites sync both ways, newest change wins | ✅ |
 | Play from the PC library on the phone (streaming) | ✅ PC library page: albums with covers, songs, search, album pages; streams from Hive; kept on the phone, refreshed by ETag |
-| Hand off playback between phone and PC | ❌ |
-| Remote control Hive on the PC | ❌ |
+| Hand off playback between phone and PC | 🟡 PC → phone ("Play on this phone": same song and position, the phone's copy or streamed; the PC pauses). Phone → PC needs a small change in Hive's renderer |
+| Remote control Hive on the PC | ✅ now playing, play/pause, skip, seek, volume; off until allowed in Hive's settings |
 | Android Auto (browse, search, play) | ✅ library tree, songs play their list from there, search |
 | Home-screen widget | ✅ |
 | Away from home via Tailscale | ❌ |

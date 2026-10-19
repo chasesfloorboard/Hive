@@ -47,10 +47,13 @@ class PcLibrary(context: Context, private val client: HiveLinkClient, private va
         return (sync.streams.value?.host ?: p.hosts.firstOrNull() ?: return null) to p.port
     }
 
-    fun coverUrl(t: PcTrack): String? {
+    fun coverUrl(t: PcTrack): String? = coverFor(t.cover)
+
+    /** A cover from Hive's covers folder, by its file name. */
+    fun coverFor(name: String): String? {
         val (host, port) = base() ?: return null
-        if (t.cover.isBlank()) return null
-        return "http://$host:$port/api/cover?name=${t.cover}&t=${android.net.Uri.encode(store.pairing?.token.orEmpty())}"
+        if (name.isBlank()) return null
+        return "http://$host:$port/api/cover?name=$name&t=${android.net.Uri.encode(store.pairing?.token.orEmpty())}"
     }
 
     fun mediaItem(t: PcTrack): MediaItem? {

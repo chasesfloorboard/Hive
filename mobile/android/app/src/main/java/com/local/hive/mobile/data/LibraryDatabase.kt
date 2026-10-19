@@ -372,6 +372,10 @@ interface LibraryDao {
     @Query("SELECT * FROM pc_match")
     suspend fun allMatches(): List<PcMatch>
 
+    /** The phone's copy of a Hive (PC) song, if it has one. */
+    @Query("SELECT t.* FROM pc_match m JOIN tracks t ON t.id = m.trackId WHERE m.pcId = :pcId LIMIT 1")
+    suspend fun trackForPc(pcId: String): Track?
+
     @Query("DELETE FROM pc_match")
     suspend fun clearMatches()
 

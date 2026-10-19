@@ -231,6 +231,25 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
     fun playNextPc(tracks: List<com.local.hive.mobile.link.PcTrack>) = app.player.playNextMedia(tracks.mapNotNull { app.pcLibrary.mediaItem(it) })
     fun addToQueuePc(tracks: List<com.local.hive.mobile.link.PcTrack>) = app.player.addToQueueMedia(tracks.mapNotNull { app.pcLibrary.mediaItem(it) })
 
+    // ---- remote control of Hive on the PC ----
+    suspend fun pcRemoteState(): com.local.hive.mobile.link.RemoteState? = app.sync.pcConnection()?.let { linkClient.remoteState(it) }
+    fun pcRemote(command: String, positionMs: Long? = null, volume: Double? = null) = viewModelScope.launch {
+        runCatching { app.sync.pcConnection()?.let { linkClient.remote(it, command, positionMs, volume) } }
+    }
+
+    /** Takes over what the PC is playing: the phone's copy if it has one, else streamed from Hive; then the PC pauses. */
+    fun playPcHere(state: com.local.hive.mobile.link.RemoteState, onDone: (String) -> Unit) = viewModelScope.launch {
+        val local = dao.trackForPc(state.id)
+        // The PC says enough about the song to stream it, even before the PC library has been fetched.
+        val item = local?.toMediaItem() ?: app.pcLibrary.mediaItem(
+            com.local.hive.mobile.link.PcTrack(id = state.id, title = state.title, artist = state.artist, album = state.album, duration = state.duration, cover = state.cover),
+        )
+        if (item == null) { onDone("This song can't play on the phone"); return@launch }
+        app.player.playMedia(listOf(item), startPositionMs = state.position)
+        pcRemote("pause")
+        onDone(if (local != null) "Playing your copy here" else "Playing here, streamed from your PC")
+    }
+
     val sleep = app.player.sleep
     fun setSleepTimer(minutes: Int) = app.player.setSleepTimer(minutes)
     fun sleepAtEndOfSong() = app.player.sleepAtEndOfSong()

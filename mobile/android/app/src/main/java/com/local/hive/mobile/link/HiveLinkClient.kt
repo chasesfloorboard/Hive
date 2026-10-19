@@ -53,7 +53,20 @@ import java.util.concurrent.TimeUnit
 @Serializable data class LoveResponse(val seq: Long, val results: List<LoveResult>)
 @Serializable data class HiveAddress(val name: String = "", val address: String, val tailscale: Boolean = false)
 @Serializable data class StreamCaps(val track: Boolean = false, val song: Boolean = false)
-@Serializable data class InfoResponse(val serverId: String, val name: String, val port: Int, val seq: Long, val addresses: List<HiveAddress> = emptyList(), val streams: StreamCaps = StreamCaps())
+@Serializable data class InfoResponse(val serverId: String, val name: String, val port: Int, val seq: Long, val addresses: List<HiveAddress> = emptyList(), val streams: StreamCaps = StreamCaps(), val remote: Boolean = false)
+/** What Hive on the PC is playing. */
+@Serializable data class RemoteState(
+    val playing: Boolean = false,
+    val id: String = "",
+    val title: String = "",
+    val artist: String = "",
+    val album: String = "",
+    val cover: String = "",
+    val position: Long = 0,
+    val duration: Long = 0,
+    val volume: Double = 1.0,
+)
+@Serializable private data class RemoteCommand(val command: String, val positionMs: Long? = null, val volume: Double? = null)
 @Serializable private data class PairRequest(val code: String, val deviceName: String)
 @Serializable private data class DiscoveryReply(val hivelink: Int, val serverId: String, val name: String, val port: Int)
 
@@ -135,6 +148,13 @@ class HiveLinkClient(private val http: OkHttpClient = defaultHttp()) {
         http.newCall(authed(conn, "/api/love").post(body).build()).execute().use {
             json.decodeFromString(LoveResponse.serializer(), read(it))
         }
+    }
+
+    suspend fun remoteState(conn: Connection): RemoteState = get(conn, "/api/remote", RemoteState.serializer())
+
+    suspend fun remote(conn: Connection, command: String, positionMs: Long? = null, volume: Double? = null) = withContext(Dispatchers.IO) {
+        val body = json.encodeToString(RemoteCommand.serializer(), RemoteCommand(command, positionMs, volume)).toRequestBody(jsonType)
+        http.newCall(authed(conn, "/api/remote").post(body).build()).execute().use { read(it) }
     }
 
     suspend fun unpair(conn: Connection) = withContext(Dispatchers.IO) {
