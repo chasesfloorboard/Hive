@@ -221,6 +221,13 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
     val spotify get() = app.spotify
     val spotifyAccount get() = app.spotifyAccount
     val spotifyUser = app.spotifyAccount.user
+
+    /** Spotify search: with this phone's own sign-in, else through Hive on the PC and its Spotify app. */
+    suspend fun searchSpotify(q: String): com.local.hive.mobile.stream.SpotifyAccount.Results {
+        if (spotifyUser.value.signedIn) return app.spotifyAccount.search(q)
+        val conn = app.sync.pcConnection() ?: throw java.io.IOException("Searching Spotify needs Hive open on your PC (it searches with your Spotify app there), or a Spotify sign-in in Settings.")
+        return com.local.hive.mobile.link.HiveLinkClient().spotifySearch(conn, q)
+    }
     /** Hive on the PC, while reachable; with it, songs the phone lacks play in full. */
     val pcStreams = app.sync.streams
     val youTubeMusic get() = app.youTubeMusic

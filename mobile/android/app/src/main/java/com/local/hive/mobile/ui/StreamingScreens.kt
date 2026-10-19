@@ -465,15 +465,14 @@ fun SpotifyScreen(vm: MainViewModel, bottomPadding: Dp, onBack: () -> Unit, onOp
         mine = if (!user.signedIn) null else { mine = Load.Loading; runCatching { vm.spotifyAccount.playlists() }.fold({ Load.Ready(it) }, { Load.Failed(it.friendly("Spotify")) }) }
     }
     LaunchedEffect(submitted, attempt) {
-        results = if (submitted.isBlank() || !user.signedIn) null else { results = Load.Loading; runCatching { vm.spotifyAccount.search(submitted) }.fold({ Load.Ready(it) }, { Load.Failed(it.friendly("Spotify")) }) }
+        results = if (submitted.isBlank()) null else { results = Load.Loading; runCatching { vm.searchSpotify(submitted) }.fold({ Load.Ready(it) }, { Load.Failed(it.friendly("Spotify")) }) }
     }
     fun submit() {
         val q = query.trim()
         when {
             q.isEmpty() -> Unit
             Spotify.isSpotifyLink(q) -> { hint = null; onOpen(q) }
-            user.signedIn -> { hint = null; submitted = q }
-            else -> hint = "Paste a Spotify link (Share › Copy link), or sign in to Spotify in Settings to search."
+            else -> { hint = null; submitted = q }
         }
     }
     Column(Modifier.fillMaxSize()) {
@@ -486,7 +485,7 @@ fun SpotifyScreen(vm: MainViewModel, bottomPadding: Dp, onBack: () -> Unit, onOp
                     Text(if (vm.fullSongs.collectAsStateWithLifecycle().value) "Songs in your library play from your files; the rest play in full from YouTube Music." else "Songs in your library play from your files; the rest play Spotify's 30-second previews where Spotify shares them.", style = HiveText.small, color = c.textDim, modifier = Modifier.padding(top = 4.dp))
                 }
             }
-            item { SearchField(query, { query = it; hint = null }, if (user.signedIn) "Search Spotify, or paste a link" else "Paste a Spotify link", onSubmit = ::submit, onClear = { query = ""; submitted = ""; hint = null }) }
+            item { SearchField(query, { query = it; hint = null }, "Search Spotify, or paste a link", onSubmit = ::submit, onClear = { query = ""; submitted = ""; hint = null }) }
             hint?.let { item { Text(it, style = HiveText.small, color = c.textDim, modifier = Modifier.padding(horizontal = 22.dp, vertical = 8.dp)) } }
             when (val r = results) {
                 null -> {

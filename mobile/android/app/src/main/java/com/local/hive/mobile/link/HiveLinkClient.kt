@@ -182,6 +182,25 @@ class HiveLinkClient(private val http: OkHttpClient = defaultHttp()) {
 
     suspend fun plays(conn: Connection, since: Long): List<PlayIn> = get(conn, "/api/plays?since=$since", PlaysResponse.serializer()).plays
 
+    /** Spotify search through the PC's signed-in Spotify app: songs, albums and playlists. */
+    suspend fun spotifySearch(conn: Connection, query: String): com.local.hive.mobile.stream.SpotifyAccount.Results = withContext(Dispatchers.IO) {
+        val q = java.net.URLEncoder.encode(query.take(200), "UTF-8")
+        // The PC may first have to start Spotify in the background.
+        http.newBuilder().readTimeout(60, java.util.concurrent.TimeUnit.SECONDS).callTimeout(70, java.util.concurrent.TimeUnit.SECONDS).build()
+            .newCall(authed(conn, "/api/spotify/search?q=$q").build()).execute().use { res ->
+            val o = Json.parseToJsonElement(read(res)) as kotlinx.serialization.json.JsonObject
+            fun list(key: String) = (o[key] as? kotlinx.serialization.json.JsonArray).orEmpty().mapNotNull { it as? kotlinx.serialization.json.JsonObject }
+            fun kotlinx.serialization.json.JsonObject.s(key: String) = (this[key] as? kotlinx.serialization.json.JsonPrimitive)?.content.orEmpty()
+            fun idOf(uri: String) = uri.substringAfterLast(':')
+            val big = com.local.hive.mobile.stream.Spotify::largest
+            com.local.hive.mobile.stream.SpotifyAccount.Results(
+                playlists = list("playlists").map { com.local.hive.mobile.stream.SpCard("playlist", idOf(it.s("uri")), it.s("name"), it.s("subtitle"), big(it.s("image"))) },
+                albums = list("albums").map { com.local.hive.mobile.stream.SpCard("album", idOf(it.s("uri")), it.s("name"), it.s("subtitle"), big(it.s("image"))) },
+                songs = list("tracks").map { com.local.hive.mobile.stream.SpSong(idOf(it.s("uri")), it.s("title"), it.s("artist"), it.s("album"), it.s("duration").toLongOrNull() ?: 0, big(it.s("image")), "") },
+            )
+        }
+    }
+
     suspend fun playlists(conn: Connection): List<PcPlaylist> = get(conn, "/api/playlists", PlaylistsResponse.serializer()).playlists
 
     suspend fun remoteState(conn: Connection): RemoteState = get(conn, "/api/remote", RemoteState.serializer())
