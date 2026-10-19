@@ -2471,6 +2471,7 @@ ipcMain.handle('mpris:update', async (_evt, payload = {}) => {
         track: String(track.path),
         candidates: coverCandidates,
         coversDir: COVERS_DIR(),
+    getPlaylists: async () => readJsonSafe(PLAYLISTS_PATH(), []),
     // Remote control from the phone (off until allowed in Settings): Hive's own
     // MPRIS command channel, and the state the player reports to it.
     remote: {

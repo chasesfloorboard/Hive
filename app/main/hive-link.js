@@ -13,6 +13,8 @@
 //                                  (answered "held" while acceptPhoneChanges is off)
 //   GET  /api/events               server-sent events (live Love changes)
 //   GET  /api/stream/track?id=     a library song's file, with Range support
+//   GET  /api/playlists            Hive's own playlists, read only: library songs by
+//                                  id, Apple Music and Spotify songs as Hive keeps them
 //   GET  /api/remote               what Hive is playing (when remote control is on)
 //   POST /api/remote               play/pause, next, previous, seek, volume
 //   GET  /api/cover?name=          a library cover from Hive's covers folder
@@ -68,7 +70,7 @@ function lanAddresses() {
   return out;
 }
 
-function createHiveLink({ dataDir, getTracks, setLove, onPaired, streamSong = null, coversDir = null, remote = null, log = () => {}, port = DEFAULT_PORT, discoveryPort = DISCOVERY_PORT, acceptPhoneChanges = false }) {
+function createHiveLink({ dataDir, getTracks, setLove, onPaired, streamSong = null, coversDir = null, remote = null, getPlaylists = null, log = () => {}, port = DEFAULT_PORT, discoveryPort = DISCOVERY_PORT, acceptPhoneChanges = false }) {
   const statePath = path.join(dataDir, 'hive-link.json');
   let state = loadState();
   let server = null;
@@ -356,6 +358,8 @@ function createHiveLink({ dataDir, getTracks, setLove, onPaired, streamSong = nu
         const body = await readJson(req);
         return send(res, 200, await applyLoveChanges(device, body?.changes));
       }
+      case 'GET /api/playlists':
+        return send(res, 200, { playlists: await playlistsPayload() });
       case 'GET /api/remote':
         return remoteState(res);
       case 'POST /api/remote':
@@ -374,6 +378,32 @@ function createHiveLink({ dataDir, getTracks, setLove, onPaired, streamSong = nu
       default:
         return send(res, 404, { error: 'Unknown endpoint.' });
     }
+  }
+
+  // ---- playlists (read only) -----------------------------------------------
+
+  const COVER_FILE = /^[a-f0-9]{40}\.(jpe?g|png|webp)$/i;
+  async function playlistsPayload() {
+    if (!getPlaylists) return [];
+    const lists = (await getPlaylists()) || [];
+    const byPath = new Map((await getTracks()).filter(t => t?.path).map(t => [path.resolve(String(t.path)), t]));
+    return lists.filter(p => p && !p.smart && Array.isArray(p.tracks)).map(p => {
+      const kept = p.podcastEpisodes || {};
+      const songs = p.tracks.map(entry => {
+        const ref = String(entry || '');
+        const stream = /^ytm:(apple|spotify):(.+)$/.exec(ref);
+        if (stream) {
+          const k = kept[ref] || {};
+          return { kind: 'stream', key: `${stream[1] === 'apple' ? 'am' : 'sp'}:${stream[2]}`, title: text(k.title), artist: text(k.artist), album: text(k.album),
+            duration: Math.round(num(k.duration) * 1000), cover: COVER_FILE.test(String(k.cover || '')) ? String(k.cover) : '' };
+        }
+        if (/^[a-z]+:/i.test(ref)) return null; // radio, podcasts and the like stay on the PC
+        const track = byPath.get(path.resolve(ref));
+        return track ? { kind: 'track', id: trackIdFor(track) } : null;
+      }).filter(Boolean);
+      return { id: String(p.id || ''), name: text(p.name) || 'Playlist', source: text(p.source), cover: COVER_FILE.test(String(p.cover || '')) ? String(p.cover) : '',
+        artworkUrl: /^https:\/\//.test(String(p.artworkUrl || p.cover || '')) ? String(p.artworkUrl || p.cover) : '', updatedAt: num(p.updatedAt), songs };
+    }).filter(p => p.id && p.songs.length);
   }
 
   // ---- remote control ------------------------------------------------------
