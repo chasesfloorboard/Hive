@@ -188,6 +188,10 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
         onDone(id, listOfNotNull("$inLibrary from your library", previews.takeIf { it > 0 }?.let { "$it previews" }, (streams.size - previews).takeIf { it > 0 }?.let { "$it $source only" }).joinToString(", "))
     }
 
+    val equaliser get() = app.equaliser
+    /** The playing song's genre, for the equaliser's "Auto-Select by Genre". */
+    val currentGenre = combine(nowPlaying, tracks) { n, list -> list.firstOrNull { it.id == n.trackId }?.genre.orEmpty() }.distinctUntilChanged().state("")
+
     val sleep = app.player.sleep
     fun setSleepTimer(minutes: Int) = app.player.setSleepTimer(minutes)
     fun sleepAtEndOfSong() = app.player.sleepAtEndOfSong()

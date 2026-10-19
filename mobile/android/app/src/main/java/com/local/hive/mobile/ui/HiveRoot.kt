@@ -185,7 +185,8 @@ private fun HiveContent(vm: MainViewModel, openPlayerInitially: Boolean) {
                     ) {
                         composable("home") { HomeScreen(vm, homeNav, actions, bottomPadding) }
                         composable("search") { SearchScreen(vm, actions, bottomPadding, { nav.popBackStack() }, homeNav.openAlbum, homeNav.openArtist) }
-                        composable("settings") { SettingsScreen(vm, bottomPadding) { nav.popBackStack() } }
+                        composable("settings") { SettingsScreen(vm, bottomPadding, onOpenEqualiser = { nav.navigate("equaliser") }) { nav.popBackStack() } }
+                        composable("equaliser") { EqualiserScreen(vm, bottomPadding) { nav.popBackStack() } }
                         composable("album/{id}", listOf(navArgument("id") { type = NavType.LongType })) { entry ->
                             val id = entry.arguments?.getLong("id") ?: 0L
                             val albums by vm.albums.collectAsStateWithLifecycle()
@@ -251,6 +252,7 @@ private fun HiveContent(vm: MainViewModel, openPlayerInitially: Boolean) {
                             onInfo = { infoTarget = it },
                             onAddToPlaylist = { addTarget = listOf(it) },
                             onOpenLyrics = { lyricsOpen = true },
+                            onOpenEqualiser = { playerOpen = false; nav.navigate("equaliser") { launchSingleTop = true } },
                         )
                     }
                     HiveToast(toast, Modifier.align(Alignment.BottomCenter).navigationBarsPadding().padding(bottom = bottomPadding + 16.dp)) { toast = null }

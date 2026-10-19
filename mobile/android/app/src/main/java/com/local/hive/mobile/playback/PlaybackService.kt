@@ -8,7 +8,14 @@ import androidx.media3.common.Player
 import androidx.media3.datasource.DefaultDataSource
 import androidx.media3.datasource.DefaultHttpDataSource
 import androidx.media3.datasource.ResolvingDataSource
+import androidx.media3.exoplayer.DefaultRenderersFactory
 import androidx.media3.exoplayer.ExoPlayer
+import androidx.media3.exoplayer.audio.AudioSink
+import androidx.media3.exoplayer.audio.DefaultAudioSink
+import androidx.media3.common.audio.AudioProcessor
+import android.content.Context
+import kotlinx.coroutines.flow.MutableStateFlow
+import kotlinx.coroutines.flow.combine
 import androidx.media3.exoplayer.source.DefaultMediaSourceFactory
 import androidx.media3.session.MediaSession
 import androidx.media3.session.MediaSessionService
@@ -30,10 +37,13 @@ import kotlinx.coroutines.withContext
  * media notification, lock-screen and Bluetooth controls, and audio focus.
  * ExoPlayer plays queued local files back to back without a gap.
  */
+@androidx.annotation.OptIn(androidx.media3.common.util.UnstableApi::class)
 class PlaybackService : MediaSessionService() {
     private var session: MediaSession? = null
     private val scope = MainScope()
     private lateinit var memory: PlaybackMemory
+    private val equaliser = EqualiserProcessor()
+    private val genre = MutableStateFlow("")
 
     override fun onCreate() {
         super.onCreate()
@@ -44,7 +54,12 @@ class PlaybackService : MediaSessionService() {
             val toPc = pairing != null && spec.uri.scheme == "http" && spec.uri.port == pairing.port && spec.uri.host in pairing.hosts
             if (toPc) spec.withAdditionalHeaders(mapOf("Authorization" to "Bearer ${pairing!!.token}")) else spec
         }
-        val player = ExoPlayer.Builder(this)
+        // Hive's equaliser runs inside the audio sink, ahead of every output.
+        val renderers = object : DefaultRenderersFactory(this) {
+            override fun buildAudioSink(context: Context, enableFloatOutput: Boolean, enableAudioTrackPlaybackParams: Boolean): AudioSink =
+                DefaultAudioSink.Builder(context).setAudioProcessors(arrayOf<AudioProcessor>(equaliser)).build()
+        }
+        val player = ExoPlayer.Builder(this, renderers)
             .setMediaSourceFactory(DefaultMediaSourceFactory(dataSources))
             .setAudioAttributes(
                 AudioAttributes.Builder().setUsage(C.USAGE_MEDIA).setContentType(C.AUDIO_CONTENT_TYPE_MUSIC).build(),
@@ -65,6 +80,7 @@ class PlaybackService : MediaSessionService() {
                 player.prepare()
                 player.play()
             }
+            override fun onMediaMetadataChanged(mediaMetadata: androidx.media3.common.MediaMetadata) { genre.value = mediaMetadata.genre?.toString().orEmpty() }
             override fun onTimelineChanged(timeline: androidx.media3.common.Timeline, reason: Int) {
                 if (reason == Player.TIMELINE_CHANGE_REASON_PLAYLIST_CHANGED) memory.saveQueue(player)
             }
@@ -75,6 +91,10 @@ class PlaybackService : MediaSessionService() {
         })
         scope.launch {
             while (isActive) { delay(5_000); if (player.isPlaying) memory.saveCursor(player) }
+        }
+        // The curve follows the settings, and for "Auto-Select by Genre" the playing song's genre.
+        scope.launch {
+            combine(app.equaliser.state, genre) { eq, g -> if (eq.enabled) eq.curve(g) else null }.collect { equaliser.setCurve(it) }
         }
         // Pick up where the last session left off, paused, unless something was queued meanwhile.
         scope.launch {

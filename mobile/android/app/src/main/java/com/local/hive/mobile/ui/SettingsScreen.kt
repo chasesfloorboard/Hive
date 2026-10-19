@@ -46,7 +46,7 @@ import com.local.hive.mobile.ui.theme.mix
 
 /** Settings laid out as in Hive: titled sections with a description, label-and-hint rows with the control on the right. */
 @Composable
-fun SettingsScreen(vm: MainViewModel, bottomPadding: Dp, onBack: () -> Unit) {
+fun SettingsScreen(vm: MainViewModel, bottomPadding: Dp, onOpenEqualiser: () -> Unit, onBack: () -> Unit) {
     val link by vm.link.collectAsStateWithLifecycle()
     val tracks by vm.tracks.collectAsStateWithLifecycle()
     val scanning by vm.scanning.collectAsStateWithLifecycle()
@@ -62,6 +62,12 @@ fun SettingsScreen(vm: MainViewModel, bottomPadding: Dp, onBack: () -> Unit) {
             }
             item {
                 Section("Spotify", "Sign in to see your playlists and Liked Songs, and to search Spotify. Shared links work without signing in.") { SpotifyRows(vm) }
+            }
+            item {
+                Section("Sound", "Hive's equaliser runs inside the player, so it works on speakers, headphones and Bluetooth alike.") {
+                    val eq by vm.equaliser.state.collectAsStateWithLifecycle()
+                    SettingRow("Equaliser", if (eq.enabled) eq.preset else "Off") { SmallButton("Open") { onOpenEqualiser() } }
+                }
             }
             item {
                 Section("Library", "The music stored on this phone, kept up to date as files change.") {

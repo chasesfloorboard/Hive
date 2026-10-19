@@ -56,7 +56,7 @@ renderer views) and its state on mobile.
 | Queue: drag to reorder, multi-select | queue drop targets | 🟡 drag to reorder, remove; no multi-select |
 | Shuffle, repeat | | ✅ |
 | Playback state restored on launch | `playback-state:*` | ✅ queue, track, position, shuffle, repeat; Bluetooth resume |
-| Equaliser with presets, import presets | `equaliser:*` | ❌ |
+| Equaliser with presets, import presets | `equaliser:*` | ✅ 10 bands + preamp, MusicBee presets, auto by genre, save/delete; no .sde import UI yet |
 | ReplayGain | `replaygain:analyse` | ❌ (reading tags) / 🖥️ (analysis) |
 | Audio output selection | `audio-output:*` | ➖ Android's output switcher |
 | Lock screen, notification, Bluetooth controls | MPRIS, tray | ✅ MediaSession |

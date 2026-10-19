@@ -103,6 +103,7 @@ import com.local.hive.mobile.ui.theme.HiveShape
 import com.local.hive.mobile.ui.theme.HiveText
 import com.local.hive.mobile.ui.theme.Motion
 import com.local.hive.mobile.ui.theme.hiveGlass
+import androidx.compose.material.icons.rounded.GraphicEq
 import androidx.compose.material.icons.rounded.Lyrics
 import androidx.compose.material.icons.rounded.Info
 import androidx.compose.material.icons.automirrored.rounded.PlaylistAdd
@@ -148,6 +149,7 @@ fun PlayerSheet(
     onInfo: (Track) -> Unit,
     onAddToPlaylist: (Track) -> Unit,
     onOpenLyrics: () -> Unit,
+    onOpenEqualiser: () -> Unit,
 ) {
     val c = Hive.colors
     val now by vm.nowPlaying.collectAsStateWithLifecycle()
@@ -247,6 +249,7 @@ fun PlayerSheet(
                         onInfo = onInfo,
                         onAddToPlaylist = onAddToPlaylist,
                         onOpenLyrics = onOpenLyrics,
+                        onOpenEqualiser = onOpenEqualiser,
                         onOpenArtist = onOpenArtist,
                         onArtPlaced = { artTarget = it },
                     )
@@ -384,6 +387,7 @@ private fun FullPlayerContent(
     onInfo: (Track) -> Unit,
     onAddToPlaylist: (Track) -> Unit,
     onOpenLyrics: () -> Unit,
+    onOpenEqualiser: () -> Unit,
     onArtPlaced: (Rect) -> Unit,
 ) {
     val c = Hive.colors
@@ -430,6 +434,7 @@ private fun FullPlayerContent(
                             }
                             HiveMenuItem("Playing tracks", Icons.AutoMirrored.Rounded.QueueMusic) { menu = false; onOpenQueue() }
                             HiveMenuDivider()
+                            HiveMenuItem("Equaliser", Icons.Rounded.GraphicEq) { menu = false; onOpenEqualiser() }
                             HiveMenuItem(sleepLabel(sleep), Icons.Rounded.Bedtime) { menu = false; sleepMenu = true }
                         }
                         HiveMenu(sleepMenu, { sleepMenu = false }) {
