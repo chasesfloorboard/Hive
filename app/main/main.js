@@ -56,6 +56,7 @@ const { parseMusicBeeLibrary, parseMusicBeePlaylist, parseMusicBeeAutoPlaylist, 
 const { selectPreferredLyrics, lyricsSearchTitle } = require('./lyrics-provider');
 const { autoUpdater } = require('electron-updater');
 const { createUpdateChecker } = require('./update-checker');
+const { createHiveLink } = require('./hive-link');
 const { createDirectoryTreeWatcher } = require('./directory-tree-watcher');
 const { createPortableUpdater } = require('./portable-updater');
 // electron-updater only works for installer builds, which carry an
@@ -521,6 +522,7 @@ const { createHiveTray, updateHiveTrayState, hiveLogoPath } = createTrayControll
   getMainWindow: () => mainWindow,
   openMainWindow: () => createWindow(),
   quitApp: () => app.quit(),
+  pairPhone: () => showHiveLinkPairing(),
 });
 let mprisTrackPath = '';
 let lastMprisArtworkLogAt = 0;
@@ -1664,6 +1666,10 @@ updateChecker.onStatus(status => {
 });
 
 app.on('before-quit', () => { stopSpotifyBridge(); });
+app.whenReady().then(() => {
+  try { startHiveLink(); } catch (err) { scanLog('Hive Link failed to start', { error: err?.message || String(err) }); }
+});
+app.on('before-quit', () => { try { hiveLink?.stop(); } catch {} });
 
 app.on('window-all-closed', () => {
   stopLibraryWatchers();
@@ -7864,8 +7870,49 @@ async function updateCachedLoved(paths, loved) {
   } catch (err) {
     crashDebug('DATABASE Love projection update failed', { message: err?.message || String(err), paths: [...wanted] });
   }
+  hiveLink?.notifyLoveChanged([...wanted], !!loved).catch(() => {});
   return changed;
 }
+
+// ---- Hive Link (Hive Mobile) -------------------------------------------------
+// Started once the app is ready; see app/main/hive-link.js for the protocol.
+let hiveLink = null;
+
+function startHiveLink() {
+  if (hiveLink) return;
+  hiveLink = createHiveLink({
+    dataDir: USER_DATA(),
+    getTracks: async () => ((await libraryCacheStore.get()) || {}).tracks || [],
+    // A phone Love goes through the heart button's own path, then the open
+    // window is told, the same way the metadata job queue reports Love.
+    setLove: async (trackPath, loved) => {
+      const sender = mainWindow && !mainWindow.isDestroyed() ? mainWindow.webContents : null;
+      await setLoveForSingleTrack(sender ? { sender } : null, trackPath, loved);
+      try { sender?.send('library:scanTrack', [{ path: trackPath, loved: !!loved, loveHydrated: true }]); } catch {}
+    },
+    onPaired: device => scanLog('Hive Link paired', { device: device.name }),
+    log: (...args) => scanLog(args.map(String).join(' '))
+  });
+  hiveLink.start();
+}
+
+async function showHiveLinkPairing() {
+  if (!hiveLink) startHiveLink();
+  const { code, addresses, port } = hiveLink.startPairing();
+  const where = addresses.map(a => `${a.address}:${port}${a.tailscale ? ' (Tailscale)' : ''}`).join('\n') || `port ${port}`;
+  const parent = mainWindow && !mainWindow.isDestroyed() ? mainWindow : undefined;
+  await dialog.showMessageBox(parent, {
+    type: 'info',
+    title: 'Pair phone',
+    message: `Pairing code: ${code}`,
+    detail: `Open Hive on your phone and enter this code. It works for 5 minutes.\n\nThis PC:\n${where}`,
+    buttons: ['Done']
+  });
+}
+
+ipcMain.handle('hiveLink:pair', async () => hiveLink?.startPairing() || null);
+ipcMain.handle('hiveLink:devices', async () => hiveLink?.devices() || []);
+ipcMain.handle('hiveLink:unpair', async (_evt, deviceId) => !!hiveLink?.unpair(String(deviceId || '')));
 
 async function readFlacMusicBeeLove(filePath) {
   try {
@@ -8188,6 +8235,7 @@ ipcMain.handle('tracks:setLove', async (evt, trackPaths = [], loved) => {
       queueOwnWriteSnapshotRefresh(path.dirname(path.resolve(String(job.path))));
       try { await databaseRequest('set_loved', { values: { [path.resolve(String(job.path))]: value } }); }
       catch (err) { scanLog('DATABASE Love projection update failed', { path: job.path, error: err?.message || String(err) }); }
+      hiveLink?.notifyLoveChanged([job.path], value).catch(() => {});
     } else {
       results.failed++;
       const recovery = recoveryJobs.get(path.resolve(String(job.path)));

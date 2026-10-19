@@ -19,6 +19,7 @@ function createTrayController(deps) {
     getMainWindow,
     openMainWindow,
     quitApp,
+    pairPhone,
   } = deps;
 
   const path = require('path');
@@ -48,6 +49,7 @@ function createTrayController(deps) {
       { label: 'Previous', click: () => mpris.command('PREVIOUS') },
       { label: 'Next', click: () => mpris.command('NEXT') },
       { type: 'separator' },
+      ...(pairPhone ? [{ label: 'Pair phone…', click: () => pairPhone() }] : []),
       { label: 'Show Hive', click: () => { const mainWindow = getMainWindow(); if (!mainWindow || mainWindow.isDestroyed()) { openMainWindow(); return; } mainWindow.show(); mainWindow.focus(); } },
       { label: 'Quit Hive', click: () => quitApp() }
     ]);
