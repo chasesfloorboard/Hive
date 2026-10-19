@@ -3,6 +3,7 @@ package com.local.hive.mobile.link
 import android.os.Build
 import com.local.hive.mobile.data.LibraryDao
 import com.local.hive.mobile.data.LoveState
+import com.local.hive.mobile.data.Play
 import com.local.hive.mobile.data.Rating
 import com.local.hive.mobile.data.PcMatch
 import kotlinx.coroutines.CancellationException
@@ -28,6 +29,8 @@ data class LinkStatus(
     val matchedTracks: Int = 0,
     val pcTracks: Int = 0,
     val pendingChanges: Int = 0,
+    /** Phone changes and plays waiting in Hive on the PC for the user to apply. */
+    val waitingOnPc: Int = 0,
     val error: String? = null,
 )
 
@@ -113,6 +116,7 @@ class SyncEngine(
                 val conn = connection() ?: throw HiveLinkException("Can't reach ${store.pairing?.name ?: "Hive"}. Is it open on the PC?")
                 pushPending(conn)
                 if (!store.fullSyncDone) fullSync(conn) else pullChanges(conn)
+                syncPlays(conn)
                 store.lastSyncAt = System.currentTimeMillis()
                 _status.update { it.copy(error = null, lastSyncAt = store.lastSyncAt, host = conn.host) }
             } catch (e: CancellationException) {
@@ -180,6 +184,33 @@ class SyncEngine(
         _status.update { it.copy(matchedTracks = matches.size, pcTracks = library.tracks.size) }
     }
 
+    /**
+     * Listening goes both ways: plays made here go to Hive on the PC (which
+     * keeps them for the user to apply), and plays made in Hive come here,
+     * so both count the same year. A Hive without plays support is skipped.
+     */
+    private suspend fun syncPlays(conn: HiveLinkClient.Connection) {
+        val info = runCatchingNotCancelled { client.info(conn) }.getOrNull() ?: return
+        _status.update { it.copy(waitingOnPc = info.inbox.loves + info.inbox.plays) }
+        if (!info.plays) return
+        val pcIdFor = dao.allMatches().associate { it.trackId to it.pcId }
+        val unsent = dao.unsentPlays()
+        // Plays of songs the PC doesn't have stay here; there's nothing there to count them against.
+        val (matched, phoneOnly) = unsent.partition { pcIdFor[it.trackId] != null }
+        if (phoneOnly.isNotEmpty()) dao.markPlaysSent(phoneOnly.map { it.rowId })
+        for (chunk in matched.chunked(500)) {
+            client.sendPlays(conn, chunk.map { PlayOut("${store.pairing?.deviceId}:${it.rowId}", pcIdFor.getValue(it.trackId), it.playedAt, it.listenedMs) })
+            dao.markPlaysSent(chunk.map { it.rowId })
+        }
+        val trackFor = dao.allMatches().groupBy({ it.pcId }, { it.trackId })
+        val fetched = client.plays(conn, store.lastPcPlayAt)
+        val fresh = fetched.flatMap { p -> trackFor[p.id].orEmpty().take(1).map { Play(trackId = it, playedAt = p.playedAt, listenedMs = p.listenedMs, synced = true, fromPc = true) } }
+            .filter { dao.playCountAt(it.trackId, it.playedAt) == 0 }
+        if (fresh.isNotEmpty()) dao.insertPlays(fresh)
+        fetched.maxOfOrNull { it.playedAt }?.let { store.lastPcPlayAt = maxOf(store.lastPcPlayAt, it) }
+        _status.update { it.copy(waitingOnPc = info.inbox.loves + info.inbox.plays + matched.size) }
+    }
+
     private suspend fun pullChanges(conn: HiveLinkClient.Connection) {
         val changes = client.loveChanges(conn, store.lastSeq)
         if (changes.reset) { fullSync(conn); return }
@@ -201,7 +232,8 @@ class SyncEngine(
             val resolved = response.results.mapNotNull { r ->
                 val mine = byTrack[r.clientChangeId] ?: return@mapNotNull null
                 when (r.status) {
-                    "applied", "unchanged", "not-found" -> mine.copy(pending = false)
+                    // "staged": Hive keeps it for the user to apply on the PC; it's delivered.
+                    "applied", "unchanged", "not-found", "staged" -> mine.copy(pending = false)
                     "stale" -> LoveState(mine.trackId, r.loved ?: mine.loved, r.at ?: mine.changedAt, pending = false)
                     else -> null // "failed": keep it pending and try again next sync
                 }
@@ -271,7 +303,13 @@ class SyncEngine(
 
     private suspend fun connection(): HiveLinkClient.Connection? {
         val pairing = store.pairing ?: return null
-        val candidates = listOfNotNull(activeHost) + pairing.hosts
+        // The cable first: Hive on the PC answers on this phone's own address while it's plugged in.
+        if (client.serverAt(HiveLinkClient.USB_HOST, pairing.port) == pairing.serverId) {
+            activeHost = HiveLinkClient.USB_HOST
+            if (HiveLinkClient.USB_HOST !in pairing.hosts) store.pairing = pairing.copy(hosts = pairing.hosts + HiveLinkClient.USB_HOST)
+            return HiveLinkClient.Connection(HiveLinkClient.USB_HOST, pairing.port, pairing.token)
+        }
+        val candidates = (listOfNotNull(activeHost) + pairing.hosts).filter { it != HiveLinkClient.USB_HOST }
         for (host in candidates.distinct()) {
             if (client.ping(host, pairing.port)) {
                 activeHost = host

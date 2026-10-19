@@ -53,7 +53,15 @@ import java.util.concurrent.TimeUnit
 @Serializable data class LoveResponse(val seq: Long, val results: List<LoveResult>)
 @Serializable data class HiveAddress(val name: String = "", val address: String, val tailscale: Boolean = false)
 @Serializable data class StreamCaps(val track: Boolean = false, val song: Boolean = false)
-@Serializable data class InfoResponse(val serverId: String, val name: String, val port: Int, val seq: Long, val addresses: List<HiveAddress> = emptyList(), val streams: StreamCaps = StreamCaps(), val remote: Boolean = false)
+/** Phone changes waiting in Hive on the PC for the user to apply. */
+@Serializable data class InboxSummary(val loves: Int = 0, val plays: Int = 0)
+@Serializable data class InfoResponse(val serverId: String, val name: String, val port: Int, val seq: Long, val addresses: List<HiveAddress> = emptyList(), val streams: StreamCaps = StreamCaps(), val remote: Boolean = false, val plays: Boolean = false, val inbox: InboxSummary = InboxSummary())
+/** A play, as sent to Hive ([clientId] is this phone's own id for it) or fetched from it. */
+@Serializable data class PlayOut(val clientId: String, val id: String, val playedAt: Long, val listenedMs: Long)
+@Serializable data class PlaysRequest(val plays: List<PlayOut>)
+@Serializable data class PlaysStaged(val staged: Int = 0)
+@Serializable data class PlayIn(val id: String, val playedAt: Long, val listenedMs: Long = 0, val eventId: String = "")
+@Serializable data class PlaysResponse(val plays: List<PlayIn> = emptyList())
 /** A song in one of Hive's playlists: a library song ([id]) or a streamed one ([key] with its details). */
 @Serializable data class PcPlaylistSong(val kind: String, val id: String = "", val key: String = "", val title: String = "", val artist: String = "", val album: String = "", val duration: Long = 0, val cover: String = "")
 @Serializable data class PcPlaylist(val id: String, val name: String, val source: String = "", val cover: String = "", val artworkUrl: String = "", val updatedAt: Double = 0.0, val songs: List<PcPlaylistSong> = emptyList())
@@ -84,6 +92,8 @@ class HiveLinkClient(private val http: OkHttpClient = defaultHttp()) {
     /** Asks every Hive on the local network to answer, for [timeoutMs]. */
     suspend fun discover(timeoutMs: Int = 1500): List<DiscoveredHive> = withContext(Dispatchers.IO) {
         val found = LinkedHashMap<String, DiscoveredHive>()
+        // Plugged in by USB, Hive on the PC answers on this phone's own address (Hive sets up "adb reverse").
+        serverAt(USB_HOST, DEFAULT_PORT)?.let { found[it] = DiscoveredHive(it, "Hive on your PC (USB)", USB_HOST, DEFAULT_PORT) }
         DatagramSocket().use { socket ->
             socket.broadcast = true
             socket.soTimeout = 300
@@ -116,6 +126,16 @@ class HiveLinkClient(private val http: OkHttpClient = defaultHttp()) {
             }
         }
         return out.distinct()
+    }
+
+    /** The id of the Hive answering at [host], or null when none does. */
+    suspend fun serverAt(host: String, port: Int): String? = withContext(Dispatchers.IO) {
+        runCatching {
+            http.newCall(Request.Builder().url(base(host, port) + "/api/ping").build()).execute().use { res ->
+                if (!res.isSuccessful) null
+                else (Json.parseToJsonElement(res.body.string()) as? kotlinx.serialization.json.JsonObject)?.get("serverId")?.let { (it as? kotlinx.serialization.json.JsonPrimitive)?.content }
+            }
+        }.getOrNull()
     }
 
     suspend fun ping(host: String, port: Int): Boolean = withContext(Dispatchers.IO) {
@@ -154,6 +174,13 @@ class HiveLinkClient(private val http: OkHttpClient = defaultHttp()) {
             json.decodeFromString(LoveResponse.serializer(), read(it))
         }
     }
+
+    suspend fun sendPlays(conn: Connection, plays: List<PlayOut>): PlaysStaged = withContext(Dispatchers.IO) {
+        val body = json.encodeToString(PlaysRequest.serializer(), PlaysRequest(plays)).toRequestBody(jsonType)
+        http.newCall(authed(conn, "/api/plays").post(body).build()).execute().use { json.decodeFromString(PlaysStaged.serializer(), read(it)) }
+    }
+
+    suspend fun plays(conn: Connection, since: Long): List<PlayIn> = get(conn, "/api/plays?since=$since", PlaysResponse.serializer()).plays
 
     suspend fun playlists(conn: Connection): List<PcPlaylist> = get(conn, "/api/playlists", PlaylistsResponse.serializer()).playlists
 
@@ -212,6 +239,8 @@ class HiveLinkClient(private val http: OkHttpClient = defaultHttp()) {
 
     companion object {
         const val DEFAULT_PORT = 47800
+        /** Hive on the PC over a USB cable, through "adb reverse". */
+        const val USB_HOST = "127.0.0.1"
         const val DISCOVERY_PORT = 47801
         const val DISCOVERY_REQUEST = "HIVELINK_DISCOVER"
 

@@ -32,7 +32,7 @@ class LinkStore(context: Context) {
         set(value) = prefs.edit {
             if (value == null) {
                 remove("token"); remove("serverId"); remove("name"); remove("port"); remove("deviceId"); remove("hosts")
-                remove("lastSeq"); remove("lastSyncAt"); remove("fullSyncDone")
+                remove("lastSeq"); remove("lastSyncAt"); remove("fullSyncDone"); remove("lastPcPlayAt")
             } else {
                 putString("token", value.token)
                 putString("serverId", value.serverId)
@@ -51,6 +51,11 @@ class LinkStore(context: Context) {
     var fullSyncDone: Boolean
         get() = prefs.getBoolean("fullSyncDone", false)
         set(value) = prefs.edit { putBoolean("fullSyncDone", value) }
+
+    /** The time of the newest Hive (PC) play brought to this phone. */
+    var lastPcPlayAt: Long
+        get() = prefs.getLong("lastPcPlayAt", 0)
+        set(value) = prefs.edit { putLong("lastPcPlayAt", value) }
 
     /** Highest PC change sequence applied here. */
     var lastSeq: Long

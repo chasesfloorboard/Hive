@@ -58,7 +58,7 @@ fun SettingsScreen(vm: MainViewModel, bottomPadding: Dp, onOpenEqualiser: () -> 
         LazyColumn(Modifier.fillMaxSize(), contentPadding = PaddingValues(start = 8.dp, end = 8.dp, bottom = bottomPadding + 24.dp), verticalArrangement = Arrangement.spacedBy(10.dp)) {
             item { Text("Settings", style = HiveText.viewTitle, color = Hive.colors.text, modifier = Modifier.padding(start = 12.dp, top = 4.dp, bottom = 6.dp)) }
             item {
-                Section("Hive on your PC", "Brings Hive's Favorites to this phone over Wi-Fi. For now, changes you make here stay on this phone.") {
+                Section("Hive on your PC", "Over Wi-Fi, or by USB cable with USB debugging on. Your PC's Favorites and plays come here; what you do here waits in Hive on the PC until you apply it there (Settings › Connections).") {
                     if (link.paired) PairedRows(vm) else PairRows(vm)
                 }
             }
@@ -171,7 +171,7 @@ private fun PairedRows(vm: MainViewModel) {
     val link by vm.link.collectAsStateWithLifecycle()
     val state = when {
         link.syncing -> "Syncing…"
-        link.live -> "Connected" + if (link.host.isNotBlank()) " · ${link.host}" else ""
+        link.live -> "Connected" + when { link.host == com.local.hive.mobile.link.HiveLinkClient.USB_HOST -> " · by USB"; link.host.isNotBlank() -> " · ${link.host}"; else -> "" }
         else -> "Not connected right now"
     }
     SettingRow(link.serverName, state) {
@@ -179,7 +179,8 @@ private fun PairedRows(vm: MainViewModel) {
     }
     val detail = buildList {
         if (link.pcTracks > 0) add("%,d of this phone's songs matched to Hive's %,d".format(link.matchedTracks, link.pcTracks))
-        if (link.pendingChanges > 0) add("${link.pendingChanges} changes kept on this phone")
+        if (link.pendingChanges > 0) add("${link.pendingChanges} changes not sent yet")
+        if (link.waitingOnPc > 0) add("%,d changes and plays waiting for you in Hive on the PC".format(link.waitingOnPc))
         if (link.lastSyncAt > 0) add("Synced ${DateUtils.getRelativeTimeSpanString(link.lastSyncAt)}")
     }.joinToString("\n")
     SettingRow("Favorites sync", detail) { SmallButton(if (link.syncing) "Syncing…" else "Sync now", enabled = !link.syncing, primary = true) { vm.syncNow() } }

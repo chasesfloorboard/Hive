@@ -157,6 +157,8 @@ data class Play(
     val playedAt: Long,
     val listenedMs: Long,
     val synced: Boolean = false,
+    /** A play made in Hive on the PC, brought here so both count the same listening; never sent back. */
+    @androidx.room.ColumnInfo(defaultValue = "0") val fromPc: Boolean = false,
 )
 
 data class AlbumSummary(
@@ -425,6 +427,20 @@ interface LibraryDao {
     @Upsert
     suspend fun insertPlay(play: Play)
 
+    /** Plays made here that Hive on the PC hasn't been given yet. */
+    @Query("SELECT * FROM plays WHERE synced = 0 AND fromPc = 0 ORDER BY playedAt LIMIT 2000")
+    suspend fun unsentPlays(): List<Play>
+
+    @Query("UPDATE plays SET synced = 1 WHERE rowId IN (:ids)")
+    suspend fun markPlaysSent(ids: List<Long>)
+
+    @androidx.room.Insert
+    suspend fun insertPlays(plays: List<Play>)
+
+    /** Whether a play of this song at this moment is already here (a PC play fetched twice). */
+    @Query("SELECT COUNT(*) FROM plays WHERE trackId = :trackId AND playedAt = :playedAt")
+    suspend fun playCountAt(trackId: Long, playedAt: Long): Int
+
     @Query(
         "SELECT p.trackId, p.playedAt, p.listenedMs, t.title, t.artist, t.album, t.albumArtist, t.albumId, t.genre " +
             "FROM plays p JOIN tracks t ON t.id = p.trackId WHERE p.playedAt >= :from AND p.playedAt < :to"
@@ -452,9 +468,9 @@ interface LibraryDao {
 
 @Database(
     entities = [Track::class, LoveState::class, PcMatch::class, Play::class, FavoriteAlbum::class, Playlist::class, PlaylistEntry::class, StreamTrack::class, Rating::class],
-    version = 4,
+    version = 5,
     exportSchema = true,
-    autoMigrations = [AutoMigration(from = 1, to = 2), AutoMigration(from = 2, to = 3), AutoMigration(from = 3, to = 4)],
+    autoMigrations = [AutoMigration(from = 1, to = 2), AutoMigration(from = 2, to = 3), AutoMigration(from = 3, to = 4), AutoMigration(from = 4, to = 5)],
 )
 abstract class LibraryDatabase : RoomDatabase() {
     abstract fun dao(): LibraryDao
