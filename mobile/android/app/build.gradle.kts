@@ -53,6 +53,7 @@ dependencies {
     implementation(libs.okhttp)
     implementation(libs.okhttp.sse)
     implementation(libs.coil.compose)
+    implementation(libs.haze)
     implementation(libs.palette)
     implementation(libs.serialization.json)
     implementation(libs.coroutines.android)

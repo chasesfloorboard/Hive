@@ -6,6 +6,7 @@ import androidx.lifecycle.viewModelScope
 import com.local.hive.mobile.HiveApp
 import com.local.hive.mobile.data.AlbumSummary
 import com.local.hive.mobile.data.ArtistSummary
+import com.local.hive.mobile.data.FavoriteAlbum
 import com.local.hive.mobile.data.NamedCount
 import com.local.hive.mobile.data.Track
 import com.local.hive.mobile.link.DiscoveredHive
@@ -16,6 +17,7 @@ import kotlinx.coroutines.flow.SharingStarted
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
 import kotlinx.coroutines.flow.distinctUntilChanged
+import kotlinx.coroutines.flow.combine
 import kotlinx.coroutines.flow.map
 import kotlinx.coroutines.flow.mapLatest
 import kotlinx.coroutines.flow.stateIn
@@ -37,12 +39,19 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
     val tracks = dao.tracks().map { list -> list.sortedWith(compareBy(LibrarySort.collator) { LibrarySort.key(it.title) }) }.state(emptyList())
     val favorites = dao.lovedTracks().state(emptyList())
     val lovedIds: StateFlow<Set<Long>> = dao.loveStates().map { list -> list.filter { it.loved }.mapTo(HashSet()) { it.trackId } }.state(emptySet())
+    val favoriteAlbumKeys: StateFlow<Set<String>> = dao.favoriteAlbums().map { list -> list.mapTo(HashSet()) { it.key } }.state(emptySet())
     val albums: StateFlow<List<AlbumSummary>> = dao.albums().map { list -> list.sortedWith(compareBy(LibrarySort.collator) { LibrarySort.key(it.album) }) }.state(emptyList())
+    /** Favorite albums that are on this phone, newest first. */
+    val favoriteAlbums: StateFlow<List<AlbumSummary>> = combine(albums, dao.favoriteAlbums()) { all, favs ->
+        val byKey = all.associateBy { FavoriteAlbum.keyOf(it.album, it.artist) }
+        favs.mapNotNull { byKey[it.key] }
+    }.state(emptyList())
     val artists: StateFlow<List<ArtistSummary>> = dao.artists().map { list -> list.sortedWith(compareBy(LibrarySort.collator) { LibrarySort.key(it.artist) }) }.state(emptyList())
     val genres: StateFlow<List<NamedCount>> = dao.genres().state(emptyList())
     val folders: StateFlow<List<NamedCount>> = dao.folders().state(emptyList())
     val recentlyAdded = dao.recentlyAdded(AUTO_PLAYLIST_SIZE).state(emptyList())
     val mostPlayed = dao.mostPlayed(AUTO_PLAYLIST_SIZE).state(emptyList())
+    val topMostPlayed = dao.mostPlayed(25).state(emptyList())
     val recentlyPlayed = dao.recentlyPlayed(AUTO_PLAYLIST_SIZE).state(emptyList())
 
     val nowPlaying = app.player.state
@@ -80,6 +89,12 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
     // ---- love ----
 
     fun setLoved(tracks: List<Track>, loved: Boolean) = viewModelScope.launch { app.sync.setLoved(tracks.map { it.id }, loved) }
+    /** Album Favorites stay on this phone and never change the songs' Love. */
+    fun toggleFavoriteAlbum(album: String, artist: String) = viewModelScope.launch {
+        val key = FavoriteAlbum.keyOf(album, artist)
+        if (key in favoriteAlbumKeys.value) dao.deleteFavoriteAlbum(key)
+        else dao.upsertFavoriteAlbum(FavoriteAlbum(key, album, artist, System.currentTimeMillis()))
+    }
     fun toggleLoved(trackId: Long) = viewModelScope.launch { app.sync.setLoved(listOf(trackId), trackId !in lovedIds.value) }
 
     // ---- library ----

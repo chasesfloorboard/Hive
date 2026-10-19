@@ -2,6 +2,7 @@ package com.local.hive.mobile.data
 
 import android.content.Context
 import android.net.Uri
+import androidx.room.AutoMigration
 import androidx.room.Dao
 import androidx.room.Database
 import androidx.room.Entity
@@ -50,6 +51,22 @@ data class LoveState(
     val changedAt: Long,
     val pending: Boolean,
 )
+
+/**
+ * An album in Favorites, as in Samsung Music: separate from loving its songs.
+ * Keyed by name rather than MediaStore's album id so it survives a rescan.
+ */
+@Entity(tableName = "favorite_albums")
+data class FavoriteAlbum(
+    @PrimaryKey val key: String,
+    val album: String,
+    val artist: String,
+    val addedAt: Long,
+) {
+    companion object {
+        fun keyOf(album: String, artist: String) = "${artist.trim().lowercase()}\u0000${album.trim().lowercase()}"
+    }
+}
 
 /** Which Hive (PC) track a phone track is the same song as. */
 @Entity(tableName = "pc_match", indices = [Index("pcId")])
@@ -193,6 +210,17 @@ interface LibraryDao {
     @Upsert
     suspend fun upsertLove(states: List<LoveState>)
 
+    // ---- favorite albums ----
+
+    @Query("SELECT * FROM favorite_albums ORDER BY addedAt DESC")
+    fun favoriteAlbums(): Flow<List<FavoriteAlbum>>
+
+    @Upsert
+    suspend fun upsertFavoriteAlbum(album: FavoriteAlbum)
+
+    @Query("DELETE FROM favorite_albums WHERE `key` = :key")
+    suspend fun deleteFavoriteAlbum(key: String)
+
     // ---- PC matching ----
 
     @Query("SELECT * FROM pc_match")
@@ -228,7 +256,12 @@ interface LibraryDao {
     fun recentlyPlayed(limit: Int): Flow<List<Track>>
 }
 
-@Database(entities = [Track::class, LoveState::class, PcMatch::class, Play::class], version = 1, exportSchema = true)
+@Database(
+    entities = [Track::class, LoveState::class, PcMatch::class, Play::class, FavoriteAlbum::class],
+    version = 2,
+    exportSchema = true,
+    autoMigrations = [AutoMigration(from = 1, to = 2)],
+)
 abstract class LibraryDatabase : RoomDatabase() {
     abstract fun dao(): LibraryDao
 

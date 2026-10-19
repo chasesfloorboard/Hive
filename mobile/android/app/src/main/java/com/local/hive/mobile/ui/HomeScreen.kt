@@ -1,10 +1,16 @@
 package com.local.hive.mobile.ui
 
 import android.net.Uri
-import androidx.compose.foundation.ExperimentalFoundationApi
+import androidx.compose.animation.AnimatedVisibility
+import androidx.compose.animation.core.tween
+import androidx.compose.animation.expandVertically
+import androidx.compose.animation.fadeIn
+import androidx.compose.animation.fadeOut
+import androidx.compose.animation.shrinkVertically
+import androidx.compose.foundation.Image
 import androidx.compose.foundation.background
+import androidx.compose.foundation.border
 import androidx.compose.foundation.clickable
-import androidx.compose.foundation.gestures.animateScrollBy
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
@@ -20,63 +26,60 @@ import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.statusBarsPadding
 import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.lazy.LazyColumn
-import androidx.compose.foundation.lazy.LazyListState
 import androidx.compose.foundation.lazy.LazyRow
-import androidx.compose.foundation.lazy.grid.GridCells
-import androidx.compose.foundation.lazy.grid.GridItemSpan
-import androidx.compose.foundation.lazy.grid.LazyVerticalGrid
-import androidx.compose.foundation.lazy.grid.items
 import androidx.compose.foundation.lazy.items
 import androidx.compose.foundation.lazy.itemsIndexed
 import androidx.compose.foundation.lazy.rememberLazyListState
 import androidx.compose.foundation.pager.HorizontalPager
-import androidx.compose.foundation.pager.PagerState
 import androidx.compose.foundation.pager.rememberPagerState
 import androidx.compose.material.icons.Icons
-import androidx.compose.material.icons.rounded.Category
 import androidx.compose.material.icons.rounded.Favorite
-import androidx.compose.material.icons.rounded.Folder
+import androidx.compose.material.icons.rounded.FavoriteBorder
+import androidx.compose.material.icons.rounded.KeyboardArrowDown
 import androidx.compose.material.icons.rounded.LibraryMusic
-import androidx.compose.material.icons.rounded.MoreVert
 import androidx.compose.material.icons.rounded.Person
 import androidx.compose.material.icons.rounded.Search
+import androidx.compose.material.icons.rounded.Shuffle
+import androidx.compose.material3.Icon
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
-import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.rememberCoroutineScope
+import androidx.compose.runtime.saveable.rememberSaveable
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
-import androidx.compose.ui.graphics.Brush
+import androidx.compose.ui.draw.shadow
 import androidx.compose.ui.graphics.Color
-import androidx.compose.ui.graphics.vector.ImageVector
-import androidx.compose.ui.text.style.TextAlign
+import androidx.compose.ui.res.painterResource
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.Dp
 import androidx.compose.ui.unit.dp
-import androidx.compose.ui.unit.lerp
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
+import com.local.hive.mobile.R
 import com.local.hive.mobile.data.AlbumSummary
+import com.local.hive.mobile.data.FavoriteAlbum
 import com.local.hive.mobile.data.ArtistSummary
-import com.local.hive.mobile.data.NamedCount
 import com.local.hive.mobile.data.Track
+import com.local.hive.mobile.ui.theme.Hive
+import com.local.hive.mobile.ui.theme.HiveShape
+import com.local.hive.mobile.ui.theme.HiveText
 import com.local.hive.mobile.ui.theme.Motion
-import com.local.hive.mobile.ui.theme.OneUi
+import com.local.hive.mobile.ui.theme.hiveGlass
+import com.local.hive.mobile.ui.theme.mix
 import kotlinx.coroutines.launch
-import kotlin.math.abs
 
-enum class HomeTab(val label: String) { Favorites("Favorites"), Playlists("Playlists"), Albums("Albums"), Tracks("Tracks"), Artists("Artists"), Genres("Genres"), Folders("Folders") }
+enum class HomeTab(val label: String) { Music("Music"), Playlists("Playlists"), Favorites("Favorites") }
 
-/** Auto playlists, which Samsung Music's Playlists tab leads with. */
+/** Auto playlists, shown in the Playlists tab and the sidebar. */
 enum class AutoPlaylist(val title: String) {
     Favorites("Favorites"),
-    RecentlyAdded("Recently added"),
-    MostPlayed("Most played"),
-    RecentlyPlayed("Recently played"),
+    RecentlyAdded("Recently Added"),
+    MostPlayed("Top 25 Most Played"),
+    RecentlyPlayed("History"),
 }
 
 data class HomeNavigation(
@@ -87,102 +90,214 @@ data class HomeNavigation(
     val openPlaylist: (AutoPlaylist) -> Unit,
     val openSearch: () -> Unit,
     val openSettings: () -> Unit,
+    val openSidebar: () -> Unit,
 )
 
+private enum class MusicView(val label: String) { Albums("Albums"), Tracks("Tracks"), Artists("Artists") }
+
 /**
- * Samsung Music's main screen: the app name with search and ⋮, the One UI tab
- * row (the current tab large, the rest small, sliding to centre as you swipe),
- * and one rounded panel holding the current tab.
+ * Hive's main window, folded for a phone: the brand and search in the top
+ * bar, the top tabs as Hive pills, and each view in a glass panel over the
+ * ambient backdrop.
  */
 @Composable
 fun HomeScreen(vm: MainViewModel, nav: HomeNavigation, actions: TrackActions, bottomPadding: Dp) {
     val tabs = HomeTab.entries
-    val pager = rememberPagerState(initialPage = HomeTab.Tracks.ordinal) { tabs.size }
-    var menu by remember { mutableStateOf(false) }
+    val pager = rememberPagerState { tabs.size }
+    val scope = rememberCoroutineScope()
 
-    Column(Modifier.fillMaxSize().background(OneUi.Window).statusBarsPadding()) {
-        Row(Modifier.fillMaxWidth().height(56.dp).padding(start = 24.dp, end = 4.dp), verticalAlignment = Alignment.CenterVertically) {
-            Text("Hive", style = OneUi.AppTitle, color = OneUi.Text1, modifier = Modifier.weight(1f))
-            BarIcon(Icons.Rounded.Search, "Search", nav.openSearch)
-            Box {
-                BarIcon(Icons.Rounded.MoreVert, "More options", { menu = true })
-                OneUiMenu(menu, { menu = false }) {
-                    OneUiMenuItem("Settings") { menu = false; nav.openSettings() }
+    Column(Modifier.fillMaxSize().statusBarsPadding()) {
+        Row(Modifier.fillMaxWidth().height(56.dp).padding(start = 14.dp, end = 6.dp), verticalAlignment = Alignment.CenterVertically) {
+            Row(
+                Modifier.clip(HiveShape.tab).clickable(onClick = nav.openSidebar).padding(horizontal = 6.dp, vertical = 6.dp),
+                verticalAlignment = Alignment.CenterVertically,
+            ) {
+                val c = Hive.colors
+                Image(painterResource(R.drawable.hive_logo), "Hive", Modifier.size(26.dp).shadow(6.dp, HiveShape.thumb, ambientColor = c.accentGlow, spotColor = c.accentGlow))
+                Spacer(Modifier.width(8.dp))
+                Text("Hive", style = HiveText.brand, color = c.text)
+                Icon(Icons.Rounded.KeyboardArrowDown, "Open sidebar", tint = c.textDim, modifier = Modifier.size(18.dp))
+            }
+            Spacer(Modifier.weight(1f))
+            SearchPill(nav.openSearch)
+        }
+        LazyRow(Modifier.fillMaxWidth(), contentPadding = PaddingValues(horizontal = 10.dp), horizontalArrangement = Arrangement.spacedBy(4.dp)) {
+            itemsIndexed(tabs) { i, tab -> HiveTab(tab.label, pager.currentPage == i, { scope.launch { pager.animateScrollToPage(i, animationSpec = Motion.move()) } }) }
+        }
+        Spacer(Modifier.height(10.dp))
+        HorizontalPager(pager, Modifier.fillMaxSize(), beyondViewportPageCount = 1) { page ->
+            Box(Modifier.fillMaxSize().padding(horizontal = 8.dp).hiveGlass(HiveShape.panel)) {
+                when (tabs[page]) {
+                    HomeTab.Music -> MusicPanel(vm, nav, actions, bottomPadding)
+                    HomeTab.Playlists -> PlaylistsPanel(vm, nav, bottomPadding)
+                    HomeTab.Favorites -> FavoritesPanel(vm, nav, actions, bottomPadding)
                 }
             }
         }
-        OneUiTabs(tabs.map { it.label }, pager)
-        Box(
-            Modifier
-                .fillMaxSize()
-                .padding(horizontal = 4.dp)
-                .clip(OneUi.PanelShape)
-                .background(OneUi.Panel),
-        ) {
-            HorizontalPager(pager, Modifier.fillMaxSize(), beyondViewportPageCount = 1) { page ->
-                val bottom = bottomPadding + 12.dp
-                when (tabs[page]) {
-                    HomeTab.Favorites -> FavoritesTab(vm, nav, bottom)
-                    HomeTab.Playlists -> PlaylistsTab(vm, nav, bottom)
-                    HomeTab.Albums -> AlbumsTab(vm.albums.collectAsStateWithLifecycle().value, nav.openAlbum, bottom)
-                    HomeTab.Tracks -> TracksTab(vm, actions, bottom)
-                    HomeTab.Artists -> ArtistsTab(vm.artists.collectAsStateWithLifecycle().value, nav.openArtist, bottom)
-                    HomeTab.Genres -> NamedTab(vm.genres.collectAsStateWithLifecycle().value, Icons.Rounded.Category, "No genres", nav.openGenre, bottom)
-                    HomeTab.Folders -> NamedTab(vm.folders.collectAsStateWithLifecycle().value, Icons.Rounded.Folder, "No folders", nav.openFolder, bottom, isFolder = true)
-                }
-            }
+    }
+}
+
+@Composable
+private fun SearchPill(onClick: () -> Unit) {
+    val c = Hive.colors
+    Row(
+        Modifier.height(36.dp).clip(HiveShape.pill).background(mix(c.accent, c.panelStrong, 0.05f)).border(1.dp, c.border, HiveShape.pill)
+            .clickable(onClick = onClick).padding(horizontal = 14.dp),
+        verticalAlignment = Alignment.CenterVertically,
+    ) {
+        Icon(Icons.Rounded.Search, null, tint = c.textDim, modifier = Modifier.size(17.dp))
+        Spacer(Modifier.width(8.dp))
+        Text("Search library…", style = HiveText.small, color = c.textDimmer)
+    }
+}
+
+/** The view header inside a panel: the view title, with optional controls on the right. */
+@Composable
+internal fun PanelHeader(title: String, controls: @Composable () -> Unit = {}) {
+    Row(Modifier.fillMaxWidth().padding(start = 18.dp, end = 12.dp, top = 16.dp, bottom = 6.dp), verticalAlignment = Alignment.CenterVertically) {
+        Text(title, style = HiveText.viewTitle, color = Hive.colors.text, modifier = Modifier.weight(1f))
+        controls()
+    }
+}
+
+// ---- Music ----
+
+@Composable
+private fun MusicPanel(vm: MainViewModel, nav: HomeNavigation, actions: TrackActions, bottom: Dp) {
+    var view by rememberSaveable { mutableStateOf(MusicView.Albums) }
+    var years by rememberSaveable { mutableStateOf(true) }
+    Column(Modifier.fillMaxSize()) {
+        PanelHeader(view.label)
+        Row(Modifier.fillMaxWidth().padding(horizontal = 14.dp, vertical = 4.dp), verticalAlignment = Alignment.CenterVertically) {
+            HiveToggle(MusicView.entries.map { it.label }, view.ordinal, { view = MusicView.entries[it] })
+            Spacer(Modifier.weight(1f))
+            if (view == MusicView.Albums) HivePill(if (years) "Years: on" else "Years: off", years) { years = !years }
+        }
+        when (view) {
+            MusicView.Albums -> AlbumsView(vm, nav, actions, years, bottom)
+            MusicView.Tracks -> TracksView(vm, actions, bottom)
+            MusicView.Artists -> ArtistsView(vm.artists.collectAsStateWithLifecycle().value, nav.openArtist, bottom)
         }
     }
 }
 
 /**
- * One UI's tab row: text only, no indicator. The current tab is drawn large
- * and white and the others small and grey; sizes follow the pager while you
- * swipe, and the current tab is brought to the middle.
+ * Albums as Hive shows them: grouped by year under a heading and hairline
+ * rule, two covers to a row. Tapping a cover opens the album right there in
+ * the grid (Hive's inline album), below its row; tapping again closes it.
  */
-@OptIn(ExperimentalFoundationApi::class)
 @Composable
-private fun OneUiTabs(labels: List<String>, pager: PagerState) {
-    val scope = rememberCoroutineScope()
-    val row = rememberLazyListState()
-    LaunchedEffect(pager.currentPage) { centre(row, pager.currentPage) }
-    LazyRow(
-        state = row,
-        modifier = Modifier.fillMaxWidth().height(52.dp),
-        contentPadding = PaddingValues(horizontal = 16.dp),
-        horizontalArrangement = Arrangement.spacedBy(20.dp),
-        verticalAlignment = Alignment.CenterVertically,
-    ) {
-        itemsIndexed(labels) { i, label ->
-            val distance = abs(i - (pager.currentPage + pager.currentPageOffsetFraction)).coerceAtMost(1f)
-            val emphasis = 1f - distance
-            Text(
-                label,
-                style = OneUi.TabOther.copy(fontSize = lerp(OneUi.TabOther.fontSize, OneUi.TabSelected.fontSize, emphasis)),
-                color = androidx.compose.ui.graphics.lerp(OneUi.Text4, OneUi.Text1, emphasis),
-                maxLines = 1,
-                modifier = Modifier.clickable { scope.launch { pager.animateScrollToPage(i, animationSpec = Motion.move()) } },
-            )
+private fun AlbumsView(vm: MainViewModel, nav: HomeNavigation, actions: TrackActions, byYear: Boolean, bottom: Dp) {
+    val albums by vm.albums.collectAsStateWithLifecycle()
+    var open by rememberSaveable { mutableStateOf<Long?>(null) }
+    val sections = remember(albums, byYear) {
+        if (byYear) albums.groupBy { it.year }.toSortedMap(compareByDescending { it }).map { (y, list) -> (if (y > 0) "$y" else "Unknown year") to list }
+        else listOf("" to albums)
+    }
+    LazyColumn(Modifier.fillMaxSize(), contentPadding = PaddingValues(bottom = bottom + 12.dp)) {
+        if (albums.isEmpty()) item { EmptyState("No albums yet", "Albums appear once Hive finds music on this phone.") }
+        sections.forEach { (heading, list) ->
+            if (heading.isNotBlank()) item(key = "y$heading") { YearHeading(heading) }
+            list.chunked(2).forEach { row ->
+                item(key = "r${row.first().albumId}") {
+                    Row(Modifier.fillMaxWidth().padding(horizontal = 14.dp, vertical = 8.dp), horizontalArrangement = Arrangement.spacedBy(14.dp)) {
+                        row.forEach { a -> AlbumCard(a, a.albumId == open, Modifier.weight(1f)) { open = if (open == a.albumId) null else a.albumId } }
+                        if (row.size == 1) Spacer(Modifier.weight(1f))
+                    }
+                }
+                val inRow = row.firstOrNull { it.albumId == open }
+                item(key = "i${row.first().albumId}") {
+                    AnimatedVisibility(inRow != null, enter = expandVertically(tween(220)) + fadeIn(tween(220)), exit = shrinkVertically(tween(180)) + fadeOut(tween(140))) {
+                        inRow?.let { InlineAlbum(vm, it, actions, onOpenPage = { nav.openAlbum(it.albumId) }) }
+                    }
+                }
+            }
         }
     }
 }
 
-private suspend fun centre(row: LazyListState, index: Int) {
-    val info = row.layoutInfo.visibleItemsInfo.firstOrNull { it.index == index }
-    if (info == null) { row.animateScrollToItem(index); return }
-    val viewportCentre = (row.layoutInfo.viewportStartOffset + row.layoutInfo.viewportEndOffset) / 2
-    row.animateScrollBy((info.offset + info.size / 2 - viewportCentre).toFloat(), Motion.move())
-}
-
-// ---- tabs ----
-
+/** Hive's `.album-card`: rounded art with a deep soft shadow, bold title, dim artist; an accent ring when open. */
 @Composable
-private fun TracksTab(vm: MainViewModel, actions: TrackActions, bottom: Dp) {
-    val tracks by vm.tracks.collectAsStateWithLifecycle()
-    TrackList(vm, tracks, actions, bottom, "No music", "Hive plays the music stored on this phone.", sortLabel = "Name", indexed = true)
+internal fun AlbumCard(a: AlbumSummary, selected: Boolean, modifier: Modifier, onClick: () -> Unit) {
+    val c = Hive.colors
+    Column(modifier.pressable(onClick)) {
+        Box {
+            Artwork(Uri.parse("content://media/external/audio/albumart/${a.albumId}"), Modifier.fillMaxWidth().aspectRatio(1f), HiveShape.art, Icons.Rounded.LibraryMusic, elevation = 14.dp)
+            if (selected) Box(Modifier.matchParentSize().border(2.dp, c.accent, HiveShape.art))
+        }
+        Text(a.album.ifBlank { "Unknown album" }, style = HiveText.cardTitle, color = c.text, maxLines = 2, overflow = TextOverflow.Ellipsis, modifier = Modifier.padding(top = 10.dp))
+        Text(a.artist.ifBlank { "Unknown artist" }, style = HiveText.cardSub, color = c.textDim, maxLines = 1, overflow = TextOverflow.Ellipsis)
+    }
 }
 
-/** Songs with Samsung's sort bar and, for long lists, the A–Z index. */
+/**
+ * Hive's inline album: an accent-tinted panel with the cover beside the
+ * album's name and details, Play / Shuffle / ♥, then its tracklist.
+ */
+@Composable
+internal fun InlineAlbum(vm: MainViewModel, a: AlbumSummary, actions: TrackActions, onOpenPage: () -> Unit) {
+    val c = Hive.colors
+    val tracks by remember(a.albumId) { vm.albumTracks(a.albumId) }.collectAsStateWithLifecycle(emptyList())
+    val loved by vm.lovedIds.collectAsStateWithLifecycle()
+    val now by vm.nowPlaying.collectAsStateWithLifecycle()
+    val favorite = FavoriteAlbum.keyOf(a.album, a.artist) in vm.favoriteAlbumKeys.collectAsStateWithLifecycle().value
+    Column(
+        Modifier
+            .fillMaxWidth()
+            .padding(horizontal = 10.dp, vertical = 6.dp)
+            .shadow(18.dp, HiveShape.menu, ambientColor = c.accentGlow, spotColor = Color.Black)
+            .clip(HiveShape.menu)
+            .background(mix(c.accent, c.panelStrong.copy(alpha = 0.96f), 0.08f))
+            .border(1.dp, mix(c.accent, Color.Transparent, 0.10f), HiveShape.menu)
+            .padding(14.dp),
+    ) {
+        Row(verticalAlignment = Alignment.Top) {
+            Artwork(Uri.parse("content://media/external/audio/albumart/${a.albumId}"), Modifier.size(112.dp).clickable(onClick = onOpenPage), androidx.compose.foundation.shape.RoundedCornerShape(6.dp), Icons.Rounded.LibraryMusic)
+            Spacer(Modifier.width(14.dp))
+            Column(Modifier.weight(1f)) {
+                Text(a.album.ifBlank { "Unknown album" }, style = HiveText.cardTitle.copy(fontSize = HiveText.row.fontSize), color = c.text, maxLines = 2, overflow = TextOverflow.Ellipsis, modifier = Modifier.clickable(onClick = onOpenPage))
+                Text(listOfNotNull(a.artist.ifBlank { null }, a.year.takeIf { it > 0 }?.toString()).joinToString(" · "), style = HiveText.small, color = c.textDim, modifier = Modifier.padding(top = 3.dp))
+                Text("${countOf(tracks.size, "track")} · ${formatLength(tracks.sumOf { it.durationMs })}", style = HiveText.small, color = c.textDimmer)
+                Row(Modifier.padding(top = 12.dp), horizontalArrangement = Arrangement.spacedBy(8.dp), verticalAlignment = Alignment.CenterVertically) {
+                    AccentPlayButton(false, { vm.play(tracks) }, size = 38.dp)
+                    ControlButton(Icons.Rounded.Shuffle, "Shuffle", { vm.shuffle(tracks) }, size = 38.dp)
+                    ControlButton(if (favorite) Icons.Rounded.Favorite else Icons.Rounded.FavoriteBorder, if (favorite) "Remove album from Favorites" else "Add album to Favorites", { vm.toggleFavoriteAlbum(a.album, a.artist) }, size = 38.dp, tint = if (favorite) c.accent else null)
+                }
+            }
+        }
+        Box(Modifier.fillMaxWidth().padding(top = 12.dp, bottom = 4.dp).height(1.dp).background(c.border))
+        tracks.forEachIndexed { i, t ->
+            TrackRow(t, t.id in loved, now.trackId == t.id, now.isPlaying, actions, onClick = { vm.play(tracks, i) }, subtitle = if (t.artist != a.artist) t.artist else "", number = t.trackNumber.takeIf { it > 0 } ?: (i + 1))
+        }
+    }
+}
+
+private enum class TrackSort(val label: String) { Title("Title"), Artist("Artist"), Album("Album"), Added("Added"), Length("Length") }
+
+/** Every song, sortable like Hive's song table, with the A–Z index on title sort. */
+@Composable
+private fun TracksView(vm: MainViewModel, actions: TrackActions, bottom: Dp) {
+    val all by vm.tracks.collectAsStateWithLifecycle()
+    var sort by rememberSaveable { mutableStateOf(TrackSort.Title) }
+    val tracks = remember(all, sort) {
+        when (sort) {
+            TrackSort.Title -> all
+            TrackSort.Artist -> all.sortedWith(compareBy<Track, String>(LibrarySort.collator) { LibrarySort.key(it.artist) }.thenBy { it.album }.thenBy { it.trackNumber })
+            TrackSort.Album -> all.sortedWith(compareBy<Track, String>(LibrarySort.collator) { LibrarySort.key(it.album) }.thenBy { it.discNumber }.thenBy { it.trackNumber })
+            TrackSort.Added -> all.sortedByDescending { it.dateAdded }
+            TrackSort.Length -> all.sortedByDescending { it.durationMs }
+        }
+    }
+    Column(Modifier.fillMaxSize()) {
+        LazyRow(contentPadding = PaddingValues(horizontal = 14.dp, vertical = 6.dp), horizontalArrangement = Arrangement.spacedBy(4.dp), verticalAlignment = Alignment.CenterVertically) {
+            item { HiveLabel("Sort", Modifier.padding(end = 6.dp)) }
+            items(TrackSort.entries) { s -> HivePill(s.label, s == sort) { sort = s } }
+        }
+        TrackList(vm, tracks, actions, bottom, "No music yet", "Hive plays the music stored on this phone.", indexed = sort == TrackSort.Title)
+    }
+}
+
+/** Songs with Play all / Shuffle and, when sorted by title, the A–Z index. */
 @Composable
 fun TrackList(
     vm: MainViewModel,
@@ -191,192 +306,108 @@ fun TrackList(
     bottom: Dp,
     emptyTitle: String,
     emptyBody: String,
-    sortLabel: String,
     indexed: Boolean = false,
+    header: (@Composable () -> Unit)? = null,
 ) {
     val loved by vm.lovedIds.collectAsStateWithLifecycle()
     val now by vm.nowPlaying.collectAsStateWithLifecycle()
     val loaded by vm.libraryLoaded.collectAsStateWithLifecycle()
     val list = rememberLazyListState()
     val scope = rememberCoroutineScope()
-    val firstByLetter = remember(tracks) {
-        buildMap { tracks.forEachIndexed { i, t -> putIfAbsent(indexLetter(LibrarySort.key(t.title)), i) } }
+    val firstByLetter = remember(tracks, indexed) {
+        if (!indexed) emptyMap() else buildMap { tracks.forEachIndexed { i, t -> putIfAbsent(indexLetter(LibrarySort.key(t.title)), i) } }
     }
     val showIndex = indexed && tracks.size > 30
     Box(Modifier.fillMaxSize()) {
-        LazyColumn(Modifier.fillMaxSize(), state = list, contentPadding = PaddingValues(bottom = bottom)) {
+        LazyColumn(Modifier.fillMaxSize(), state = list, contentPadding = PaddingValues(bottom = bottom + 12.dp, end = if (showIndex) 14.dp else 0.dp)) {
+            if (header != null) item { header() }
             if (tracks.isEmpty()) { if (loaded) item { EmptyState(emptyTitle, emptyBody) } }
             else {
-                item { SortBar(sortLabel, onShuffle = { vm.shuffle(tracks) }, onPlay = { vm.play(tracks) }) }
+                item {
+                    Row(Modifier.fillMaxWidth().padding(start = 18.dp, end = 12.dp, top = 6.dp, bottom = 8.dp), verticalAlignment = Alignment.CenterVertically) {
+                        HiveLabel(countOf(tracks.size, "track") + " · " + formatLength(tracks.sumOf { it.durationMs }), Modifier.weight(1f))
+                        ControlButton(Icons.Rounded.Shuffle, "Shuffle", { vm.shuffle(tracks) }, size = 38.dp)
+                        Spacer(Modifier.width(8.dp))
+                        AccentPlayButton(false, { vm.play(tracks) }, size = 38.dp)
+                    }
+                }
                 itemsIndexed(tracks, key = { _, t -> t.id }) { i, t ->
-                    TrackRow(t, t.id in loved, now.trackId == t.id, now.isPlaying, actions, onClick = { vm.play(tracks, i) }, endPadding = if (showIndex) 28.dp else 4.dp)
+                    TrackRow(t, t.id in loved, now.trackId == t.id, now.isPlaying, actions, onClick = { vm.play(tracks, i) })
                 }
             }
         }
         if (showIndex) {
-            IndexBar(
-                IndexLetters,
-                onLetter = { c -> scope.launch { list.scrollToItem(jumpIndex(firstByLetter, c, tracks.lastIndex) + 1) } },
-                modifier = Modifier.align(Alignment.CenterEnd).padding(top = 64.dp, bottom = bottom, end = 4.dp),
-            )
+            IndexBar(IndexLetters, onLetter = { ch ->
+                val target = IndexLetters.dropWhile { it != ch }.firstNotNullOfOrNull { firstByLetter[it] } ?: tracks.lastIndex
+                scope.launch { list.scrollToItem(target + 1 + if (header != null) 1 else 0) }
+            }, modifier = Modifier.align(Alignment.CenterEnd).padding(top = 48.dp, bottom = bottom))
         }
     }
 }
 
-/** The first item filed under [letter], or under the next letter that has any. */
-private fun jumpIndex(firstByLetter: Map<Char, Int>, letter: Char, last: Int): Int =
-    IndexLetters.dropWhile { it != letter }.firstNotNullOfOrNull { firstByLetter[it] } ?: last
-
-/**
- * Favorites as Samsung shows them: large rounded cards, the type and name
- * written over the art, the count beneath. Hive's Love is per song, so the
- * cards are Favorite tracks, then the albums and artists those songs are on.
- */
 @Composable
-private fun FavoritesTab(vm: MainViewModel, nav: HomeNavigation, bottom: Dp) {
-    val favorites by vm.favorites.collectAsStateWithLifecycle()
-    val loaded by vm.libraryLoaded.collectAsStateWithLifecycle()
-    val cards = remember(favorites) {
-        val albums = favorites.groupBy { it.albumId }.values.sortedByDescending { it.size }.take(24)
-        val artists = favorites.filter { it.artist.isNotBlank() }.groupBy { it.artist }.values.sortedByDescending { it.size }.take(12)
-        buildList {
-            val a = albums.iterator()
-            val b = artists.iterator()
-            while (a.hasNext() || b.hasNext()) {
-                if (a.hasNext()) add(false to a.next())
-                if (b.hasNext()) add(true to b.next())
-            }
+private fun ArtistsView(artists: List<ArtistSummary>, open: (String) -> Unit, bottom: Dp) {
+    LazyColumn(Modifier.fillMaxSize(), contentPadding = PaddingValues(top = 4.dp, bottom = bottom + 12.dp)) {
+        if (artists.isEmpty()) item { EmptyState("No artists yet", "") }
+        items(artists, key = { it.artist }) { a ->
+            LibraryRow(Uri.parse("content://media/external/audio/albumart/${a.albumId}"), Icons.Rounded.Person, a.artist, "${countOf(a.albumCount, "album")} · ${countOf(a.trackCount, "track")}", round = true) { open(a.artist) }
         }
     }
-    if (favorites.isEmpty()) {
-        if (loaded) EmptyState("No favorites yet", "Tap ♥ on a song, or pair with Hive on your PC to bring your Favorites over.")
-        return
-    }
-    LazyVerticalGrid(
-        GridCells.Fixed(2), Modifier.fillMaxSize(),
-        contentPadding = PaddingValues(start = 12.dp, end = 12.dp, top = 16.dp, bottom = bottom),
-        horizontalArrangement = Arrangement.spacedBy(10.dp), verticalArrangement = Arrangement.spacedBy(14.dp),
+}
+
+/** A row for things that aren't songs: art, name, detail line. */
+@Composable
+fun LibraryRow(art: Any?, fallback: androidx.compose.ui.graphics.vector.ImageVector, title: String, subtitle: String, round: Boolean = false, trailing: String? = null, onClick: () -> Unit) {
+    val c = Hive.colors
+    Row(
+        Modifier.fillMaxWidth().padding(horizontal = 8.dp).height(66.dp).clip(HiveShape.row).clickable(onClick = onClick).padding(horizontal = 10.dp),
+        verticalAlignment = Alignment.CenterVertically,
     ) {
-        item { FavoriteCard(favorites.first().artworkUri, null, "Favorite tracks", countOf(favorites.size, "track"), dim = true) { nav.openPlaylist(AutoPlaylist.Favorites) } }
-        items(cards) { (isArtist, tracks) ->
-            val first = tracks.first()
-            if (isArtist) {
-                FavoriteCard(first.artworkUri, "Artists", first.artist, "${countOf(tracks.distinctBy { it.albumId }.size, "album")}   ${countOf(tracks.size, "track")}") { nav.openArtist(first.artist) }
-            } else {
-                FavoriteCard(first.artworkUri, "Albums", first.album.ifBlank { "Unknown album" }, countOf(tracks.size, "track")) { nav.openAlbum(first.albumId) }
-            }
+        Artwork(art, Modifier.size(46.dp), if (round) androidx.compose.foundation.shape.CircleShape else HiveShape.thumb, fallback)
+        Spacer(Modifier.width(12.dp))
+        Column(Modifier.weight(1f), verticalArrangement = Arrangement.spacedBy(2.dp)) {
+            Text(title, style = HiveText.rowStrong, color = c.text, maxLines = 1, overflow = TextOverflow.Ellipsis)
+            Text(subtitle, style = HiveText.rowSub, color = c.textDim, maxLines = 1, overflow = TextOverflow.Ellipsis)
         }
+        if (trailing != null) Text(trailing, style = HiveText.numbers, color = c.textDimmer)
     }
 }
 
-@Composable
-private fun FavoriteCard(art: Any?, kind: String?, name: String, caption: String, dim: Boolean = false, onClick: () -> Unit) {
-    Column(Modifier.clickable(onClick = onClick), horizontalAlignment = Alignment.CenterHorizontally) {
-        Box(Modifier.fillMaxWidth().aspectRatio(1f).clip(OneUi.Hero)) {
-            Artwork(art, Modifier.fillMaxSize(), OneUi.Hero, Icons.Rounded.Favorite)
-            Box(Modifier.fillMaxSize().background(Brush.verticalGradient(listOf(Color.Black.copy(alpha = if (dim) 0.45f else 0.15f), Color.Black.copy(alpha = if (dim) 0.45f else 0.35f)))))
-            Column(Modifier.align(Alignment.Center).padding(horizontal = 12.dp), horizontalAlignment = Alignment.CenterHorizontally) {
-                if (kind != null) Text(kind, style = OneUi.Sub, color = Color.White.copy(alpha = 0.85f))
-                Text(name, style = OneUi.Title, color = Color.White, textAlign = TextAlign.Center, maxLines = 2, overflow = TextOverflow.Ellipsis)
-            }
-        }
-        Text(caption, style = OneUi.Sub, color = OneUi.Text2, modifier = Modifier.padding(top = 8.dp))
-    }
-}
+// ---- Playlists and Favorites ----
 
 @Composable
-private fun PlaylistsTab(vm: MainViewModel, nav: HomeNavigation, bottom: Dp) {
+private fun PlaylistsPanel(vm: MainViewModel, nav: HomeNavigation, bottom: Dp) {
     val favorites by vm.favorites.collectAsStateWithLifecycle()
     val recent by vm.recentlyAdded.collectAsStateWithLifecycle()
     val most by vm.mostPlayed.collectAsStateWithLifecycle()
     val played by vm.recentlyPlayed.collectAsStateWithLifecycle()
-    LazyColumn(Modifier.fillMaxSize(), contentPadding = PaddingValues(bottom = bottom)) {
-        item {
-            LazyRow(contentPadding = PaddingValues(horizontal = 16.dp, vertical = 16.dp), horizontalArrangement = Arrangement.spacedBy(10.dp)) {
-                items(listOf(AutoPlaylist.RecentlyAdded to recent, AutoPlaylist.MostPlayed to most, AutoPlaylist.RecentlyPlayed to played)) { (kind, tracks) ->
-                    Column(Modifier.width(132.dp).clickable { nav.openPlaylist(kind) }, horizontalAlignment = Alignment.CenterHorizontally) {
-                        Artwork(tracks.firstOrNull()?.artworkUri, Modifier.size(132.dp), OneUi.Cover, Icons.Rounded.LibraryMusic)
-                        Text(kind.title, style = OneUi.Sub, color = OneUi.Text1, modifier = Modifier.padding(top = 8.dp), maxLines = 1)
-                        Text(countOf(tracks.size, "track"), style = OneUi.Sub, color = OneUi.TextSub)
-                    }
+    val rows = listOf(AutoPlaylist.Favorites to favorites, AutoPlaylist.RecentlyAdded to recent, AutoPlaylist.MostPlayed to most.take(25), AutoPlaylist.RecentlyPlayed to played)
+    LazyColumn(Modifier.fillMaxSize(), contentPadding = PaddingValues(bottom = bottom + 12.dp)) {
+        item { PanelHeader("Playlists") }
+        item { HiveLabel("Smart playlists", Modifier.padding(start = 18.dp, top = 6.dp, bottom = 6.dp)) }
+        items(rows) { (kind, tracks) ->
+            LibraryRow(tracks.firstOrNull()?.artworkUri, if (kind == AutoPlaylist.Favorites) Icons.Rounded.Favorite else Icons.Rounded.LibraryMusic, kind.title, countOf(tracks.size, "track")) { nav.openPlaylist(kind) }
+        }
+    }
+}
+
+@Composable
+private fun FavoritesPanel(vm: MainViewModel, nav: HomeNavigation, actions: TrackActions, bottom: Dp) {
+    val tracks by vm.favorites.collectAsStateWithLifecycle()
+    val albums by vm.favoriteAlbums.collectAsStateWithLifecycle()
+    TrackList(
+        vm, tracks, actions, bottom,
+        if (albums.isEmpty()) "No Favorites yet" else "No favorite songs yet",
+        "Tap ♥ on a song or an album, or pair with Hive on your PC to bring your Favorites over.",
+        header = { Column {
+            PanelHeader("Favorites")
+            if (albums.isNotEmpty()) {
+                YearHeading("Albums")
+                LazyRow(contentPadding = PaddingValues(horizontal = 16.dp), horizontalArrangement = Arrangement.spacedBy(14.dp), modifier = Modifier.padding(bottom = 8.dp)) {
+                    items(albums, key = { it.albumId }) { a -> AlbumCard(a, false, Modifier.width(136.dp).animateItem()) { nav.openAlbum(a.albumId) } }
                 }
+                if (tracks.isNotEmpty()) YearHeading("Songs")
             }
-        }
-        item { SortBar("Name") }
-        item { LibraryRow(favorites.firstOrNull()?.artworkUri, Icons.Rounded.Favorite, "Favorites", countOf(favorites.size, "track")) { nav.openPlaylist(AutoPlaylist.Favorites) } }
-    }
-}
-
-@Composable
-private fun AlbumsTab(albums: List<AlbumSummary>, open: (Long) -> Unit, bottom: Dp) {
-    LazyVerticalGrid(
-        GridCells.Fixed(2), Modifier.fillMaxSize(),
-        contentPadding = PaddingValues(start = 12.dp, end = 12.dp, bottom = bottom),
-        horizontalArrangement = Arrangement.spacedBy(10.dp), verticalArrangement = Arrangement.spacedBy(16.dp),
-    ) {
-        item(span = { GridItemSpan(maxLineSpan) }) { SortBar("Name") }
-        if (albums.isEmpty()) item(span = { GridItemSpan(maxLineSpan) }) { EmptyState("No albums", "") }
-        items(albums, key = { it.albumId }) { a ->
-            Column(Modifier.clickable { open(a.albumId) }, horizontalAlignment = Alignment.CenterHorizontally) {
-                Artwork(Uri.parse("content://media/external/audio/albumart/${a.albumId}"), Modifier.fillMaxWidth().aspectRatio(1f), OneUi.Hero, Icons.Rounded.LibraryMusic)
-                Text(a.album.ifBlank { "Unknown album" }, style = OneUi.GridTitle, color = OneUi.Text1, maxLines = 1, overflow = TextOverflow.Ellipsis, textAlign = TextAlign.Center, modifier = Modifier.padding(top = 8.dp, start = 4.dp, end = 4.dp))
-                Text("${a.artist.ifBlank { "Unknown" }} | ${countOf(a.trackCount, "track")}", style = OneUi.Sub, color = OneUi.TextSub, maxLines = 1, overflow = TextOverflow.Ellipsis, textAlign = TextAlign.Center, modifier = Modifier.padding(horizontal = 4.dp))
-            }
-        }
-    }
-}
-
-@Composable
-private fun ArtistsTab(artists: List<ArtistSummary>, open: (String) -> Unit, bottom: Dp) {
-    val list = rememberLazyListState()
-    val scope = rememberCoroutineScope()
-    val firstByLetter = remember(artists) { buildMap { artists.forEachIndexed { i, a -> putIfAbsent(indexLetter(LibrarySort.key(a.artist)), i) } } }
-    val showIndex = artists.size > 30
-    Box(Modifier.fillMaxSize()) {
-        LazyColumn(Modifier.fillMaxSize(), state = list, contentPadding = PaddingValues(bottom = bottom)) {
-            item { SortBar("Name") }
-            if (artists.isEmpty()) item { EmptyState("No artists", "") }
-            items(artists, key = { it.artist }) { a ->
-                LibraryRow(
-                    Uri.parse("content://media/external/audio/albumart/${a.albumId}"), Icons.Rounded.Person, a.artist,
-                    "${countOf(a.albumCount, "album")} | ${countOf(a.trackCount, "track")}", endPadding = if (showIndex) 28.dp else OneUi.Gutter,
-                ) { open(a.artist) }
-            }
-        }
-        if (showIndex) {
-            IndexBar(
-                IndexLetters,
-                onLetter = { c -> scope.launch { list.scrollToItem(jumpIndex(firstByLetter, c, artists.lastIndex) + 1) } },
-                modifier = Modifier.align(Alignment.CenterEnd).padding(top = 64.dp, bottom = bottom, end = 4.dp),
-            )
-        }
-    }
-}
-
-@Composable
-private fun NamedTab(items: List<NamedCount>, icon: ImageVector, empty: String, open: (String) -> Unit, bottom: Dp, isFolder: Boolean = false) {
-    LazyColumn(Modifier.fillMaxSize(), contentPadding = PaddingValues(bottom = bottom)) {
-        item { SortBar("Name") }
-        if (items.isEmpty()) item { EmptyState(empty, "") }
-        items(items, key = { it.name }) { g ->
-            val name = if (isFolder) g.name.trimEnd('/').substringAfterLast('/').ifBlank { "Music" } else g.name
-            LibraryRow(null, icon, name, if (isFolder) "/${g.name}" else countOf(g.trackCount, "track")) { open(g.name) }
-        }
-    }
-}
-
-/** A Samsung list row for things that aren't songs: art, name, detail line. */
-@Composable
-fun LibraryRow(art: Any?, fallback: ImageVector, title: String, subtitle: String, endPadding: Dp = OneUi.Gutter, onClick: () -> Unit) {
-    Box(Modifier.fillMaxWidth().height(OneUi.RowHeight).clickable(onClick = onClick)) {
-        Row(Modifier.fillMaxSize().padding(start = OneUi.Gutter, end = endPadding), verticalAlignment = Alignment.CenterVertically) {
-            Artwork(art, Modifier.size(OneUi.ThumbSize), OneUi.Thumb, fallback)
-            Spacer(Modifier.width(OneUi.ThumbGap))
-            Column(Modifier.weight(1f), verticalArrangement = Arrangement.spacedBy(3.dp)) {
-                Text(title, style = OneUi.Title, color = OneUi.Text1, maxLines = 1, overflow = TextOverflow.Ellipsis)
-                Text(subtitle, style = OneUi.Sub, color = OneUi.TextSub, maxLines = 1, overflow = TextOverflow.Ellipsis)
-            }
-        }
-        Box(Modifier.align(Alignment.BottomStart).padding(start = OneUi.DividerInset, end = OneUi.Gutter).fillMaxWidth().height(0.5.dp).background(OneUi.Divider))
-    }
+        } },
+    )
 }

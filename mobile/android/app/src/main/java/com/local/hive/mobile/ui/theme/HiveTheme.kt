@@ -85,13 +85,6 @@ data class HiveColors(
     val control: Color get() = mix(accent, mix(panelStrong.copy(alpha = 1f), bg, panelStrong.alpha), 0.05f)
 }
 
-private fun mix(a: Color, b: Color, amountOfA: Float) = Color(
-    red = a.red * amountOfA + b.red * (1 - amountOfA),
-    green = a.green * amountOfA + b.green * (1 - amountOfA),
-    blue = a.blue * amountOfA + b.blue * (1 - amountOfA),
-    alpha = a.alpha * amountOfA + b.alpha * (1 - amountOfA),
-)
-
 internal fun hsl(h: Float, s: Float, l: Float, a: Float): Color {
     val c = (1 - abs(2 * l - 1)) * s
     val hp = ((h % 360) + 360) % 360 / 60f
