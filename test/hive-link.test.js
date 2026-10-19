@@ -17,7 +17,7 @@ const { createHiveLink, trackIdFor } = require('../app/main/hive-link');
 
 let nextPort = 48100 + Math.floor(Math.random() * 500) * 2;
 
-function setup() {
+function setup({ acceptPhoneChanges = true } = {}) {
   const dataDir = fs.mkdtempSync(path.join(os.tmpdir(), 'hive-link-'));
   const tracks = [
     { id: 'a1', path: '/music/Pearl Jam - Black.mp3', title: 'Black', artist: 'Pearl Jam', album: 'Ten', duration: '343.2', loved: false },
@@ -30,6 +30,7 @@ function setup() {
     dataDir,
     port,
     discoveryPort: port + 1,
+    acceptPhoneChanges,
     getTracks: async () => tracks,
     setLove: async (trackPath, loved) => {
       setLoveCalls.push([trackPath, loved]);
@@ -145,6 +146,20 @@ test('a phone Love goes through setLove and is logged with the phone as origin',
   const changes = await request(ctx.port, 'GET', '/api/love/changes?since=0', { token });
   assert.equal(changes.body.reset, false);
   assert.deepEqual(changes.body.changes.map(c => [c.id, c.loved, c.at, c.origin]), [['a1', true, 1000, deviceId]]);
+});
+
+test('while phone changes are off, phone Love is held and nothing is written', async t => {
+  const ctx = setup({ acceptPhoneChanges: false });
+  t.after(() => ctx.link.stop());
+  await waitListening(ctx.port);
+  const token = await pair(ctx);
+
+  const res = await request(ctx.port, 'POST', '/api/love', { token, body: { changes: [{ clientChangeId: 1, id: 'a1', loved: true, at: 1000 }] } });
+  assert.deepEqual(res.body.results.map(r => r.status), ['held']);
+  assert.equal(ctx.setLoveCalls.length, 0);
+  assert.equal(ctx.tracks[0].loved, false);
+  const changes = await request(ctx.port, 'GET', '/api/love/changes?since=0', { token });
+  assert.deepEqual(changes.body.changes, []);
 });
 
 test('an older phone change loses to a newer PC change', async t => {

@@ -10,6 +10,7 @@
 //   GET  /api/library              compact track list (gzip) for matching
 //   GET  /api/love/changes?since=  Love changes after a sequence number
 //   POST /api/love                 apply Love changes made on the phone
+//                                  (answered "held" while acceptPhoneChanges is off)
 //   GET  /api/events               server-sent events (live Love changes)
 //
 // Love itself stays where Hive keeps it: in the music files. Phone changes
@@ -19,6 +20,10 @@
 // Each change carries the time it was made. When both sides change the same
 // track, the newer change wins; an older one is answered with the current
 // state so the phone can correct itself.
+//
+// While acceptPhoneChanges is off, PC Love still reaches the phone but phone
+// changes are not applied: each is answered "held" and the phone keeps it
+// queued for later.
 
 const crypto = require('crypto');
 const dgram = require('dgram');
@@ -53,7 +58,7 @@ function lanAddresses() {
   return out;
 }
 
-function createHiveLink({ dataDir, getTracks, setLove, onPaired, log = () => {}, port = DEFAULT_PORT, discoveryPort = DISCOVERY_PORT }) {
+function createHiveLink({ dataDir, getTracks, setLove, onPaired, log = () => {}, port = DEFAULT_PORT, discoveryPort = DISCOVERY_PORT, acceptPhoneChanges = false }) {
   const statePath = path.join(dataDir, 'hive-link.json');
   let state = loadState();
   let server = null;
@@ -198,6 +203,10 @@ function createHiveLink({ dataDir, getTracks, setLove, onPaired, log = () => {},
   }
 
   async function applyLoveChanges(device, changes) {
+    if (!acceptPhoneChanges) {
+      const held = Array.isArray(changes) ? changes.slice(0, 500) : [];
+      return { seq: state.seq, results: held.map(c => ({ clientChangeId: c?.clientChangeId ?? null, id: String(c?.id || ''), status: 'held' })) };
+    }
     const tracks = await getTracks();
     const byId = new Map(tracks.map(t => [trackIdFor(t), t]));
     const results = [];

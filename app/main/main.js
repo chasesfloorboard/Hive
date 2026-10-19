@@ -7890,6 +7890,8 @@ function startHiveLink() {
       await setLoveForSingleTrack(sender ? { sender } : null, trackPath, loved);
       try { sender?.send('library:scanTrack', [{ path: trackPath, loved: !!loved, loveHydrated: true }]); } catch {}
     },
+    // Hive Mobile is not ready to change the PC library yet: phone Love stays on the phone.
+    acceptPhoneChanges: false,
     onPaired: device => scanLog('Hive Link paired', { device: device.name }),
     log: (...args) => scanLog(args.map(String).join(' '))
   });
