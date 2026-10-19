@@ -308,8 +308,9 @@ fun SearchScreen(vm: MainViewModel, actions: TrackActions, bottomPadding: Dp, on
     val library by vm.tracks.collectAsStateWithLifecycle()
     LaunchedEffect(query, library) { delay(140); results = vm.search(query) }
     val q = query.trim()
-    val albumHits by remember(q, albums) { derivedStateOf { if (q.length < 2) emptyList() else albums.filter { it.album.contains(q, true) || it.artist.contains(q, true) }.take(8) } }
-    val artistHits by remember(q, artists) { derivedStateOf { if (q.length < 2) emptyList() else artists.filter { it.artist.contains(q, true) }.take(6) } }
+    val fq = remember(q) { LibrarySort.fold(q) }
+    val albumHits by remember(fq, albums) { derivedStateOf { if (fq.length < 2) emptyList() else albums.filter { fq in LibrarySort.fold(it.album) || fq in LibrarySort.fold(it.artist) }.take(8) } }
+    val artistHits by remember(fq, artists) { derivedStateOf { if (fq.length < 2) emptyList() else artists.filter { fq in LibrarySort.fold(it.artist) }.take(6) } }
 
     Column(Modifier.fillMaxSize()) {
         Row(Modifier.fillMaxWidth().statusBarsPadding().padding(horizontal = 10.dp, vertical = 6.dp), verticalAlignment = Alignment.CenterVertically) {

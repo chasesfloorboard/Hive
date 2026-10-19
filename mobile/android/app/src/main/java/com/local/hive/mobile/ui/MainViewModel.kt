@@ -90,7 +90,18 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
     fun artistTracks(artist: String) = dao.artistTracks(artist)
     fun genreTracks(genre: String) = dao.genreTracks(genre)
     fun folderTracks(folder: String) = dao.folderTracks(folder)
-    suspend fun search(query: String): List<Track> = if (query.isBlank()) emptyList() else dao.search("%${query.trim()}%")
+    /** Songs whose title, artist or album holds [query], ignoring case and accents. */
+    suspend fun search(query: String): List<Track> {
+        val q = LibrarySort.fold(query.trim())
+        if (q.isEmpty()) return emptyList()
+        return kotlinx.coroutines.withContext(kotlinx.coroutines.Dispatchers.Default) {
+            val library = tracks.value
+            val index = searchIndex?.takeIf { it.first === library }?.second
+                ?: library.map { LibrarySort.fold("${it.title}\u0000${it.artist}\u0000${it.album}") }.also { searchIndex = library to it }
+            library.indices.filter { q in index[it] }.take(300).map { library[it] }
+        }
+    }
+    private var searchIndex: Pair<List<Track>, List<String>>? = null
     suspend fun playStats(trackId: Long) = dao.playStats(trackId)
 
     // ---- ratings ----

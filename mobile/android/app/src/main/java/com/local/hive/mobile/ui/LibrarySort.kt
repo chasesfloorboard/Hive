@@ -16,4 +16,12 @@ object LibrarySort {
         // Titles that are only symbols ("!") keep their text so they still sort somewhere sensible.
         return withoutArticle.ifBlank { trimmed.ifBlank { value } }
     }
+
+    /** Text as search compares it: no case, accents or ligatures, so "aenima" finds "Ænima" and "bjork" finds "Björk". */
+    fun fold(value: String): String = java.text.Normalizer.normalize(
+        value.lowercase().replace("æ", "ae").replace("œ", "oe").replace("ø", "o").replace("ß", "ss").replace("ł", "l").replace("đ", "d"),
+        java.text.Normalizer.Form.NFKD,
+    ).replace(marks, "")
+
+    private val marks = Regex("\\p{M}+")
 }
