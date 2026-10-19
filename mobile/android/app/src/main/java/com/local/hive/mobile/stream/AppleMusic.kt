@@ -158,7 +158,7 @@ class AppleMusic(private val http: OkHttpClient = defaultHttp()) {
             if (id.isEmpty() || kind !in setOf("playlist", "album")) return null
             val name = linkTitles(item["titleLinks"]).firstOrNull() ?: item.str("title") ?: item.str("headline").orEmpty()
             val curator = linkTitles(item["subtitleLinks"]).joinToString(", ").ifBlank { item.str("subtitle").orEmpty() }
-            return AmCard(kind, id, name, curator, artworkUrl(item["artwork"], 400), cd.str("url").orEmpty())
+            return AmCard(kind, id, name, curator, artworkUrl(item["artwork"], 1000), cd.str("url").orEmpty())
         }
 
         private fun song(item: JsonObject, requireSongKind: Boolean): AmSong? {
@@ -171,7 +171,7 @@ class AppleMusic(private val http: OkHttpClient = defaultHttp()) {
                 artist = linkTitles(item["subtitleLinks"]).joinToString(", "),
                 album = linkTitles(item["tertiaryLinks"]).firstOrNull().orEmpty(),
                 durationMs = item.str("duration")?.toDoubleOrNull()?.toLong() ?: 0,
-                artwork = artworkUrl(item["artwork"], 600),
+                artwork = artworkUrl(item["artwork"], 1200),
                 url = cd.str("url").orEmpty(),
             )
         }
@@ -206,7 +206,7 @@ class AppleMusic(private val http: OkHttpClient = defaultHttp()) {
                 .flatMap { s -> s["items"]?.arr.orEmpty().mapNotNull { it.obj?.let { o -> song(o, requireSongKind = false) } } }
             // Album pages list songs without their own artist or artwork; the header carries them.
             val headerArtist = linkTitles(header?.get("subtitleLinks")).joinToString(", ")
-            val headerArt = artworkUrl(header?.get("artwork"), 600)
+            val headerArt = artworkUrl(header?.get("artwork"), 1200)
             val isAlbum = ref.kind == "album"
             val filled = songs.map { s ->
                 s.copy(
@@ -224,7 +224,7 @@ class AppleMusic(private val http: OkHttpClient = defaultHttp()) {
                 name = header?.str("title").orEmpty(),
                 curator = headerArtist,
                 description = description.replace(tags, " ").replace(spaces, " ").trim(),
-                artwork = artworkUrl(header?.get("artwork"), 1000),
+                artwork = artworkUrl(header?.get("artwork"), 1400),
                 url = "https://music.apple.com/${ref.storefront}/${ref.kind}/${ref.id}",
                 songs = filled, more = more,
             )

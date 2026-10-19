@@ -43,7 +43,12 @@ import kotlinx.coroutines.withContext
 import java.util.concurrent.TimeUnit
 
 /** Owns the app-wide pieces: library database, Hive Link sync, playback and theme. */
-class HiveApp : Application() {
+class HiveApp : Application(), coil3.SingletonImageLoader.Factory {
+    /** Coil, with album art read at full quality (see [com.local.hive.mobile.data.AlbumArtFetcher]). */
+    override fun newImageLoader(context: coil3.PlatformContext): coil3.ImageLoader = coil3.ImageLoader.Builder(context)
+        .components { add(com.local.hive.mobile.data.AlbumArtFetcher.Factory(this@HiveApp)) }
+        .build()
+
     val scope = CoroutineScope(SupervisorJob() + Dispatchers.Default)
     val database by lazy { LibraryDatabase.open(this) }
     val appleMusic by lazy { com.local.hive.mobile.stream.AppleMusic() }

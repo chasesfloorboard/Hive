@@ -48,7 +48,7 @@ class Spotify(private val http: OkHttpClient = AppleMusic.defaultHttp()) {
                 async {
                     runCatching {
                         val o = Json.parseToJsonElement(get("https://open.spotify.com/oembed?url=${URLEncoder.encode("https://open.spotify.com/playlist/$id", "UTF-8")}")) as JsonObject
-                        SpCard("playlist", id, o.str("title").orEmpty(), "Spotify", o.str("thumbnail_url").orEmpty())
+                        SpCard("playlist", id, o.str("title").orEmpty(), "Spotify", largest(o.str("thumbnail_url").orEmpty()))
                     }.getOrNull()
                 }
             }.awaitAll().filterNotNull().filter { it.name.isNotBlank() }
@@ -118,6 +118,12 @@ class Spotify(private val http: OkHttpClient = AppleMusic.defaultHttp()) {
             if (name.isBlank() && songs.isEmpty()) return null
             return SpCollection(kind, id, name, owner, cover, songs)
         }
+
+        /** Spotify's 300 px album and playlist images as their 640 px versions. */
+        fun largest(url: String): String = url
+            .replace(Regex("""^https://image-cdn-[a-z]+\.spotifycdn\.com/image/"""), "https://i.scdn.co/image/")
+            .replace("ab67616d00001e02", "ab67616d0000b273").replace("ab67616d00004851", "ab67616d0000b273")
+            .replace("ab67706f00000002", "ab67706f00000003")
 
         private fun biggestImage(entity: JsonObject): String {
             val visual = ((entity["visualIdentity"] as? JsonObject)?.get("image") as? JsonArray).orEmpty().mapNotNull { it as? JsonObject }

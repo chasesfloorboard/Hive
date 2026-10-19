@@ -82,7 +82,7 @@ class PodcastDirectory(private val http: OkHttpClient = AppleMusic.defaultHttp()
         val merged = LinkedHashMap<String, Podcast>()
         for (r in pages.flatten().mapNotNull { it as? JsonObject }) {
             val feed = r.str("feedUrl") ?: continue
-            val p = Podcast(feed, r.str("collectionName") ?: r.str("trackName") ?: "Podcast", r.str("artistName").orEmpty(), r.str("artworkUrl600") ?: r.str("artworkUrl100").orEmpty())
+            val p = Podcast(feed, r.str("collectionName") ?: r.str("trackName") ?: "Podcast", r.str("artistName").orEmpty(), (r.str("artworkUrl600") ?: r.str("artworkUrl100")).orEmpty().replace(Regex("""/\d+x\d+bb\."""), "/1400x1400bb."))
             val prior = merged[feed]
             merged[feed] = if (prior == null) p else prior.copy(image = prior.image.ifBlank { p.image }, author = prior.author.ifBlank { p.author })
         }
