@@ -207,7 +207,7 @@ interface LibraryDao {
     )
     fun artistTracks(artist: String): Flow<List<Track>>
 
-    @Query("SELECT * FROM tracks WHERE genre = :genre ORDER BY artist COLLATE NOCASE, album COLLATE NOCASE, trackNumber")
+    @Query("SELECT * FROM tracks WHERE genre = :genre COLLATE NOCASE ORDER BY artist COLLATE NOCASE, album COLLATE NOCASE, trackNumber")
     fun genreTracks(genre: String): Flow<List<Track>>
 
     @Query("SELECT * FROM tracks WHERE folder = :folder ORDER BY fileName COLLATE NOCASE")
@@ -230,7 +230,8 @@ interface LibraryDao {
     )
     fun artists(): Flow<List<ArtistSummary>>
 
-    @Query("SELECT genre AS name, COUNT(*) AS trackCount FROM tracks WHERE genre != '' GROUP BY genre ORDER BY genre COLLATE NOCASE")
+    // "Alternative Dance" and "alternative dance" are one genre; the most used spelling names it.
+    @Query("SELECT (SELECT g.genre FROM tracks g WHERE g.genre = t.genre COLLATE NOCASE GROUP BY g.genre ORDER BY COUNT(*) DESC LIMIT 1) AS name, COUNT(*) AS trackCount FROM tracks t WHERE t.genre != '' GROUP BY t.genre COLLATE NOCASE ORDER BY t.genre COLLATE NOCASE")
     fun genres(): Flow<List<NamedCount>>
 
     @Query("SELECT folder AS name, COUNT(*) AS trackCount FROM tracks GROUP BY folder ORDER BY folder COLLATE NOCASE")

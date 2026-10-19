@@ -205,6 +205,8 @@ private fun MusicPanel(vm: MainViewModel, nav: HomeNavigation, actions: TrackAct
 private fun AlbumsView(vm: MainViewModel, nav: HomeNavigation, actions: TrackActions, sort: AlbumSort, bottom: Dp) {
     val albums by vm.albums.collectAsStateWithLifecycle()
     var open by rememberSaveable { mutableStateOf<Long?>(null) }
+    // Back closes an album opened in the grid before it leaves Hive.
+    androidx.activity.compose.BackHandler(enabled = open != null) { open = null }
     val sections = remember(albums, sort) {
         when (sort) {
             AlbumSort.Year -> albums.groupBy { it.year }.toSortedMap(compareByDescending { it }).map { (y, list) -> (if (y > 0) "$y" else "Unknown year") to list }

@@ -267,7 +267,8 @@ fun YearHeading(text: String, modifier: Modifier = Modifier) {
 /** Small uppercase label, Hive's column-header voice. */
 @Composable
 fun HiveLabel(text: String, modifier: Modifier = Modifier, color: Color? = null) {
-    Text(text.uppercase(), style = HiveText.label, color = color ?: Hive.colors.textDimmer, modifier = modifier)
+    // Small capitals need the dim colour, not the dimmer one, to stay readable (4.5:1) on Hive's dark panels.
+    Text(text.uppercase(), style = HiveText.label, color = color ?: Hive.colors.textDim, modifier = modifier)
 }
 
 // ---- tracks ----

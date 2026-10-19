@@ -90,7 +90,11 @@ fun SettingsScreen(vm: MainViewModel, bottomPadding: Dp, onOpenEqualiser: () -> 
             item {
                 Section("Appearance", "Hive's themes, or your own .hive-theme. While a song plays, the accent and backdrop follow its cover.") { ThemeRows(vm) }
             }
-            item { Section("About", "") { SettingRow("Hive Mobile", "Version 0.4 · Inter is licensed under the SIL Open Font License.") {} } }
+            item {
+                val context = androidx.compose.ui.platform.LocalContext.current
+                val version = remember { runCatching { context.packageManager.getPackageInfo(context.packageName, 0).versionName }.getOrNull() ?: "" }
+                Section("About", "") { SettingRow("Hive Mobile", "Version $version · Inter is licensed under the SIL Open Font License.") {} }
+            }
         }
     }
 }
