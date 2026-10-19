@@ -332,36 +332,42 @@ private fun HiveContent(vm: MainViewModel, openPlayerInitially: Boolean) {
 private fun Sidebar(vm: MainViewModel, current: String, go: (String) -> Unit) {
     val c = Hive.colors
     val favorites by vm.favorites.collectAsStateWithLifecycle()
+    val link by vm.link.collectAsStateWithLifecycle()
     // The drawer sits above the blur layer, so it is Hive's strong panel made solid rather than glass.
     val shape = androidx.compose.foundation.shape.RoundedCornerShape(topEnd = 24.dp, bottomEnd = 24.dp)
-    Column(
-        Modifier.fillMaxHeight().width(290.dp).clip(shape).background(c.control).border(1.dp, hiveGlassBorder(), shape)
-            .statusBarsPadding().navigationBarsPadding().verticalScroll(rememberScrollState()).padding(horizontal = 12.dp, vertical = 14.dp),
-    ) {
-        Row(Modifier.padding(start = 8.dp, bottom = 18.dp, top = 4.dp), verticalAlignment = Alignment.CenterVertically) {
+    Column(Modifier.fillMaxHeight().width(290.dp).clip(shape).background(c.control).border(1.dp, hiveGlassBorder(), shape).statusBarsPadding().navigationBarsPadding()) {
+        Row(Modifier.padding(start = 20.dp, bottom = 12.dp, top = 18.dp), verticalAlignment = Alignment.CenterVertically) {
             Image(painterResource(R.drawable.hive_logo), null, Modifier.size(30.dp))
             Spacer(Modifier.width(10.dp))
             Text("Hive", style = HiveText.brand.copy(fontSize = HiveText.viewTitle.fontSize), color = c.text)
         }
-        SidebarItem("Music", Icons.Rounded.LibraryMusic, current == "home") { go("home") }
-        SidebarItem("Favorites", Icons.Rounded.Favorite, current == "playlist/{kind}Favorites", countOf(favorites.size, "track")) { go("playlist/${AutoPlaylist.Favorites.name}") }
-        SidebarDivider("Library")
-        SidebarItem("History", Icons.Rounded.History, current == "playlist/{kind}RecentlyPlayed") { go("playlist/${AutoPlaylist.RecentlyPlayed.name}") }
-        SidebarItem("Top 25 Most Played", Icons.Rounded.TrendingUp, current == "playlist/{kind}MostPlayed") { go("playlist/${AutoPlaylist.MostPlayed.name}") }
-        SidebarItem("Recently Added", Icons.Rounded.NewReleases, current == "playlist/{kind}RecentlyAdded") { go("playlist/${AutoPlaylist.RecentlyAdded.name}") }
-        SidebarItem("Yearly Wrap", Icons.Rounded.AutoAwesome, current == "wrap") { go("wrap") }
-        SidebarItem("PC library", Icons.Rounded.Computer, current == "pc" || current.startsWith("pc/")) { go("pc") }
-        SidebarItem("Playing on your PC", Icons.Rounded.Devices, current == "remote") { go("remote") }
-        SidebarDivider("Streaming")
-        SidebarItem("Apple Music", Icons.Rounded.Explore, current == "apple" || current.startsWith("apple/")) { go("apple") }
-        SidebarItem("Spotify", Icons.Rounded.GraphicEq, current == "spotify" || current.startsWith("spotify/")) { go("spotify") }
-        SidebarItem("Radio", Icons.Rounded.Radio, current == "radio") { go("radio") }
-        SidebarItem("Podcasts", Icons.Rounded.Podcasts, current == "podcasts" || current.startsWith("podcast?")) { go("podcasts") }
-        SidebarDivider("This phone")
-        SidebarItem("Genres", Icons.Rounded.Category, current == "genres") { go("genres") }
-        SidebarItem("Folders", Icons.Rounded.Folder, current == "folders") { go("folders") }
-        Spacer(Modifier.height(18.dp))
-        SidebarItem("Settings", Icons.Rounded.Settings, current == "settings") { go("settings") }
+        Column(Modifier.weight(1f).verticalScroll(rememberScrollState()).padding(horizontal = 12.dp)) {
+            SidebarItem("Music", Icons.Rounded.LibraryMusic, current == "home") { go("home") }
+            SidebarItem("Favorites", Icons.Rounded.Favorite, current == "playlist/{kind}Favorites", countOf(favorites.size, "track")) { go("playlist/${AutoPlaylist.Favorites.name}") }
+            SidebarDivider("Library")
+            SidebarItem("History", Icons.Rounded.History, current == "playlist/{kind}RecentlyPlayed") { go("playlist/${AutoPlaylist.RecentlyPlayed.name}") }
+            SidebarItem("Top 25 Most Played", Icons.Rounded.TrendingUp, current == "playlist/{kind}MostPlayed") { go("playlist/${AutoPlaylist.MostPlayed.name}") }
+            SidebarItem("Recently Added", Icons.Rounded.NewReleases, current == "playlist/{kind}RecentlyAdded") { go("playlist/${AutoPlaylist.RecentlyAdded.name}") }
+            SidebarItem("Yearly Wrap", Icons.Rounded.AutoAwesome, current == "wrap") { go("wrap") }
+            // Shown once the phone is paired with Hive on the PC.
+            if (link.paired) {
+                SidebarDivider(link.serverName.ifBlank { "Hive on your PC" })
+                SidebarItem("PC library", Icons.Rounded.Computer, current == "pc" || current.startsWith("pc/")) { go("pc") }
+                SidebarItem("Playing on your PC", Icons.Rounded.Devices, current == "remote") { go("remote") }
+            }
+            SidebarDivider("Streaming")
+            SidebarItem("Apple Music", Icons.Rounded.Explore, current == "apple" || current.startsWith("apple/")) { go("apple") }
+            SidebarItem("Spotify", Icons.Rounded.GraphicEq, current == "spotify" || current.startsWith("spotify/")) { go("spotify") }
+            SidebarItem("Radio", Icons.Rounded.Radio, current == "radio") { go("radio") }
+            SidebarItem("Podcasts", Icons.Rounded.Podcasts, current == "podcasts" || current.startsWith("podcast?")) { go("podcasts") }
+            SidebarDivider("This phone")
+            SidebarItem("Genres", Icons.Rounded.Category, current == "genres") { go("genres") }
+            SidebarItem("Folders", Icons.Rounded.Folder, current == "folders") { go("folders") }
+            Spacer(Modifier.height(10.dp))
+        }
+        // Settings stays in reach however long the list grows.
+        Box(Modifier.fillMaxWidth().height(1.dp).background(c.border))
+        Box(Modifier.padding(horizontal = 12.dp, vertical = 8.dp)) { SidebarItem("Settings", Icons.Rounded.Settings, current == "settings") { go("settings") } }
     }
 }
 
