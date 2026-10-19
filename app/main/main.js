@@ -5526,7 +5526,11 @@ ipcMain.handle('history:get', async () => {
 // intentionally keeps only the latest entry per track for the History view. Each
 // event represents one actual playback session and stores the measured listening
 // duration so the Wrap can report minutes without guessing.
-ipcMain.handle('listening:record', async (_evt, payload = {}) => {
+ipcMain.handle('listening:record', async (_evt, payload = {}) => recordListeningEvent(payload));
+
+// One playback session into listening-events.json and the per-year Wrapped
+// store: Hive's own plays, and the phone's once the user applies them.
+async function recordListeningEvent(payload = {}) {
   const event = {
     id: crypto.randomUUID(),
     playedAt: Number(payload.playedAt) || Date.now(),
@@ -5579,7 +5583,37 @@ ipcMain.handle('listening:record', async (_evt, payload = {}) => {
     } catch {}
   } catch (err) { console.warn('Could not update local Wrapped data store:', err?.message || err); }
   return { ok:true, id:event.id };
-});
+}
+
+// Plays from Hive Mobile the user chose to keep: each is a listening event
+// (source "hive-mobile", at the time it was played) and counts toward the
+// song's play count, as a play in Hive would. Files aren't written.
+async function recordPhonePlays(plays) {
+  const counted = new Map();
+  for (const p of [...plays].sort((a, b) => a.playedAt - b.playedAt)) {
+    const t = p.track || {};
+    await recordListeningEvent({
+      playedAt: p.playedAt, duration: Math.round((Number(p.listenedMs) || 0) / 1000), trackDuration: Number(t.duration) || 0,
+      path: String(t.path || ''), title: t.title, artist: t.artist, album: t.album, albumArtist: t.albumArtist, genre: t.genre,
+      cover: /^data:/i.test(String(t.cover || '')) ? null : t.cover, source: 'hive-mobile', completed: true
+    });
+    const c = counted.get(t.path) || { n: 0, last: 0 };
+    counted.set(t.path, { n: c.n + 1, last: Math.max(c.last, p.playedAt) });
+  }
+  const updates = [];
+  await withStatsMutation(async () => {
+    const stats = await readJsonSafe(STATS_PATH(), {});
+    for (const [trackPath, c] of counted) {
+      const entry = stats[trackPath] || { playCount: 0, lastPlayedAt: 0 };
+      entry.playCount = Number(entry.playCount || 0) + c.n;
+      entry.lastPlayedAt = Math.max(Number(entry.lastPlayedAt || 0), c.last);
+      stats[trackPath] = entry;
+      updates.push({ path: trackPath, playCount: entry.playCount, lastPlayedAt: entry.lastPlayedAt });
+    }
+    await writeJsonSafe(STATS_PATH(), stats);
+  });
+  try { mainWindow?.webContents?.send('library:scanTrack', updates); } catch {}
+}
 
 
 async function readEmbeddedPlayCount(trackPath) {
@@ -7912,8 +7946,16 @@ function startHiveLink() {
       await setLoveForSingleTrack(sender ? { sender } : null, trackPath, loved);
       try { sender?.send('library:scanTrack', [{ path: trackPath, loved: !!loved, loveHydrated: true }]); } catch {}
     },
-    // Hive Mobile is not ready to change the PC library yet: phone Love stays on the phone.
+    // Phone changes don't touch the PC library by themselves: they wait in
+    // Hive Link's inbox until the user applies them in Settings.
     acceptPhoneChanges: false,
+    // Hive's own listening (not imports, not plays that came from the phone).
+    getPlays: async since => {
+      const events = await readJsonSafe(LISTENING_EVENTS_PATH(), []);
+      return (Array.isArray(events) ? events : []).filter(e => e && e.path && Number(e.playedAt) > since && e.source !== 'hive-mobile' && e.source !== 'musicbee-wrapped');
+    },
+    recordPlays: recordPhonePlays,
+    onInbox: summary => { try { mainWindow?.webContents?.send('hiveLink:inbox', summary); } catch {} },
     coversDir: COVERS_DIR(),
     // Apple Music and Spotify songs Hive Mobile lacks play from YouTube Music
     // through Hive, sharing Hive's own matches (ytm:apple:…, ytm:spotify:…).
@@ -7930,6 +7972,11 @@ function startHiveLink() {
     log: (...args) => scanLog(args.map(String).join(' '))
   });
   hiveLink.start();
+  // A phone plugged in by USB (with USB debugging) reaches Hive Link through the cable.
+  try {
+    const { createUsbBridge } = require('./usb-bridge');
+    createUsbBridge({ port: hiveLink.info().port, log: (...args) => scanLog(args.map(String).join(' ')) }).start();
+  } catch (err) { scanLog('Hive Link USB bridge unavailable', err?.message || String(err)); }
 }
 
 async function showHiveLinkPairing() {
@@ -7948,6 +7995,10 @@ async function showHiveLinkPairing() {
 
 ipcMain.handle('hiveLink:pair', async () => hiveLink?.startPairing() || null);
 ipcMain.handle('hiveLink:devices', async () => hiveLink?.devices() || []);
+ipcMain.handle('hiveLink:inbox', async () => (hiveLink ? hiveLink.inbox() : { loves: [], plays: [] }));
+ipcMain.handle('hiveLink:applyInbox', async (_evt, what = {}) => (hiveLink ? hiveLink.applyInbox(what) : null));
+ipcMain.handle('hiveLink:discardInbox', async (_evt, what = {}) => (hiveLink ? hiveLink.discardInbox(what) : null));
+
 ipcMain.handle('hiveLink:remoteControl', async (_evt, on) => {
   if (typeof on === 'boolean') hiveLink?.setRemoteControl(on);
   return !!hiveLink?.remoteControl();

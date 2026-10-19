@@ -9,8 +9,11 @@
 //   GET  /api/info                 server identity and library revision
 //   GET  /api/library              compact track list (gzip) for matching
 //   GET  /api/love/changes?since=  Love changes after a sequence number
-//   POST /api/love                 apply Love changes made on the phone
-//                                  (answered "held" while acceptPhoneChanges is off)
+//   POST /api/love                 Love changes made on the phone: applied, or
+//                                  (while acceptPhoneChanges is off) kept in the
+//                                  inbox for the user to confirm in Hive
+//   POST /api/plays                plays made on the phone, kept in the inbox
+//   GET  /api/plays?since=         plays made in Hive, so the phone counts them too
 //   GET  /api/events               server-sent events (live Love changes)
 //   GET  /api/stream/track?id=     a library song's file, with Range support
 //   GET  /api/playlists            Hive's own playlists, read only: library songs by
@@ -33,8 +36,9 @@
 // state so the phone can correct itself.
 //
 // While acceptPhoneChanges is off, PC Love still reaches the phone but phone
-// changes are not applied: each is answered "held" and the phone keeps it
-// queued for later.
+// changes are not applied: they wait in the inbox ("staged"), and the user
+// looks them over in Hive and applies or discards them. Phone plays always
+// wait there; applied, they join Hive's own listening history and Wrapped.
 
 const crypto = require('crypto');
 const dgram = require('dgram');
@@ -53,6 +57,18 @@ const PAIRING_TTL_MS = 5 * 60 * 1000;
 const MAX_PAIRING_ATTEMPTS = 5;
 const MAX_EVENTS = 5000;
 const MAX_BODY_BYTES = 1024 * 1024;
+const MAX_INBOX_PLAYS = 50000;
+
+// The inbox as saved: Love by song id, plays in a list. Anything malformed is dropped.
+function cleanInbox(raw) {
+  const loves = {};
+  for (const [id, l] of Object.entries(raw?.loves && typeof raw.loves === 'object' ? raw.loves : {})) {
+    if (id && l && typeof l === 'object') loves[id] = { id, loved: !!l.loved, at: Number(l.at) || 0, deviceId: String(l.deviceId || '') };
+  }
+  const plays = (Array.isArray(raw?.plays) ? raw.plays : []).filter(p => p && p.id && p.playedAt && p.clientId)
+    .map(p => ({ id: String(p.id), playedAt: Number(p.playedAt), listenedMs: Number(p.listenedMs) || 0, deviceId: String(p.deviceId || ''), clientId: String(p.clientId) }));
+  return { loves, plays };
+}
 
 function sha256(value) { return crypto.createHash('sha256').update(String(value)).digest('hex'); }
 function trackIdFor(track) { return String(track?.id || sha256(path.resolve(String(track?.path || ''))).slice(0, 32)); }
@@ -70,7 +86,7 @@ function lanAddresses() {
   return out;
 }
 
-function createHiveLink({ dataDir, getTracks, setLove, onPaired, streamSong = null, coversDir = null, remote = null, getPlaylists = null, log = () => {}, port = DEFAULT_PORT, discoveryPort = DISCOVERY_PORT, acceptPhoneChanges = false }) {
+function createHiveLink({ dataDir, getTracks, setLove, onPaired, streamSong = null, coversDir = null, remote = null, getPlaylists = null, getPlays = null, recordPlays = null, onInbox = () => {}, log = () => {}, port = DEFAULT_PORT, discoveryPort = DISCOVERY_PORT, acceptPhoneChanges = false }) {
   const statePath = path.join(dataDir, 'hive-link.json');
   let state = loadState();
   let server = null;
@@ -89,10 +105,12 @@ function createHiveLink({ dataDir, getTracks, setLove, onPaired, streamSong = nu
         devices: Array.isArray(raw.devices) ? raw.devices : [],
         seq: num(raw.seq),
         events: Array.isArray(raw.events) ? raw.events : [],
-        lastChangeAt: raw.lastChangeAt && typeof raw.lastChangeAt === 'object' ? raw.lastChangeAt : {}
+        lastChangeAt: raw.lastChangeAt && typeof raw.lastChangeAt === 'object' ? raw.lastChangeAt : {},
+        remoteControl: !!raw.remoteControl,
+        inbox: cleanInbox(raw.inbox)
       };
     } catch {
-      return { serverId: crypto.randomUUID(), devices: [], seq: 0, events: [], lastChangeAt: {} };
+      return { serverId: crypto.randomUUID(), devices: [], seq: 0, events: [], lastChangeAt: {}, inbox: cleanInbox(null) };
     }
   }
 
@@ -121,7 +139,10 @@ function createHiveLink({ dataDir, getTracks, setLove, onPaired, streamSong = nu
       seq: state.seq,
       addresses: lanAddresses(),
       streams: { track: true, song: !!streamSong },
-      remote: !!remote && !!state.remoteControl
+      remote: !!remote && !!state.remoteControl,
+      plays: !!getPlays,
+      // Phone changes waiting for the user in Hive.
+      inbox: inboxSummary()
     };
   }
 
@@ -221,8 +242,17 @@ function createHiveLink({ dataDir, getTracks, setLove, onPaired, streamSong = nu
 
   async function applyLoveChanges(device, changes) {
     if (!acceptPhoneChanges) {
-      const held = Array.isArray(changes) ? changes.slice(0, 500) : [];
-      return { seq: state.seq, results: held.map(c => ({ clientChangeId: c?.clientChangeId ?? null, id: String(c?.id || ''), status: 'held' })) };
+      // Kept for the user to confirm in Hive; the newest change per song wins.
+      const staged = Array.isArray(changes) ? changes.slice(0, 500) : [];
+      for (const c of staged) {
+        const id = String(c?.id || '');
+        if (!id) continue;
+        const at = num(c?.at) || Date.now();
+        const prior = state.inbox.loves[id];
+        if (!prior || prior.at <= at) state.inbox.loves[id] = { id, loved: !!c.loved, at, deviceId: device.id };
+      }
+      inboxChanged();
+      return { seq: state.seq, results: staged.map(c => ({ clientChangeId: c?.clientChangeId ?? null, id: String(c?.id || ''), status: 'staged' })) };
     }
     const tracks = await getTracks();
     const byId = new Map(tracks.map(t => [trackIdFor(t), t]));
@@ -255,6 +285,93 @@ function createHiveLink({ dataDir, getTracks, setLove, onPaired, streamSong = nu
       }
     }
     return { seq: state.seq, results };
+  }
+
+  // ---- plays and the inbox -------------------------------------------------
+
+  // Plays made on the phone wait here until the user applies them; each is
+  // known by the phone's own id for it, so a resend never counts twice.
+  function stagePlays(device, plays) {
+    const seen = new Set(state.inbox.plays.map(p => `${p.deviceId}:${p.clientId}`));
+    let added = 0;
+    for (const p of Array.isArray(plays) ? plays.slice(0, 5000) : []) {
+      const clientId = String(p?.clientId ?? '');
+      const id = String(p?.id || '');
+      const playedAt = num(p?.playedAt);
+      if (!clientId || !id || !playedAt || seen.has(`${device.id}:${clientId}`)) continue;
+      seen.add(`${device.id}:${clientId}`);
+      state.inbox.plays.push({ id, playedAt, listenedMs: Math.max(0, num(p?.listenedMs)), deviceId: device.id, clientId });
+      added++;
+    }
+    if (state.inbox.plays.length > MAX_INBOX_PLAYS) state.inbox.plays.splice(0, state.inbox.plays.length - MAX_INBOX_PLAYS);
+    if (added) inboxChanged();
+    return { staged: added };
+  }
+
+  // Hive's own plays after a time, for the phone's counts and Wrap.
+  async function playsSince(since) {
+    if (!getPlays) return { plays: [] };
+    const tracks = await getTracks();
+    const byPath = new Map(tracks.filter(t => t?.path).map(t => [path.resolve(String(t.path)), t]));
+    const plays = [];
+    for (const e of await getPlays(since)) {
+      const track = e?.path ? byPath.get(path.resolve(String(e.path))) : null;
+      if (!track) continue;
+      plays.push({ id: trackIdFor(track), playedAt: num(e.playedAt), listenedMs: Math.round(num(e.duration) * 1000), eventId: String(e.id || '') });
+      if (plays.length >= 5000) break;
+    }
+    return { plays };
+  }
+
+  function inboxChanged() { saveSoon(); try { onInbox(inboxSummary()); } catch {} }
+
+  function inboxSummary() {
+    return { loves: Object.keys(state.inbox.loves).length, plays: state.inbox.plays.length };
+  }
+
+  // The inbox as the user reviews it: songs by name, newest first.
+  async function inbox() {
+    const tracks = await getTracks();
+    const byId = new Map(tracks.map(t => [trackIdFor(t), t]));
+    const nameOf = id => { const t = byId.get(id); return t ? { title: text(t.title), artist: text(t.artist), album: text(t.album), path: String(t.path), loved: t.loved === true || t.loved === 'True' } : null; };
+    const deviceName = id => state.devices.find(d => d.id === id)?.name || 'A phone';
+    const loves = Object.values(state.inbox.loves).map(l => ({ ...l, device: deviceName(l.deviceId), track: nameOf(l.id) })).filter(l => l.track).sort((a, b) => b.at - a.at);
+    const plays = state.inbox.plays.map(p => ({ ...p, device: deviceName(p.deviceId), track: nameOf(p.id) })).filter(p => p.track).sort((a, b) => b.playedAt - a.playedAt);
+    return { loves, plays };
+  }
+
+  // Applies what the user chose: Love through the heart button's own path,
+  // plays into Hive's listening history. What isn't chosen stays.
+  async function applyInbox({ loves = true, plays = true } = {}) {
+    const tracks = await getTracks();
+    const byId = new Map(tracks.map(t => [trackIdFor(t), t]));
+    let lovesApplied = 0, playsApplied = 0;
+    if (loves) {
+      for (const change of Object.values(state.inbox.loves)) {
+        const track = byId.get(change.id);
+        delete state.inbox.loves[change.id];
+        if (!track || (!!track.loved === change.loved)) continue;
+        const absolute = path.resolve(String(track.path));
+        pendingOrigins.set(absolute, { origin: change.deviceId, at: change.at });
+        try { await setLove(absolute, change.loved); lovesApplied++; } catch (err) { pendingOrigins.delete(absolute); log('Hive Link inbox Love failed', err?.message || String(err)); }
+      }
+    }
+    if (plays && recordPlays) {
+      const ready = state.inbox.plays.map(p => ({ ...p, track: byId.get(p.id) })).filter(p => p.track);
+      state.inbox.plays = [];
+      if (ready.length) { await recordPlays(ready); playsApplied = ready.length; }
+    }
+    inboxChanged();
+    saveNow();
+    return { lovesApplied, playsApplied, ...inboxSummary() };
+  }
+
+  function discardInbox({ loves = true, plays = true } = {}) {
+    if (loves) state.inbox.loves = {};
+    if (plays) state.inbox.plays = [];
+    inboxChanged();
+    saveNow();
+    return inboxSummary();
   }
 
   // ---- library -------------------------------------------------------------
@@ -358,6 +475,10 @@ function createHiveLink({ dataDir, getTracks, setLove, onPaired, streamSong = nu
         const body = await readJson(req);
         return send(res, 200, await applyLoveChanges(device, body?.changes));
       }
+      case 'POST /api/plays':
+        return send(res, 200, stagePlays(device, (await readJson(req))?.plays));
+      case 'GET /api/plays':
+        return send(res, 200, await playsSince(num(url.searchParams.get('since'))));
       case 'GET /api/playlists':
         return send(res, 200, { playlists: await playlistsPayload() });
       case 'GET /api/remote':
@@ -551,6 +672,10 @@ function createHiveLink({ dataDir, getTracks, setLove, onPaired, streamSong = nu
     unpair,
     notifyLoveChanged,
     info,
+    inbox,
+    inboxSummary,
+    applyInbox,
+    discardInbox,
     devices: () => state.devices.map(({ tokenHash, ...rest }) => rest)
   };
 }
