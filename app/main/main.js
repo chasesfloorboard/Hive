@@ -2925,19 +2925,31 @@ const LIBRARY_BOUNDARY_ERROR = 'File is outside a configured Beehive library fol
 ipcMain.on('files:startDrag', (evt, filePaths = []) => {
   const paths = Array.from(new Set((Array.isArray(filePaths) ? filePaths : [filePaths]).map(p => String(p || '')).filter(Boolean)))
     .filter(p => { try { return fs.existsSync(p) && fs.statSync(p).isFile(); } catch { return false; } });
-  if (!paths.length) return;
+  if (!paths.length) { if (!evt.sender.isDestroyed()) evt.sender.send('files:dragEnded'); return; }
   try {
     // Electron's native file drag exposes the real filesystem paths to the OS,
     // which lets targets such as Discord, a DAW, Nautilus, etc. receive the
-    // actual music files instead of a web URL.
-    evt.sender.startDrag({
-      files: paths,
-      icon: nativeImage.createEmpty()
-    });
+    // actual music files instead of a web URL. The page cancels its own HTML
+    // drag first (renderer/drag-out.js), since only one drag can run at once.
+    evt.sender.startDrag({ files: paths, icon: fileDragIcon() });
   } catch (err) {
     crashDebug('Native file drag failed', { message: err?.message || String(err) });
   }
+  // On Linux and Windows the drag runs to its drop inside startDrag, so the
+  // page can now forget what it was dragging.
+  if (!evt.sender.isDestroyed()) evt.sender.send('files:dragEnded');
 });
+
+// The picture under the pointer while files are dragged out: Hive's logo, small.
+let cachedFileDragIcon = null;
+function fileDragIcon() {
+  if (cachedFileDragIcon) return cachedFileDragIcon;
+  try {
+    const logo = nativeImage.createFromPath(hiveLogoPath());
+    cachedFileDragIcon = logo.isEmpty() ? nativeImage.createEmpty() : logo.resize({ width: 48, height: 48, quality: 'best' });
+  } catch { cachedFileDragIcon = nativeImage.createEmpty(); }
+  return cachedFileDragIcon;
+}
 
 ipcMain.handle('file:showInBrowser', async (_evt, filePath) => {
   const target = path.resolve(String(filePath || ''));

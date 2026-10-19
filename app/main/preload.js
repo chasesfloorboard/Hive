@@ -110,6 +110,7 @@ contextBridge.exposeInMainWorld('beehive', {
   showFileInBrowser: (filePath) => ipcRenderer.invoke('file:showInBrowser', filePath),
   deleteTracksFromDisk: (filePaths) => ipcRenderer.invoke('tracks:deleteFromDisk', filePaths),
   startNativeFileDrag: (filePaths) => ipcRenderer.send('files:startDrag', Array.isArray(filePaths) ? filePaths : [filePaths]),
+  onNativeFileDragEnd: (callback) => { ipcRenderer.on('files:dragEnded', () => callback()); },
 
   getCachedLibrary: (options) => ipcRenderer.invoke('library:getCached', options || {}),
   clearLibraryCacheNow: () => ipcRenderer.invoke('library:clearCacheNow'),
