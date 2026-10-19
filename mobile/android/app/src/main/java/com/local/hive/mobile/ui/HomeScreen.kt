@@ -64,6 +64,7 @@ import androidx.compose.runtime.rememberCoroutineScope
 import androidx.compose.runtime.saveable.rememberSaveable
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
+import androidx.compose.animation.togetherWith
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.draw.shadow
@@ -467,23 +468,59 @@ private fun SmartCard(title: String, detail: String, covers: List<Uri>, icon: Im
 
 // ---- Favorites ----
 
+private enum class FavoriteView(val label: String) { Tracks("Tracks"), Albums("Albums") }
+
+/**
+ * Favorites with Samsung Music's switch at the top: Tracks is every song
+ * you've favorited, Albums the albums you've hearted (each opening the whole
+ * album). They're kept apart, as Samsung Music keeps them.
+ */
 @Composable
 private fun FavoritesTab(vm: MainViewModel, nav: HomeNavigation, actions: TrackActions, bottom: Dp) {
     val tracks by vm.favorites.collectAsStateWithLifecycle()
     val albums by vm.favoriteAlbums.collectAsStateWithLifecycle()
-    TrackList(
-        vm, tracks, actions, bottom,
-        if (albums.isEmpty()) "No Favorites yet" else "No favorite songs yet",
-        "Tap ♥ on a song or an album, or pair with Hive on your PC to bring your Favorites over.",
-        header = if (albums.isEmpty()) null else { {
-            Column {
-                Text("Albums", style = HiveText.year, color = Hive.colors.text, modifier = Modifier.padding(start = 18.dp, top = 10.dp, bottom = 10.dp))
-                LazyRow(contentPadding = PaddingValues(horizontal = 16.dp), horizontalArrangement = Arrangement.spacedBy(14.dp), modifier = Modifier.padding(bottom = 8.dp)) {
-                    items(albums, key = { it.albumId }) { a -> AlbumCard(a, false, Modifier.width(136.dp).animateItem()) { nav.openAlbum(a.albumId) } }
+    var view by rememberSaveable { mutableStateOf(FavoriteView.Tracks) }
+    var sort by rememberSaveable { mutableStateOf(TrackSort.Added) }
+    Column(Modifier.fillMaxSize()) {
+        HiveToggle(
+            FavoriteView.entries.map { "${it.label} · ${if (it == FavoriteView.Tracks) tracks.size else albums.size}" },
+            view.ordinal, { view = FavoriteView.entries[it] },
+            Modifier.padding(start = 16.dp, end = 16.dp, top = 6.dp, bottom = 2.dp),
+        )
+        androidx.compose.animation.AnimatedContent(view, transitionSpec = {
+            val dir = if (targetState.ordinal > initialState.ordinal) 1 else -1
+            (androidx.compose.animation.slideInHorizontally(Motion.move()) { it / 6 * dir } + androidx.compose.animation.fadeIn(Motion.swap()))
+                .togetherWith(androidx.compose.animation.slideOutHorizontally(Motion.move()) { -it / 6 * dir } + androidx.compose.animation.fadeOut(Motion.underFade()))
+        }, label = "favoritesView") { shown ->
+            when (shown) {
+                FavoriteView.Tracks -> {
+                    val sorted = remember(tracks, sort) {
+                        when (sort) {
+                            TrackSort.Title -> tracks.sortedWith(compareBy(LibrarySort.collator) { LibrarySort.key(it.title) })
+                            TrackSort.Artist -> tracks.sortedWith(compareBy<Track, String>(LibrarySort.collator) { LibrarySort.key(it.artist) }.thenBy { it.album }.thenBy { it.trackNumber })
+                            TrackSort.Album -> tracks.sortedWith(compareBy<Track, String>(LibrarySort.collator) { LibrarySort.key(it.album) }.thenBy { it.discNumber }.thenBy { it.trackNumber })
+                            TrackSort.Added -> tracks
+                            TrackSort.Length -> tracks.sortedByDescending { it.durationMs }
+                        }
+                    }
+                    TrackList(vm, sorted, actions, bottom, "No favorite songs yet", "Tap ♥ on a song, or pair with Hive on your PC to bring your Favorites over.",
+                        indexed = sort == TrackSort.Title,
+                        sortHeader = { count, shuffle, play -> ListHeader(TrackSort.entries, sort, { if (it == TrackSort.Added) "Date favorited" else it.label }, { sort = it }, count, shuffle, play) })
+                }
+                FavoriteView.Albums -> LazyColumn(Modifier.fillMaxSize(), contentPadding = PaddingValues(top = 6.dp, bottom = bottom + 12.dp)) {
+                    if (albums.isEmpty()) item { EmptyState("No favorite albums yet", "Tap ♥ on an album's page to keep it here.") }
+                    albums.chunked(2).forEach { row ->
+                        item(key = "f${row.first().albumId}") {
+                            Row(Modifier.fillMaxWidth().padding(horizontal = 16.dp, vertical = 8.dp), horizontalArrangement = Arrangement.spacedBy(14.dp)) {
+                                row.forEach { a -> AlbumCard(a, false, Modifier.weight(1f)) { nav.openAlbum(a.albumId) } }
+                                if (row.size == 1) Spacer(Modifier.weight(1f))
+                            }
+                        }
+                    }
                 }
             }
-        } },
-    )
+        }
+    }
 }
 
 // ---- Browse ----
