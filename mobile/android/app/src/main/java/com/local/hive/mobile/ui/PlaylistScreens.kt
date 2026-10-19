@@ -96,13 +96,13 @@ val PlaylistRow.durationMs: Long get() = track?.durationMs ?: stream?.durationMs
 
 /**
  * A song from Apple Music or Spotify that isn't in the library: its cover and
- * names, and a badge saying how it plays. Hive plays its preview.
+ * names, and a badge saying how it plays: in full through Hive on the PC, or its preview.
  */
 @Composable
-fun StreamRow(stream: StreamTrack, playing: Boolean, isPlaying: Boolean, onClick: () -> Unit, onRemove: (() -> Unit)? = null, number: Int? = null) {
+fun StreamRow(stream: StreamTrack, playing: Boolean, isPlaying: Boolean, full: Boolean, onClick: () -> Unit, onRemove: (() -> Unit)? = null, number: Int? = null) {
     val c = Hive.colors
     var menu by remember { mutableStateOf(false) }
-    val playable = stream.previewUrl.isNotBlank()
+    val playable = full || stream.previewUrl.isNotBlank()
     Row(
         Modifier.fillMaxWidth().padding(horizontal = 8.dp).height(64.dp).clip(HiveShape.row)
             .background(if (playing) c.accentSoft.copy(alpha = 0.22f) else Color.Transparent)
@@ -117,7 +117,7 @@ fun StreamRow(stream: StreamTrack, playing: Boolean, isPlaying: Boolean, onClick
         Column(Modifier.weight(1f).padding(horizontal = 12.dp), verticalArrangement = Arrangement.spacedBy(2.dp)) {
             Text(stream.title, style = HiveText.row, color = if (playing) c.accent else if (playable) c.text else c.textDim, maxLines = 1, overflow = TextOverflow.Ellipsis)
             Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(6.dp)) {
-                StreamBadge(if (playable) "Preview" else "${stream.source} only")
+                StreamBadge(when { full -> "Via Hive"; playable -> "Preview"; else -> "${stream.source} only" })
                 Text(listOf(stream.artist, stream.album).filter { it.isNotBlank() }.joinToString(" · "), style = HiveText.rowSub, color = c.textDim, maxLines = 1, overflow = TextOverflow.Ellipsis)
             }
         }
@@ -257,6 +257,7 @@ fun PlaylistScreen(vm: MainViewModel, id: Long, actions: TrackActions, bottomPad
     val summary = summaries.firstOrNull { it.id == id }
     val loved by vm.lovedIds.collectAsStateWithLifecycle()
     val now by vm.nowPlaying.collectAsStateWithLifecycle()
+    val full by vm.fullSongs.collectAsStateWithLifecycle()
     val colors by produceState<AuraColors?>(null, summary?.coverAlbumId) { value = summary?.coverAlbumId?.let { vm.albumColors(it) } }
     val list = rememberLazyListState()
     val titleAlpha by animateFloatAsState(if (list.firstVisibleItemIndex > 0) 1f else 0f, tween(180), label = "title")
@@ -306,7 +307,7 @@ fun PlaylistScreen(vm: MainViewModel, id: Long, actions: TrackActions, bottomPad
                         if (!editing) {
                             val t = row.track
                             if (t != null) TrackRow(t, t.id in loved, now.trackId == t.id, now.isPlaying, actions.copy(onRemoveFromPlaylist = { remove() }), onClick = { vm.playRows(rows, i) })
-                            else StreamRow(row.stream!!, now.mediaId == row.stream.key, now.isPlaying, onClick = { vm.playRows(rows, i) }, onRemove = remove)
+                            else StreamRow(row.stream!!, now.mediaId == row.stream.key, now.isPlaying, full, onClick = { vm.playRows(rows, i) }, onRemove = remove)
                         } else {
                             val lifted = dragKey == k
                             Row(

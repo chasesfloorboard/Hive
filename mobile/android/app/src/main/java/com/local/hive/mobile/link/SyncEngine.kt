@@ -47,6 +47,10 @@ class SyncEngine(
     private val scope: CoroutineScope,
 ) {
     private val mutex = Mutex()
+    private val _streams = MutableStateFlow<PcStreams?>(null)
+    /** Set while Hive on the PC is reachable: how the phone can stream through it. */
+    val streams: StateFlow<PcStreams?> = _streams.asStateFlow()
+
     private val _status = MutableStateFlow(LinkStatus())
     val status: StateFlow<LinkStatus> = _status.asStateFlow()
     private var liveJob: Job? = null
@@ -223,6 +227,8 @@ class SyncEngine(
                 val conn = connection()
                 if (conn != null) {
                     _status.update { it.copy(live = true, host = conn.host) }
+                    val caps = runCatchingNotCancelled { client.info(conn).streams }.getOrNull()
+                    _streams.value = PcStreams(conn.host, conn.port, conn.token, songs = caps?.song == true)
                     runCatching {
                         client.events(conn).collect { event ->
                             backoff = 2_000L
@@ -233,6 +239,7 @@ class SyncEngine(
                         }
                     }
                     _status.update { it.copy(live = false) }
+                    _streams.value = null
                     activeHost = null
                     syncNow() // catch up on anything missed while the stream was down
                 }
@@ -245,6 +252,7 @@ class SyncEngine(
     fun stopLive() {
         liveJob?.cancel()
         liveJob = null
+        _streams.value = null
         _status.update { it.copy(live = false) }
     }
 
@@ -264,4 +272,18 @@ class SyncEngine(
         store.pairing = pairing.copy(port = found.port, hosts = listOf(found.host) + pairing.hosts)
         return HiveLinkClient.Connection(found.host, found.port, pairing.token)
     }
+}
+
+/**
+ * Streaming through Hive on the PC: [songs] says whether it can find songs it
+ * doesn't have on YouTube Music. The token goes only to this address.
+ */
+data class PcStreams(val host: String, val port: Int, val token: String, val songs: Boolean) {
+    fun songUrl(s: com.local.hive.mobile.data.StreamTrack): String = android.net.Uri.Builder()
+        .scheme("http").encodedAuthority("$host:$port").path("/api/stream/song")
+        .appendQueryParameter("key", s.key).appendQueryParameter("title", s.title).appendQueryParameter("artist", s.artist)
+        .appendQueryParameter("album", s.album).appendQueryParameter("duration", (s.durationMs / 1000).toString())
+        .build().toString()
+
+    fun isFor(uri: android.net.Uri) = uri.scheme == "http" && uri.host == host && uri.port == port
 }

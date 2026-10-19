@@ -46,7 +46,8 @@ import java.util.concurrent.TimeUnit
 @Serializable data class LoveResult(val clientChangeId: Long? = null, val id: String? = null, val status: String, val loved: Boolean? = null, val at: Long? = null, val error: String? = null)
 @Serializable data class LoveResponse(val seq: Long, val results: List<LoveResult>)
 @Serializable data class HiveAddress(val name: String = "", val address: String, val tailscale: Boolean = false)
-@Serializable data class InfoResponse(val serverId: String, val name: String, val port: Int, val seq: Long, val addresses: List<HiveAddress> = emptyList())
+@Serializable data class StreamCaps(val track: Boolean = false, val song: Boolean = false)
+@Serializable data class InfoResponse(val serverId: String, val name: String, val port: Int, val seq: Long, val addresses: List<HiveAddress> = emptyList(), val streams: StreamCaps = StreamCaps())
 @Serializable private data class PairRequest(val code: String, val deviceName: String)
 @Serializable private data class DiscoveryReply(val hivelink: Int, val serverId: String, val name: String, val port: Int)
 

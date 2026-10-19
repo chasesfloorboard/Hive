@@ -187,10 +187,14 @@ private fun MediaItem.toQueueItem() = QueueItem(
     durationMs = mediaMetadata.durationMs ?: 0,
 )
 
+/** Where a streamed song's preview is kept, for when the full song through the PC fails. */
+const val EXTRA_PREVIEW = "hive.preview"
+
 /** A streamed song (Apple Music, Spotify) played from [uri]: its preview, or the full song through Hive on the PC. */
 fun StreamTrack.toMediaItem(uri: String): MediaItem = MediaItem.Builder()
     .setMediaId(key)
     .setUri(uri)
+    .setRequestMetadata(MediaItem.RequestMetadata.Builder().setExtras(android.os.Bundle().apply { putString(EXTRA_PREVIEW, previewUrl) }).build())
     .setMediaMetadata(
         MediaMetadata.Builder()
             .setTitle(title)

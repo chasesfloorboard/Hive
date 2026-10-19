@@ -89,7 +89,7 @@ renderer views) and its state on mobile.
 |---|---|---|
 | Internet radio (search, now playing) | `radio:*` | ❌ |
 | Podcasts (search, feeds, favorites) | `podcast:*`, `podcasts:favorites:*` | ❌ |
-| YouTube Music page, downloads | `ytmusic:*` | ❌ |
+| YouTube Music page, downloads | `ytmusic:*` | 🟡 Apple Music and Spotify songs the phone lacks play in full from YouTube Music through Hive on the PC (falls back to previews); no YouTube Music page or downloads |
 | Spotify page and library | `spotify:*` | ✅ editorial playlists, shared links, previews, library matches, import; sign-in (own developer app) for your playlists, Liked Songs, private playlists and search. No playback control of the Spotify app |
 | Apple Music page | `applemusic:*` | ✅ Browse shelves, search, playlists and albums, links; library matches play in full, others as previews; import as playlist |
 | Scrobbling: ListenBrainz, Last.fm | `scrobble:*` | ❌ |
@@ -130,7 +130,7 @@ renderer views) and its state on mobile.
 |---|---|
 | Pair over Wi-Fi with a code | ✅ |
 | Favorites sync both ways, newest change wins | ✅ |
-| Play from the PC library on the phone (streaming) | ❌ |
+| Play from the PC library on the phone (streaming) | 🟡 Hive Link serves library files (/api/stream/track); no phone UI to browse the PC library yet |
 | Hand off playback between phone and PC | ❌ |
 | Remote control Hive on the PC | ❌ |
 | Away from home via Tailscale | ❌ |

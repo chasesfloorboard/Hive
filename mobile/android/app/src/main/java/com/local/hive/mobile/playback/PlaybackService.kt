@@ -5,7 +5,11 @@ import android.content.Intent
 import androidx.media3.common.AudioAttributes
 import androidx.media3.common.C
 import androidx.media3.common.Player
+import androidx.media3.datasource.DefaultDataSource
+import androidx.media3.datasource.DefaultHttpDataSource
+import androidx.media3.datasource.ResolvingDataSource
 import androidx.media3.exoplayer.ExoPlayer
+import androidx.media3.exoplayer.source.DefaultMediaSourceFactory
 import androidx.media3.session.MediaSession
 import androidx.media3.session.MediaSessionService
 import androidx.media3.session.MediaSession.MediaItemsWithStartPosition
@@ -33,7 +37,15 @@ class PlaybackService : MediaSessionService() {
 
     override fun onCreate() {
         super.onCreate()
+        val app = application as HiveApp
+        // Streams from Hive on the PC carry the pairing token; nothing else does.
+        val dataSources = ResolvingDataSource.Factory(DefaultDataSource.Factory(this, DefaultHttpDataSource.Factory().setUserAgent("HiveMobile"))) { spec ->
+            val pairing = app.linkStore.pairing
+            val toPc = pairing != null && spec.uri.scheme == "http" && spec.uri.port == pairing.port && spec.uri.host in pairing.hosts
+            if (toPc) spec.withAdditionalHeaders(mapOf("Authorization" to "Bearer ${pairing!!.token}")) else spec
+        }
         val player = ExoPlayer.Builder(this)
+            .setMediaSourceFactory(DefaultMediaSourceFactory(dataSources))
             .setAudioAttributes(
                 AudioAttributes.Builder().setUsage(C.USAGE_MEDIA).setContentType(C.AUDIO_CONTENT_TYPE_MUSIC).build(),
                 /* handleAudioFocus = */ true,
@@ -41,10 +53,18 @@ class PlaybackService : MediaSessionService() {
             .setHandleAudioBecomingNoisy(true)
             .setWakeMode(C.WAKE_MODE_LOCAL)
             .build()
-        val app = application as HiveApp
         player.addListener(PlayCounter(app.playRecorder, player))
         memory = PlaybackMemory(this, app.database.dao())
         player.addListener(object : Player.Listener {
+            // A song streamed through the PC that fails (PC gone, no match) falls back to its preview.
+            override fun onPlayerError(error: androidx.media3.common.PlaybackException) {
+                val item = player.currentMediaItem ?: return
+                val preview = item.requestMetadata.extras?.getString(EXTRA_PREVIEW)?.takeIf { it.isNotBlank() } ?: return
+                if (item.localConfiguration?.uri?.toString() == preview) return
+                player.replaceMediaItem(player.currentMediaItemIndex, item.buildUpon().setUri(preview).build())
+                player.prepare()
+                player.play()
+            }
             override fun onTimelineChanged(timeline: androidx.media3.common.Timeline, reason: Int) {
                 if (reason == Player.TIMELINE_CHANGE_REASON_PLAYLIST_CHANGED) memory.saveQueue(player)
             }

@@ -231,7 +231,8 @@ private fun SongShelf(vm: MainViewModel, songs: List<AmSong>) {
 private fun ServiceSongRow(vm: MainViewModel, s: StreamTrack, local: Track?, nowMediaId: String?, isPlaying: Boolean, number: Int?, onClick: () -> Unit) {
     val c = Hive.colors
     var menu by remember { mutableStateOf(false) }
-    val playable = local != null || s.previewUrl.isNotBlank()
+    val full by vm.fullSongs.collectAsStateWithLifecycle()
+    val playable = local != null || full || s.previewUrl.isNotBlank()
     val playing = nowMediaId != null && nowMediaId == (local?.id?.toString() ?: s.key)
     Row(
         Modifier.fillMaxWidth().padding(horizontal = 6.dp).height(62.dp).clip(HiveShape.row)
@@ -249,6 +250,7 @@ private fun ServiceSongRow(vm: MainViewModel, s: StreamTrack, local: Track?, now
             Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(6.dp)) {
                 when {
                     local != null -> StreamBadge("In library", accent = true)
+                    full -> StreamBadge("Via Hive")
                     s.previewUrl.isNotBlank() -> StreamBadge("Preview")
                     else -> StreamBadge("${s.source} only")
                 }
@@ -353,7 +355,9 @@ private fun ServiceCollectionScreen(
                                     }
                                 }, size = 46.dp)
                             }
-                            Text("Songs you don't own play as 30-second previews.", style = HiveText.small, color = c.textDimmer, modifier = Modifier.padding(top = 12.dp))
+                            val full by vm.fullSongs.collectAsStateWithLifecycle()
+                            Text(if (full) "Songs you don't own play in full from YouTube Music, through Hive on your PC." else "Songs you don't own play as 30-second previews. With Hive on your PC reachable, they play in full.",
+                                style = HiveText.small, color = c.textDimmer, textAlign = TextAlign.Center, modifier = Modifier.padding(top = 12.dp))
                         }
                     }
                     item { PanelTop() }

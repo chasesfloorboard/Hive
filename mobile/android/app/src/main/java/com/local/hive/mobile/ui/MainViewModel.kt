@@ -122,9 +122,9 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
     /** Saves a playlist in a new order, or without a song; [entries] is the whole playlist as it should be. */
     fun setPlaylistEntries(id: Long, entries: List<PlaylistEntry>) = viewModelScope.launch { dao.setPlaylistEntries(id, entries, System.currentTimeMillis()) }
 
-    /** Library songs play from the phone; a streamed song plays its preview. Songs with neither are skipped. */
+    /** Library songs play from the phone; a streamed song plays through the PC or as a preview. Songs with neither are skipped. */
     private fun mediaFor(row: PlaylistRow): MediaItem? =
-        row.track?.toMediaItem() ?: row.stream?.let { s -> s.previewUrl.ifBlank { null }?.let { s.toMediaItem(it) } }
+        row.track?.toMediaItem() ?: row.stream?.let { s -> streamUri(s)?.let { s.toMediaItem(it) } }
     fun playRows(rows: List<PlaylistRow>, index: Int = 0, shuffle: Boolean = false) {
         val items = rows.map(::mediaFor)
         app.player.playMedia(items.filterNotNull(), items.take(index).count { it != null }, shuffle)
@@ -138,6 +138,12 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
     val spotify get() = app.spotify
     val spotifyAccount get() = app.spotifyAccount
     val spotifyUser = app.spotifyAccount.user
+    /** Hive on the PC, while reachable; with it, songs the phone lacks play in full. */
+    val pcStreams = app.sync.streams
+    val fullSongs = app.sync.streams.map { it?.songs == true }.state(false)
+
+    /** A streamed song plays in full through the PC when it can, else its preview. */
+    private fun streamUri(s: StreamTrack): String? = pcStreams.value?.takeIf { it.songs }?.songUrl(s) ?: s.previewUrl.ifBlank { null }
     private var matchIndex: Triple<List<Track>, TrackMatcher.Index, Map<String, Track>>? = null
 
     /** The library song a streamed song is, when the phone has it. */
@@ -155,8 +161,8 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
     /** Library songs play in full from the phone; the rest play the service's preview, and songs with neither are skipped. */
     private suspend fun streamMedia(songs: List<StreamTrack>): List<MediaItem?> {
         val matched = songs.map { localMatch(it) to it }
-        dao.upsertStreamTracks(matched.filter { it.first == null && it.second.previewUrl.isNotBlank() }.map { it.second })
-        return matched.map { (local, song) -> local?.toMediaItem() ?: song.previewUrl.ifBlank { null }?.let { song.toMediaItem(it) } }
+        dao.upsertStreamTracks(matched.filter { it.first == null }.map { it.second })
+        return matched.map { (local, song) -> local?.toMediaItem() ?: streamUri(song)?.let { song.toMediaItem(it) } }
     }
     fun playStreams(songs: List<StreamTrack>, index: Int = 0, shuffle: Boolean = false) = viewModelScope.launch {
         val items = streamMedia(songs)
