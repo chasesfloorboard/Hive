@@ -103,6 +103,10 @@ import com.local.hive.mobile.ui.theme.HiveShape
 import com.local.hive.mobile.ui.theme.HiveText
 import com.local.hive.mobile.ui.theme.Motion
 import com.local.hive.mobile.ui.theme.hiveGlass
+import dev.chrisbanes.haze.HazeTint
+import dev.chrisbanes.haze.HazeStyle
+import dev.chrisbanes.haze.hazeEffect
+import com.local.hive.mobile.ui.theme.LocalHiveHaze
 import com.local.hive.mobile.ui.theme.mix
 import kotlinx.coroutines.launch
 import kotlin.math.abs
@@ -139,7 +143,9 @@ fun PlayerSheet(
     var settleMs by remember { mutableStateOf<Int?>(null) }
     var artTarget by remember { mutableStateOf<Rect?>(null) }
     val navBottom = WindowInsets.navigationBars.asPaddingValues().calculateBottomPadding()
-    val glass by animateColorAsState(mix(c.accent, c.panelStrong.copy(alpha = 0.94f), 0.09f), tween(900), label = "barGlass")
+    val glass by animateColorAsState(mix(c.accent, c.panelStrong.copy(alpha = 0.78f), 0.09f), tween(900), label = "barGlass")
+    // Frosted like Hive's player bar: what scrolls under the bar is blurred, not just tinted.
+    val haze = LocalHiveHaze.current
     val edge by animateColorAsState(mix(c.accent, c.border, 0.14f), tween(900), label = "barEdge")
 
     LaunchedEffect(open) {
@@ -201,6 +207,7 @@ fun PlayerSheet(
                 .requiredSize(with(density) { width.toDp() }, with(density) { height.toDp() })
                 .shadow(lerpDp(18.dp, 0.dp, p), RoundedCornerShape(corner), ambientColor = c.accentGlow, spotColor = Color.Black)
                 .clip(RoundedCornerShape(corner))
+                .then(if (haze != null) Modifier.hazeEffect(haze, HazeStyle(backgroundColor = c.bg, tint = HazeTint(Color.Transparent), blurRadius = 28.dp, noiseFactor = 0.03f)) else Modifier)
                 .background(lerp(glass, c.bg, p))
                 .border(1.dp, edge.copy(alpha = edge.alpha * (1 - p)), RoundedCornerShape(corner)),
         ) {

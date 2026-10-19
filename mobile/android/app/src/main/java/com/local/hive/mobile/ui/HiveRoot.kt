@@ -1,5 +1,7 @@
 package com.local.hive.mobile.ui
 
+import androidx.compose.foundation.border
+import com.local.hive.mobile.ui.theme.hiveGlassBorder
 import android.net.Uri
 import androidx.activity.compose.BackHandler
 import androidx.compose.animation.AnimatedVisibility
@@ -243,8 +245,10 @@ private fun HiveContent(vm: MainViewModel, openPlayerInitially: Boolean) {
 private fun Sidebar(vm: MainViewModel, current: String, go: (String) -> Unit) {
     val c = Hive.colors
     val favorites by vm.favorites.collectAsStateWithLifecycle()
+    // The drawer sits above the blur layer, so it is Hive's strong panel made solid rather than glass.
+    val shape = androidx.compose.foundation.shape.RoundedCornerShape(topEnd = 24.dp, bottomEnd = 24.dp)
     Column(
-        Modifier.fillMaxHeight().width(290.dp).hiveGlass(androidx.compose.foundation.shape.RoundedCornerShape(topEnd = 24.dp, bottomEnd = 24.dp), strength = 0.35f)
+        Modifier.fillMaxHeight().width(290.dp).clip(shape).background(c.control).border(1.dp, hiveGlassBorder(), shape)
             .statusBarsPadding().navigationBarsPadding().verticalScroll(rememberScrollState()).padding(horizontal = 12.dp, vertical = 14.dp),
     ) {
         Row(Modifier.padding(start = 8.dp, bottom = 18.dp, top = 4.dp), verticalAlignment = Alignment.CenterVertically) {

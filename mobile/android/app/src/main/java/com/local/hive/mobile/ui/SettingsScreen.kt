@@ -29,6 +29,7 @@ import androidx.compose.runtime.remember
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.draw.alpha
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.SolidColor
@@ -55,7 +56,7 @@ fun SettingsScreen(vm: MainViewModel, bottomPadding: Dp, onBack: () -> Unit) {
         LazyColumn(Modifier.fillMaxSize(), contentPadding = PaddingValues(start = 8.dp, end = 8.dp, bottom = bottomPadding + 24.dp), verticalArrangement = Arrangement.spacedBy(10.dp)) {
             item { Text("Settings", style = HiveText.viewTitle, color = Hive.colors.text, modifier = Modifier.padding(start = 12.dp, top = 4.dp, bottom = 6.dp)) }
             item {
-                Section("Hive on your PC", "Keep Favorites in sync with Hive on your computer, over Wi-Fi.") {
+                Section("Hive on your PC", "Brings Hive's Favorites to this phone over Wi-Fi. For now, changes you make here stay on this phone.") {
                     if (link.paired) PairedRows(vm) else PairRows(vm)
                 }
             }
@@ -106,11 +107,12 @@ private fun SmallButton(label: String, enabled: Boolean = true, primary: Boolean
     val c = Hive.colors
     Box(
         Modifier.height(36.dp).clip(RoundedCornerShape(10.dp))
+            .alpha(if (enabled) 1f else 0.45f)
             .background(if (primary) c.accent else mix(c.accent, c.panelStrong, 0.05f))
             .border(1.dp, mix(c.accent, c.border, 0.14f), RoundedCornerShape(10.dp))
             .clickable(enabled = enabled, onClick = onClick).padding(horizontal = 14.dp),
         contentAlignment = Alignment.Center,
-    ) { Text(label, style = HiveText.pill, color = when { !enabled -> c.textDimmer; primary -> readableOn(c.accent); else -> c.text }) }
+    ) { Text(label, style = HiveText.pill, color = if (primary) readableOn(c.accent) else c.text) }
 }
 
 @Composable
@@ -127,7 +129,7 @@ private fun PairedRows(vm: MainViewModel) {
     }
     val detail = buildList {
         if (link.pcTracks > 0) add("%,d of this phone's songs matched to Hive's %,d".format(link.matchedTracks, link.pcTracks))
-        if (link.pendingChanges > 0) add("${link.pendingChanges} changes waiting")
+        if (link.pendingChanges > 0) add("${link.pendingChanges} changes kept on this phone")
         if (link.lastSyncAt > 0) add("Synced ${DateUtils.getRelativeTimeSpanString(link.lastSyncAt)}")
     }.joinToString("\n")
     SettingRow("Favorites sync", detail) { SmallButton(if (link.syncing) "Syncing…" else "Sync now", enabled = !link.syncing, primary = true) { vm.syncNow() } }
