@@ -17,7 +17,7 @@ const { createHiveLink, trackIdFor } = require('../app/main/hive-link');
 
 let nextPort = 48100 + Math.floor(Math.random() * 500) * 2;
 
-function setup({ acceptPhoneChanges = true, streamSong = null, coversDir = null, remote = null } = {}) {
+function setup({ acceptPhoneChanges = true, streamSong = null, coversDir = null, remote = null, getPlaylists = null } = {}) {
   const dataDir = fs.mkdtempSync(path.join(os.tmpdir(), 'hive-link-'));
   const tracks = [
     { id: 'a1', path: '/music/Pearl Jam - Black.mp3', title: 'Black', artist: 'Pearl Jam', album: 'Ten', duration: '343.2', loved: false },
@@ -34,6 +34,7 @@ function setup({ acceptPhoneChanges = true, streamSong = null, coversDir = null,
     streamSong,
     coversDir,
     remote,
+    getPlaylists,
     getTracks: async () => tracks,
     setLove: async (trackPath, loved) => {
       setLoveCalls.push([trackPath, loved]);
@@ -233,6 +234,21 @@ test('remote control is off until allowed, then reports and commands playback', 
   assert.equal((await request(ctx.port, 'POST', '/api/remote', { token, body: { command: 'rm -rf' } })).status, 400);
   assert.deepEqual(commands, ['PLAYPAUSE', 'SEEK\t30', 'VOLUME\t1']);
   assert.equal((await request(ctx.port, 'GET', '/api/info', { token })).body.remote, true);
+});
+
+test('playlists come read only: library songs by id, streamed songs as Hive keeps them, smart ones left out', async t => {
+  const ctx = setup({ getPlaylists: async () => [
+    { id: 'p1', name: 'Mix', smart: false, cover: 'b'.repeat(40) + '.jpg', tracks: ['/music/Huge.mp3', 'ytm:apple:42', 'radio:x', '/music/gone.mp3'],
+      podcastEpisodes: { 'ytm:apple:42': { title: 'Saving Up', artist: 'Dom Dolla', duration: 207.5 } } },
+    { id: 'fav', name: 'Favorites', smart: true, tracks: [] }
+  ] });
+  t.after(() => ctx.link.stop());
+  await waitListening(ctx.port);
+  const token = await pair(ctx);
+  const lists = (await request(ctx.port, 'GET', '/api/playlists', { token })).body.playlists;
+  assert.equal(lists.length, 1);
+  assert.deepEqual(lists[0].songs, [{ kind: 'track', id: 'b2' }, { kind: 'stream', key: 'am:42', title: 'Saving Up', artist: 'Dom Dolla', album: '', duration: 207500, cover: '' }]);
+  assert.equal(lists[0].cover, 'b'.repeat(40) + '.jpg');
 });
 
 test('songs Hive lacks stream through the injected resolver', async t => {
