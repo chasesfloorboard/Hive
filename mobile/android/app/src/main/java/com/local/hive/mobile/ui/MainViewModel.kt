@@ -15,7 +15,9 @@ import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.SharingStarted
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
+import kotlinx.coroutines.flow.distinctUntilChanged
 import kotlinx.coroutines.flow.map
+import kotlinx.coroutines.flow.mapLatest
 import kotlinx.coroutines.flow.stateIn
 import kotlinx.coroutines.launch
 
@@ -37,6 +39,17 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
     val recentlyPlayed = dao.recentlyPlayed(AUTO_PLAYLIST_SIZE).state(emptyList())
 
     val nowPlaying = app.player.state
+
+    /** Colours of what is playing now, for the aura and the accent. */
+    @OptIn(kotlinx.coroutines.ExperimentalCoroutinesApi::class)
+    val aura: StateFlow<AuraColors?> = nowPlaying
+        .map { it.artworkUri }
+        .distinctUntilChanged()
+        .mapLatest { uri -> ArtColors.extract(app, uri?.let(android.net.Uri::parse)) }
+        .state(null)
+
+    suspend fun albumColors(albumId: Long): AuraColors? =
+        ArtColors.extract(app, android.net.Uri.parse("content://media/external/audio/albumart/$albumId"))
     val link = app.sync.status
     val colors = app.themes.colors
 

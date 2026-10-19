@@ -1,9 +1,10 @@
 package com.local.hive.mobile.ui
 
 import android.text.format.DateUtils
+import androidx.compose.animation.animateColorAsState
 import androidx.compose.foundation.background
-import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.Arrangement
+import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.PaddingValues
 import androidx.compose.foundation.layout.Row
@@ -16,17 +17,16 @@ import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.shape.CircleShape
-import androidx.compose.foundation.shape.RoundedCornerShape
+import androidx.compose.foundation.text.BasicTextField
 import androidx.compose.foundation.text.KeyboardOptions
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.rounded.Computer
-import androidx.compose.material3.Button
-import androidx.compose.material3.ButtonDefaults
+import androidx.compose.material.icons.rounded.Palette
+import androidx.compose.material.icons.rounded.Refresh
+import androidx.compose.material.icons.rounded.Sync
+import androidx.compose.material.icons.rounded.Wifi
 import androidx.compose.material3.CircularProgressIndicator
 import androidx.compose.material3.Icon
-import androidx.compose.material3.OutlinedButton
-import androidx.compose.material3.OutlinedTextField
-import androidx.compose.material3.OutlinedTextFieldDefaults
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.getValue
@@ -36,15 +36,26 @@ import androidx.compose.runtime.rememberCoroutineScope
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.draw.alpha
 import androidx.compose.ui.draw.clip
+import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.graphics.SolidColor
+import androidx.compose.ui.graphics.vector.ImageVector
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.input.KeyboardType
+import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.unit.Dp
 import androidx.compose.ui.unit.dp
-import androidx.compose.ui.unit.sp
+import androidx.compose.ui.unit.em
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import com.local.hive.mobile.link.HiveLinkClient
+import com.local.hive.mobile.ui.theme.GlassLayers
+import com.local.hive.mobile.ui.theme.GlassWeight
 import com.local.hive.mobile.ui.theme.Hive
+import com.local.hive.mobile.ui.theme.HiveType
+import com.local.hive.mobile.ui.theme.Radius
+import com.local.hive.mobile.ui.theme.Space
+import com.local.hive.mobile.ui.theme.glass
 import kotlinx.coroutines.launch
 
 @Composable
@@ -54,44 +65,58 @@ fun SettingsScreen(vm: MainViewModel, bottomPadding: Dp, onBack: () -> Unit) {
     val tracks by vm.tracks.collectAsStateWithLifecycle()
     val scanning by vm.scanning.collectAsStateWithLifecycle()
 
-    Column(Modifier.fillMaxSize()) {
-        BackBar("Settings", onBack)
-        LazyColumn(Modifier.fillMaxSize(), contentPadding = PaddingValues(start = 16.dp, end = 16.dp, bottom = bottomPadding + 16.dp), verticalArrangement = Arrangement.spacedBy(14.dp)) {
+    GlassLayers(Modifier.fillMaxSize(), content = {
+        LazyColumn(
+            Modifier.fillMaxSize(),
+            contentPadding = PaddingValues(start = Space.md, end = Space.md, top = 112.dp, bottom = bottomPadding + Space.xl),
+            verticalArrangement = Arrangement.spacedBy(Space.sm),
+        ) {
+            item { Text("Settings", style = HiveType.title, color = colors.text, modifier = Modifier.padding(start = Space.xs, bottom = Space.sm)) }
+            item { SectionLabel("Hive on your PC", Modifier.padding(start = 0.dp)) }
             item {
-                Card("Hive on your PC") {
+                SettingsCard {
                     if (link.paired) PairedSection(vm) else PairSection(vm)
-                    link.error?.let { Text(it, color = colors.accent, fontSize = 13.sp, modifier = Modifier.padding(top = 8.dp)) }
+                    link.error?.let { Text(it, style = HiveType.secondary, color = colors.accent, modifier = Modifier.padding(top = Space.sm)) }
                 }
             }
+            item { SectionLabel("Library") }
             item {
-                Card("Library") {
-                    Text("${tracks.size} tracks on this phone", color = colors.text, fontSize = 15.sp)
-                    Text("Hive reads the music stored on this phone, the same files Samsung Music plays.", color = colors.textDim, fontSize = 13.sp, modifier = Modifier.padding(top = 2.dp, bottom = 10.dp))
-                    OutlinedButton(onClick = { vm.rescan() }, enabled = !scanning) {
-                        if (scanning) { CircularProgressIndicator(Modifier.size(16.dp), strokeWidth = 2.dp); Spacer(Modifier.width(8.dp)) }
-                        Text(if (scanning) "Scanning…" else "Rescan library")
+                SettingsCard {
+                    CardHeader(Icons.Rounded.Refresh, "%,d songs on this phone".format(tracks.size), "Read from the music stored on this phone, and kept up to date as files change.")
+                    Row(Modifier.padding(top = Space.md)) {
+                        GlassPill(if (scanning) "Scanning…" else "Rescan now", null, { if (!scanning) vm.rescan() })
                     }
                 }
             }
+            item { SectionLabel("Appearance") }
             item {
-                Card("Theme") {
-                    Text("Hive Mobile uses the same theme variables as Hive on the PC (--bg, --accent, --panel…). It starts with your current Hive theme.", color = colors.textDim, fontSize = 13.sp, modifier = Modifier.padding(bottom = 10.dp))
-                    OutlinedButton(onClick = { vm.resetTheme() }) { Text("Use the bundled theme") }
+                SettingsCard {
+                    CardHeader(Icons.Rounded.Palette, "Your Hive theme", "Hive Mobile reads the same theme variables as Hive on the PC. While a song plays, the accent follows its cover.")
+                    Row(Modifier.padding(top = Space.md)) { GlassPill("Use the bundled theme", null, { vm.resetTheme() }) }
                 }
             }
-            item {
-                Text("Hive Mobile 0.1.0", color = colors.textDimmer, fontSize = 12.sp, modifier = Modifier.padding(start = 4.dp))
-            }
+            item { Text("Hive Mobile 0.2", style = HiveType.caption, color = colors.textDimmer, textAlign = TextAlign.Center, modifier = Modifier.fillMaxWidth().padding(top = Space.lg)) }
         }
-    }
+    }, overlay = { FloatingBar("Settings", 0f, onBack) })
 }
 
 @Composable
-private fun Card(title: String, content: @Composable () -> Unit) {
+private fun SettingsCard(content: @Composable () -> Unit) {
+    Column(Modifier.fillMaxWidth().glass(Radius.card, GlassWeight.Regular).padding(Space.lg)) { content() }
+}
+
+@Composable
+private fun CardHeader(icon: ImageVector, title: String, body: String) {
     val colors = Hive.colors
-    Column(Modifier.fillMaxWidth().clip(RoundedCornerShape(colors.radius + 6.dp)).background(colors.control).padding(18.dp)) {
-        Text(title, color = colors.text, fontSize = 17.sp, fontWeight = FontWeight.SemiBold, modifier = Modifier.padding(bottom = 10.dp))
-        content()
+    Row(verticalAlignment = Alignment.Top) {
+        Box(Modifier.size(40.dp).clip(CircleShape).background(colors.accent.copy(alpha = 0.16f)), contentAlignment = Alignment.Center) {
+            Icon(icon, null, tint = colors.accent, modifier = Modifier.size(20.dp))
+        }
+        Spacer(Modifier.width(Space.md))
+        Column(Modifier.weight(1f), verticalArrangement = Arrangement.spacedBy(Space.xxs)) {
+            Text(title, style = HiveType.body, color = colors.text)
+            if (body.isNotBlank()) Text(body, style = HiveType.secondary, color = colors.textDim)
+        }
     }
 }
 
@@ -99,28 +124,39 @@ private fun Card(title: String, content: @Composable () -> Unit) {
 private fun PairedSection(vm: MainViewModel) {
     val colors = Hive.colors
     val link by vm.link.collectAsStateWithLifecycle()
+    val state = when {
+        link.syncing -> "Syncing…"
+        link.live -> "Connected" + if (link.host.isNotBlank()) " · ${link.host}" else ""
+        else -> "Not connected right now"
+    }
+    val dot by animateColorAsState(if (link.live) Color(0xFF7BE0A0) else colors.textDimmer, label = "dot")
     Row(verticalAlignment = Alignment.CenterVertically) {
-        Icon(Icons.Rounded.Computer, null, tint = colors.accent)
-        Spacer(Modifier.width(10.dp))
+        Box(Modifier.size(40.dp).clip(CircleShape).background(colors.accent.copy(alpha = 0.16f)), contentAlignment = Alignment.Center) {
+            Icon(Icons.Rounded.Computer, null, tint = colors.accent, modifier = Modifier.size(20.dp))
+        }
+        Spacer(Modifier.width(Space.md))
         Column(Modifier.weight(1f)) {
-            Text(link.serverName, color = colors.text, fontSize = 15.sp)
-            val state = when {
-                link.syncing -> "Syncing…"
-                link.live -> "Connected${if (link.host.isNotBlank()) " · ${link.host}" else ""}"
-                else -> "Not connected"
+            Text(link.serverName, style = HiveType.body, color = colors.text)
+            Row(verticalAlignment = Alignment.CenterVertically) {
+                Box(Modifier.size(7.dp).clip(CircleShape).background(dot))
+                Spacer(Modifier.width(6.dp))
+                Text(state, style = HiveType.secondary, color = colors.textDim)
             }
-            Text(state, color = colors.textDim, fontSize = 13.sp)
         }
     }
     val details = buildList {
-        if (link.pcTracks > 0) add("${link.matchedTracks} of your phone's songs matched to Hive's ${link.pcTracks}")
+        if (link.pcTracks > 0) add("%,d of your phone's songs matched to Hive's %,d".format(link.matchedTracks, link.pcTracks))
         if (link.pendingChanges > 0) add("${link.pendingChanges} changes waiting to sync")
-        if (link.lastSyncAt > 0) add("Last synced ${DateUtils.getRelativeTimeSpanString(link.lastSyncAt)}")
+        if (link.lastSyncAt > 0) add("Synced ${DateUtils.getRelativeTimeSpanString(link.lastSyncAt)}")
     }
-    details.forEach { Text(it, color = colors.textDim, fontSize = 13.sp, modifier = Modifier.padding(top = 4.dp)) }
-    Row(Modifier.padding(top = 12.dp), horizontalArrangement = Arrangement.spacedBy(10.dp)) {
-        Button(onClick = { vm.syncNow() }, enabled = !link.syncing, colors = ButtonDefaults.buttonColors(containerColor = colors.text, contentColor = colors.bg)) { Text("Sync now") }
-        OutlinedButton(onClick = { vm.unpair() }) { Text("Unpair") }
+    if (details.isNotEmpty()) {
+        Column(Modifier.padding(top = Space.md), verticalArrangement = Arrangement.spacedBy(Space.xxs)) {
+            details.forEach { Text(it, style = HiveType.secondary, color = colors.textDim) }
+        }
+    }
+    Row(Modifier.padding(top = Space.lg), horizontalArrangement = Arrangement.spacedBy(Space.sm)) {
+        PrimaryPill(if (link.syncing) "Syncing…" else "Sync now", Icons.Rounded.Sync, { if (!link.syncing) vm.syncNow() })
+        GlassPill("Unpair", null, { vm.unpair() })
     }
 }
 
@@ -136,46 +172,82 @@ private fun PairSection(vm: MainViewModel) {
     var error by remember { mutableStateOf<String?>(null) }
     val scope = rememberCoroutineScope()
 
-    Text("Pair once and your Favorites stay in sync both ways. In Hive on the PC, open the tray menu and choose “Pair phone…” to get a code.", color = colors.textDim, fontSize = 13.sp)
-    Spacer(Modifier.height(10.dp))
-    OutlinedButton(onClick = { vm.discover() }, enabled = !discovering) {
-        if (discovering) { CircularProgressIndicator(Modifier.size(16.dp), strokeWidth = 2.dp); Spacer(Modifier.width(8.dp)) }
-        Text(if (discovering) "Looking on Wi-Fi…" else "Find Hive on this Wi-Fi")
+    CardHeader(Icons.Rounded.Computer, "Pair with Hive", "Pair once and your Favorites stay in sync both ways. On the PC, open Hive's tray menu and choose “Pair phone…” for a code.")
+    Row(Modifier.padding(top = Space.md), verticalAlignment = Alignment.CenterVertically) {
+        GlassPill(if (discovering) "Looking on Wi-Fi…" else "Find Hive on Wi-Fi", Icons.Rounded.Wifi, { if (!discovering) vm.discover() })
+        if (discovering) { Spacer(Modifier.width(Space.sm)); CircularProgressIndicator(Modifier.size(18.dp), strokeWidth = 2.dp, color = colors.accent) }
     }
     found.forEach { hive ->
+        val selected = host == hive.host
         Row(
-            Modifier.fillMaxWidth().padding(top = 8.dp).clip(RoundedCornerShape(12.dp)).clickable { host = hive.host; port = hive.port.toString() }
-                .background(if (host == hive.host) colors.accentSoft else colors.bg.copy(alpha = 0.4f)).padding(12.dp),
+            Modifier.fillMaxWidth().padding(top = Space.sm).clip(Radius.card)
+                .background(if (selected) colors.accent.copy(alpha = 0.14f) else colors.text.copy(alpha = 0.04f))
+                .pressable({ host = hive.host; port = hive.port.toString() }, 0.98f).padding(Space.md),
             verticalAlignment = Alignment.CenterVertically,
         ) {
-            Icon(Icons.Rounded.Computer, null, tint = colors.text, modifier = Modifier.size(20.dp).clip(CircleShape))
-            Spacer(Modifier.width(10.dp))
+            Icon(Icons.Rounded.Computer, null, tint = if (selected) colors.accent else colors.textDim, modifier = Modifier.size(20.dp))
+            Spacer(Modifier.width(Space.sm))
             Column {
-                Text(hive.name, color = colors.text, fontSize = 15.sp)
-                Text("${hive.host}:${hive.port}", color = colors.textDim, fontSize = 12.sp)
+                Text(hive.name, style = HiveType.body, color = colors.text)
+                Text("${hive.host}:${hive.port}", style = HiveType.caption, color = colors.textDim)
             }
         }
     }
-    val fieldColors = OutlinedTextFieldDefaults.colors(focusedBorderColor = colors.accent, unfocusedBorderColor = colors.border, cursorColor = colors.accent)
-    Row(Modifier.padding(top = 10.dp), horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-        OutlinedTextField(host, { host = it }, label = { Text("PC address") }, singleLine = true, colors = fieldColors, modifier = Modifier.weight(1f),
-            keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Uri))
-        OutlinedTextField(port, { port = it.filter(Char::isDigit) }, label = { Text("Port") }, singleLine = true, colors = fieldColors, modifier = Modifier.width(96.dp),
-            keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Number))
+    Row(Modifier.padding(top = Space.md), horizontalArrangement = Arrangement.spacedBy(Space.xs)) {
+        Field(host, { host = it }, "PC address", KeyboardType.Uri, Modifier.weight(1f))
+        Field(port, { port = it.filter(Char::isDigit) }, "Port", KeyboardType.Number, Modifier.width(96.dp))
     }
-    OutlinedTextField(code, { code = it.filter(Char::isDigit).take(6) }, label = { Text("Pairing code") }, singleLine = true, colors = fieldColors,
-        modifier = Modifier.fillMaxWidth().padding(top = 8.dp), keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.NumberPassword))
-    error?.let { Text(it, color = colors.accent, fontSize = 13.sp, modifier = Modifier.padding(top = 6.dp)) }
-    Button(
-        onClick = {
+    CodeField(code) { code = it.filter(Char::isDigit).take(6) }
+    error?.let { Text(it, style = HiveType.secondary, color = colors.accent, modifier = Modifier.padding(top = Space.xs)) }
+    Row(Modifier.padding(top = Space.md).alpha(if (host.isNotBlank() && code.length == 6) 1f else 0.4f)) {
+        PrimaryPill(if (busy) "Pairing…" else "Pair", null, {
+            if (busy || host.isBlank() || code.length != 6) return@PrimaryPill
             busy = true; error = null
             scope.launch {
                 error = vm.pair(host, port.toIntOrNull() ?: HiveLinkClient.DEFAULT_PORT, code)
                 busy = false
             }
+        })
+    }
+}
+
+@Composable
+private fun Field(value: String, onChange: (String) -> Unit, label: String, type: KeyboardType, modifier: Modifier) {
+    val colors = Hive.colors
+    Column(modifier.clip(Radius.card).background(colors.text.copy(alpha = 0.05f)).padding(horizontal = Space.md, vertical = Space.sm)) {
+        Text(label.uppercase(), style = HiveType.label.copy(fontSize = HiveType.label.fontSize * 0.9f), color = colors.textDimmer)
+        BasicTextField(
+            value, onChange, singleLine = true,
+            textStyle = HiveType.body.copy(color = colors.text, fontWeight = FontWeight.Normal),
+            cursorBrush = SolidColor(colors.accent),
+            keyboardOptions = KeyboardOptions(keyboardType = type),
+            modifier = Modifier.fillMaxWidth().padding(top = 2.dp),
+        )
+    }
+}
+
+/** Six digit boxes, like a one-time code. */
+@Composable
+private fun CodeField(code: String, onChange: (String) -> Unit) {
+    val colors = Hive.colors
+    BasicTextField(
+        code, onChange, singleLine = true,
+        keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.NumberPassword),
+        cursorBrush = SolidColor(Color.Transparent),
+        modifier = Modifier.fillMaxWidth().padding(top = Space.sm),
+        decorationBox = {
+            Row(horizontalArrangement = Arrangement.spacedBy(Space.xs)) {
+                repeat(6) { i ->
+                    val active = i == code.length
+                    Box(
+                        Modifier.weight(1f).height(52.dp).clip(Radius.card)
+                            .background(if (active) colors.accent.copy(alpha = 0.14f) else colors.text.copy(alpha = 0.05f)),
+                        contentAlignment = Alignment.Center,
+                    ) {
+                        Text(code.getOrNull(i)?.toString() ?: "", style = HiveType.headline.copy(letterSpacing = 0.em), color = colors.text)
+                    }
+                }
+            }
         },
-        enabled = !busy && host.isNotBlank() && code.length == 6,
-        colors = ButtonDefaults.buttonColors(containerColor = colors.text, contentColor = colors.bg),
-        modifier = Modifier.padding(top = 10.dp),
-    ) { Text(if (busy) "Pairing…" else "Pair") }
+    )
 }

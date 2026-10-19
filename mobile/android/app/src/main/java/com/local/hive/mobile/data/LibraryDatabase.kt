@@ -78,6 +78,8 @@ data class AlbumSummary(
 
 data class ArtistSummary(
     val artist: String,
+    /** One of the artist's albums, for a picture. */
+    val albumId: Long,
     val albumCount: Int,
     val trackCount: Int,
 )
@@ -125,7 +127,7 @@ interface LibraryDao {
     fun albums(): Flow<List<AlbumSummary>>
 
     @Query(
-        "SELECT artist, COUNT(DISTINCT albumId) AS albumCount, COUNT(*) AS trackCount " +
+        "SELECT artist, MAX(albumId) AS albumId, COUNT(DISTINCT albumId) AS albumCount, COUNT(*) AS trackCount " +
             "FROM tracks WHERE artist != '' GROUP BY artist ORDER BY artist COLLATE NOCASE"
     )
     fun artists(): Flow<List<ArtistSummary>>
