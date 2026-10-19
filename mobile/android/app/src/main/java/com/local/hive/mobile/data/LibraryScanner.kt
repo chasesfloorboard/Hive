@@ -80,7 +80,7 @@ class LibraryScanner(private val resolver: ContentResolver) {
                 )
             }
         }
-        return out
+        return AlbumMerge.apply(out)
     }
 
     private fun cleanUnknown(value: String) = if (value == "<unknown>") "" else value
