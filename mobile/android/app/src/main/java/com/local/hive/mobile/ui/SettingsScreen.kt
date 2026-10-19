@@ -44,6 +44,7 @@ import com.local.hive.mobile.ui.theme.HiveShape
 import com.local.hive.mobile.ui.theme.HiveText
 import com.local.hive.mobile.ui.theme.hiveGlass
 import com.local.hive.mobile.ui.theme.mix
+import kotlinx.coroutines.launch
 
 /** Settings laid out as in Hive: titled sections with a description, label-and-hint rows with the control on the right. */
 @Composable
@@ -75,6 +76,9 @@ fun SettingsScreen(vm: MainViewModel, bottomPadding: Dp, onOpenEqualiser: () -> 
                         HiveToggle(listOf("Off", "On"), if (eq.clippingGuard) 1 else 0, { i -> vm.equaliser.update { it.copy(clippingGuard = i == 1) } })
                     }
                 }
+            }
+            item {
+                Section("Scrobbling", "Report what you play to ListenBrainz or Last.fm, as Hive on your PC does. Listens made offline go once you're back.") { ScrobbleRows(vm) }
             }
             item {
                 Section("Library", "The music stored on this phone, kept up to date as files change.") {
@@ -266,4 +270,49 @@ private fun ThemeSwatch(pack: com.local.hive.mobile.ui.theme.ThemePack, selected
         }
         Text(pack.name, style = HiveText.small, color = if (selected) c.text else c.textDim, maxLines = 1, overflow = androidx.compose.ui.text.style.TextOverflow.Ellipsis, modifier = Modifier.padding(top = 6.dp))
     }
+}
+
+@Composable
+private fun ScrobbleRows(vm: MainViewModel) {
+    val context = androidx.compose.ui.platform.LocalContext.current
+    val s by vm.scrobbler.settings.collectAsStateWithLifecycle()
+    val scope = androidx.compose.runtime.rememberCoroutineScope()
+    var token by remember(s.listenBrainzToken) { mutableStateOf(s.listenBrainzToken) }
+    var key by remember(s.lastFmKey) { mutableStateOf(s.lastFmKey) }
+    var secret by remember(s.lastFmSecret) { mutableStateOf(s.lastFmSecret) }
+    var error by remember { mutableStateOf<String?>(null) }
+
+    SettingRow("ListenBrainz", if (s.listenBrainz && s.listenBrainzToken.isNotBlank()) "On" else "Paste your user token from listenbrainz.org/settings.") {
+        HiveToggle(listOf("Off", "On"), if (s.listenBrainz) 1 else 0, { i -> vm.scrobbler.update { it.copy(listenBrainz = i == 1, listenBrainzToken = token.trim()) } })
+    }
+    Box(Modifier.padding(horizontal = 14.dp, vertical = 4.dp)) {
+        Field(token, { token = it.trim(); vm.scrobbler.update { st -> st.copy(listenBrainzToken = it.trim()) } }, "User token", KeyboardType.Password, Modifier.fillMaxWidth())
+    }
+    if (s.lastFmSession.isNotBlank()) {
+        SettingRow("Last.fm", "Signed in as ${s.lastFmUser}") {
+            HiveToggle(listOf("Off", "On"), if (s.lastFm) 1 else 0, { i -> vm.scrobbler.update { it.copy(lastFm = i == 1) } })
+        }
+        SettingRow("Sign out of Last.fm", "") { SmallButton("Sign out") { vm.scrobbler.update { it.copy(lastFm = false, lastFmSession = "", lastFmUser = "") } } }
+    } else {
+        SettingRow("Last.fm", "Your API key and shared secret from last.fm/api/account/create, then sign in.") {}
+        Row(Modifier.padding(horizontal = 14.dp, vertical = 4.dp), horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+            Field(key, { key = it.trim() }, "API key", KeyboardType.Ascii, Modifier.weight(1f))
+            Field(secret, { secret = it.trim() }, "Shared secret", KeyboardType.Password, Modifier.weight(1f))
+        }
+        Row(Modifier.padding(horizontal = 14.dp, vertical = 8.dp), horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+            SmallButton("Sign in", enabled = key.length >= 16 && secret.length >= 16, primary = s.lastFmPendingToken.isBlank()) {
+                vm.scrobbler.update { it.copy(lastFmKey = key, lastFmSecret = secret) }
+                scope.launch {
+                    runCatching { vm.scrobbler.lastFmAuthUrl() }
+                        .onSuccess { url -> error = null; runCatching { context.startActivity(android.content.Intent(android.content.Intent.ACTION_VIEW, url)) } }
+                        .onFailure { error = it.message }
+                }
+            }
+            if (s.lastFmPendingToken.isNotBlank()) SmallButton("I've allowed Hive", primary = true) {
+                scope.launch { runCatching { vm.scrobbler.finishLastFm() }.onSuccess { error = null }.onFailure { error = it.message } }
+            }
+        }
+    }
+    if (s.queued > 0) Text("${countOf(s.queued, "listen")} waiting to be sent", style = HiveText.small, color = Hive.colors.textDim, modifier = Modifier.padding(horizontal = 18.dp, vertical = 4.dp))
+    (error ?: s.lastError)?.let { Text(it, style = HiveText.small, color = Color(0xFFFF8A8A), modifier = Modifier.padding(horizontal = 18.dp, vertical = 4.dp)) }
 }

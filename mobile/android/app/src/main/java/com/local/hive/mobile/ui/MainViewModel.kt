@@ -189,6 +189,7 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
     }
 
     val equaliser get() = app.equaliser
+    val scrobbler get() = app.scrobbler
     /** The playing song's genre, for the equaliser's "Auto-Select by Genre". */
     val currentGenre = combine(nowPlaying, tracks) { n, list -> list.firstOrNull { it.id == n.trackId }?.genre.orEmpty() }.distinctUntilChanged().state("")
 

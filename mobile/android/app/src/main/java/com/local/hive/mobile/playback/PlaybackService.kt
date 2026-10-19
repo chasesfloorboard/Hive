@@ -97,7 +97,9 @@ class PlaybackService : MediaSessionService() {
             .setHandleAudioBecomingNoisy(true)
             .setWakeMode(C.WAKE_MODE_LOCAL)
             .build()
-        player.addListener(PlayCounter(app.playRecorder, player))
+        player.addListener(PlayCounter(app.playRecorder, app.scrobbler, scope, player))
+        // Listens that couldn't be sent last time go now.
+        scope.launch(Dispatchers.IO) { app.scrobbler.scrobble(null) }
         memory = PlaybackMemory(this, app.database.dao())
         player.addListener(object : Player.Listener {
             // A song streamed through the PC that fails (PC gone, no match) falls back to its preview.
@@ -205,11 +207,19 @@ class PlaybackService : MediaSessionService() {
 }
 
 /**
- * Counts a play once a track has been listened to for half its length or four
+ * Counts a play once a song has been listened to for half its length or four
  * minutes, whichever comes first (the Last.fm rule Hive's scrobbler uses).
+ * Library songs are counted for History and Top 25; songs (library or
+ * streamed, not radio or podcasts) are scrobbled.
  */
-private class PlayCounter(private val recorder: PlayRecorder, private val player: Player) : Player.Listener {
-    private var currentId: Long? = null
+private class PlayCounter(
+    private val recorder: PlayRecorder,
+    private val scrobbler: com.local.hive.mobile.stream.Scrobbler,
+    private val scope: kotlinx.coroutines.CoroutineScope,
+    private val player: Player,
+) : Player.Listener {
+    private var currentKey: String? = null
+    private var listen: com.local.hive.mobile.stream.Listen? = null
     private var listenedMs = 0L
     private var resumedAt = 0L
     private var counted = false
@@ -231,7 +241,16 @@ private class PlayCounter(private val recorder: PlayRecorder, private val player
     override fun onMediaItemTransition(mediaItem: androidx.media3.common.MediaItem?, reason: Int) {
         accumulate()
         check()
-        currentId = mediaItem?.mediaId?.toLongOrNull()
+        currentKey = mediaItem?.mediaId
+        val m = mediaItem?.mediaMetadata
+        val key = currentKey
+        // Radio and podcast episodes aren't songs to scrobble.
+        listen = if (key == null || key.startsWith("radio:") || key.startsWith("pod:") || m?.title.isNullOrBlank() || m?.artist.isNullOrBlank()) null else com.local.hive.mobile.stream.Listen(
+            title = m!!.title.toString(), artist = m.artist.toString(), album = m.albumTitle?.toString().orEmpty(),
+            durationMs = m.durationMs ?: 0, startedAt = System.currentTimeMillis(),
+            service = when { key.startsWith("am:") -> "music.apple.com"; key.startsWith("sp:") -> "spotify.com"; else -> "" },
+        )
+        listen?.let { l -> scope.launch { scrobbler.nowPlaying(l) } }
         listenedMs = 0
         durationMs = 0
         counted = false
@@ -250,12 +269,14 @@ private class PlayCounter(private val recorder: PlayRecorder, private val player
     }
 
     private fun check() {
-        val id = currentId ?: return
+        val key = currentKey ?: return
         if (counted) return
         val duration = durationMs.takeIf { it > 0 } ?: return
         if (listenedMs >= minOf(duration / 2, 4 * 60_000L)) {
             counted = true
-            recorder.record(id, listenedMs)
+            key.toLongOrNull()?.let { recorder.record(it, listenedMs) }
+            // Previews (30 s) are not real listens.
+            listen?.takeIf { duration > 45_000 }?.let { l -> scope.launch { scrobbler.scrobble(l.copy(durationMs = l.durationMs.takeIf { it > 0 } ?: duration)) } }
         }
     }
 }

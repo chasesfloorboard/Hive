@@ -92,7 +92,7 @@ renderer views) and its state on mobile.
 | YouTube Music page, downloads | `ytmusic:*` | 🟡 Apple Music and Spotify songs the phone lacks play in full from YouTube Music through Hive on the PC (falls back to previews); no YouTube Music page or downloads |
 | Spotify page and library | `spotify:*` | ✅ editorial playlists, shared links, previews, library matches, import; sign-in (own developer app) for your playlists, Liked Songs, private playlists and search. No playback control of the Spotify app |
 | Apple Music page | `applemusic:*` | ✅ Browse shelves, search, playlists and albums, links; library matches play in full, others as previews; import as playlist |
-| Scrobbling: ListenBrainz, Last.fm | `scrobble:*` | ❌ |
+| Scrobbling: ListenBrainz, Last.fm | `scrobble:*` | ✅ token / own API key + browser sign-in, now playing, half-or-4-min rule, offline queue |
 | Discord presence | `discord-presence:*` | ➖ (shown by the PC) |
 
 ## Yearly Wrap and stats
