@@ -3,6 +3,7 @@ package com.local.hive.mobile.stream
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.async
 import kotlinx.coroutines.awaitAll
+import kotlinx.coroutines.sync.withPermit
 import kotlinx.coroutines.coroutineScope
 import kotlinx.coroutines.withContext
 import kotlinx.serialization.json.Json
@@ -61,7 +62,29 @@ class Spotify(private val http: OkHttpClient = AppleMusic.defaultHttp()) {
     suspend fun collection(link: String): SpCollection {
         val ref = parseLink(link) ?: throw IOException("Enter an open.spotify.com playlist, album or song link.")
         val html = get("https://open.spotify.com/embed/${ref.first}/${ref.second}")
-        return parseEmbed(html, ref.first, ref.second) ?: throw IOException("Spotify did not share this ${ref.first} publicly.")
+        val found = parseEmbed(html, ref.first, ref.second) ?: throw IOException("Spotify did not share this ${ref.first} publicly.")
+        // A playlist's page leaves out its songs' covers; each song's own link preview has its album's.
+        val covers = covers(found.songs.filter { it.artwork.isBlank() }.map { it.id })
+        return if (covers.isEmpty()) found else found.copy(songs = found.songs.map { s -> covers[s.id]?.let { s.copy(artwork = it) } ?: s })
+    }
+
+    private val coverCache = java.util.concurrent.ConcurrentHashMap<String, String>()
+    private val coverLookups = kotlinx.coroutines.sync.Semaphore(8)
+
+    /** Album covers (640 px) for Spotify song ids, eight lookups at a time; songs without one are left out. */
+    suspend fun covers(ids: List<String>): Map<String, String> = coroutineScope {
+        ids.distinct().map { id ->
+            async {
+                coverCache[id]?.let { return@async id to it }
+                val url = coverLookups.withPermit {
+                    runCatching {
+                        val o = Json.parseToJsonElement(get("https://open.spotify.com/oembed?url=${URLEncoder.encode("spotify:track:$id", "UTF-8")}")) as JsonObject
+                        largest(o.str("thumbnail_url").orEmpty())
+                    }.getOrNull()
+                }
+                url?.takeIf { it.startsWith("https://") }?.let { coverCache[id] = it; id to it }
+            }
+        }.awaitAll().filterNotNull().toMap()
     }
 
     private suspend fun get(url: String): String = withContext(Dispatchers.IO) {

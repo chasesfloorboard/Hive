@@ -282,6 +282,7 @@ fun PlaylistScreen(vm: MainViewModel, id: Long, actions: TrackActions, bottomPad
     val c = Hive.colors
     val playlist by remember(id) { vm.playlist(id) }.collectAsStateWithLifecycle(null)
     val allRows by remember(id) { vm.playlistRows(id) }.collectAsStateWithLifecycle(emptyList())
+    LaunchedEffect(allRows.size) { vm.fillSpotifyCovers(allRows) }
     // Slots whose library song has since gone from the phone are left out.
     val rows = remember(allRows) { allRows.filter { it.track != null || it.stream != null } }
     val summaries by vm.playlists.collectAsStateWithLifecycle()

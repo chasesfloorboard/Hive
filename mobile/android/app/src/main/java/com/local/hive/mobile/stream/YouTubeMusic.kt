@@ -50,6 +50,13 @@ class YouTubeMusic(context: Context, private val http: OkHttpClient = AppleMusic
         audioUrl(id)
     }
 
+    /** A link to [song]'s AAC audio (an .m4a, which every player can tag and play), for saving to the phone. */
+    fun downloadUrl(song: WantedSong): String = synchronized(locks.getOrPut(song.key) { Any() }) {
+        val id = prefs.getString("match:${song.key}", null) ?: findMatch(song)?.also { prefs.edit().putString("match:${song.key}", it).apply() }
+            ?: throw IOException("Couldn't find “${song.title}” on YouTube Music.")
+        audioUrl(id, aac = true)
+    }
+
     /** Forgets [key]'s audio link (it was refused), so the next resolve fetches a new one. */
     fun invalidate(key: String) {
         prefs.getString("match:$key", null)?.let { links.remove(it) }
@@ -99,8 +106,9 @@ class YouTubeMusic(context: Context, private val http: OkHttpClient = AppleMusic
 
     // ---- audio ----
 
-    private fun audioUrl(videoId: String): String {
-        links[videoId]?.let { (url, expires) -> if (expires - System.currentTimeMillis() > 5 * 60_000) return url }
+    private fun audioUrl(videoId: String, aac: Boolean = false): String {
+        val cacheKey = if (aac) "$videoId:aac" else videoId
+        links[cacheKey]?.let { (url, expires) -> if (expires - System.currentTimeMillis() > 5 * 60_000) return url }
         val visitor = visitor()
         val body = buildJsonObject {
             putJsonObject("context") {
@@ -121,12 +129,13 @@ class YouTubeMusic(context: Context, private val http: OkHttpClient = AppleMusic
         }
         val formats = ((o["streamingData"] as? JsonObject)?.get("adaptiveFormats") as? JsonArray).orEmpty().mapNotNull { it as? JsonObject }
             .filter { it.str("mimeType")?.startsWith("audio/") == true && it.str("url") != null }
-        // Opus first (the best YouTube offers), then AAC; the highest bitrate of the kind.
-        val best = formats.maxWithOrNull(compareBy<JsonObject> { if (it.str("mimeType")!!.startsWith("audio/webm")) 1 else 0 }.thenBy { it.str("bitrate")?.toIntOrNull() ?: 0 })
+        // Opus first (the best YouTube offers), then AAC; the highest bitrate of the kind. Saving wants AAC.
+        val preferred = if (aac) "audio/mp4" else "audio/webm"
+        val best = formats.maxWithOrNull(compareBy<JsonObject> { if (it.str("mimeType")!!.startsWith(preferred)) 1 else 0 }.thenBy { it.str("bitrate")?.toIntOrNull() ?: 0 })
             ?: throw IOException("YouTube didn't give an audio stream.")
         val url = best.str("url")!!
         val expires = Uri.parse(url).getQueryParameter("expire")?.toLongOrNull()?.times(1000) ?: (System.currentTimeMillis() + 3_600_000)
-        links[videoId] = url to expires
+        links[cacheKey] = url to expires
         return url
     }
 

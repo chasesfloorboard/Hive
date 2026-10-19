@@ -314,6 +314,7 @@ private fun HiveContent(vm: MainViewModel, openPlayerInitially: Boolean) {
                             onAddToPlaylist = { addTarget = listOf(it) },
                             onOpenLyrics = { lyricsOpen = true },
                             onOpenEqualiser = { playerOpen = false; nav.navigate("equaliser") { launchSingleTop = true } },
+                            onToast = { toast = it },
                         )
                     }
                     SelectionBar(vm, selection, Modifier.align(Alignment.BottomCenter).navigationBarsPadding().padding(bottom = bottomPadding + 8.dp), onAddToPlaylist = { addTarget = it }, onDelete = { deleteRequest(it) }, onToast = { toast = it })

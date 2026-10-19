@@ -51,6 +51,7 @@ import androidx.compose.material.icons.rounded.KeyboardArrowUp
 import androidx.compose.material.icons.rounded.MoreHoriz
 import androidx.compose.material.icons.rounded.MoreVert
 import androidx.compose.material.icons.rounded.Share
+import androidx.compose.material.icons.rounded.Download
 import androidx.compose.foundation.layout.fillMaxHeight
 import androidx.compose.material.icons.rounded.Repeat
 import androidx.compose.material.icons.rounded.RepeatOne
@@ -158,6 +159,7 @@ fun PlayerSheet(
     onAddToPlaylist: (Track) -> Unit,
     onOpenLyrics: () -> Unit,
     onOpenEqualiser: () -> Unit,
+    onToast: (String) -> Unit = {},
 ) {
     val c = Hive.colors
     // The cover follows a sideways swipe on Now Playing; let go far or fast enough and the song changes.
@@ -263,6 +265,7 @@ fun PlayerSheet(
                         onOpenLyrics = onOpenLyrics,
                         onOpenEqualiser = onOpenEqualiser,
                         onOpenArtist = onOpenArtist,
+                        onToast = onToast,
                         onArtPlaced = { artTarget = it },
                     )
                 }
@@ -456,6 +459,7 @@ private fun FullPlayerContent(
     onAddToPlaylist: (Track) -> Unit,
     onOpenLyrics: () -> Unit,
     onOpenEqualiser: () -> Unit,
+    onToast: (String) -> Unit,
     onArtPlaced: (Rect) -> Unit,
 ) {
     val c = Hive.colors
@@ -501,6 +505,16 @@ private fun FullPlayerContent(
                                 HiveMenuItem("Go to album", Icons.Rounded.Album) { menu = false; current?.let(onOpenAlbum) }
                                 HiveMenuItem("Go to artist", Icons.Rounded.Person) { menu = false; current?.let(onOpenArtist) }
                                 HiveMenuItem("Track details", Icons.Rounded.Info) { menu = false; current?.let(onInfo) }
+                                HiveMenuDivider()
+                            }
+                            // A song from Apple Music or Spotify that isn't on the phone can be saved to it.
+                            val streamed = now.trackId == null && (now.mediaId?.startsWith("am:") == true || now.mediaId?.startsWith("sp:") == true)
+                            if (streamed) {
+                                val saving = now.mediaId in vm.downloading.collectAsStateWithLifecycle().value
+                                HiveMenuItem(if (saving) "Downloading…" else "Download", Icons.Rounded.Download) {
+                                    menu = false
+                                    if (!saving) { onToast("Downloading “${now.title}”…"); vm.download(now, onToast) }
+                                }
                                 HiveMenuDivider()
                             }
                             if (now.mediaId?.startsWith("pod:") == true) HiveMenuItem("Speed · ${"%.2g".format(now.speed)}×", Icons.Rounded.Speed) { menu = false; speedMenu = true }

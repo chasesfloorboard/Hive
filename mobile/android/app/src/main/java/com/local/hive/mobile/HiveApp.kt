@@ -54,6 +54,7 @@ class HiveApp : Application(), coil3.SingletonImageLoader.Factory {
     val appleMusic by lazy { com.local.hive.mobile.stream.AppleMusic() }
     val spotify by lazy { com.local.hive.mobile.stream.Spotify() }
     val youTubeMusic by lazy { com.local.hive.mobile.stream.YouTubeMusic(this) }
+    val downloader by lazy { com.local.hive.mobile.stream.Downloader(this, youTubeMusic) }
     val likedAlbums by lazy { com.local.hive.mobile.data.LikedAlbums(this, database.dao()) }
     val spotifyAccount by lazy { com.local.hive.mobile.stream.SpotifyAccount(this) }
     val lyrics by lazy { com.local.hive.mobile.stream.LyricsProvider(this) }

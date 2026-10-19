@@ -50,10 +50,16 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
     val lovedIds: StateFlow<Set<Long>> = dao.loveStates().map { list -> list.filter { it.loved }.mapTo(HashSet()) { it.trackId } }.state(emptySet())
     val favoriteAlbumKeys: StateFlow<Set<String>> = dao.favoriteAlbums().map { list -> list.mapTo(HashSet()) { it.key } }.state(emptySet())
     val albums: StateFlow<List<AlbumSummary>> = dao.albums().map { list -> list.sortedWith(compareBy(LibrarySort.collator) { LibrarySort.key(it.album) }) }.state(emptyList())
-    /** Favorite albums that are on this phone, the ones added to the library most recently first. */
+    /**
+     * Favorite albums that are on this phone: the most recently hearted first
+     * (hearting one again brings it to the top); albums hearted together, as
+     * when they were filled in from liked songs, newest to the library first.
+     */
     val favoriteAlbums: StateFlow<List<AlbumSummary>> = combine(albums, dao.favoriteAlbums()) { all, favs ->
         val byKey = all.associateBy { FavoriteAlbum.keyOf(it.album, it.artist) }
-        favs.mapNotNull { byKey[it.key] }.distinctBy { it.albumId }.sortedByDescending { it.added }
+        favs.mapNotNull { f -> byKey[f.key]?.let { f.addedAt to it } }
+            .sortedWith(compareByDescending<Pair<Long, AlbumSummary>> { it.first }.thenByDescending { it.second.added })
+            .map { it.second }.distinctBy { it.albumId }
     }.state(emptyList())
     val artists: StateFlow<List<ArtistSummary>> = dao.artists().map { list -> list.sortedWith(compareBy(LibrarySort.collator) { LibrarySort.key(it.artist) }) }.state(emptyList())
     val genres: StateFlow<List<NamedCount>> = dao.genres().state(emptyList())
@@ -134,6 +140,28 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
     val playlists: StateFlow<List<PlaylistSummary>> = dao.playlists().state(emptyList())
     fun playlist(id: Long) = dao.playlist(id)
     fun playlistRows(id: Long) = dao.playlistRows(id)
+
+    val downloading = app.downloader.active
+
+    /** Saves the streamed song now playing to the phone; [onDone] hears how it went. */
+    fun download(now: com.local.hive.mobile.playback.NowPlaying, onDone: (String) -> Unit) {
+        val key = now.mediaId ?: return
+        val song = com.local.hive.mobile.stream.WantedSong(key, now.title, now.artist, now.album, now.durationMs)
+        viewModelScope.launch {
+            runCatching { app.downloader.save(song, now.artworkUri) }
+                .onSuccess { onDone("Saved “${now.title}” to Music/Hive") }
+                .onFailure { onDone(it.message ?: "Couldn't save “${now.title}”") }
+        }
+    }
+
+    /** Spotify songs saved without a cover (playlist pages leave them out) get their album's cover, once. */
+    fun fillSpotifyCovers(rows: List<com.local.hive.mobile.data.PlaylistRow>) = viewModelScope.launch {
+        val bare = rows.mapNotNull { it.stream }.filter { it.key.startsWith("sp:") && it.artworkUrl.isBlank() }
+        if (bare.isEmpty()) return@launch
+        val covers = runCatching { app.spotify.covers(bare.map { it.key.removePrefix("sp:") }) }.getOrDefault(emptyMap())
+        val filled = bare.mapNotNull { s -> covers[s.key.removePrefix("sp:")]?.let { s.copy(artworkUrl = it) } }
+        if (filled.isNotEmpty()) dao.upsertStreamTracks(filled)
+    }
 
     /** Creates a playlist (optionally with songs) and reports its id. */
     fun createPlaylist(name: String, tracks: List<Track> = emptyList(), source: String = "", sourceUrl: String = "", imageUrl: String = "", onCreated: (Long) -> Unit = {}) =
