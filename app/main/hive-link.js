@@ -13,6 +13,9 @@
 //                                  (answered "held" while acceptPhoneChanges is off)
 //   GET  /api/events               server-sent events (live Love changes)
 //   GET  /api/stream/track?id=     a library song's file, with Range support
+//   GET  /api/cover?name=          a library cover from Hive's covers folder
+//                                  (the token may come as ?t= so any image
+//                                  loader on the phone can fetch it)
 //   GET  /api/stream/song?key=…    a song Hive doesn't have (Apple Music,
 //                                  Spotify), streamed from YouTube Music
 //                                  through Hive, as Hive itself plays them
@@ -63,7 +66,7 @@ function lanAddresses() {
   return out;
 }
 
-function createHiveLink({ dataDir, getTracks, setLove, onPaired, streamSong = null, log = () => {}, port = DEFAULT_PORT, discoveryPort = DISCOVERY_PORT, acceptPhoneChanges = false }) {
+function createHiveLink({ dataDir, getTracks, setLove, onPaired, streamSong = null, coversDir = null, log = () => {}, port = DEFAULT_PORT, discoveryPort = DISCOVERY_PORT, acceptPhoneChanges = false }) {
   const statePath = path.join(dataDir, 'hive-link.json');
   let state = loadState();
   let server = null;
@@ -150,10 +153,13 @@ function createHiveLink({ dataDir, getTracks, setLove, onPaired, streamSong = nu
     return { status: 200, body: { token, deviceId: device.id, serverId: state.serverId, name: serverName(), seq: state.seq } };
   }
 
-  function authenticate(req) {
+  function authenticate(req, url) {
     const header = String(req.headers.authorization || '');
-    if (!header.startsWith('Bearer ')) return null;
-    const hash = sha256(header.slice(7).trim());
+    // Covers alone accept the token in the address: image loaders can't always send headers.
+    const fromQuery = url && url.pathname === '/api/cover' ? String(url.searchParams.get('t') || '') : '';
+    const token = header.startsWith('Bearer ') ? header.slice(7).trim() : fromQuery;
+    if (!token) return null;
+    const hash = sha256(token);
     const device = state.devices.find(d => d.tokenHash === hash);
     if (device) { device.lastSeen = Date.now(); saveSoon(); }
     return device || null;
@@ -267,7 +273,8 @@ function createHiveLink({ dataDir, getTracks, setLove, onPaired, streamSong = nu
         loved: t.loved === true || t.loved === 'True',
         rating: num(t.rating),
         playCount: num(t.playCount),
-        file: path.basename(String(t.path))
+        file: path.basename(String(t.path)),
+        cover: /^[a-f0-9]{40}\.(jpe?g|png|webp)$/i.test(String(t.cover || '')) ? String(t.cover) : ''
       }));
     const json = JSON.stringify({ seq: state.seq, tracks: rows });
     const etag = `"${sha256(json).slice(0, 24)}"`;
@@ -328,7 +335,7 @@ function createHiveLink({ dataDir, getTracks, setLove, onPaired, streamSong = nu
     if (route === 'GET /api/ping') return send(res, 200, { ok: true, protocol: PROTOCOL_VERSION, serverId: state.serverId });
     if (route === 'POST /api/pair') return (r => send(res, r.status, r.body))(completePairing(await readJson(req)));
 
-    const device = authenticate(req);
+    const device = authenticate(req, url);
     if (!device) return send(res, 401, { error: 'Not paired with this Hive.' });
 
     switch (route) {
@@ -346,6 +353,8 @@ function createHiveLink({ dataDir, getTracks, setLove, onPaired, streamSong = nu
         const body = await readJson(req);
         return send(res, 200, await applyLoveChanges(device, body?.changes));
       }
+      case 'GET /api/cover':
+        return sendCover(res, String(url.searchParams.get('name') || ''));
       case 'GET /api/stream/track':
         return streamTrack(req, res, String(url.searchParams.get('id') || ''));
       case 'GET /api/stream/song':
@@ -363,6 +372,17 @@ function createHiveLink({ dataDir, getTracks, setLove, onPaired, streamSong = nu
   // ---- streaming -----------------------------------------------------------
 
   const AUDIO_TYPES = { '.mp3': 'audio/mpeg', '.flac': 'audio/flac', '.m4a': 'audio/mp4', '.aac': 'audio/aac', '.ogg': 'audio/ogg', '.opus': 'audio/ogg', '.wav': 'audio/wav' };
+
+  // A cover from Hive's covers folder; only plain cover file names, nothing else on disk.
+  async function sendCover(res, name) {
+    if (!coversDir || !/^[a-f0-9]{40}\.(jpe?g|png|webp)$/i.test(name)) return send(res, 404, { error: 'No such cover.' });
+    const file = path.join(coversDir, name);
+    let data;
+    try { data = await fs.promises.readFile(file); } catch { return send(res, 404, { error: 'No such cover.' }); }
+    const type = name.endsWith('.png') ? 'image/png' : name.endsWith('.webp') ? 'image/webp' : 'image/jpeg';
+    res.writeHead(200, { 'Content-Type': type, 'Content-Length': data.length, 'Cache-Control': 'private, max-age=86400' });
+    res.end(data);
+  }
 
   // A library song's file, by its Hive Link id. Only files Hive lists are served.
   async function streamTrack(req, res, id) {

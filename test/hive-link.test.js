@@ -17,7 +17,7 @@ const { createHiveLink, trackIdFor } = require('../app/main/hive-link');
 
 let nextPort = 48100 + Math.floor(Math.random() * 500) * 2;
 
-function setup({ acceptPhoneChanges = true, streamSong = null } = {}) {
+function setup({ acceptPhoneChanges = true, streamSong = null, coversDir = null } = {}) {
   const dataDir = fs.mkdtempSync(path.join(os.tmpdir(), 'hive-link-'));
   const tracks = [
     { id: 'a1', path: '/music/Pearl Jam - Black.mp3', title: 'Black', artist: 'Pearl Jam', album: 'Ten', duration: '343.2', loved: false },
@@ -32,6 +32,7 @@ function setup({ acceptPhoneChanges = true, streamSong = null } = {}) {
     discoveryPort: port + 1,
     acceptPhoneChanges,
     streamSong,
+    coversDir,
     getTracks: async () => tracks,
     setLove: async (trackPath, loved) => {
       setLoveCalls.push([trackPath, loved]);
@@ -194,6 +195,22 @@ test('a library song streams with Range support, and only listed files are serve
   assert.equal(whole.body.toString(), '0123456789');
   assert.equal((await rawGet(ctx.port, '/api/stream/track?id=nope', token)).status, 404);
   assert.equal((await rawGet(ctx.port, '/api/stream/track?id=c3')).status, 401);
+});
+
+test('covers come only from the covers folder, with the token in the address allowed', async t => {
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'hive-link-covers-'));
+  const name = 'a'.repeat(40) + '.jpg';
+  fs.writeFileSync(path.join(dir, name), Buffer.from('JPEG'));
+  const ctx = setup({ coversDir: dir });
+  t.after(() => ctx.link.stop());
+  await waitListening(ctx.port);
+  const token = await pair(ctx);
+  assert.equal((await rawGet(ctx.port, `/api/cover?name=${name}`, token)).body.toString(), 'JPEG');
+  assert.equal((await rawGet(ctx.port, `/api/cover?name=${name}&t=${token}`)).status, 200);
+  assert.equal((await rawGet(ctx.port, `/api/cover?name=${name}`)).status, 401);
+  assert.equal((await rawGet(ctx.port, `/api/cover?name=../hive-link.json`, token)).status, 404);
+  // The address token is for covers only.
+  assert.equal((await rawGet(ctx.port, `/api/library?t=${token}`)).status, 401);
 });
 
 test('songs Hive lacks stream through the injected resolver', async t => {

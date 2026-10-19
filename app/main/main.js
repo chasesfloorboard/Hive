@@ -7892,6 +7892,7 @@ function startHiveLink() {
     },
     // Hive Mobile is not ready to change the PC library yet: phone Love stays on the phone.
     acceptPhoneChanges: false,
+    coversDir: COVERS_DIR(),
     // Apple Music and Spotify songs Hive Mobile lacks play from YouTube Music
     // through Hive, sharing Hive's own matches (ytm:apple:…, ytm:spotify:…).
     streamSong: async (song, range) => {
