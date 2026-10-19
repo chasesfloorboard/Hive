@@ -144,6 +144,9 @@ private fun HiveContent(vm: MainViewModel, openPlayerInitially: Boolean) {
     fun enc(s: String) = Uri.encode(s)
     fun go(path: String) { scope.launch { drawer.close() }; nav.navigate(path) { launchSingleTop = true } }
     var addTarget by remember { mutableStateOf<List<Track>?>(null) }
+    val selection = remember { Selection() }
+    // Picking ends when the page changes.
+    LaunchedEffect(route?.id) { selection.clear() }
     var infoTarget by remember { mutableStateOf<Track?>(null) }
     var toast by remember { mutableStateOf<String?>(null) }
     val actions = TrackActions(
@@ -179,6 +182,7 @@ private fun HiveContent(vm: MainViewModel, openPlayerInitially: Boolean) {
             HiveGlassLayers(
                 Modifier.fillMaxSize(),
                 content = {
+                    CompositionLocalProvider(LocalSelection provides selection) {
                     NavHost(
                         nav, startDestination = "home", modifier = Modifier.fillMaxSize().navigationBarsPadding(),
                         enterTransition = { openEnter }, exitTransition = { openExit },
@@ -244,6 +248,7 @@ private fun HiveContent(vm: MainViewModel, openPlayerInitially: Boolean) {
                             SongsScreen(vm, kind.title, flow, actions, bottomPadding) { nav.popBackStack() }
                         }
                     }
+                    }
                 },
                 overlay = {
                     if (hasMedia) {
@@ -260,6 +265,7 @@ private fun HiveContent(vm: MainViewModel, openPlayerInitially: Boolean) {
                             onOpenEqualiser = { playerOpen = false; nav.navigate("equaliser") { launchSingleTop = true } },
                         )
                     }
+                    SelectionBar(vm, selection, Modifier.align(Alignment.BottomCenter).navigationBarsPadding().padding(bottom = bottomPadding + 8.dp), onAddToPlaylist = { addTarget = it }, onToast = { toast = it })
                     HiveToast(toast, Modifier.align(Alignment.BottomCenter).navigationBarsPadding().padding(bottom = bottomPadding + 16.dp)) { toast = null }
                     AnimatedVisibility(queueOpen, enter = slideInVertically(Motion.open()) { it } + fadeIn(Motion.underFade()), exit = slideOutVertically(Motion.close()) { it } + fadeOut(Motion.close())) {
                         QueueScreen(vm) { queueOpen = false }
@@ -272,6 +278,7 @@ private fun HiveContent(vm: MainViewModel, openPlayerInitially: Boolean) {
         }
         infoTarget?.let { t -> TrackInfoSheet(vm, t, onDismiss = { infoTarget = null }) { playerOpen = false; nav.navigate("album/${it.albumId}") } }
         addTarget?.let { tracks -> AddToPlaylistSheet(vm, tracks, onDismiss = { addTarget = null }) { name -> toast = "Added to $name" } }
+        BackHandler(enabled = selection.active) { selection.clear() }
         BackHandler(enabled = playerOpen || queueOpen || lyricsOpen || drawer.isOpen) {
             when {
                 drawer.isOpen -> scope.launch { drawer.close() }

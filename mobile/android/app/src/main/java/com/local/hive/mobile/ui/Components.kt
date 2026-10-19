@@ -44,6 +44,7 @@ import androidx.compose.material.icons.automirrored.rounded.PlaylistAdd
 import androidx.compose.material.icons.automirrored.rounded.PlaylistPlay
 import androidx.compose.material.icons.automirrored.rounded.QueueMusic
 import androidx.compose.material.icons.rounded.Album
+import androidx.compose.material.icons.rounded.Check
 import androidx.compose.material.icons.rounded.Favorite
 import androidx.compose.material.icons.rounded.FavoriteBorder
 import androidx.compose.material.icons.rounded.Info
@@ -282,12 +283,23 @@ data class TrackActions(
     val onRemoveFromPlaylist: ((Track) -> Unit)? = null,
 )
 
+/** Songs picked for a group action; long-press a song to start, tap to add or remove while picking. */
+class Selection {
+    val tracks = androidx.compose.runtime.mutableStateListOf<Track>()
+    val active: Boolean get() = tracks.isNotEmpty()
+    operator fun contains(t: Track) = tracks.any { it.id == t.id }
+    fun toggle(t: Track) { if (t in this) tracks.removeAll { it.id == t.id } else tracks += t }
+    fun clear() = tracks.clear()
+}
+
+val LocalSelection = androidx.compose.runtime.staticCompositionLocalOf<Selection?> { null }
+
 /**
  * A song in Hive's style: rounded row, 44dp art (or the track number in an
  * album), title over artist · album, length in tabular figures. The playing
  * row takes the accent: accent title, moving bars, and a soft accent fill
  * with a 2dp accent bar at its leading edge (Hive's selected-row treatment).
- * Long-press or ⋯ opens the glass menu.
+ * ⋯ opens the glass menu; long-press starts picking songs (see [Selection]).
  */
 @Composable
 fun TrackRow(
@@ -304,7 +316,9 @@ fun TrackRow(
 ) {
     val c = Hive.colors
     var menu by remember { mutableStateOf(false) }
-    val fill by animateColorAsState(if (playing) c.accentSoft.copy(alpha = 0.22f) else Color.Transparent, tween(180), label = "rowFill")
+    val selection = LocalSelection.current
+    val picked = selection != null && track in selection
+    val fill by animateColorAsState(when { picked -> c.accentSoft.copy(alpha = 0.38f); playing -> c.accentSoft.copy(alpha = 0.22f); else -> Color.Transparent }, tween(180), label = "rowFill")
     val titleColor by animateColorAsState(if (playing) c.accent else c.text, tween(180), label = "rowTitle")
     Box(Modifier.fillMaxWidth().padding(horizontal = 8.dp)) {
         Row(
@@ -314,21 +328,27 @@ fun TrackRow(
                 .clip(HiveShape.row)
                 .background(fill)
                 .drawBehind { if (playing) drawRect(c.accent, size = Size(2.dp.toPx(), size.height)) }
-                .combinedClickable(onClick = onClick, onLongClick = { menu = true })
+                .combinedClickable(
+                    onClick = { if (selection?.active == true) selection.toggle(track) else onClick() },
+                    onLongClick = { if (selection != null) selection.toggle(track) else menu = true },
+                )
                 .padding(start = 10.dp, end = 0.dp),
             verticalAlignment = Alignment.CenterVertically,
         ) {
             if (showArt) {
                 Box {
                     Artwork(track.artworkUri, Modifier.size(44.dp))
-                    if (playing) Box(Modifier.size(44.dp).clip(HiveShape.thumb).background(Color.Black.copy(alpha = 0.45f)), contentAlignment = Alignment.Center) {
+                    if (picked) Box(Modifier.size(44.dp).clip(HiveShape.thumb).background(c.accent.copy(alpha = 0.85f)), contentAlignment = Alignment.Center) {
+                        Icon(Icons.Rounded.Check, "Picked", tint = readableOn(c.accent), modifier = Modifier.size(22.dp))
+                    } else if (playing) Box(Modifier.size(44.dp).clip(HiveShape.thumb).background(Color.Black.copy(alpha = 0.45f)), contentAlignment = Alignment.Center) {
                         NowPlayingBars(isPlaying, Color.White, Modifier.size(15.dp))
                     }
                 }
                 Spacer(Modifier.width(12.dp))
             } else {
                 Box(Modifier.width(28.dp), contentAlignment = Alignment.CenterStart) {
-                    if (playing) NowPlayingBars(isPlaying, c.accent, Modifier.size(13.dp))
+                    if (picked) Icon(Icons.Rounded.Check, "Picked", tint = c.accent, modifier = Modifier.size(18.dp))
+                    else if (playing) NowPlayingBars(isPlaying, c.accent, Modifier.size(13.dp))
                     else Text(number?.takeIf { it > 0 }?.toString() ?: "", style = HiveText.numbers, color = c.textDimmer)
                 }
                 Spacer(Modifier.width(8.dp))
