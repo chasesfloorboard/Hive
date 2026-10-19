@@ -4,11 +4,10 @@ import android.net.Uri
 import androidx.activity.compose.BackHandler
 import androidx.compose.animation.AnimatedVisibility
 import androidx.compose.animation.animateColorAsState
+import androidx.compose.animation.core.LinearEasing
 import androidx.compose.animation.core.tween
 import androidx.compose.animation.fadeIn
 import androidx.compose.animation.fadeOut
-import androidx.compose.animation.scaleIn
-import androidx.compose.animation.scaleOut
 import androidx.compose.animation.slideInHorizontally
 import androidx.compose.animation.slideInVertically
 import androidx.compose.animation.slideOutHorizontally
@@ -104,13 +103,18 @@ fun HiveRoot(vm: MainViewModel, openPlayerInitially: Boolean) {
     }
 }
 
-// Pages slide in from the right with a fade (One UI's 450 ms open curve) while
-// the page beneath recedes slightly; back reverses it, and follows the finger
-// during a predictive back gesture.
-private val openEnter = slideInHorizontally(Motion.open()) { it / 3 } + fadeIn(tween(260))
-private val openExit = scaleOut(Motion.open(), targetScale = 0.96f) + fadeOut(tween(220))
-private val closeEnter = scaleIn(Motion.close(), initialScale = 0.96f) + fadeIn(tween(260))
-private val closeExit = slideOutHorizontally(Motion.close()) { it / 3 } + fadeOut(tween(220))
+// Pages push in from the right edge with One UI's 450 ms open curve while the
+// page beneath drifts a quarter-width left and fades out quickly, so two glass
+// pages never sit on top of each other for long. Back reverses it on the 400 ms
+// close curve; during a predictive back gesture the same motion follows the
+// finger one-to-one.
+private const val UNDER_DRIFT = 4
+private val openEnter = slideInHorizontally(Motion.open()) { it }
+private val openExit = slideOutHorizontally(Motion.open()) { -it / UNDER_DRIFT } + fadeOut(tween(180))
+private val closeEnter = slideInHorizontally(Motion.close()) { -it / UNDER_DRIFT } + fadeIn(tween(220, delayMillis = 60))
+private val closeExit = slideOutHorizontally(Motion.close()) { it }
+private val followEnter = slideInHorizontally(tween(Motion.CLOSE_MS, easing = LinearEasing)) { -it / UNDER_DRIFT } + fadeIn(tween(Motion.CLOSE_MS, easing = LinearEasing))
+private val followExit = slideOutHorizontally(tween(Motion.CLOSE_MS, easing = LinearEasing)) { it }
 
 @Composable
 private fun HiveContent(vm: MainViewModel, openPlayerInitially: Boolean) {
@@ -148,6 +152,8 @@ private fun HiveContent(vm: MainViewModel, openPlayerInitially: Boolean) {
 
     ModalNavigationDrawer(
         drawerState = drawer,
+        // An edge swipe on a page means back; the sidebar only swipes open from Home.
+        gesturesEnabled = drawer.isOpen || route?.destination?.route == "home",
         scrimColor = Color.Black.copy(alpha = 0.45f),
         drawerContent = { Sidebar(vm, route?.destination?.route.orEmpty() + (route?.arguments?.getString("kind") ?: ""), ::go) },
     ) {
@@ -160,6 +166,7 @@ private fun HiveContent(vm: MainViewModel, openPlayerInitially: Boolean) {
                         nav, startDestination = "home", modifier = Modifier.fillMaxSize().navigationBarsPadding(),
                         enterTransition = { openEnter }, exitTransition = { openExit },
                         popEnterTransition = { closeEnter }, popExitTransition = { closeExit },
+                        predictivePopEnterTransition = { followEnter }, predictivePopExitTransition = { followExit },
                     ) {
                         composable("home") { HomeScreen(vm, homeNav, actions, bottomPadding) }
                         composable("search") { SearchScreen(vm, actions, bottomPadding, { nav.popBackStack() }, homeNav.openAlbum, homeNav.openArtist) }
