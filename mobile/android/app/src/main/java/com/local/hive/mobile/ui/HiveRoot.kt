@@ -143,12 +143,27 @@ private fun HiveContent(vm: MainViewModel, openPlayerInitially: Boolean) {
 
     fun enc(s: String) = Uri.encode(s)
     fun go(path: String) { scope.launch { drawer.close() }; nav.navigate(path) { launchSingleTop = true } }
+    var toast by remember { mutableStateOf<String?>(null) }
     var addTarget by remember { mutableStateOf<List<Track>?>(null) }
+    val context = androidx.compose.ui.platform.LocalContext.current
+    var deleting by remember { mutableStateOf<List<Track>?>(null) }
+    // Android asks the user before any file goes; Hive rescans once it has.
+    val deleteLauncher = androidx.activity.compose.rememberLauncherForActivityResult(androidx.activity.result.contract.ActivityResultContracts.StartIntentSenderForResult()) { result ->
+        val gone = deleting
+        deleting = null
+        if (result.resultCode == android.app.Activity.RESULT_OK && gone != null) { toast = "Deleted ${countOf(gone.size, "song")}"; vm.rescan() }
+    }
+    fun deleteRequest(tracks: List<Track>) {
+        if (tracks.isEmpty()) return
+        if (android.os.Build.VERSION.SDK_INT < android.os.Build.VERSION_CODES.R) { toast = "Deleting needs Android 11 or later"; return }
+        deleting = tracks
+        val request = android.provider.MediaStore.createDeleteRequest(context.contentResolver, tracks.map { it.uri })
+        deleteLauncher.launch(androidx.activity.result.IntentSenderRequest.Builder(request.intentSender).build())
+    }
     val selection = remember { Selection() }
     // Picking ends when the page changes.
     LaunchedEffect(route?.id) { selection.clear() }
     var infoTarget by remember { mutableStateOf<Track?>(null) }
-    var toast by remember { mutableStateOf<String?>(null) }
     val actions = TrackActions(
         onPlayNext = { vm.playNext(listOf(it)) },
         onAddToQueue = { vm.addToQueue(listOf(it)) },
@@ -157,6 +172,7 @@ private fun HiveContent(vm: MainViewModel, openPlayerInitially: Boolean) {
         onGoToArtist = { nav.navigate("artist/${enc(it.artist)}") },
         onAddToPlaylist = { addTarget = it },
         onInfo = { infoTarget = it },
+        onDelete = { tracks -> deleteRequest(tracks) },
     )
     val homeNav = HomeNavigation(
         openAlbum = { nav.navigate("album/$it") },
@@ -265,7 +281,7 @@ private fun HiveContent(vm: MainViewModel, openPlayerInitially: Boolean) {
                             onOpenEqualiser = { playerOpen = false; nav.navigate("equaliser") { launchSingleTop = true } },
                         )
                     }
-                    SelectionBar(vm, selection, Modifier.align(Alignment.BottomCenter).navigationBarsPadding().padding(bottom = bottomPadding + 8.dp), onAddToPlaylist = { addTarget = it }, onToast = { toast = it })
+                    SelectionBar(vm, selection, Modifier.align(Alignment.BottomCenter).navigationBarsPadding().padding(bottom = bottomPadding + 8.dp), onAddToPlaylist = { addTarget = it }, onDelete = { deleteRequest(it) }, onToast = { toast = it })
                     HiveToast(toast, Modifier.align(Alignment.BottomCenter).navigationBarsPadding().padding(bottom = bottomPadding + 16.dp)) { toast = null }
                     AnimatedVisibility(queueOpen, enter = slideInVertically(Motion.open()) { it } + fadeIn(Motion.underFade()), exit = slideOutVertically(Motion.close()) { it } + fadeOut(Motion.close())) {
                         QueueScreen(vm) { queueOpen = false }

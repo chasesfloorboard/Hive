@@ -290,7 +290,9 @@ fun SearchScreen(vm: MainViewModel, actions: TrackActions, bottomPadding: Dp, on
     val artists by vm.artists.collectAsStateWithLifecycle()
     val focus = remember { FocusRequester() }
     LaunchedEffect(Unit) { focus.requestFocus() }
-    LaunchedEffect(query) { delay(140); results = vm.search(query) }
+    // Results follow the library, so a deleted or newly scanned song shows at once.
+    val library by vm.tracks.collectAsStateWithLifecycle()
+    LaunchedEffect(query, library) { delay(140); results = vm.search(query) }
     val q = query.trim()
     val albumHits by remember(q, albums) { derivedStateOf { if (q.length < 2) emptyList() else albums.filter { it.album.contains(q, true) || it.artist.contains(q, true) }.take(8) } }
     val artistHits by remember(q, artists) { derivedStateOf { if (q.length < 2) emptyList() else artists.filter { it.artist.contains(q, true) }.take(6) } }

@@ -45,6 +45,7 @@ import androidx.compose.material.icons.automirrored.rounded.PlaylistPlay
 import androidx.compose.material.icons.automirrored.rounded.QueueMusic
 import androidx.compose.material.icons.rounded.Album
 import androidx.compose.material.icons.rounded.Check
+import androidx.compose.material.icons.rounded.Delete
 import androidx.compose.material.icons.rounded.Favorite
 import androidx.compose.material.icons.rounded.FavoriteBorder
 import androidx.compose.material.icons.rounded.Info
@@ -279,6 +280,7 @@ data class TrackActions(
     val onGoToArtist: (Track) -> Unit,
     val onInfo: (Track) -> Unit = {},
     val onAddToPlaylist: (List<Track>) -> Unit = {},
+    val onDelete: (List<Track>) -> Unit = {},
     /** Set only where the song sits in a playlist the user can edit. */
     val onRemoveFromPlaylist: ((Track) -> Unit)? = null,
 )
@@ -380,6 +382,7 @@ fun TrackMenu(expanded: Boolean, loved: Boolean, onDismiss: () -> Unit, track: T
         HiveMenuItem("Go to album", Icons.Rounded.Album) { onDismiss(); actions.onGoToAlbum(track) }
         HiveMenuItem("Go to artist", Icons.Rounded.Person) { onDismiss(); actions.onGoToArtist(track) }
         HiveMenuItem("Track info", Icons.Rounded.Info) { onDismiss(); actions.onInfo(track) }
+        HiveMenuItem("Delete from phone", Icons.Rounded.Delete, destructive = true) { onDismiss(); actions.onDelete(listOf(track)) }
         actions.onRemoveFromPlaylist?.let { remove ->
             HiveMenuDivider()
             HiveMenuItem("Remove from playlist", Icons.Rounded.RemoveCircleOutline, destructive = true) { onDismiss(); remove(track) }
