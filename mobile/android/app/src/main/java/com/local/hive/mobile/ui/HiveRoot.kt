@@ -59,6 +59,7 @@ import androidx.compose.material3.darkColorScheme
 import androidx.compose.material3.rememberDrawerState
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.CompositionLocalProvider
+import androidx.compose.ui.graphics.luminance
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.rememberCoroutineScope
@@ -108,6 +109,14 @@ fun HiveRoot(vm: MainViewModel, openPlayerInitially: Boolean) {
         surface = colors.bg, onSurface = colors.text, surfaceVariant = colors.panelStrong,
         onSurfaceVariant = colors.textDim, outline = colors.border,
     )
+    // Status and navigation bar icons dark on a light theme, light on a dark one.
+    val view = androidx.compose.ui.platform.LocalView.current
+    val lightTheme = colors.bg.luminance() > 0.5f
+    androidx.compose.runtime.SideEffect {
+        (view.context as? android.app.Activity)?.window?.let { w ->
+            androidx.core.view.WindowCompat.getInsetsController(w, view).apply { isAppearanceLightStatusBars = lightTheme; isAppearanceLightNavigationBars = lightTheme }
+        }
+    }
     CompositionLocalProvider(LocalHiveColors provides colors) {
         MaterialTheme(colorScheme = scheme) { HiveContent(vm, openPlayerInitially) }
     }

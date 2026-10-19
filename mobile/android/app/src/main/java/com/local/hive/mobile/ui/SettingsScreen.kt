@@ -16,6 +16,7 @@ import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.lazy.LazyColumn
+import androidx.compose.foundation.lazy.items
 import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.foundation.text.BasicTextField
@@ -83,9 +84,7 @@ fun SettingsScreen(vm: MainViewModel, bottomPadding: Dp, onOpenEqualiser: () -> 
                 }
             }
             item {
-                Section("Appearance", "Hive Mobile uses your Hive theme. While a song plays, the accent and backdrop follow its cover.") {
-                    SettingRow("Theme", "The theme variables from Hive on your PC.") { SmallButton("Reset") { vm.resetTheme() } }
-                }
+                Section("Appearance", "Hive's themes, or your own .hive-theme. While a song plays, the accent and backdrop follow its cover.") { ThemeRows(vm) }
             }
             item { Section("About", "") { SettingRow("Hive Mobile", "Version 0.4 · Inter is licensed under the SIL Open Font License.") {} } }
         }
@@ -228,4 +227,43 @@ private fun SpotifyRows(vm: MainViewModel) {
         }
     }
     user.error?.let { Text(it, style = HiveText.small, color = Color(0xFFFF8A8A), modifier = Modifier.padding(horizontal = 18.dp, vertical = 4.dp)) }
+}
+
+@Composable
+private fun ThemeRows(vm: MainViewModel) {
+    val c = Hive.colors
+    val context = androidx.compose.ui.platform.LocalContext.current
+    val current by vm.themeName.collectAsStateWithLifecycle()
+    var note by remember { mutableStateOf<String?>(null) }
+    val importer = androidx.activity.compose.rememberLauncherForActivityResult(androidx.activity.result.contract.ActivityResultContracts.OpenDocument()) { uri ->
+        if (uri == null) return@rememberLauncherForActivityResult
+        val name = uri.lastPathSegment?.substringAfterLast('/')?.substringBeforeLast('.') ?: "Imported theme"
+        val pack = runCatching { context.contentResolver.openInputStream(uri)?.bufferedReader()?.readText() }.getOrNull()?.let { com.local.hive.mobile.ui.theme.ThemePack.parse(it, name) }
+        if (pack == null) note = "That file isn't a Hive theme." else { vm.applyTheme(pack); note = null }
+    }
+    androidx.compose.foundation.lazy.LazyRow(contentPadding = PaddingValues(horizontal = 16.dp, vertical = 6.dp), horizontalArrangement = Arrangement.spacedBy(10.dp)) {
+        items(vm.themePacks) { pack -> ThemeSwatch(pack, pack.name == current) { vm.applyTheme(pack) } }
+    }
+    SettingRow("Import a theme", "A .hive-theme from Hive on your PC, or a CSS file of Hive's variables.") {
+        SmallButton("Import") { importer.launch(arrayOf("*/*")) }
+    }
+    note?.let { Text(it, style = HiveText.small, color = Color(0xFFFF8A8A), modifier = Modifier.padding(horizontal = 18.dp)) }
+}
+
+/** A theme as a little window: its background, a panel and its accent. */
+@Composable
+private fun ThemeSwatch(pack: com.local.hive.mobile.ui.theme.ThemePack, selected: Boolean, onClick: () -> Unit) {
+    val c = Hive.colors
+    val t = remember(pack) { pack.colors }
+    Column(Modifier.width(96.dp).clip(RoundedCornerShape(14.dp)).clickable(onClick = onClick), horizontalAlignment = Alignment.CenterHorizontally) {
+        Box(
+            Modifier.size(96.dp, 70.dp).clip(RoundedCornerShape(14.dp)).background(t.bg)
+                .border(if (selected) 2.dp else 1.dp, if (selected) c.accent else c.border, RoundedCornerShape(14.dp)).padding(10.dp),
+        ) {
+            Box(Modifier.fillMaxWidth().height(22.dp).clip(RoundedCornerShape(6.dp)).background(t.panelStrong.copy(alpha = 1f)).border(1.dp, t.border, RoundedCornerShape(6.dp)))
+            Box(Modifier.align(Alignment.BottomStart).size(22.dp).clip(CircleShape).background(t.accent))
+            Box(Modifier.align(Alignment.BottomEnd).width(36.dp).height(6.dp).clip(RoundedCornerShape(3.dp)).background(t.textDim))
+        }
+        Text(pack.name, style = HiveText.small, color = if (selected) c.text else c.textDim, maxLines = 1, overflow = androidx.compose.ui.text.style.TextOverflow.Ellipsis, modifier = Modifier.padding(top = 6.dp))
+    }
 }

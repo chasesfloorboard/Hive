@@ -153,23 +153,57 @@ object ThemeCss {
     private val NAMED = mapOf("white" to Color.White, "black" to Color.Black, "transparent" to Color.Transparent)
 }
 
+/** A theme as Hive packs it: a name and its CSS variables. */
+data class ThemePack(val name: String, val css: String) {
+    val colors: HiveColors get() = HiveColors.fromCss(css)
+
+    companion object {
+        /** A .hive-theme file ({"format":"hive-theme","name":…,"css":…}) or plain CSS. */
+        fun parse(text: String, fallbackName: String): ThemePack? {
+            val trimmed = text.trim()
+            if (trimmed.startsWith("{")) {
+                val o = runCatching { kotlinx.serialization.json.Json.parseToJsonElement(trimmed) as kotlinx.serialization.json.JsonObject }.getOrNull() ?: return null
+                fun str(k: String) = (o[k] as? kotlinx.serialization.json.JsonPrimitive)?.content
+                val css = str("css") ?: return null
+                return ThemePack(str("name") ?: fallbackName, css)
+            }
+            return if (trimmed.contains("--")) ThemePack(fallbackName, trimmed) else null
+        }
+    }
+}
+
 /** The active theme: the CSS Hive applies on the PC, bundled or synced. */
 class ThemeStore(private val context: Context) {
     private val prefs = context.getSharedPreferences("hive-theme", Context.MODE_PRIVATE)
     private val _colors = MutableStateFlow(load())
     val colors: StateFlow<HiveColors> = _colors.asStateFlow()
+    private val _name = MutableStateFlow(prefs.getString("name", null) ?: YOUR_THEME)
+    val name: StateFlow<String> = _name.asStateFlow()
 
     val css: String get() = prefs.getString("css", null) ?: bundledCss()
 
-    fun apply(css: String) {
-        prefs.edit { putString("css", css) }
+    /** "Your Hive theme" (the one from Hive on the PC), then Hive's stock themes. */
+    val packs: List<ThemePack> by lazy {
+        listOf(ThemePack(YOUR_THEME, bundledCss())) + runCatching {
+            context.assets.list("themes").orEmpty().sorted().mapNotNull { f ->
+                ThemePack.parse(context.assets.open("themes/$f").bufferedReader().readText(), f.substringBefore('.'))
+            }
+        }.getOrDefault(emptyList())
+    }
+
+    fun apply(css: String, name: String = "Custom") {
+        prefs.edit { putString("css", css); putString("name", name) }
         _colors.value = HiveColors.fromCss(css)
+        _name.value = name
     }
 
     fun reset() {
-        prefs.edit { remove("css") }
+        prefs.edit { remove("css"); remove("name") }
         _colors.value = load()
+        _name.value = YOUR_THEME
     }
+
+    companion object { const val YOUR_THEME = "Your Hive theme" }
 
     private fun load() = HiveColors.fromCss(css)
     private fun bundledCss() = runCatching { context.assets.open("default-theme.css").bufferedReader().readText() }.getOrDefault("")

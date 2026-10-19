@@ -1,0 +1,6 @@
+{
+  "format": "hive-theme",
+  "version": 1,
+  "name": "Ocean",
+  "css": ":root {\n  --bg: #070c12;\n  --panel: rgba(13,22,32,.75);\n  --panel-strong: rgba(10,18,27,.9);\n  --border: rgba(190,220,245,.10);\n  --text: #e7eef5;\n  --text-dim: #9aaabd;\n  --text-dimmer: #66788c;\n  --accent: #70a8d6;\n  --accent-soft: rgba(112,168,214,.34);\n  --accent-glow: rgba(112,168,214,.22);\n  --ambient-a: rgba(35,105,155,.18);\n  --ambient-b: rgba(25,65,105,.15);\n  --radius: 13px;\n  --blur: 28px;\n}\n"
+}

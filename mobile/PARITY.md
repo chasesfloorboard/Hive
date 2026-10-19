@@ -107,7 +107,7 @@ renderer views) and its state on mobile.
 
 | Feature | Hive | Mobile |
 |---|---|---|
-| Themes, `.hive-theme` import/export, stock themes | `themes:*`, `theme:*` | 🟡 CSS variables parsed, no picker |
+| Themes, `.hive-theme` import/export, stock themes | `themes:*`, `theme:*` | ✅ your Hive theme + Hive's six stock themes, .hive-theme/CSS import; no export |
 | Custom CSS | `custom-css:*` | ➖ mapped to theme variables |
 | MusicBee skin import | `themes:importMusicBeeSkins` | 🖥️ |
 | Glass panels, art-tinted accent, rich labels | `.glass`, `hiveRich*` | 🟡 glass, ambient and art accent done; no rich labels |
