@@ -1,7 +1,9 @@
 package com.local.hive.mobile.ui
 
 import android.os.Build
+import androidx.compose.animation.Crossfade
 import androidx.compose.animation.animateColorAsState
+import androidx.compose.animation.core.Animatable
 import androidx.compose.animation.core.animateDpAsState
 import androidx.compose.animation.core.animateFloatAsState
 import androidx.compose.animation.core.spring
@@ -10,7 +12,6 @@ import androidx.compose.foundation.Canvas
 import androidx.compose.foundation.background
 import androidx.compose.foundation.gestures.detectHorizontalDragGestures
 import androidx.compose.foundation.gestures.detectTapGestures
-import androidx.compose.foundation.gestures.detectVerticalDragGestures
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.BoxWithConstraints
@@ -18,13 +19,17 @@ import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.PaddingValues
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.Spacer
+import androidx.compose.foundation.layout.WindowInsets
 import androidx.compose.foundation.layout.aspectRatio
+import androidx.compose.foundation.layout.asPaddingValues
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
+import androidx.compose.foundation.layout.navigationBars
 import androidx.compose.foundation.layout.navigationBarsPadding
 import androidx.compose.foundation.layout.offset
 import androidx.compose.foundation.layout.padding
+import androidx.compose.foundation.layout.requiredSize
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.statusBarsPadding
 import androidx.compose.foundation.layout.width
@@ -32,6 +37,7 @@ import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.itemsIndexed
 import androidx.compose.foundation.lazy.rememberLazyListState
 import androidx.compose.foundation.shape.CircleShape
+import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.automirrored.rounded.QueueMusic
 import androidx.compose.material.icons.rounded.Close
@@ -39,7 +45,6 @@ import androidx.compose.material.icons.rounded.Favorite
 import androidx.compose.material.icons.rounded.FavoriteBorder
 import androidx.compose.material.icons.rounded.KeyboardArrowDown
 import androidx.compose.material.icons.rounded.KeyboardArrowUp
-import androidx.compose.material.icons.rounded.MusicNote
 import androidx.compose.material.icons.rounded.Pause
 import androidx.compose.material.icons.rounded.PlayArrow
 import androidx.compose.material.icons.rounded.Repeat
@@ -62,17 +67,27 @@ import androidx.compose.ui.draw.alpha
 import androidx.compose.ui.draw.blur
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.draw.scale
+import androidx.compose.ui.draw.shadow
 import androidx.compose.ui.geometry.CornerRadius
 import androidx.compose.ui.geometry.Offset
+import androidx.compose.ui.geometry.Rect
 import androidx.compose.ui.geometry.Size
 import androidx.compose.ui.graphics.Brush
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.RectangleShape
+import androidx.compose.ui.graphics.graphicsLayer
 import androidx.compose.ui.graphics.vector.ImageVector
 import androidx.compose.ui.input.pointer.pointerInput
+import androidx.compose.ui.layout.layout
+import androidx.compose.ui.unit.Constraints
+import androidx.compose.ui.layout.onGloballyPositioned
+import androidx.compose.ui.platform.LocalDensity
+import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextOverflow
+import androidx.compose.ui.unit.Dp
 import androidx.compose.ui.unit.IntOffset
 import androidx.compose.ui.unit.dp
+import androidx.compose.ui.unit.lerp
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import androidx.media3.common.Player
 import com.local.hive.mobile.data.Track
@@ -81,37 +96,246 @@ import com.local.hive.mobile.ui.theme.GlassLayers
 import com.local.hive.mobile.ui.theme.GlassWeight
 import com.local.hive.mobile.ui.theme.Hive
 import com.local.hive.mobile.ui.theme.HiveType
+import com.local.hive.mobile.ui.theme.Motion
 import com.local.hive.mobile.ui.theme.Radius
 import com.local.hive.mobile.ui.theme.Space
 import com.local.hive.mobile.ui.theme.glass
+import kotlinx.coroutines.launch
+import androidx.compose.foundation.gestures.awaitEachGesture
+import androidx.compose.foundation.gestures.awaitFirstDown
+import androidx.compose.runtime.rememberCoroutineScope
+import androidx.compose.runtime.rememberUpdatedState
+import androidx.compose.ui.composed
+import androidx.compose.ui.input.pointer.util.VelocityTracker
+import kotlin.math.abs
 import kotlin.math.roundToInt
 
+private val MiniHeight = 64.dp
+private val MiniMargin = 12.dp
+private val MiniArt = 44.dp
+
 /**
- * The floating glass pill above every screen (60dp, fully round, as in
- * Samsung Music): round art, title over artist, play/pause and next, and a
- * hairline of progress in the accent along its lower edge.
+ * The player as one surface that grows from the mini pill into Now Playing,
+ * the way Samsung Music's does: the pill widens to the screen, its corners
+ * relax, the aura fades in, and the cover flies from the pill's round
+ * thumbnail to the large cover. Drag it up or down by hand; release past
+ * halfway, or flick, and it settles with One UI's open (450 ms) or close
+ * (400 ms) curve.
  */
 @Composable
-fun MiniPlayer(now: NowPlaying, onOpen: () -> Unit, onTogglePlay: () -> Unit, onNext: () -> Unit, onQueue: () -> Unit, modifier: Modifier = Modifier) {
+fun PlayerSheet(
+    vm: MainViewModel,
+    open: Boolean,
+    onOpenChange: (Boolean) -> Unit,
+    onOpenQueue: () -> Unit,
+    onOpenAlbum: (Track) -> Unit,
+    onOpenArtist: (Track) -> Unit,
+) {
+    val now by vm.nowPlaying.collectAsStateWithLifecycle()
+    val aura by vm.aura.collectAsStateWithLifecycle()
+    val density = LocalDensity.current
+    val progress = remember { Animatable(if (open) 1f else 0f) }
+    // While a finger is down the sheet follows it directly; the settle
+    // animation starts only on release, so nothing can fight the drag.
+    var dragging by remember { mutableStateOf(false) }
+    var dragValue by remember { mutableFloatStateOf(0f) }
+    var dragStart by remember { mutableFloatStateOf(0f) }
+    var settleMs by remember { mutableStateOf<Int?>(null) }
+    var artTarget by remember { mutableStateOf<Rect?>(null) }
+    val navBottom = WindowInsets.navigationBars.asPaddingValues().calculateBottomPadding()
+
+    // The open state leads and the animation follows it.
+    LaunchedEffect(open) {
+        val spec = settleMs?.let { tween<Float>(it, easing = Motion.Open) } ?: if (open) Motion.open() else Motion.close()
+        settleMs = null
+        progress.animateTo(if (open) 1f else 0f, spec)
+    }
+
+    BoxWithConstraints(Modifier.fillMaxSize()) {
+        val fullW = constraints.maxWidth
+        val fullH = constraints.maxHeight
+        val p = if (dragging) dragValue else progress.value
+        val margin = with(density) { MiniMargin.toPx() }
+        val miniH = with(density) { MiniHeight.toPx() }
+        val miniTop = fullH - with(density) { navBottom.toPx() } - miniH - with(density) { Space.xs.toPx() }
+        val travel = fullH - miniH
+
+        // The container's bounds, from the pill to the whole screen.
+        val left = margin * (1 - p)
+        val top = miniTop * (1 - p)
+        val width = fullW - 2 * left
+        val height = miniH + travel * p
+        val corner = lerp(MiniHeight / 2, 28.dp, p)
+
+        val scope = rememberCoroutineScope()
+        val dragModifier = Modifier.screenVerticalDrag(
+            onStart = {
+                dragStart = progress.value
+                dragValue = progress.value
+                dragging = true
+                scope.launch { progress.stop() }
+            },
+            onDelta = { dy -> dragValue = (dragValue - dy / travel).coerceIn(0f, 1f) },
+            onStop = { velocity ->
+                // A clear flick wins; otherwise the direction of travel decides
+                // once the sheet has moved 15% of the way.
+                val moved = dragValue - dragStart
+                val target = when {
+                    velocity < -900f -> true
+                    velocity > 900f -> false
+                    moved > 0.15f -> true
+                    moved < -0.15f -> false
+                    else -> dragStart > 0.5f
+                }
+                scope.launch {
+                    progress.snapTo(dragValue)
+                    dragging = false
+                    if (target != open) {
+                        settleMs = Motion.settleMs(velocity)
+                        onOpenChange(target)
+                    } else {
+                        progress.animateTo(if (target) 1f else 0f, tween(Motion.settleMs(velocity), easing = Motion.Open))
+                    }
+                }
+            },
+        )
+
+        Box(
+            Modifier
+                .offset { IntOffset(left.roundToInt(), top.roundToInt()) }
+                .requiredSize(with(density) { width.toDp() }, with(density) { height.toDp() })
+                .then(if (p < 0.98f) Modifier.shadow(lerp(14.dp, 0.dp, p), RoundedCornerShape(corner), ambientColor = Color.Black, spotColor = Color.Black) else Modifier)
+                .glass(RoundedCornerShape(corner), GlassWeight.Thin),
+        ) {
+            // One layer pinned to the screen holds both the mini controls and
+            // Now Playing. Its coordinates are the screen's, so the drag on it
+            // measures the finger truly; the container's clip keeps touches
+            // to the pill while closed.
+            Box(
+                Modifier
+                    .layout { measurable, constraints ->
+                        val placeable = measurable.measure(Constraints.fixed(fullW, fullH))
+                        layout(constraints.maxWidth, constraints.maxHeight) { placeable.place(-left.roundToInt(), -top.roundToInt()) }
+                    }
+                    .then(dragModifier),
+            ) {
+                Box(Modifier.fillMaxSize().graphicsLayer { alpha = Motion.SineInOut60.transform(((p - 0.15f) / 0.85f).coerceIn(0f, 1f)) }) {
+                    FullPlayerContent(
+                        vm, now, aura, p,
+                        onClose = { onOpenChange(false) },
+                        onOpenQueue = onOpenQueue,
+                        onOpenAlbum = onOpenAlbum,
+                        onOpenArtist = onOpenArtist,
+                        onArtPlaced = { artTarget = it },
+                    )
+                }
+                if (p < 0.3f) {
+                    MiniContent(
+                        now,
+                        showArt = p == 0f,
+                        modifier = Modifier
+                            .offset { IntOffset(margin.roundToInt(), miniTop.roundToInt()) }
+                            .requiredSize(with(density) { (fullW - 2 * margin).toDp() }, MiniHeight)
+                            .alpha((1f - p / 0.25f).coerceIn(0f, 1f)),
+                        onOpen = { onOpenChange(true) },
+                        onTogglePlay = { vm.player.togglePlay() },
+                        onNext = { vm.player.next() },
+                        onQueue = onOpenQueue,
+                    )
+                }
+            }
+        }
+
+        // The cover, flying between the pill's thumbnail and the large cover.
+        val miniArtSize = with(density) { MiniArt.toPx() }
+        val from = Rect(Offset(margin + with(density) { 10.dp.toPx() }, miniTop + (miniH - miniArtSize) / 2), Size(miniArtSize, miniArtSize))
+        val to = artTarget
+        if (to != null && p > 0f) {
+            val eased = Motion.SineInOut80.transform(p)
+            val r = androidx.compose.ui.geometry.lerp(from, to, eased)
+            Artwork(
+                now.artworkUri,
+                Modifier
+                    .offset { IntOffset(r.left.roundToInt(), r.top.roundToInt()) }
+                    .requiredSize(with(density) { r.width.toDp() }, with(density) { r.height.toDp() }),
+                RoundedCornerShape(lerp(MiniArt / 2, 24.dp, eased)),
+                glow = aura?.primary,
+                elevation = lerp(0.dp, 40.dp, eased),
+            )
+        }
+    }
+}
+
+/**
+ * A vertical drag on a layer pinned to the screen, so its local positions are
+ * screen positions even while the sheet moves. Only an unconsumed, mostly
+ * vertical drag past touch slop starts it, so taps, buttons and the
+ * horizontal seek bar keep working.
+ */
+private fun Modifier.screenVerticalDrag(onStart: () -> Unit, onDelta: (Float) -> Unit, onStop: (Float) -> Unit): Modifier = composed {
+    val latestStart by rememberUpdatedState(onStart)
+    val latestDelta by rememberUpdatedState(onDelta)
+    val latestStop by rememberUpdatedState(onStop)
+    pointerInput(Unit) {
+        awaitEachGesture {
+            val down = awaitFirstDown(requireUnconsumed = false)
+            var last = down.position
+            var lastTime = down.uptimeMillis
+            var started = false
+            val tracker = VelocityTracker()
+            tracker.addPosition(down.uptimeMillis, down.position)
+            while (true) {
+                val event = awaitPointerEvent()
+                val change = event.changes.firstOrNull { it.id == down.id } ?: break
+                if (!change.pressed) break
+                tracker.addPosition(change.uptimeMillis, change.position)
+                if (!started) {
+                    if (change.isConsumed) break
+                    val d = change.position - down.position
+                    if (abs(d.y) > viewConfiguration.touchSlop && abs(d.y) > abs(d.x)) {
+                        started = true
+                        last = change.position
+                        latestStart()
+                    }
+                    continue
+                }
+                change.consume()
+                latestDelta(change.position.y - last.y)
+                last = change.position
+                lastTime = change.uptimeMillis
+            }
+            if (started) {
+                // Some input sources end without a usable last sample; fall back
+                // to the drag's average speed so a quick swipe still reads as one.
+                val tracked = tracker.calculateVelocity().y
+                val elapsed = (lastTime - down.uptimeMillis).coerceAtLeast(1L)
+                latestStop(if (tracked != 0f) tracked else (last.y - down.position.y) / elapsed * 1000f)
+            }
+        }
+    }
+}
+
+/** The pill's contents: art, title over artist, play/pause, next, queue. */
+@Composable
+private fun MiniContent(now: NowPlaying, showArt: Boolean, modifier: Modifier, onOpen: () -> Unit, onTogglePlay: () -> Unit, onNext: () -> Unit, onQueue: () -> Unit) {
     val colors = Hive.colors
     val progress = if (now.durationMs > 0) now.positionMs.toFloat() / now.durationMs else 0f
-    Box(
-        modifier
-            .fillMaxWidth()
-            .padding(horizontal = Space.sm, vertical = Space.xs)
-            .height(64.dp)
-            .glass(Radius.pill, GlassWeight.Thin)
-            .pressable(onOpen, 0.98f),
-    ) {
+    Box(modifier.pressable(onOpen, 0.985f)) {
         Canvas(Modifier.align(Alignment.BottomCenter).fillMaxWidth().padding(horizontal = 28.dp).height(2.dp)) {
             drawRoundRect(colors.text.copy(alpha = 0.08f), cornerRadius = CornerRadius(size.height))
             drawRoundRect(colors.accent, size = Size(size.width * progress.coerceIn(0f, 1f), size.height), cornerRadius = CornerRadius(size.height))
         }
         Row(Modifier.fillMaxSize().padding(start = 10.dp, end = 6.dp), verticalAlignment = Alignment.CenterVertically) {
-            Artwork(now.artworkUri, Modifier.size(44.dp), CircleShape)
-            Column(Modifier.weight(1f).padding(horizontal = Space.sm), verticalArrangement = Arrangement.spacedBy(1.dp)) {
-                Text(now.title.ifBlank { "Nothing playing" }, style = HiveType.body, color = colors.text, maxLines = 1, overflow = TextOverflow.Ellipsis)
-                if (now.artist.isNotBlank()) Text(now.artist, style = HiveType.caption, color = colors.textDim, maxLines = 1, overflow = TextOverflow.Ellipsis)
+            // Samsung's mini player cross-fades the art on track change in 250 ms.
+            // While the sheet moves, the flying cover stands in for it.
+            Crossfade(now.artworkUri, animationSpec = Motion.swap(), modifier = Modifier.alpha(if (showArt) 1f else 0f), label = "miniArt") { art ->
+                Artwork(art, Modifier.size(MiniArt), CircleShape)
+            }
+            Crossfade(now.title to now.artist, animationSpec = Motion.swap(), modifier = Modifier.weight(1f), label = "miniText") { (title, artist) ->
+                Column(Modifier.padding(horizontal = Space.sm), verticalArrangement = Arrangement.spacedBy(1.dp)) {
+                    Text(title.ifBlank { "Nothing playing" }, style = HiveType.body, color = colors.text, maxLines = 1, overflow = TextOverflow.Ellipsis)
+                    if (artist.isNotBlank()) Text(artist, style = HiveType.caption, color = colors.textDim, maxLines = 1, overflow = TextOverflow.Ellipsis)
+                }
             }
             MiniButton(if (now.isPlaying) Icons.Rounded.Pause else Icons.Rounded.PlayArrow, if (now.isPlaying) "Pause" else "Play", onTogglePlay, 28.dp)
             MiniButton(Icons.Rounded.SkipNext, "Next", onNext, 26.dp)
@@ -121,82 +345,81 @@ fun MiniPlayer(now: NowPlaying, onOpen: () -> Unit, onTogglePlay: () -> Unit, on
 }
 
 @Composable
-private fun MiniButton(icon: ImageVector, label: String, onClick: () -> Unit, iconSize: androidx.compose.ui.unit.Dp) {
+private fun MiniButton(icon: ImageVector, label: String, onClick: () -> Unit, iconSize: Dp) {
     Box(Modifier.size(42.dp).clip(CircleShape).pressable(onClick, 0.85f), contentAlignment = Alignment.Center) {
         Icon(icon, label, tint = Hive.colors.text, modifier = Modifier.size(iconSize))
     }
 }
 
 /**
- * Now Playing. The screen is lit by the cover's colours (Hive's aura, drifting
- * with the song); the cover floats at 85% width with a glow of its own and
- * settles back a little while paused. Title and artist sit beside the heart,
- * over a slim seek bar and the transport, with what plays next at the bottom.
- * Swipe down to close.
+ * Now Playing's layout. The large cover itself is drawn by [PlayerSheet] so it
+ * can fly in from the pill; this reserves its place and reports where it is.
  */
 @Composable
-fun FullPlayer(vm: MainViewModel, onClose: () -> Unit, onOpenQueue: () -> Unit, onOpenAlbum: (Track) -> Unit, onOpenArtist: (Track) -> Unit) {
+private fun FullPlayerContent(
+    vm: MainViewModel,
+    now: NowPlaying,
+    aura: AuraColors?,
+    sheetProgress: Float,
+    onClose: () -> Unit,
+    onOpenQueue: () -> Unit,
+    onOpenAlbum: (Track) -> Unit,
+    onOpenArtist: (Track) -> Unit,
+    onArtPlaced: (Rect) -> Unit,
+) {
     val colors = Hive.colors
-    val now by vm.nowPlaying.collectAsStateWithLifecycle()
     val loved by vm.lovedIds.collectAsStateWithLifecycle()
-    val aura by vm.aura.collectAsStateWithLifecycle()
     var current by remember { mutableStateOf<Track?>(null) }
     var upNext by remember { mutableStateOf<Track?>(null) }
     LaunchedEffect(now.trackId, now.queueIndex, now.queue.size) {
         current = now.trackId?.let { vm.tracksById(listOf(it)).firstOrNull() }
         upNext = now.queue.getOrNull(now.queueIndex + 1)?.let { vm.tracksById(listOf(it)).firstOrNull() }
     }
-    var drag by remember { mutableFloatStateOf(0f) }
-    val dragOffset by animateFloatAsState(drag, spring(stiffness = 600f), label = "drag")
     val coverScale by animateFloatAsState(if (now.isPlaying) 1f else 0.9f, spring(dampingRatio = 0.6f, stiffness = 260f), label = "cover")
-    val progress = if (now.durationMs > 0) now.positionMs.toFloat() / now.durationMs else 0f
+    val songProgress = if (now.durationMs > 0) now.positionMs.toFloat() / now.durationMs else 0f
+    // Controls rise a little as the sheet opens.
+    val rise = with(LocalDensity.current) { (48.dp * (1f - sheetProgress)).toPx() }
 
-    GlassLayers(
-        Modifier
-            .fillMaxSize()
-            .offset { IntOffset(0, dragOffset.roundToInt()) }
-            .clip(Radius.hero)
-            .pointerInput(Unit) {
-                detectVerticalDragGestures(
-                    onDragEnd = { if (drag > size.height * 0.16f) onClose() else drag = 0f },
-                    onDragCancel = { drag = 0f },
-                ) { _, dy -> drag = (drag + dy).coerceAtLeast(0f) }
-            },
-        content = {
-            AuraBackground(aura, progress, intensity = 1.25f, base = colors.bg, modifier = Modifier.fillMaxSize())
-            if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.S) {
-                Artwork(now.artworkUri, Modifier.fillMaxSize().blur(90.dp).alpha(0.28f), RectangleShape)
-            }
-            Box(Modifier.fillMaxSize().background(Brush.verticalGradient(0f to Color.Transparent, 0.55f to colors.bg.copy(alpha = 0.25f), 1f to colors.bg.copy(alpha = 0.85f))))
-        },
-        overlay = {
-            BoxWithConstraints(Modifier.fillMaxSize().statusBarsPadding().navigationBarsPadding()) {
-                val compact = maxHeight < 700.dp
-                Column(Modifier.fillMaxSize(), horizontalAlignment = Alignment.CenterHorizontally) {
-                    Row(Modifier.fillMaxWidth().padding(horizontal = Space.sm, vertical = Space.xs), verticalAlignment = Alignment.CenterVertically) {
-                        GlassIconButton(Icons.Rounded.KeyboardArrowDown, "Close player", onClose)
-                        Column(Modifier.weight(1f).pressable({ current?.let(onOpenAlbum) }), horizontalAlignment = Alignment.CenterHorizontally) {
-                            Text("PLAYING FROM", style = HiveType.label, color = colors.textDimmer)
-                            Text(now.album.ifBlank { "Your library" }, style = HiveType.tab, color = colors.text, maxLines = 1, overflow = TextOverflow.Ellipsis, modifier = Modifier.padding(horizontal = Space.md))
+    GlassLayers(Modifier.fillMaxSize(), content = {
+        AuraBackground(aura, songProgress, intensity = 1.25f, base = colors.bg, modifier = Modifier.fillMaxSize())
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.S) {
+            Artwork(now.artworkUri, Modifier.fillMaxSize().blur(90.dp).alpha(0.28f), RectangleShape)
+        }
+        Box(Modifier.fillMaxSize().background(Brush.verticalGradient(0f to Color.Transparent, 0.55f to colors.bg.copy(alpha = 0.25f), 1f to colors.bg.copy(alpha = 0.85f))))
+    }, overlay = {
+        BoxWithConstraints(Modifier.fillMaxSize().statusBarsPadding().navigationBarsPadding()) {
+            val compact = maxHeight < 700.dp
+            Column(Modifier.fillMaxSize(), horizontalAlignment = Alignment.CenterHorizontally) {
+                Row(Modifier.fillMaxWidth().padding(horizontal = Space.sm, vertical = Space.xs), verticalAlignment = Alignment.CenterVertically) {
+                    GlassIconButton(Icons.Rounded.KeyboardArrowDown, "Close player", onClose)
+                    Column(Modifier.weight(1f).pressable({ current?.let(onOpenAlbum) }), horizontalAlignment = Alignment.CenterHorizontally) {
+                        Text("PLAYING FROM", style = HiveType.label, color = colors.textDimmer)
+                        Crossfade(now.album, animationSpec = Motion.swap(), label = "album") { album ->
+                            Text(album.ifBlank { "Your library" }, style = HiveType.tab, color = colors.text, maxLines = 1, overflow = TextOverflow.Ellipsis, modifier = Modifier.padding(horizontal = Space.md))
                         }
-                        GlassIconButton(Icons.AutoMirrored.Rounded.QueueMusic, "Queue", onOpenQueue)
                     }
+                    GlassIconButton(Icons.AutoMirrored.Rounded.QueueMusic, "Queue", onOpenQueue)
+                }
 
-                    Spacer(Modifier.weight(1f))
-                    Artwork(
-                        now.artworkUri,
-                        Modifier.fillMaxWidth(if (compact) 0.72f else 0.85f).aspectRatio(1f).scale(coverScale),
-                        Radius.hero,
-                        Icons.Rounded.MusicNote,
-                        glow = aura?.primary,
-                        elevation = 44.dp,
-                    )
-                    Spacer(Modifier.weight(1f))
+                Spacer(Modifier.weight(1f))
+                // The cover's place; PlayerSheet draws the cover here.
+                Box(
+                    Modifier
+                        .fillMaxWidth(if (compact) 0.72f else 0.85f)
+                        .aspectRatio(1f)
+                        .scale(coverScale)
+                        // Unclipped root coordinates: boundsInRoot would shrink with the sheet.
+                        .onGloballyPositioned { c -> onArtPlaced(Rect(c.localToRoot(Offset.Zero), c.localToRoot(Offset(c.size.width.toFloat(), c.size.height.toFloat())))) },
+                )
+                Spacer(Modifier.weight(1f))
 
+                Column(Modifier.graphicsLayer { translationY = rise }) {
                     Row(Modifier.fillMaxWidth().padding(start = 30.dp, end = 18.dp), verticalAlignment = Alignment.CenterVertically) {
-                        Column(Modifier.weight(1f), verticalArrangement = Arrangement.spacedBy(3.dp)) {
-                            Text(now.title.ifBlank { "Nothing playing" }, style = HiveType.headline.copy(fontSize = HiveType.headline.fontSize * 1.1f), color = colors.text, maxLines = 1, overflow = TextOverflow.Ellipsis)
-                            Text(now.artist, style = HiveType.body.copy(fontWeight = androidx.compose.ui.text.font.FontWeight.Normal), color = colors.textDim, maxLines = 1, overflow = TextOverflow.Ellipsis, modifier = Modifier.pressable({ current?.let(onOpenArtist) }))
+                        Crossfade(now.title to now.artist, animationSpec = Motion.swap(), modifier = Modifier.weight(1f), label = "titles") { (title, artist) ->
+                            Column(verticalArrangement = Arrangement.spacedBy(3.dp)) {
+                                Text(title.ifBlank { "Nothing playing" }, style = HiveType.headline.copy(fontSize = HiveType.headline.fontSize * 1.1f), color = colors.text, maxLines = 1, overflow = TextOverflow.Ellipsis)
+                                Text(artist, style = HiveType.body.copy(fontWeight = FontWeight.Normal), color = colors.textDim, maxLines = 1, overflow = TextOverflow.Ellipsis, modifier = Modifier.pressable({ current?.let(onOpenArtist) }))
+                            }
                         }
                         val isLoved = now.trackId != null && now.trackId in loved
                         val heartScale by animateFloatAsState(if (isLoved) 1f else 0.92f, spring(dampingRatio = 0.4f, stiffness = 500f), label = "heart")
@@ -211,7 +434,9 @@ fun FullPlayer(vm: MainViewModel, onClose: () -> Unit, onOpenQueue: () -> Unit, 
                         TransportButton(Icons.Rounded.Shuffle, "Shuffle", 24.dp, active = now.shuffle) { vm.player.toggleShuffle() }
                         TransportButton(Icons.Rounded.SkipPrevious, "Previous", 40.dp) { vm.player.previous() }
                         Box(Modifier.size(76.dp).clip(CircleShape).background(colors.text).pressable({ vm.player.togglePlay() }, 0.9f), contentAlignment = Alignment.Center) {
-                            Icon(if (now.isPlaying) Icons.Rounded.Pause else Icons.Rounded.PlayArrow, if (now.isPlaying) "Pause" else "Play", tint = colors.bg, modifier = Modifier.size(40.dp))
+                            Crossfade(now.isPlaying, animationSpec = tween(180), label = "playIcon") { playing ->
+                                Icon(if (playing) Icons.Rounded.Pause else Icons.Rounded.PlayArrow, if (playing) "Pause" else "Play", tint = colors.bg, modifier = Modifier.size(40.dp))
+                            }
                         }
                         TransportButton(Icons.Rounded.SkipNext, "Next", 40.dp) { vm.player.next() }
                         TransportButton(if (now.repeatMode == Player.REPEAT_MODE_ONE) Icons.Rounded.RepeatOne else Icons.Rounded.Repeat, "Repeat", 24.dp, active = now.repeatMode != Player.REPEAT_MODE_OFF) { vm.player.cycleRepeat() }
@@ -232,12 +457,12 @@ fun FullPlayer(vm: MainViewModel, onClose: () -> Unit, onOpenQueue: () -> Unit, 
                     } ?: Spacer(Modifier.height(72.dp))
                 }
             }
-        },
-    )
+        }
+    })
 }
 
 @Composable
-private fun TransportButton(icon: ImageVector, label: String, iconSize: androidx.compose.ui.unit.Dp, active: Boolean? = null, onClick: () -> Unit) {
+private fun TransportButton(icon: ImageVector, label: String, iconSize: Dp, active: Boolean? = null, onClick: () -> Unit) {
     val colors = Hive.colors
     val tint by animateColorAsState(when (active) { null -> colors.text; true -> colors.accent; false -> colors.textDimmer }, tween(250), label = "tint")
     Box(Modifier.size(56.dp).clip(CircleShape).pressable(onClick, 0.85f), contentAlignment = Alignment.Center) {

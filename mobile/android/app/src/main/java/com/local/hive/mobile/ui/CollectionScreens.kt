@@ -112,7 +112,7 @@ fun CollectionScreen(
                     Spacer(Modifier.height(Space.xl))
                     Text(title, style = HiveType.title, color = colors.text, textAlign = TextAlign.Center, maxLines = 2, overflow = TextOverflow.Ellipsis)
                     if (subtitle.isNotBlank()) Text(subtitle, style = HiveType.body.copy(fontWeight = androidx.compose.ui.text.font.FontWeight.Normal), color = aura?.accent ?: colors.textDim, textAlign = TextAlign.Center, modifier = Modifier.padding(top = Space.xxs))
-                    if (tracks.isNotEmpty()) Text("%,d songs · %s".format(tracks.size, formatLength(tracks.sumOf { it.durationMs })), style = HiveType.caption, color = colors.textDimmer, modifier = Modifier.padding(top = Space.xs))
+                    if (tracks.isNotEmpty()) Text("%s · %s".format(countOf(tracks.size, "song"), formatLength(tracks.sumOf { it.durationMs })), style = HiveType.caption, color = colors.textDimmer, modifier = Modifier.padding(top = Space.xs))
                     if (tracks.isNotEmpty()) {
                         Row(Modifier.padding(top = Space.lg), horizontalArrangement = Arrangement.spacedBy(Space.sm)) {
                             PrimaryPill("Play", Icons.Rounded.PlayArrow, { vm.play(tracks) })

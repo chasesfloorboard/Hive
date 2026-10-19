@@ -75,6 +75,7 @@ import com.local.hive.mobile.data.Track
 import com.local.hive.mobile.ui.theme.GlassWeight
 import com.local.hive.mobile.ui.theme.Hive
 import com.local.hive.mobile.ui.theme.HiveType
+import com.local.hive.mobile.ui.theme.Motion
 import com.local.hive.mobile.ui.theme.Radius
 import com.local.hive.mobile.ui.theme.Space
 import com.local.hive.mobile.ui.theme.GlassLayers
@@ -102,8 +103,7 @@ data class HomeNavigation(
     val openSettings: () -> Unit,
 )
 
-private val BarHeight = 104.dp
-private val ToolbarHeight = 52.dp
+private val BarHeight = 60.dp
 
 @Composable
 fun HomeScreen(vm: MainViewModel, nav: HomeNavigation, actions: TrackActions, bottomPadding: Dp) {
@@ -168,26 +168,26 @@ fun HomeScreen(vm: MainViewModel, nav: HomeNavigation, actions: TrackActions, bo
                     }
                 }
             }, overlay = {
-                // The floating glass bar: actions, then the tabs as pills.
-                Column(
+                // One slim glass capsule: the tabs as pills, then search and settings.
+                Row(
                     Modifier
                         .fillMaxWidth()
                         .padding(horizontal = Space.sm)
                         .height(BarHeight - Space.xs)
-                        .glass(Radius.card, GlassWeight.Thin),
+                        .glass(Radius.pill, GlassWeight.Thin),
+                    verticalAlignment = Alignment.CenterVertically,
                 ) {
-                    Row(Modifier.fillMaxWidth().height(ToolbarHeight).padding(start = Space.md, end = Space.xs), verticalAlignment = Alignment.CenterVertically) {
-                        Text("Hive", style = HiveType.bar, color = colors.text, modifier = Modifier.weight(1f).alpha(((progress - 0.55f) * 2.5f).coerceIn(0f, 1f)))
-                        BarIcon(Icons.Rounded.Search, "Search", nav.openSearch)
-                        BarIcon(Icons.Rounded.Settings, "Settings", nav.openSettings)
-                    }
                     val tabList = rememberLazyListState()
                     LaunchedEffect(pager.currentPage) { tabList.animateScrollToItem((pager.currentPage - 1).coerceAtLeast(0)) }
-                    LazyRow(state = tabList, contentPadding = PaddingValues(horizontal = Space.xs), horizontalArrangement = Arrangement.spacedBy(Space.xxs), verticalAlignment = Alignment.CenterVertically, modifier = Modifier.height(BarHeight - Space.xs - ToolbarHeight)) {
+                    LazyRow(state = tabList, contentPadding = PaddingValues(horizontal = Space.xs), horizontalArrangement = Arrangement.spacedBy(Space.xxs), verticalAlignment = Alignment.CenterVertically, modifier = Modifier.weight(1f)) {
                         itemsIndexed(tabs) { i, tab ->
-                            TabPill(tab.label, pager.currentPage == i) { scope.launch { pager.animateScrollToPage(i) } }
+                            TabPill(tab.label, pager.currentPage == i) { scope.launch { pager.animateScrollToPage(i, animationSpec = Motion.move()) } }
                         }
                     }
+                    Box(Modifier.width(0.5.dp).height(22.dp).background(colors.border))
+                    BarIcon(Icons.Rounded.Search, "Search", nav.openSearch)
+                    BarIcon(Icons.Rounded.Settings, "Settings", nav.openSettings)
+                    Spacer(Modifier.width(Space.xxs))
                 }
             })
         }
@@ -204,8 +204,8 @@ private fun BarIcon(icon: ImageVector, label: String, onClick: () -> Unit) {
 @Composable
 private fun TabPill(label: String, selected: Boolean, onClick: () -> Unit) {
     val colors = Hive.colors
-    val fill by animateColorAsState(if (selected) colors.text.copy(alpha = 0.12f) else Color.Transparent, tween(250), label = "pill")
-    val text by animateColorAsState(if (selected) colors.text else colors.textDim, tween(250), label = "pillText")
+    val fill by animateColorAsState(if (selected) colors.text.copy(alpha = 0.12f) else Color.Transparent, Motion.swap(), label = "pill")
+    val text by animateColorAsState(if (selected) colors.text else colors.textDim, Motion.swap(), label = "pillText")
     Box(
         Modifier
             .height(34.dp)
@@ -232,9 +232,10 @@ fun TrackList(
 ) {
     val loved by vm.lovedIds.collectAsStateWithLifecycle()
     val now by vm.nowPlaying.collectAsStateWithLifecycle()
+    val loaded by vm.libraryLoaded.collectAsStateWithLifecycle()
     LazyColumn(Modifier.fillMaxSize(), contentPadding = contentPadding) {
         if (header != null) item { header() }
-        if (tracks.isEmpty()) item { EmptyState(emptyTitle, emptyBody) }
+        if (tracks.isEmpty()) { if (loaded) item { EmptyState(emptyTitle, emptyBody) } }
         else {
             item { PlayBar(tracks.size, "song", { vm.shuffle(tracks) }, { vm.play(tracks) }) }
             itemsIndexed(tracks, key = { _, t -> t.id }) { i, t ->
@@ -291,7 +292,7 @@ private fun PlaylistCard(kind: AutoPlaylist, tracks: List<Track>, hue: Color, on
             Icon(kind.icon, null, tint = Color.White, modifier = Modifier.align(Alignment.BottomStart).padding(Space.md).size(26.dp))
         }
         Text(kind.title, style = HiveType.body, color = colors.text, modifier = Modifier.padding(top = Space.sm))
-        Text("%,d songs".format(tracks.size), style = HiveType.secondary, color = colors.textDim)
+        Text(countOf(tracks.size, "song"), style = HiveType.secondary, color = colors.textDim)
     }
 }
 
@@ -327,7 +328,7 @@ private fun ArtistsTab(artists: List<ArtistSummary>, open: (String) -> Unit, pad
                 Spacer(Modifier.width(Space.md))
                 Column(Modifier.weight(1f), verticalArrangement = Arrangement.spacedBy(2.dp)) {
                     Text(a.artist, style = HiveType.body, color = colors.text, maxLines = 1, overflow = TextOverflow.Ellipsis)
-                    Text("${a.albumCount} ${if (a.albumCount == 1) "album" else "albums"} · ${a.trackCount} songs", style = HiveType.secondary, color = colors.textDim)
+                    Text("${countOf(a.albumCount, "album")} · ${countOf(a.trackCount, "song")}", style = HiveType.secondary, color = colors.textDim)
                 }
             }
         }
@@ -348,7 +349,7 @@ private fun NamedTab(items: List<NamedCount>, icon: ImageVector, empty: String, 
                 Spacer(Modifier.width(Space.md))
                 Column(Modifier.weight(1f), verticalArrangement = Arrangement.spacedBy(2.dp)) {
                     Text(g.name.substringAfterLast('/').ifBlank { g.name.ifBlank { "Music" } }, style = HiveType.body, color = colors.text, maxLines = 1, overflow = TextOverflow.Ellipsis)
-                    Text(if (g.name.contains('/')) "${g.trackCount} songs · ${g.name}" else "${g.trackCount} songs", style = HiveType.secondary, color = colors.textDim, maxLines = 1, overflow = TextOverflow.Ellipsis)
+                    Text(if (g.name.contains('/')) "${countOf(g.trackCount, "song")} · ${g.name}" else countOf(g.trackCount, "song"), style = HiveType.secondary, color = colors.textDim, maxLines = 1, overflow = TextOverflow.Ellipsis)
                 }
             }
         }

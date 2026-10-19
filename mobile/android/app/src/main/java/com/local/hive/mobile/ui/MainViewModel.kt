@@ -27,11 +27,18 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
 
     private fun <T> Flow<T>.state(initial: T): StateFlow<T> = stateIn(viewModelScope, SharingStarted.WhileSubscribed(5_000), initial)
 
-    val tracks = dao.tracks().state(emptyList())
+    /**
+     * Sorted the way people read titles: leading punctuation and "The" are
+     * ignored, numbers sort naturally, case and accents don't matter.
+     */
+    /** False until the library has been read once, so empty states don't flash during loading. */
+    val libraryLoaded: StateFlow<Boolean> = dao.tracks().map { true }.state(false)
+
+    val tracks = dao.tracks().map { list -> list.sortedWith(compareBy(LibrarySort.collator) { LibrarySort.key(it.title) }) }.state(emptyList())
     val favorites = dao.lovedTracks().state(emptyList())
     val lovedIds: StateFlow<Set<Long>> = dao.loveStates().map { list -> list.filter { it.loved }.mapTo(HashSet()) { it.trackId } }.state(emptySet())
-    val albums: StateFlow<List<AlbumSummary>> = dao.albums().state(emptyList())
-    val artists: StateFlow<List<ArtistSummary>> = dao.artists().state(emptyList())
+    val albums: StateFlow<List<AlbumSummary>> = dao.albums().map { list -> list.sortedWith(compareBy(LibrarySort.collator) { LibrarySort.key(it.album) }) }.state(emptyList())
+    val artists: StateFlow<List<ArtistSummary>> = dao.artists().map { list -> list.sortedWith(compareBy(LibrarySort.collator) { LibrarySort.key(it.artist) }) }.state(emptyList())
     val genres: StateFlow<List<NamedCount>> = dao.genres().state(emptyList())
     val folders: StateFlow<List<NamedCount>> = dao.folders().state(emptyList())
     val recentlyAdded = dao.recentlyAdded(AUTO_PLAYLIST_SIZE).state(emptyList())

@@ -4,12 +4,11 @@ import android.net.Uri
 import androidx.activity.compose.BackHandler
 import androidx.compose.animation.AnimatedVisibility
 import androidx.compose.animation.animateColorAsState
-import androidx.compose.animation.core.FastOutSlowInEasing
 import androidx.compose.animation.core.tween
 import androidx.compose.animation.fadeIn
 import androidx.compose.animation.fadeOut
-import androidx.compose.animation.scaleIn
-import androidx.compose.animation.scaleOut
+import androidx.compose.animation.slideInHorizontally
+import androidx.compose.animation.slideOutHorizontally
 import androidx.compose.animation.slideInVertically
 import androidx.compose.animation.slideOutVertically
 import androidx.compose.foundation.layout.fillMaxSize
@@ -31,6 +30,7 @@ import androidx.navigation.navArgument
 import com.local.hive.mobile.ui.theme.GlassLayers
 import com.local.hive.mobile.ui.theme.Hive
 import com.local.hive.mobile.ui.theme.HiveTheme
+import com.local.hive.mobile.ui.theme.Motion
 
 @Composable
 fun HiveRoot(vm: MainViewModel, openPlayerInitially: Boolean) {
@@ -41,8 +41,12 @@ fun HiveRoot(vm: MainViewModel, openPlayerInitially: Boolean) {
     HiveTheme(theme.copy(accent = accent)) { HiveContent(vm, openPlayerInitially) }
 }
 
-private val enterScreen = fadeIn(tween(260)) + scaleIn(tween(320, easing = FastOutSlowInEasing), initialScale = 0.96f)
-private val exitScreen = fadeOut(tween(200))
+// One UI's sesl_fragment_open/close: the new page slides in from the right
+// (450 ms) while the page beneath fades (150 ms); back reverses it in 400 ms.
+private val openEnter = slideInHorizontally(Motion.open()) { it }
+private val openExit = fadeOut(Motion.underFade())
+private val closeEnter = fadeIn(Motion.underFade())
+private val closeExit = slideOutHorizontally(Motion.close()) { it }
 
 @Composable
 private fun HiveContent(vm: MainViewModel, openPlayerInitially: Boolean) {
@@ -81,8 +85,8 @@ private fun HiveContent(vm: MainViewModel, openPlayerInitially: Boolean) {
             AuraBackground(aura, progress, intensity = 0.55f, base = colors.bg, modifier = Modifier.fillMaxSize())
             NavHost(
                 nav, startDestination = "home", modifier = Modifier.fillMaxSize().navigationBarsPadding(),
-                enterTransition = { enterScreen }, exitTransition = { exitScreen },
-                popEnterTransition = { fadeIn(tween(260)) }, popExitTransition = { fadeOut(tween(200)) + scaleOut(tween(260), targetScale = 0.96f) },
+                enterTransition = { openEnter }, exitTransition = { openExit },
+                popEnterTransition = { closeEnter }, popExitTransition = { closeExit },
             ) {
                 composable("home") { HomeScreen(vm, homeNav, actions, bottomPadding) }
                 composable("search") { SearchScreen(vm, actions, bottomPadding) { nav.popBackStack() } }
@@ -122,30 +126,17 @@ private fun HiveContent(vm: MainViewModel, openPlayerInitially: Boolean) {
             }
         },
         overlay = {
-            AnimatedVisibility(
-                hasMedia && !playerOpen,
-                modifier = Modifier.align(Alignment.BottomCenter).navigationBarsPadding(),
-                enter = slideInVertically(tween(320)) { it } + fadeIn(),
-                exit = slideOutVertically(tween(240)) { it } + fadeOut(),
-            ) {
-                MiniPlayer(
-                    now,
-                    onOpen = { playerOpen = true },
-                    onTogglePlay = { vm.player.togglePlay() },
-                    onNext = { vm.player.next() },
-                    onQueue = { queueOpen = true },
-                )
-            }
-            AnimatedVisibility(playerOpen && hasMedia, enter = slideInVertically(tween(380, easing = FastOutSlowInEasing)) { it }, exit = slideOutVertically(tween(300)) { it }) {
-                FullPlayer(
+            if (hasMedia) {
+                PlayerSheet(
                     vm,
-                    onClose = { playerOpen = false },
+                    open = playerOpen,
+                    onOpenChange = { playerOpen = it },
                     onOpenQueue = { queueOpen = true },
                     onOpenAlbum = { playerOpen = false; nav.navigate("album/${it.albumId}") },
                     onOpenArtist = { playerOpen = false; nav.navigate("artist/${enc(it.artist)}") },
                 )
             }
-            AnimatedVisibility(queueOpen, enter = slideInVertically(tween(340, easing = FastOutSlowInEasing)) { it }, exit = slideOutVertically(tween(260)) { it }) {
+            AnimatedVisibility(queueOpen, enter = slideInVertically(Motion.open()) { it } + fadeIn(Motion.underFade()), exit = slideOutVertically(Motion.close()) { it } + fadeOut(Motion.close())) {
                 QueueScreen(vm) { queueOpen = false }
             }
             BackHandler(enabled = playerOpen || queueOpen) {

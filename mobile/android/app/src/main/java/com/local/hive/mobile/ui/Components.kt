@@ -295,7 +295,7 @@ fun PlayBar(count: Int, noun: String, onShuffle: () -> Unit, onPlay: () -> Unit)
         Modifier.fillMaxWidth().padding(start = Space.gutter, end = Space.gutter, top = Space.xs, bottom = Space.sm),
         verticalAlignment = Alignment.CenterVertically,
     ) {
-        Text("%,d %s".format(count, if (count == 1) noun else noun + "s").uppercase(), style = HiveType.label, color = colors.textDimmer, modifier = Modifier.weight(1f))
+        Text(countOf(count, noun).uppercase(), style = HiveType.label, color = colors.textDimmer, modifier = Modifier.weight(1f))
         GlassIconButton(Icons.Rounded.Shuffle, "Shuffle play", onShuffle, size = 40.dp)
         Spacer(Modifier.width(Space.xs))
         Box(Modifier.size(40.dp).clip(CircleShape).background(colors.text).pressable(onPlay, 0.9f), contentAlignment = Alignment.Center) {
@@ -317,6 +317,9 @@ fun EmptyState(title: String, body: String, modifier: Modifier = Modifier) {
 fun Hairline(modifier: Modifier = Modifier) {
     Box(modifier.fillMaxWidth().padding(horizontal = Space.gutter).height(0.5.dp).background(Hive.colors.border))
 }
+
+/** "1 song", "2 songs", "1,204 songs". */
+fun countOf(n: Int, noun: String) = "%,d %s".format(n, if (n == 1) noun else noun + "s")
 
 fun formatDuration(ms: Long): String {
     val total = (ms / 1000).coerceAtLeast(0)
