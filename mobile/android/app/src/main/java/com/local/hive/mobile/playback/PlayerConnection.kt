@@ -11,6 +11,7 @@ import androidx.media3.session.SessionToken
 import com.local.hive.mobile.data.Track
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.Job
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
@@ -33,12 +34,18 @@ data class NowPlaying(
     val queueIndex: Int = -1,
 )
 
+/** Pause at [endsAt] (fading out over the last seconds), or when the current song ends. */
+data class SleepTimer(val endsAt: Long? = null, val endOfSong: Boolean = false)
+
 /** The app's handle on [PlaybackService], exposing playback as state. */
 class PlayerConnection(private val context: Context, private val scope: CoroutineScope) {
     private val _state = MutableStateFlow(NowPlaying())
     val state: StateFlow<NowPlaying> = _state.asStateFlow()
     private var controller: MediaController? = null
     private val pending = mutableListOf<(MediaController) -> Unit>()
+    private val _sleep = MutableStateFlow<SleepTimer?>(null)
+    val sleep: StateFlow<SleepTimer?> = _sleep.asStateFlow()
+    private var sleepJob: Job? = null
 
     fun connect() {
         if (controller != null) return
@@ -49,6 +56,10 @@ class PlayerConnection(private val context: Context, private val scope: Coroutin
             controller = c
             c.addListener(object : Player.Listener {
                 override fun onEvents(player: Player, events: Player.Events) = publish()
+                override fun onMediaItemTransition(mediaItem: MediaItem?, reason: Int) {
+                    val natural = reason == Player.MEDIA_ITEM_TRANSITION_REASON_AUTO || reason == Player.MEDIA_ITEM_TRANSITION_REASON_REPEAT
+                    if (natural && _sleep.value?.endOfSong == true) { c.pause(); c.seekTo(c.currentMediaItemIndex, 0); _sleep.value = null }
+                }
             })
             pending.forEach { it(c) }
             pending.clear()
@@ -94,6 +105,29 @@ class PlayerConnection(private val context: Context, private val scope: Coroutin
     fun skipToQueueIndex(index: Int) = withController { it.seekTo(index, 0L) }
     fun removeFromQueue(index: Int) = withController { it.removeMediaItem(index) }
     fun moveInQueue(from: Int, to: Int) = withController { it.moveMediaItem(from, to) }
+    fun setSleepTimer(minutes: Int) {
+        cancelSleepTimer()
+        val endsAt = System.currentTimeMillis() + minutes * 60_000L
+        _sleep.value = SleepTimer(endsAt = endsAt)
+        sleepJob = scope.launch(Dispatchers.Main) {
+            delay((endsAt - System.currentTimeMillis() - SLEEP_FADE_MS).coerceAtLeast(0))
+            val steps = 40
+            for (i in 1..steps) { controller?.volume = 1f - i.toFloat() / steps; delay(SLEEP_FADE_MS / steps) }
+            controller?.pause()
+            controller?.volume = 1f
+            _sleep.value = null
+        }
+    }
+
+    fun sleepAtEndOfSong() { cancelSleepTimer(); _sleep.value = SleepTimer(endOfSong = true) }
+
+    fun cancelSleepTimer() {
+        if (sleepJob?.isActive == true) controller?.volume = 1f
+        sleepJob?.cancel()
+        sleepJob = null
+        _sleep.value = null
+    }
+
     fun toggleShuffle() = withController { it.shuffleModeEnabled = !it.shuffleModeEnabled }
     fun cycleRepeat() = withController {
         it.repeatMode = when (it.repeatMode) {
@@ -140,3 +174,5 @@ fun Track.toMediaItem(): MediaItem = MediaItem.Builder()
             .build(),
     )
     .build()
+
+private const val SLEEP_FADE_MS = 10_000L

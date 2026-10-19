@@ -103,6 +103,13 @@ import com.local.hive.mobile.ui.theme.HiveShape
 import com.local.hive.mobile.ui.theme.HiveText
 import com.local.hive.mobile.ui.theme.Motion
 import com.local.hive.mobile.ui.theme.hiveGlass
+import androidx.compose.runtime.produceState
+import com.local.hive.mobile.playback.SleepTimer
+import androidx.compose.material.icons.rounded.MusicNote
+import androidx.compose.material.icons.rounded.Timer
+import androidx.compose.material.icons.rounded.Bedtime
+import androidx.compose.material.icons.rounded.Person
+import androidx.compose.material.icons.rounded.Album
 import dev.chrisbanes.haze.HazeTint
 import dev.chrisbanes.haze.HazeStyle
 import dev.chrisbanes.haze.hazeEffect
@@ -367,6 +374,8 @@ private fun FullPlayerContent(
     var current by remember { mutableStateOf<Track?>(null) }
     var upNext by remember { mutableStateOf<Track?>(null) }
     var menu by remember { mutableStateOf(false) }
+    var sleepMenu by remember { mutableStateOf(false) }
+    val sleep by vm.sleep.collectAsStateWithLifecycle()
     LaunchedEffect(now.trackId, now.queueIndex, now.queue.size) {
         current = now.trackId?.let { vm.tracksById(listOf(it)).firstOrNull() }
         upNext = now.queue.getOrNull(now.queueIndex + 1)?.let { vm.tracksById(listOf(it)).firstOrNull() }
@@ -397,9 +406,16 @@ private fun FullPlayerContent(
                             Icon(Icons.Rounded.MoreHoriz, "More options", tint = c.text, modifier = Modifier.size(22.dp))
                         }
                         HiveMenu(menu, { menu = false }) {
-                            HiveMenuItem("Go to album", Icons.Rounded.KeyboardArrowUp) { menu = false; current?.let(onOpenAlbum) }
-                            HiveMenuItem("Go to artist", Icons.Rounded.KeyboardArrowUp) { menu = false; current?.let(onOpenArtist) }
+                            HiveMenuItem("Go to album", Icons.Rounded.Album) { menu = false; current?.let(onOpenAlbum) }
+                            HiveMenuItem("Go to artist", Icons.Rounded.Person) { menu = false; current?.let(onOpenArtist) }
                             HiveMenuItem("Playing tracks", Icons.AutoMirrored.Rounded.QueueMusic) { menu = false; onOpenQueue() }
+                            HiveMenuDivider()
+                            HiveMenuItem(sleepLabel(sleep), Icons.Rounded.Bedtime) { menu = false; sleepMenu = true }
+                        }
+                        HiveMenu(sleepMenu, { sleepMenu = false }) {
+                            listOf(15, 30, 45, 60, 90).forEach { m -> HiveMenuItem("$m minutes", Icons.Rounded.Timer) { sleepMenu = false; vm.setSleepTimer(m) } }
+                            HiveMenuItem("End of song", Icons.Rounded.MusicNote) { sleepMenu = false; vm.sleepAtEndOfSong() }
+                            if (sleep != null) { HiveMenuDivider(); HiveMenuItem("Turn off", Icons.Rounded.Close, destructive = true) { sleepMenu = false; vm.cancelSleepTimer() } }
                         }
                     }
                 }
@@ -566,4 +582,15 @@ fun QueueScreen(vm: MainViewModel, onClose: () -> Unit) {
             }
         }
     })
+}
+
+/** "Sleep timer", or what is left of it; the minutes tick down while the menu is shown. */
+@Composable
+private fun sleepLabel(sleep: SleepTimer?): String {
+    val now by produceState(System.currentTimeMillis(), sleep) { while (true) { value = System.currentTimeMillis(); kotlinx.coroutines.delay(15_000) } }
+    return when {
+        sleep == null -> "Sleep timer"
+        sleep.endOfSong -> "Sleep timer · end of song"
+        else -> "Sleep timer · ${((sleep.endsAt!! - now + 59_999) / 60_000).coerceAtLeast(1)} min left"
+    }
 }

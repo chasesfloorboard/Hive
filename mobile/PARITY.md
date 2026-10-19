@@ -61,7 +61,7 @@ renderer views) and its state on mobile.
 | Audio output selection | `audio-output:*` | ➖ Android's output switcher |
 | Lock screen, notification, Bluetooth controls | MPRIS, tray | ✅ MediaSession |
 | Mini player window | `miniplayer:*` | ✅ mini player bar |
-| Sleep timer | | ❌ |
+| Sleep timer | | ✅ 15–90 min with fade-out, end of song |
 
 ## Now playing
 

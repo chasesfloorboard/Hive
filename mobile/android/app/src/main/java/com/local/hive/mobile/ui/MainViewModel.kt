@@ -95,6 +95,10 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
         if (key in favoriteAlbumKeys.value) dao.deleteFavoriteAlbum(key)
         else dao.upsertFavoriteAlbum(FavoriteAlbum(key, album, artist, System.currentTimeMillis()))
     }
+    val sleep = app.player.sleep
+    fun setSleepTimer(minutes: Int) = app.player.setSleepTimer(minutes)
+    fun sleepAtEndOfSong() = app.player.sleepAtEndOfSong()
+    fun cancelSleepTimer() = app.player.cancelSleepTimer()
     fun toggleLoved(trackId: Long) = viewModelScope.launch { app.sync.setLoved(listOf(trackId), trackId !in lovedIds.value) }
 
     // ---- library ----
