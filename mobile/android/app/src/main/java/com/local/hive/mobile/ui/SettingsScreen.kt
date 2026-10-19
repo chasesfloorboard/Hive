@@ -24,7 +24,6 @@ import androidx.compose.runtime.Composable
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
-import androidx.compose.runtime.rememberCoroutineScope
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
@@ -37,7 +36,6 @@ import androidx.compose.ui.unit.dp
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import com.local.hive.mobile.link.HiveLinkClient
 import com.local.hive.mobile.ui.theme.OneUi
-import kotlinx.coroutines.launch
 
 private val CardShape = RoundedCornerShape(26.dp)
 
@@ -123,9 +121,8 @@ private fun PairSection(vm: MainViewModel) {
     var host by remember { mutableStateOf("") }
     var port by remember { mutableStateOf(HiveLinkClient.DEFAULT_PORT.toString()) }
     var code by remember { mutableStateOf("") }
-    var busy by remember { mutableStateOf(false) }
-    var error by remember { mutableStateOf<String?>(null) }
-    val scope = rememberCoroutineScope()
+    val busy by vm.pairing.collectAsStateWithLifecycle()
+    val error by vm.pairError.collectAsStateWithLifecycle()
 
     SettingRow("Pair with Hive", "Pair once and your Favorites stay in sync both ways. In Hive on the PC, open the tray menu and choose Pair phone… to get a code.")
     Row(Modifier.fillMaxWidth().clickable(enabled = !discovering) { vm.discover() }.padding(horizontal = 24.dp, vertical = 14.dp), verticalAlignment = Alignment.CenterVertically) {
@@ -151,11 +148,7 @@ private fun PairSection(vm: MainViewModel) {
     }
     (error ?: link.error)?.let { Text(it, style = OneUi.Sub, color = Color(0xFFFF6B6B), modifier = Modifier.padding(horizontal = 24.dp, vertical = 6.dp)) }
     ActionRow(if (busy) "Pairing…" else "Pair", enabled = !busy && host.isNotBlank() && code.length == 6) {
-        busy = true; error = null
-        scope.launch {
-            error = vm.pair(host, port.toIntOrNull() ?: HiveLinkClient.DEFAULT_PORT, code)
-            busy = false
-        }
+        vm.pair(host, port.toIntOrNull() ?: HiveLinkClient.DEFAULT_PORT, code)
     }
 }
 

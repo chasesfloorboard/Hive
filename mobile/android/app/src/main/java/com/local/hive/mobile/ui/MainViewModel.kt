@@ -99,8 +99,21 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
         try { _discovered.value = linkClient.discover() } finally { _discovering.value = false }
     }
 
-    suspend fun pair(host: String, port: Int, code: String): String? =
-        app.sync.pair(host.trim(), port, code).exceptionOrNull()?.let { it.message ?: "Pairing failed." }
+    private val _pairing = MutableStateFlow(false)
+    val pairing = _pairing.asStateFlow()
+    private val _pairError = MutableStateFlow<String?>(null)
+    val pairError = _pairError.asStateFlow()
+
+    /** Pairs in the ViewModel's scope, so the request outlives the pairing card it came from. */
+    fun pair(host: String, port: Int, code: String) = viewModelScope.launch {
+        _pairing.value = true
+        _pairError.value = null
+        try {
+            _pairError.value = app.sync.pair(host.trim(), port, code).exceptionOrNull()?.let { it.message ?: "Pairing failed." }
+        } finally {
+            _pairing.value = false
+        }
+    }
 
     fun unpair() = viewModelScope.launch { app.sync.unpair() }
     fun syncNow() = viewModelScope.launch { app.sync.syncNow() }

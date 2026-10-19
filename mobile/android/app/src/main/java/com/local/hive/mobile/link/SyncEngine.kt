@@ -4,6 +4,7 @@ import android.os.Build
 import com.local.hive.mobile.data.LibraryDao
 import com.local.hive.mobile.data.LoveState
 import com.local.hive.mobile.data.PcMatch
+import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Job
 import kotlinx.coroutines.delay
@@ -57,7 +58,7 @@ class SyncEngine(
 
     // ---- pairing ----
 
-    suspend fun pair(host: String, port: Int, code: String): Result<Unit> = runCatching {
+    suspend fun pair(host: String, port: Int, code: String): Result<Unit> = runCatchingNotCancelled {
         val deviceName = listOf(Build.MANUFACTURER.replaceFirstChar { it.uppercase() }, Build.MODEL).joinToString(" ")
         val response = client.pair(host, port, code, deviceName)
         val conn = HiveLinkClient.Connection(host, port, response.token)
@@ -71,9 +72,12 @@ class SyncEngine(
             hosts = listOf(host) + info?.addresses.orEmpty().sortedBy { it.tailscale }.map { it.address },
         )
         store.lastSeq = 0
+        store.fullSyncDone = false
         activeHost = host
         _status.update { LinkStatus(paired = true, serverName = response.name, host = host) }
-        syncNow()
+        // The first sync belongs to the engine, not to whoever asked to pair:
+        // the pairing screen goes away the moment pairing succeeds.
+        scope.launch { syncNow() }
         startLive()
     }
 
@@ -103,9 +107,11 @@ class SyncEngine(
             try {
                 val conn = connection() ?: throw HiveLinkException("Can't reach ${store.pairing?.name ?: "Hive"}. Is it open on the PC?")
                 pushPending(conn)
-                if (store.lastSeq == 0L) fullSync(conn) else pullChanges(conn)
+                if (!store.fullSyncDone) fullSync(conn) else pullChanges(conn)
                 store.lastSyncAt = System.currentTimeMillis()
                 _status.update { it.copy(error = null, lastSyncAt = store.lastSyncAt, host = conn.host) }
+            } catch (e: CancellationException) {
+                throw e
             } catch (e: HiveLinkException) {
                 if (e.status == 401) {
                     store.pairing = null
@@ -119,15 +125,22 @@ class SyncEngine(
         }
     }
 
+    /** Like runCatching, but lets cancellation through instead of reporting it as a failure. */
+    private inline fun <T> runCatchingNotCancelled(block: () -> T): Result<T> =
+        try { Result.success(block()) } catch (e: CancellationException) { throw e } catch (e: Exception) { Result.failure(e) }
+
     /** Re-matches every phone track after a library rescan. */
     suspend fun rematch() {
         if (store.pairing == null) return
-        store.lastSeq = 0
+        store.fullSyncDone = false
         syncNow()
     }
 
     private suspend fun fullSync(conn: HiveLinkClient.Connection) {
+        var t = System.currentTimeMillis()
+        fun step(name: String) { val n = System.currentTimeMillis(); android.util.Log.i("HiveSync", "$name: ${n - t} ms"); t = n }
         val library = client.library(conn)
+        step("download ${library.tracks.size} PC tracks")
         val index = TrackMatcher.Index(library.tracks.map {
             TrackMatcher.Candidate(it.id, it.title, it.artist, it.albumArtist, it.duration)
         })
@@ -136,7 +149,9 @@ class SyncEngine(
         val matches = phone.mapNotNull { t ->
             index.match(t.title, t.artist, t.albumArtist, t.durationMs)?.let { PcMatch(t.id, it.key) }
         }
+        step("match ${phone.size} phone tracks -> ${matches.size}")
         dao.replaceMatches(matches)
+        step("save matches")
 
         val local = dao.allLove().associateBy { it.trackId }
         val adopt = matches.mapNotNull { m ->
@@ -146,7 +161,9 @@ class SyncEngine(
             else LoveState(m.trackId, pcLoved, mine?.changedAt ?: 0, pending = false)
         }
         dao.upsertLove(adopt)
+        step("adopt ${adopt.size} love states")
         store.lastSeq = library.seq
+        store.fullSyncDone = true
         _status.update { it.copy(matchedTracks = matches.size, pcTracks = library.tracks.size) }
     }
 

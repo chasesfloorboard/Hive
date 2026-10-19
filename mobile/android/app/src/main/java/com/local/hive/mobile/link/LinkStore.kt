@@ -32,7 +32,7 @@ class LinkStore(context: Context) {
         set(value) = prefs.edit {
             if (value == null) {
                 remove("token"); remove("serverId"); remove("name"); remove("port"); remove("deviceId"); remove("hosts")
-                remove("lastSeq"); remove("lastSyncAt")
+                remove("lastSeq"); remove("lastSyncAt"); remove("fullSyncDone")
             } else {
                 putString("token", value.token)
                 putString("serverId", value.serverId)
@@ -43,7 +43,16 @@ class LinkStore(context: Context) {
             }
         }
 
-    /** Highest PC change sequence applied here; 0 means a full sync is due. */
+    /**
+     * Whether the phone has matched itself against the whole PC library at
+     * least once. Kept apart from [lastSeq]: a PC with no Love changes yet
+     * really is at sequence 0.
+     */
+    var fullSyncDone: Boolean
+        get() = prefs.getBoolean("fullSyncDone", false)
+        set(value) = prefs.edit { putBoolean("fullSyncDone", value) }
+
+    /** Highest PC change sequence applied here. */
     var lastSeq: Long
         get() = prefs.getLong("lastSeq", 0)
         set(value) = prefs.edit { putLong("lastSeq", value) }
