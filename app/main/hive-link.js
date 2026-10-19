@@ -14,6 +14,7 @@
 //                                  inbox for the user to confirm in Hive
 //   POST /api/plays                plays made on the phone, kept in the inbox
 //   GET  /api/plays?since=         plays made in Hive, so the phone counts them too
+//   GET  /api/spotify/search?q=    Spotify search through this PC's signed-in Spotify app
 //   GET  /api/events               server-sent events (live Love changes)
 //   GET  /api/stream/track?id=     a library song's file, with Range support
 //   GET  /api/playlists            Hive's own playlists, read only: library songs by
@@ -86,7 +87,7 @@ function lanAddresses() {
   return out;
 }
 
-function createHiveLink({ dataDir, getTracks, setLove, onPaired, streamSong = null, coversDir = null, remote = null, getPlaylists = null, getPlays = null, recordPlays = null, onInbox = () => {}, log = () => {}, port = DEFAULT_PORT, discoveryPort = DISCOVERY_PORT, acceptPhoneChanges = false }) {
+function createHiveLink({ dataDir, getTracks, setLove, onPaired, streamSong = null, coversDir = null, remote = null, getPlaylists = null, getPlays = null, recordPlays = null, spotifySearch = null, onInbox = () => {}, log = () => {}, port = DEFAULT_PORT, discoveryPort = DISCOVERY_PORT, acceptPhoneChanges = false }) {
   const statePath = path.join(dataDir, 'hive-link.json');
   let state = loadState();
   let server = null;
@@ -141,6 +142,7 @@ function createHiveLink({ dataDir, getTracks, setLove, onPaired, streamSong = nu
       streams: { track: true, song: !!streamSong },
       remote: !!remote && !!state.remoteControl,
       plays: !!getPlays,
+      spotifySearch: !!spotifySearch,
       // Phone changes waiting for the user in Hive.
       inbox: inboxSummary()
     };
@@ -479,6 +481,13 @@ function createHiveLink({ dataDir, getTracks, setLove, onPaired, streamSong = nu
         return send(res, 200, stagePlays(device, (await readJson(req))?.plays));
       case 'GET /api/plays':
         return send(res, 200, await playsSince(num(url.searchParams.get('since'))));
+      case 'GET /api/spotify/search': {
+        if (!spotifySearch) return send(res, 404, { error: 'This Hive cannot search Spotify.' });
+        const r = await spotifySearch(String(url.searchParams.get('q') || '').slice(0, 200));
+        if (!r?.connected) return send(res, 503, { error: "Spotify isn't running on the PC." });
+        if (r.error || !r.data) return send(res, 502, { error: r.error || 'Spotify did not answer.' });
+        return send(res, 200, r.data);
+      }
       case 'GET /api/playlists':
         return send(res, 200, { playlists: await playlistsPayload() });
       case 'GET /api/remote':

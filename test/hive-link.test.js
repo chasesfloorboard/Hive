@@ -17,7 +17,7 @@ const { createHiveLink, trackIdFor } = require('../app/main/hive-link');
 
 let nextPort = 48100 + Math.floor(Math.random() * 500) * 2;
 
-function setup({ acceptPhoneChanges = true, streamSong = null, coversDir = null, remote = null, getPlaylists = null, getPlays = null } = {}) {
+function setup({ acceptPhoneChanges = true, streamSong = null, coversDir = null, remote = null, getPlaylists = null, getPlays = null, spotifySearch = null } = {}) {
   const dataDir = fs.mkdtempSync(path.join(os.tmpdir(), 'hive-link-'));
   const tracks = [
     { id: 'a1', path: '/music/Pearl Jam - Black.mp3', title: 'Black', artist: 'Pearl Jam', album: 'Ten', duration: '343.2', loved: false },
@@ -37,6 +37,7 @@ function setup({ acceptPhoneChanges = true, streamSong = null, coversDir = null,
     remote,
     getPlaylists,
     getPlays,
+    spotifySearch,
     recordPlays: async plays => { recorded.push(...plays); },
     getTracks: async () => tracks,
     setLove: async (trackPath, loved) => {
@@ -394,4 +395,18 @@ test("the phone gets Hive's own plays for library songs since a time", async t =
   const res = await request(ctx.port, 'GET', '/api/plays?since=1000', { token });
   assert.deepEqual(res.body.plays, [{ id: 'b2', playedAt: 2000, listenedMs: 180000, eventId: 'e1' }]);
   assert.equal((await request(ctx.port, 'GET', '/api/info', { token })).body.plays, true);
+});
+
+test('the phone searches Spotify through the PC, and hears when Spotify is not running', async t => {
+  let running = true;
+  const ctx = setup({ spotifySearch: async q => running ? { connected: true, data: { tracks: [{ uri: 'spotify:track:x', title: q }], albums: [], artists: [], playlists: [] } } : { connected: false } });
+  t.after(() => ctx.link.stop());
+  await waitListening(ctx.port);
+  const token = await pair(ctx);
+  const res = await request(ctx.port, 'GET', '/api/spotify/search?q=halsey', { token });
+  assert.equal(res.status, 200);
+  assert.equal(res.body.tracks[0].title, 'halsey');
+  running = false;
+  assert.equal((await request(ctx.port, 'GET', '/api/spotify/search?q=halsey', { token })).status, 503);
+  assert.equal((await request(ctx.port, 'GET', '/api/info', { token })).body.spotifySearch, true);
 });

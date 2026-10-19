@@ -7782,7 +7782,8 @@ async function importSpotifyPlaylistFrom(input, { useBridge = true } = {}) {
 // Search Spotify through the signed-in Spotify app (Hive's add-on), starting
 // the app in the background when it isn't running. Without it, nothing:
 // Spotify has no search for visitors who aren't signed in.
-ipcMain.handle('spotify:search', async (_evt, query) => {
+ipcMain.handle('spotify:search', async (_evt, query) => searchSpotifyThroughApp(query));
+async function searchSpotifyThroughApp(query) {
   if (SPOTIFY_DEVELOPMENT_PAUSED) return { connected: false };
   const q = String(query || '').trim();
   if (!q) return { connected: true, data: { tracks: [], albums: [], artists: [], playlists: [] } };
@@ -7791,7 +7792,7 @@ ipcMain.handle('spotify:search', async (_evt, query) => {
     for (let i = 0; i < 40 && Date.now() - spotifyBridgeLastPollAt > 3000; i++) await new Promise(r => setTimeout(r, 500));
   }
   return askSpotifyBridge({ type: 'search', query: q }, 20000);
-});
+}
 
 // Spotify's own playlists, the same set Hive Mobile shows: no account or app
 // needed, read from Spotify's public link previews. Plus today's Top 50 as a
@@ -8016,6 +8017,8 @@ function startHiveLink() {
       return (Array.isArray(events) ? events : []).filter(e => e && e.path && Number(e.playedAt) > since && e.source !== 'hive-mobile' && e.source !== 'musicbee-wrapped');
     },
     recordPlays: recordPhonePlays,
+    // Hive Mobile searches Spotify through this PC's Spotify app when the phone isn't signed in itself.
+    spotifySearch: q => searchSpotifyThroughApp(q),
     onInbox: summary => { try { mainWindow?.webContents?.send('hiveLink:inbox', summary); } catch {} },
     coversDir: COVERS_DIR(),
     // Apple Music and Spotify songs Hive Mobile lacks play from YouTube Music
