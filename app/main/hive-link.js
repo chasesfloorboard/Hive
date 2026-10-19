@@ -13,6 +13,8 @@
 //                                  (answered "held" while acceptPhoneChanges is off)
 //   GET  /api/events               server-sent events (live Love changes)
 //   GET  /api/stream/track?id=     a library song's file, with Range support
+//   GET  /api/remote               what Hive is playing (when remote control is on)
+//   POST /api/remote               play/pause, next, previous, seek, volume
 //   GET  /api/cover?name=          a library cover from Hive's covers folder
 //                                  (the token may come as ?t= so any image
 //                                  loader on the phone can fetch it)
@@ -66,7 +68,7 @@ function lanAddresses() {
   return out;
 }
 
-function createHiveLink({ dataDir, getTracks, setLove, onPaired, streamSong = null, coversDir = null, log = () => {}, port = DEFAULT_PORT, discoveryPort = DISCOVERY_PORT, acceptPhoneChanges = false }) {
+function createHiveLink({ dataDir, getTracks, setLove, onPaired, streamSong = null, coversDir = null, remote = null, log = () => {}, port = DEFAULT_PORT, discoveryPort = DISCOVERY_PORT, acceptPhoneChanges = false }) {
   const statePath = path.join(dataDir, 'hive-link.json');
   let state = loadState();
   let server = null;
@@ -116,7 +118,8 @@ function createHiveLink({ dataDir, getTracks, setLove, onPaired, streamSong = nu
       port,
       seq: state.seq,
       addresses: lanAddresses(),
-      streams: { track: true, song: !!streamSong }
+      streams: { track: true, song: !!streamSong },
+      remote: !!remote && !!state.remoteControl
     };
   }
 
@@ -353,6 +356,10 @@ function createHiveLink({ dataDir, getTracks, setLove, onPaired, streamSong = nu
         const body = await readJson(req);
         return send(res, 200, await applyLoveChanges(device, body?.changes));
       }
+      case 'GET /api/remote':
+        return remoteState(res);
+      case 'POST /api/remote':
+        return remoteCommand(res, await readJson(req));
       case 'GET /api/cover':
         return sendCover(res, String(url.searchParams.get('name') || ''));
       case 'GET /api/stream/track':
@@ -367,6 +374,45 @@ function createHiveLink({ dataDir, getTracks, setLove, onPaired, streamSong = nu
       default:
         return send(res, 404, { error: 'Unknown endpoint.' });
     }
+  }
+
+  // ---- remote control ------------------------------------------------------
+  // Off until the user turns it on in Hive's settings: the phone then sees what
+  // Hive is playing and can play/pause, skip, seek and set the volume.
+
+  function setRemoteControl(on) { state.remoteControl = !!on; saveSoon(); }
+  const remoteAllowed = () => !!remote && !!state.remoteControl;
+
+  async function remoteState(res) {
+    if (!remoteAllowed()) return send(res, 403, { error: 'Turn on remote control in Hive: Settings › Connections › Hive Mobile.' });
+    const p = remote.state() || {};
+    const track = p.track || null;
+    let id = '';
+    if (track?.path && !/^[a-z]+:/i.test(String(track.path))) {
+      const wanted = path.resolve(String(track.path));
+      const hit = (await getTracks()).find(t => t?.path && path.resolve(String(t.path)) === wanted);
+      id = hit ? trackIdFor(hit) : '';
+    }
+    return send(res, 200, {
+      playing: !!track && !p.paused,
+      id,
+      title: text(track?.title), artist: text(track?.artist), album: text(track?.album),
+      cover: /^[a-f0-9]{40}\.(jpe?g|png|webp)$/i.test(String(track?.cover || '')) ? String(track.cover) : '',
+      position: Math.round(num(p.position) * 1000), duration: Math.round(num(p.duration) * 1000),
+      volume: Number.isFinite(Number(p.volume)) ? Number(p.volume) : 1,
+      shuffle: !!p.shuffle, repeat: num(p.repeat)
+    });
+  }
+
+  const REMOTE_COMMANDS = { play: 'PLAY', pause: 'PAUSE', toggle: 'PLAYPAUSE', next: 'NEXT', previous: 'PREVIOUS' };
+  function remoteCommand(res, body) {
+    if (!remoteAllowed()) return send(res, 403, { error: 'Turn on remote control in Hive: Settings › Connections › Hive Mobile.' });
+    const cmd = String(body?.command || '');
+    if (REMOTE_COMMANDS[cmd]) remote.command(REMOTE_COMMANDS[cmd]);
+    else if (cmd === 'seek' && Number.isFinite(Number(body.positionMs))) remote.command(`SEEK\t${Math.max(0, Number(body.positionMs)) / 1000}`);
+    else if (cmd === 'volume' && Number.isFinite(Number(body.volume))) remote.command(`VOLUME\t${Math.max(0, Math.min(1, Number(body.volume)))}`);
+    else return send(res, 400, { error: 'Unknown command.' });
+    return send(res, 200, { ok: true });
   }
 
   // ---- streaming -----------------------------------------------------------
@@ -470,6 +516,8 @@ function createHiveLink({ dataDir, getTracks, setLove, onPaired, streamSong = nu
     start,
     stop,
     startPairing,
+    setRemoteControl,
+    remoteControl: () => !!state.remoteControl,
     unpair,
     notifyLoveChanged,
     info,
