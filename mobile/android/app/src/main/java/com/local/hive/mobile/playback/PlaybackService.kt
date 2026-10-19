@@ -8,8 +8,18 @@ import androidx.media3.common.Player
 import androidx.media3.exoplayer.ExoPlayer
 import androidx.media3.session.MediaSession
 import androidx.media3.session.MediaSessionService
+import androidx.media3.session.MediaSession.MediaItemsWithStartPosition
+import com.google.common.util.concurrent.ListenableFuture
+import com.google.common.util.concurrent.SettableFuture
 import com.local.hive.mobile.HiveApp
 import com.local.hive.mobile.MainActivity
+import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.MainScope
+import kotlinx.coroutines.cancel
+import kotlinx.coroutines.delay
+import kotlinx.coroutines.isActive
+import kotlinx.coroutines.launch
+import kotlinx.coroutines.withContext
 
 /**
  * Background playback: ExoPlayer inside a MediaSession, which gives Hive the
@@ -18,6 +28,8 @@ import com.local.hive.mobile.MainActivity
  */
 class PlaybackService : MediaSessionService() {
     private var session: MediaSession? = null
+    private val scope = MainScope()
+    private lateinit var memory: PlaybackMemory
 
     override fun onCreate() {
         super.onCreate()
@@ -29,13 +41,47 @@ class PlaybackService : MediaSessionService() {
             .setHandleAudioBecomingNoisy(true)
             .setWakeMode(C.WAKE_MODE_LOCAL)
             .build()
-        player.addListener(PlayCounter((application as HiveApp).playRecorder, player))
+        val app = application as HiveApp
+        player.addListener(PlayCounter(app.playRecorder, player))
+        memory = PlaybackMemory(this, app.database.dao())
+        player.addListener(object : Player.Listener {
+            override fun onTimelineChanged(timeline: androidx.media3.common.Timeline, reason: Int) {
+                if (reason == Player.TIMELINE_CHANGE_REASON_PLAYLIST_CHANGED) memory.saveQueue(player)
+            }
+            override fun onEvents(player: Player, events: Player.Events) {
+                if (events.containsAny(Player.EVENT_MEDIA_ITEM_TRANSITION, Player.EVENT_IS_PLAYING_CHANGED, Player.EVENT_POSITION_DISCONTINUITY,
+                        Player.EVENT_SHUFFLE_MODE_ENABLED_CHANGED, Player.EVENT_REPEAT_MODE_CHANGED)) memory.saveCursor(player)
+            }
+        })
+        scope.launch {
+            while (isActive) { delay(5_000); if (player.isPlaying) memory.saveCursor(player) }
+        }
+        // Pick up where the last session left off, paused, unless something was queued meanwhile.
+        scope.launch {
+            val saved = withContext(Dispatchers.IO) { memory.restore() } ?: return@launch
+            if (player.mediaItemCount > 0) return@launch
+            player.setMediaItems(saved.items, saved.index, saved.positionMs)
+            player.shuffleModeEnabled = saved.shuffle
+            player.repeatMode = saved.repeatMode
+            player.prepare()
+        }
         val open = PendingIntent.getActivity(
             this, 0,
             Intent(this, MainActivity::class.java).putExtra(MainActivity.EXTRA_OPEN_PLAYER, true),
             PendingIntent.FLAG_IMMUTABLE or PendingIntent.FLAG_UPDATE_CURRENT,
         )
-        session = MediaSession.Builder(this, player).setSessionActivity(open).build()
+        session = MediaSession.Builder(this, player).setSessionActivity(open).setCallback(object : MediaSession.Callback {
+            // Bluetooth play or the system's media controls after a reboot resume the saved queue.
+            override fun onPlaybackResumption(mediaSession: MediaSession, controller: MediaSession.ControllerInfo): ListenableFuture<MediaItemsWithStartPosition> {
+                val future = SettableFuture.create<MediaItemsWithStartPosition>()
+                scope.launch {
+                    val saved = withContext(Dispatchers.IO) { memory.restore() }
+                    if (saved == null) future.setException(UnsupportedOperationException("Nothing to resume"))
+                    else future.set(MediaItemsWithStartPosition(saved.items, saved.index, saved.positionMs))
+                }
+                return future
+            }
+        }).build()
     }
 
     override fun onGetSession(controllerInfo: MediaSession.ControllerInfo): MediaSession? = session
@@ -48,6 +94,8 @@ class PlaybackService : MediaSessionService() {
     }
 
     override fun onDestroy() {
+        session?.player?.let { memory.saveCursor(it) }
+        scope.cancel()
         session?.run {
             player.release()
             release()

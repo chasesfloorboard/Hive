@@ -11,16 +11,16 @@ renderer views) and its state on mobile.
 | Feature | Hive (desktop) | Mobile |
 |---|---|---|
 | Scan library, watch for changes | `library:scan`, `scanChanged`, directory watcher | ✅ MediaStore scan + observer |
-| Albums grid | album cards, sort | 🟡 grid, no year grouping |
-| Albums grouped by year with dividers | `album-year-section` | ❌ |
-| Inline album expansion (cover + tracklist in the grid) | `inline-album-dropdown` | ❌ |
+| Albums grid | album cards, sort | ✅ |
+| Albums grouped by year with dividers | `album-year-section` | ✅ (Years: on/off) |
+| Inline album expansion (cover + tracklist in the grid) | `inline-album-dropdown` | ✅ |
 | Tracks table: sortable columns, column chooser | `song-header`, column drag | 🟡 one sort, no columns |
 | Artists, artist images, artist info | `artist:info`, `artwork:artistImage` | 🟡 list, no images or bio |
 | Similar artists | `music:similarArtists` | ❌ |
 | Genres, folders | | ✅ |
 | Column browser (genre › artist › album) | `column-browser` | ❌ |
-| Search (library database) | `library:searchDatabase` | 🟡 tracks only |
-| History, Top 25 Most Played, Recently Added | sidebar views, `history:get` | 🟡 auto playlists, no History view |
+| Search (library database) | `library:searchDatabase` | ✅ artists, albums, songs |
+| History, Top 25 Most Played, Recently Added | sidebar views, `history:get` | ✅ sidebar views |
 | Navigation editor (pin/reorder views, rich animated labels) | `navigation-editor`, `hiveRich*` | ❌ |
 | Multiple top tabs (open views as tabs) | topbar tabs | ❌ |
 
@@ -30,6 +30,8 @@ renderer views) and its state on mobile.
 |---|---|---|
 | Love (embedded `LOVE RATING`) | `track:toggleLove`, `tracks:setLove` | ✅ in-app, synced via Hive Link |
 | Love written into the phone's own files | | ❌ |
+| Album Favorites (separate from loving songs, as in Samsung Music) | | ✅ phone only |
+| Phone Love applied on the PC | `acceptPhoneChanges` | ⏸️ held on purpose until Hive Mobile is stable; PC → phone works |
 | Star ratings (POPM) | `track:setRating`, `tracks:setRatings` | ❌ |
 | Play counts and skip counts | `track:recordPlay`, `stats:*` | 🟡 counted locally, not synced |
 | Favorites sync phone ↔ PC | Hive Link | ✅ |
@@ -53,7 +55,7 @@ renderer views) and its state on mobile.
 | Queue: view, jump, remove | `#queue-list` | ✅ |
 | Queue: drag to reorder, multi-select | queue drop targets | ❌ |
 | Shuffle, repeat | | ✅ |
-| Playback state restored on launch | `playback-state:*` | ❌ |
+| Playback state restored on launch | `playback-state:*` | ✅ queue, track, position, shuffle, repeat; Bluetooth resume |
 | Equaliser with presets, import presets | `equaliser:*` | ❌ |
 | ReplayGain | `replaygain:analyse` | ❌ (reading tags) / 🖥️ (analysis) |
 | Audio output selection | `audio-output:*` | ➖ Android's output switcher |
@@ -108,7 +110,7 @@ renderer views) and its state on mobile.
 | Themes, `.hive-theme` import/export, stock themes | `themes:*`, `theme:*` | 🟡 CSS variables parsed, no picker |
 | Custom CSS | `custom-css:*` | ➖ mapped to theme variables |
 | MusicBee skin import | `themes:importMusicBeeSkins` | 🖥️ |
-| Glass panels, art-tinted accent, rich labels | `.glass`, `hiveRich*` | ❌ (removed in the Samsung pass; returning) |
+| Glass panels, art-tinted accent, rich labels | `.glass`, `hiveRich*` | 🟡 glass, ambient and art accent done; no rich labels |
 
 ## Library tools (run on the PC)
 
