@@ -45,6 +45,10 @@ data class NowPlaying(
     val shuffle: Boolean = false,
     val repeatMode: Int = Player.REPEAT_MODE_OFF,
     val queue: List<QueueItem> = emptyList(),
+    /** A radio station: no length, no seeking; the title is what the station is playing now. */
+    val isLive: Boolean = false,
+    /** For a station, its name. */
+    val station: String = "",
     val queueIndex: Int = -1,
 )
 
@@ -160,11 +164,18 @@ class PlayerConnection(private val context: Context, private val scope: Coroutin
         val c = controller ?: return
         val item = c.currentMediaItem
         val meta = item?.mediaMetadata
+        val radio = item?.mediaId?.startsWith("radio:") == true
+        // A station's song comes from its ICY title ("Artist - Title"), which the player merges into its live metadata.
+        val stationName = meta?.station?.toString().orEmpty()
+        val icy = if (radio) c.mediaMetadata.title?.toString()?.trim()?.takeIf { it.isNotBlank() } else null
+        val (liveArtist, liveTitle) = icy?.let { t -> t.indexOf(" - ").takeIf { it > 0 }?.let { t.substring(0, it).trim() to t.substring(it + 3).trim() } ?: ("" to t) } ?: ("" to "")
         _state.value = NowPlaying(
             mediaId = item?.mediaId,
             trackId = item?.mediaId?.toLongOrNull(),
-            title = meta?.title?.toString().orEmpty(),
-            artist = meta?.artist?.toString().orEmpty(),
+            title = if (radio) liveTitle.ifBlank { stationName } else meta?.title?.toString().orEmpty(),
+            artist = if (radio) liveArtist.ifBlank { if (liveTitle.isNotBlank()) stationName else "Live radio" } else meta?.artist?.toString().orEmpty(),
+            isLive = radio || c.isCurrentMediaItemLive,
+            station = stationName,
             album = meta?.albumTitle?.toString().orEmpty(),
             artworkUri = meta?.artworkUri?.toString(),
             isPlaying = c.isPlaying,
@@ -181,7 +192,7 @@ class PlayerConnection(private val context: Context, private val scope: Coroutin
 private fun MediaItem.toQueueItem() = QueueItem(
     mediaId = mediaId,
     trackId = mediaId.toLongOrNull(),
-    title = mediaMetadata.title?.toString().orEmpty(),
+    title = (mediaMetadata.title ?: mediaMetadata.station)?.toString().orEmpty(),
     artist = mediaMetadata.artist?.toString().orEmpty(),
     artworkUri = mediaMetadata.artworkUri?.toString(),
     durationMs = mediaMetadata.durationMs ?: 0,

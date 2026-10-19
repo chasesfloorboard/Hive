@@ -192,6 +192,12 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
     /** The playing song's genre, for the equaliser's "Auto-Select by Genre". */
     val currentGenre = combine(nowPlaying, tracks) { n, list -> list.firstOrNull { it.id == n.trackId }?.genre.orEmpty() }.distinctUntilChanged().state("")
 
+    // ---- radio ----
+    val radio get() = app.radio
+    val savedStations = app.radioStore.saved
+    fun toggleStation(s: com.local.hive.mobile.stream.Station) = app.radioStore.toggle(s)
+    fun playStation(s: com.local.hive.mobile.stream.Station) = app.player.playMedia(listOf(s.toMediaItem()))
+
     val sleep = app.player.sleep
     fun setSleepTimer(minutes: Int) = app.player.setSleepTimer(minutes)
     fun sleepAtEndOfSong() = app.player.sleepAtEndOfSong()

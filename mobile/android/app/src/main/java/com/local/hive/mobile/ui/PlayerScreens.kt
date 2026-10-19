@@ -103,6 +103,8 @@ import com.local.hive.mobile.ui.theme.HiveShape
 import com.local.hive.mobile.ui.theme.HiveText
 import com.local.hive.mobile.ui.theme.Motion
 import com.local.hive.mobile.ui.theme.hiveGlass
+import androidx.compose.material.icons.rounded.Radio
+import androidx.compose.animation.core.animateFloat
 import androidx.compose.material.icons.rounded.GraphicEq
 import androidx.compose.material.icons.rounded.Lyrics
 import androidx.compose.material.icons.rounded.Info
@@ -281,6 +283,7 @@ fun PlayerSheet(
                     .offset { IntOffset(r.left.roundToInt(), r.top.roundToInt()) }
                     .requiredSize(with(density) { r.width.toDp() }, with(density) { r.height.toDp() }),
                 RoundedCornerShape(lerpDp(8.dp, 12.dp, eased)),
+                if (now.isLive) Icons.Rounded.Radio else Icons.Rounded.MusicNote,
                 glow = aura?.primary ?: c.accentGlow,
                 elevation = lerpDp(0.dp, 36.dp, eased),
             )
@@ -351,7 +354,7 @@ private fun Playbar(vm: MainViewModel, now: NowPlaying, showArt: Boolean, modifi
         }
         Row(Modifier.fillMaxSize().padding(start = 11.dp, end = 10.dp), verticalAlignment = Alignment.CenterVertically) {
             Crossfade(now.artworkUri, animationSpec = Motion.swap(), modifier = Modifier.alpha(if (showArt) 1f else 0f), label = "barArt") { art ->
-                Artwork(art, Modifier.size(MiniArt), RoundedCornerShape(8.dp))
+                Artwork(art, Modifier.size(MiniArt), RoundedCornerShape(8.dp), if (now.isLive) Icons.Rounded.Radio else Icons.Rounded.MusicNote)
             }
             Crossfade(now.title to now.artist, animationSpec = Motion.swap(), modifier = Modifier.weight(1f), label = "barText") { (title, artist) ->
                 Column(Modifier.padding(horizontal = 12.dp), verticalArrangement = Arrangement.spacedBy(1.dp)) {
@@ -472,15 +475,16 @@ private fun FullPlayerContent(
                 SeekBar(now, onSeek = { vm.player.seekTo(it) })
 
                 Row(Modifier.fillMaxWidth().height(96.dp).padding(horizontal = 18.dp), horizontalArrangement = Arrangement.SpaceBetween, verticalAlignment = Alignment.CenterVertically) {
-                    TransportButton(Icons.Rounded.Shuffle, "Shuffle", 24.dp, active = now.shuffle) { vm.player.toggleShuffle() }
+                    // Shuffle and repeat mean nothing to a live station; their places stay so the row doesn't jump.
+                    if (now.isLive) Spacer(Modifier.size(48.dp)) else TransportButton(Icons.Rounded.Shuffle, "Shuffle", 24.dp, active = now.shuffle) { vm.player.toggleShuffle() }
                     TransportButton(Icons.Rounded.SkipPrevious, "Previous", 36.dp) { vm.player.previous() }
                     AccentPlayButton(now.isPlaying, { vm.player.togglePlay() }, size = 74.dp)
                     TransportButton(Icons.Rounded.SkipNext, "Next", 36.dp) { vm.player.next() }
-                    TransportButton(if (now.repeatMode == Player.REPEAT_MODE_ONE) Icons.Rounded.RepeatOne else Icons.Rounded.Repeat, "Repeat", 24.dp, active = now.repeatMode != Player.REPEAT_MODE_OFF) { vm.player.cycleRepeat() }
+                    if (now.isLive) Spacer(Modifier.size(48.dp)) else TransportButton(if (now.repeatMode == Player.REPEAT_MODE_ONE) Icons.Rounded.RepeatOne else Icons.Rounded.Repeat, "Repeat", 24.dp, active = now.repeatMode != Player.REPEAT_MODE_OFF) { vm.player.cycleRepeat() }
                 }
 
                 Row(Modifier.padding(horizontal = 12.dp).padding(bottom = 12.dp).fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-                Box(Modifier.size(58.dp).hiveGlass(HiveShape.menu).clickable(onClick = onOpenLyrics), contentAlignment = Alignment.Center) {
+                if (!now.isLive) Box(Modifier.size(58.dp).hiveGlass(HiveShape.menu).clickable(onClick = onOpenLyrics), contentAlignment = Alignment.Center) {
                     Icon(Icons.Rounded.Lyrics, "Lyrics", tint = c.accent, modifier = Modifier.size(22.dp))
                 }
                 Row(
@@ -529,6 +533,7 @@ private fun TransportButton(icon: ImageVector, label: String, iconSize: Dp, acti
 @Composable
 private fun SeekBar(now: NowPlaying, onSeek: (Long) -> Unit) {
     val c = Hive.colors
+    if (now.isLive) { LiveBar(now); return }
     var scrub by remember { mutableStateOf<Float?>(null) }
     val fraction = (scrub ?: if (now.durationMs > 0) now.positionMs.toFloat() / now.durationMs else 0f).coerceIn(0f, 1f)
     val thumb by animateDpAsState(if (scrub != null) 18.dp else 12.dp, spring(stiffness = 700f), label = "thumb")
@@ -663,3 +668,18 @@ private fun sleepLabel(sleep: SleepTimer?): String {
 }
 
 private val QueueRow = 58.dp
+
+/** In place of the seek bar for a radio station: a pulsing LIVE mark and the station. */
+@Composable
+private fun LiveBar(now: NowPlaying) {
+    val c = Hive.colors
+    val pulse = androidx.compose.animation.core.rememberInfiniteTransition(label = "live")
+    val a by pulse.animateFloat(1f, 0.25f, androidx.compose.animation.core.infiniteRepeatable(tween(900), androidx.compose.animation.core.RepeatMode.Reverse), label = "liveDot")
+    Row(Modifier.fillMaxWidth().padding(horizontal = 26.dp).padding(top = 18.dp).height(46.dp), verticalAlignment = Alignment.CenterVertically) {
+        Box(Modifier.size(9.dp).alpha(if (now.isPlaying) a else 0.4f).clip(CircleShape).background(Color(0xFFFF5A5A)))
+        Spacer(Modifier.width(8.dp))
+        Text("LIVE", style = HiveText.label, color = c.text)
+        Spacer(Modifier.width(10.dp))
+        Text(now.station, style = HiveText.small, color = c.textDim, maxLines = 1, overflow = TextOverflow.Ellipsis)
+    }
+}

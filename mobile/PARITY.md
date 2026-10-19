@@ -87,7 +87,7 @@ renderer views) and its state on mobile.
 
 | Feature | Hive | Mobile |
 |---|---|---|
-| Internet radio (search, now playing) | `radio:*` | ❌ |
+| Internet radio (search, now playing) | `radio:*` | ✅ radio-browser.info popular and search (name or genre), add by URL (.pls/.m3u), saved stations, live song titles |
 | Podcasts (search, feeds, favorites) | `podcast:*`, `podcasts:favorites:*` | ❌ |
 | YouTube Music page, downloads | `ytmusic:*` | 🟡 Apple Music and Spotify songs the phone lacks play in full from YouTube Music through Hive on the PC (falls back to previews); no YouTube Music page or downloads |
 | Spotify page and library | `spotify:*` | ✅ editorial playlists, shared links, previews, library matches, import; sign-in (own developer app) for your playlists, Liked Songs, private playlists and search. No playback control of the Spotify app |

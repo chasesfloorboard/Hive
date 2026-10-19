@@ -39,6 +39,7 @@ import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.verticalScroll
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.rounded.Explore
+import androidx.compose.material.icons.rounded.Radio
 import androidx.compose.material.icons.rounded.GraphicEq
 import androidx.compose.material.icons.rounded.Category
 import androidx.compose.material.icons.rounded.Favorite
@@ -219,6 +220,7 @@ private fun HiveContent(vm: MainViewModel, openPlayerInitially: Boolean) {
                                 onOpen = { url -> nav.navigate("apple/c?url=${enc(url)}") }, onOpenPlaylist = homeNav.openUserPlaylist, onToast = { toast = it },
                             )
                         }
+                        composable("radio") { RadioScreen(vm, bottomPadding, onBack = { nav.popBackStack() }, onToast = { toast = it }) }
                         composable("spotify") {
                             SpotifyScreen(vm, bottomPadding, onBack = { nav.popBackStack() }, onOpenSettings = homeNav.openSettings) { url -> nav.navigate("spotify/c?url=${enc(url)}") }
                         }
@@ -308,6 +310,7 @@ private fun Sidebar(vm: MainViewModel, current: String, go: (String) -> Unit) {
         SidebarDivider("Streaming")
         SidebarItem("Apple Music", Icons.Rounded.Explore, current == "apple" || current.startsWith("apple/")) { go("apple") }
         SidebarItem("Spotify", Icons.Rounded.GraphicEq, current == "spotify" || current.startsWith("spotify/")) { go("spotify") }
+        SidebarItem("Radio", Icons.Rounded.Radio, current == "radio") { go("radio") }
         SidebarDivider("This phone")
         SidebarItem("Genres", Icons.Rounded.Category, current == "genres") { go("genres") }
         SidebarItem("Folders", Icons.Rounded.Folder, current == "folders") { go("folders") }

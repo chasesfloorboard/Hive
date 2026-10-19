@@ -210,6 +210,35 @@ fun NameDialog(title: String, initial: String, confirm: String, onDismiss: () ->
     }
 }
 
+/** A Hive dialog with a few labelled fields; the first must be filled. */
+@Composable
+fun FieldsDialog(title: String, placeholders: List<String>, confirm: String, onDismiss: () -> Unit, onConfirm: (List<String>) -> Unit) {
+    val c = Hive.colors
+    val values = remember { androidx.compose.runtime.mutableStateListOf(*Array(placeholders.size) { "" }) }
+    val focus = remember { FocusRequester() }
+    LaunchedEffect(Unit) { focus.requestFocus() }
+    Dialog(onDismissRequest = onDismiss) {
+        Column(
+            Modifier.fillMaxWidth().shadow(30.dp, HiveShape.panel, ambientColor = c.accentGlow).clip(HiveShape.panel).background(c.control)
+                .border(1.dp, hiveGlassBorder(), HiveShape.panel).padding(20.dp),
+            verticalArrangement = Arrangement.spacedBy(12.dp),
+        ) {
+            Text(title, style = HiveText.year, color = c.text)
+            placeholders.forEachIndexed { i, hint ->
+                Box(Modifier.fillMaxWidth().clip(RoundedCornerShape(12.dp)).background(c.bg.copy(alpha = 0.5f)).border(1.dp, c.border, RoundedCornerShape(12.dp)).padding(horizontal = 14.dp, vertical = 12.dp)) {
+                    if (values[i].isEmpty()) Text(hint, style = HiveText.row, color = c.textDimmer)
+                    BasicTextField(values[i], { values[i] = it }, singleLine = true, textStyle = HiveText.row.copy(color = c.text), cursorBrush = SolidColor(c.accent),
+                        modifier = Modifier.fillMaxWidth().then(if (i == 0) Modifier.focusRequester(focus) else Modifier))
+                }
+            }
+            Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(8.dp, Alignment.End)) {
+                DialogButton("Cancel", false, true, onDismiss)
+                DialogButton(confirm, true, values[0].isNotBlank()) { onConfirm(values.toList()) }
+            }
+        }
+    }
+}
+
 /** A plain confirmation in Hive's dialog style. */
 @Composable
 fun ConfirmDialog(title: String, body: String, confirm: String, onDismiss: () -> Unit, onConfirm: () -> Unit) {

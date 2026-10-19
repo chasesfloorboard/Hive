@@ -51,6 +51,8 @@ class HiveApp : Application() {
     val spotifyAccount by lazy { com.local.hive.mobile.stream.SpotifyAccount(this) }
     val lyrics by lazy { com.local.hive.mobile.stream.LyricsProvider(this) }
     val equaliser by lazy { com.local.hive.mobile.playback.EqualiserStore(this) }
+    val radio by lazy { com.local.hive.mobile.stream.RadioDirectory() }
+    val radioStore by lazy { com.local.hive.mobile.stream.RadioStore(this) }
     val linkStore by lazy { LinkStore(this) }
     val sync by lazy { SyncEngine(database.dao(), linkStore, HiveLinkClient(), scope) }
     val player by lazy { PlayerConnection(this, scope) }
