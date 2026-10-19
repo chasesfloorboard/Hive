@@ -617,6 +617,19 @@
 
         <!-- ================= CONNECTIONS ================= -->
         <div id="settings-panel-connections" class="settings-tab-panel" role="tabpanel" aria-labelledby="settings-tab-connections" tabindex="0" data-settings-panel="connections">
+          <section class="settings-section" id="hive-link-section">
+            <header class="settings-section-head"><h4 class="settings-section-title">Hive Mobile</h4><p class="settings-section-desc">Keep Favorites in sync with Hive on your phone, over Wi-Fi.</p></header>
+            <div class="settings-row">
+              <span class="settings-row-text"><span class="settings-row-label">Pair a phone</span><span id="hive-link-pair-hint" class="settings-hint" aria-live="polite">In Hive on your phone, open ⋮ › Settings › Find Hive on this Wi-Fi, then enter the code shown here.</span></span>
+              <span class="settings-row-control"><button id="hive-link-pair-btn" class="sidebar-add" type="button">Pair phone</button></span>
+            </div>
+            <div id="hive-link-code" class="settings-row" hidden>
+              <span class="settings-row-text"><span class="settings-row-label">Pairing code</span><span id="hive-link-code-detail" class="settings-hint"></span></span>
+              <span id="hive-link-code-value" class="settings-row-control" style="font-size:28px;font-weight:600;letter-spacing:0.18em;font-variant-numeric:tabular-nums"></span>
+            </div>
+            <div id="hive-link-devices"></div>
+          </section>
+
           <section class="settings-section">
             <header class="settings-section-head"><h4 class="settings-section-title">Discord</h4><p class="settings-section-desc">Show what you're listening to on your Discord profile.</p></header>
             <label class="settings-row">
@@ -1246,5 +1259,6 @@
   <script src="../main/file-organiser.js"></script>
   <script src="colorExtract.js"></script>
   <script src="renderer.js"></script>
+  <script src="hive-link-settings.js"></script>
 </body>
 </html>

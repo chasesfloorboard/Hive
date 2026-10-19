@@ -4,6 +4,9 @@ try { ipcRenderer.send('startup:preloadEntry'); } catch {}
 
 contextBridge.exposeInMainWorld('beehive', {
   getVersion: () => ipcRenderer.invoke('app:getVersion'),
+  hiveLinkPair: () => ipcRenderer.invoke('hiveLink:pair'),
+  hiveLinkDevices: () => ipcRenderer.invoke('hiveLink:devices'),
+  hiveLinkUnpair: (deviceId) => ipcRenderer.invoke('hiveLink:unpair', deviceId),
   startupDebugEnabled: process.argv.includes('--startup-debug') || process.env.BEEHIVE_STARTUP_DEBUG === '1',
   performanceDebugEnabled: process.argv.includes('--scroll-debug') || process.argv.includes('--startup-debug') || process.env.BEEHIVE_SCROLL_DEBUG === '1' || process.env.BEEHIVE_STARTUP_DEBUG === '1',
   startupDebugLog: (label, details) => ipcRenderer.invoke('startup:debugLog', { label, details }),
