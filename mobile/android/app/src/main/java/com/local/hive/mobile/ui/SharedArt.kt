@@ -14,9 +14,12 @@ import com.local.hive.mobile.ui.theme.Motion
 val LocalSharedScope = compositionLocalOf<SharedTransitionScope?> { null }
 val LocalPageScope = compositionLocalOf<AnimatedVisibilityScope?> { null }
 
-// The cover travels on One UI's open curve, the length of a page push.
+// The cover travels on One UI's open curve, the length of a page push; going
+// back into the grid (shrinking), it takes the quicker back timing.
 @OptIn(ExperimentalSharedTransitionApi::class)
-private val CoverBounds = BoundsTransform { _, _ -> tween(Motion.OPEN_MS, easing = Motion.Open) }
+private val CoverBounds = BoundsTransform { from, to ->
+    if (to.width < from.width) tween(Motion.BACK_MS + 40, easing = Motion.Back) else tween(Motion.OPEN_MS, easing = Motion.Open)
+}
 
 /**
  * Marks a cover as the same object on two pages ("album-12"): opening an

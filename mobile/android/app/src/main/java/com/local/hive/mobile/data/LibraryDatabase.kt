@@ -112,6 +112,15 @@ data class StreamTrack(
     val url: String,
 )
 
+/**
+ * Recently played: one row per song, at its latest listen. [key] is the
+ * player's media id: a library song's id, or a streamed song's key ("pc:",
+ * "am:", "sp:"), whose details are kept in [StreamTrack]. A song goes in after
+ * a few seconds of listening, unlike [Play], which needs a real listen.
+ */
+@Entity(tableName = "history")
+data class HistoryEntry(@PrimaryKey val key: String, val playedAt: Long)
+
 /** A playlist slot with the song it holds; one of [track] and [stream] is set. */
 data class PlaylistRow(
     @androidx.room.Embedded val entry: PlaylistEntry,
@@ -518,16 +527,35 @@ interface LibraryDao {
             "ON p.trackId = tracks.id ORDER BY p.lastPlayed DESC LIMIT :limit"
     )
     fun recentlyPlayed(limit: Int): Flow<List<Track>>
+
+    @Upsert
+    suspend fun upsertHistory(entry: HistoryEntry)
+
+    /** Keeps a streamed song's details for history without replacing a fuller copy kept for a playlist. */
+    @androidx.room.Insert(onConflict = androidx.room.OnConflictStrategy.IGNORE)
+    suspend fun insertStreamTrackIfAbsent(track: StreamTrack)
+
+    /** Recently played, newest first: library songs and streamed ones. */
+    @Transaction
+    @Query("SELECT 0 AS rowId, 0 AS playlistId, CASE WHEN h.`key` GLOB '[0-9]*' THEN CAST(h.`key` AS INTEGER) ELSE 0 END AS trackId, 0 AS position, CASE WHEN h.`key` GLOB '[0-9]*' THEN '' ELSE h.`key` END AS streamKey FROM history h ORDER BY h.playedAt DESC LIMIT :limit")
+    fun history(limit: Int): Flow<List<PlaylistRow>>
 }
 
 @Database(
-    entities = [Track::class, LoveState::class, PcMatch::class, Play::class, FavoriteAlbum::class, Playlist::class, PlaylistEntry::class, StreamTrack::class, Rating::class, SyncedSong::class],
-    version = 7,
+    entities = [Track::class, LoveState::class, PcMatch::class, Play::class, FavoriteAlbum::class, Playlist::class, PlaylistEntry::class, StreamTrack::class, Rating::class, SyncedSong::class, HistoryEntry::class],
+    version = 8,
     exportSchema = true,
-    autoMigrations = [AutoMigration(from = 1, to = 2), AutoMigration(from = 2, to = 3), AutoMigration(from = 3, to = 4), AutoMigration(from = 4, to = 5), AutoMigration(from = 5, to = 6), AutoMigration(from = 6, to = 7)],
+    autoMigrations = [AutoMigration(from = 1, to = 2), AutoMigration(from = 2, to = 3), AutoMigration(from = 3, to = 4), AutoMigration(from = 4, to = 5), AutoMigration(from = 5, to = 6), AutoMigration(from = 6, to = 7), AutoMigration(from = 7, to = 8, spec = LibraryDatabase.SeedHistory::class)],
 )
 abstract class LibraryDatabase : RoomDatabase() {
     abstract fun dao(): LibraryDao
+
+    /** History starts from the library songs already played on this phone. */
+    class SeedHistory : androidx.room.migration.AutoMigrationSpec {
+        override fun onPostMigrate(db: androidx.sqlite.db.SupportSQLiteDatabase) {
+            db.execSQL("INSERT OR IGNORE INTO history (`key`, playedAt) SELECT CAST(trackId AS TEXT), MAX(playedAt) FROM plays WHERE trackId > 0 AND fromPc = 0 GROUP BY trackId")
+        }
+    }
 
     companion object {
         fun open(context: Context): LibraryDatabase =

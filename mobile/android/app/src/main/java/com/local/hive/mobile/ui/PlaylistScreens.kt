@@ -420,3 +420,37 @@ fun PlaylistScreen(vm: MainViewModel, id: Long, actions: TrackActions, bottomPad
         deleting = false; vm.deletePlaylist(id); onBack()
     }
 }
+
+/**
+ * Recently played: library songs and streamed ones (from the PC, Apple
+ * Music, Spotify) alike, newest first; a song shows after a few seconds.
+ */
+@Composable
+fun HistoryScreen(vm: MainViewModel, actions: TrackActions, bottomPadding: Dp, onBack: () -> Unit) {
+    val all by vm.recentlyPlayed.collectAsStateWithLifecycle()
+    // A library song since deleted from the phone is left out.
+    val rows = remember(all) { all.filter { it.track != null || it.stream != null } }
+    val loved by vm.lovedIds.collectAsStateWithLifecycle()
+    val now by vm.nowPlaying.collectAsStateWithLifecycle()
+    val full by vm.fullSongs.collectAsStateWithLifecycle()
+    Column(Modifier.fillMaxSize()) {
+        PageBar("", 0f, onBack)
+        LazyColumn(Modifier.fillMaxSize(), contentPadding = PaddingValues(bottom = bottomPadding + 16.dp)) {
+            item { PanelHeader("Recently played") }
+            if (rows.isEmpty()) item { EmptyState("Nothing here yet", "Songs show here after a few seconds of listening.") }
+            else {
+                item { PanelTop() }
+                itemsIndexed(rows, key = { _, r -> r.entry.streamKey.ifBlank { r.entry.trackId.toString() } }) { i, row ->
+                    Box(Modifier.animateItem()) {
+                        PanelSlice {
+                            val t = row.track
+                            if (t != null) TrackRow(t, t.id in loved, now.trackId == t.id, now.isPlaying, actions, onClick = { vm.playRows(rows, i) })
+                            else StreamRow(row.stream!!, now.mediaId == row.stream.key, now.isPlaying, full, onClick = { vm.playRows(rows, i) })
+                        }
+                    }
+                }
+                item { PanelBottom() }
+            }
+        }
+    }
+}

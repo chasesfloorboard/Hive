@@ -274,7 +274,9 @@ class PlaybackService : MediaLibraryService() {
                     val (queue, start) = this@PlaybackService.libraryBrowser.resolve(mediaItems)
                     MediaItemsWithStartPosition(queue, if (mediaItems.size == 1) start else startIndex.coerceIn(0, (queue.size - 1).coerceAtLeast(0)), startPositionMs)
                 }
-        }).setSessionActivity(open).build()
+        }).setSessionActivity(open)
+            .setBitmapLoader(androidx.media3.session.CacheBitmapLoader(CoverBitmapLoader(this, scope)))
+            .build()
     }
 
     override fun onGetSession(controllerInfo: MediaSession.ControllerInfo): MediaLibrarySession? = session
@@ -322,6 +324,21 @@ private class PlayCounter(
     private var resumedAt = 0L
     private var counted = false
     private var durationMs = 0L
+    // History takes a song after a few seconds of listening, much sooner than a counted play.
+    private var currentItem: androidx.media3.common.MediaItem? = null
+    private var historyDone = false
+    private var historyJob: kotlinx.coroutines.Job? = null
+
+    private fun armHistory() {
+        historyJob?.cancel()
+        val item = currentItem ?: return
+        if (historyDone || !player.isPlaying) return
+        val heard = listenedMs + if (resumedAt > 0) System.currentTimeMillis() - resumedAt else 0
+        historyJob = scope.launch {
+            kotlinx.coroutines.delay((HISTORY_MS - heard).coerceAtLeast(0))
+            if (currentItem === item && player.isPlaying && !historyDone) { historyDone = true; recorder.history(item) }
+        }
+    }
 
     override fun onIsPlayingChanged(isPlaying: Boolean) {
         if (isPlaying) {
@@ -329,6 +346,7 @@ private class PlayCounter(
             player.duration.takeIf { it > 0 }?.let { durationMs = it }
         } else accumulate()
         check()
+        armHistory()
     }
 
     override fun onPlaybackStateChanged(playbackState: Int) {
@@ -340,6 +358,8 @@ private class PlayCounter(
         accumulate()
         check()
         currentKey = mediaItem?.mediaId
+        currentItem = mediaItem
+        historyDone = false
         val m = mediaItem?.mediaMetadata
         val key = currentKey
         // Radio and podcast episodes aren't songs to scrobble.
@@ -353,6 +373,7 @@ private class PlayCounter(
         durationMs = 0
         counted = false
         resumedAt = if (player.isPlaying) System.currentTimeMillis() else 0
+        armHistory()
     }
 
     override fun onPositionDiscontinuity(oldPosition: Player.PositionInfo, newPosition: Player.PositionInfo, reason: Int) {
@@ -386,4 +407,9 @@ fun interface PlayRecorder {
     fun record(trackId: Long, listenedMs: Long)
     /** A song streamed from Hive on the PC, by its id there. */
     fun recordPc(pcId: String, listenedMs: Long) {}
+    /** A song listened to for [HISTORY_MS]: it goes into Recently played. */
+    fun history(item: androidx.media3.common.MediaItem) {}
 }
+
+/** How long a song plays before it shows in Recently played. */
+const val HISTORY_MS = 5_000L

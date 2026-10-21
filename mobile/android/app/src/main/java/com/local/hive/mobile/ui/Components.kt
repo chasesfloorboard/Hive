@@ -3,6 +3,7 @@ package com.local.hive.mobile.ui
 import androidx.compose.material.icons.rounded.Radio
 import com.local.hive.mobile.ui.theme.HiveIcons
 import androidx.compose.animation.AnimatedVisibility
+import androidx.compose.animation.togetherWith
 import androidx.compose.animation.animateColorAsState
 import androidx.compose.animation.core.MutableTransitionState
 import androidx.compose.animation.core.RepeatMode
@@ -130,9 +131,10 @@ fun Artwork(
     val c = Hive.colors
     val shadowed = if (elevation > 0.dp) modifier.shadow(elevation, shape, ambientColor = glow ?: Color.Black, spotColor = glow ?: Color.Black) else modifier
     val context = androidx.compose.ui.platform.LocalContext.current
-    // A cover already on screen at another size stands in while this size loads, so it never blinks.
+    // A cover already on screen at another size stands in while this size loads, so it never blinks;
+    // the sharpest copy drawn so far, never a list row's thumbnail once a bigger one was shown.
     val request = remember(model) {
-        val standIn = model?.toString()?.let { ShownCovers[it] }
+        val standIn = model?.toString()?.let { ShownCovers[it]?.first }
         coil3.request.ImageRequest.Builder(context).data(model).placeholderMemoryCacheKey(standIn)
             // Only a cover that wasn't standing in fades up.
             .crossfade(if (standIn != null) 0 else 260).build()
@@ -150,15 +152,16 @@ fun Artwork(
             onSuccess = { state ->
                 shown = true
                 val key = state.result.memoryCacheKey
-                if (key != null && model != null) ShownCovers[model.toString()] = key
+                val pixels = state.result.image.width.toLong() * state.result.image.height
+                if (key != null && model != null) ShownCovers.merge(model.toString(), key to pixels) { old, new -> if (new.second >= old.second) new else old }
             },
             onError = { shown = false },
         )
     }
 }
 
-/** The last memory-cache entry each cover was drawn from. */
-private val ShownCovers = java.util.concurrent.ConcurrentHashMap<String, coil3.memory.MemoryCache.Key>()
+/** The sharpest memory-cache entry each cover has been drawn from, with its size in pixels. */
+private val ShownCovers = java.util.concurrent.ConcurrentHashMap<String, Pair<coil3.memory.MemoryCache.Key, Long>>()
 
 @Composable
 private fun ArtPlaceholder(icon: ImageVector) {
@@ -259,7 +262,15 @@ fun AccentPlayButton(playing: Boolean, onClick: () -> Unit, size: Dp = 44.dp) {
             .pressable(onClick, 0.9f),
         contentAlignment = Alignment.Center,
     ) {
-        androidx.compose.animation.Crossfade(playing, animationSpec = tween(160), label = "play") { p ->
+        // Play and pause trade places with a small scale, not a flat fade.
+        androidx.compose.animation.AnimatedContent(
+            playing,
+            transitionSpec = {
+                (scaleIn(spring(dampingRatio = 0.6f, stiffness = 700f), initialScale = 0.55f) + fadeIn(tween(120)))
+                    .togetherWith(scaleOut(tween(110), targetScale = 0.55f) + fadeOut(tween(90)))
+            },
+            label = "play",
+        ) { p ->
             Icon(if (p) HiveIcons.Pause else HiveIcons.Play, if (p) "Pause" else "Play", tint = readableOn(c.accent), modifier = Modifier.size(size * 0.55f))
         }
     }

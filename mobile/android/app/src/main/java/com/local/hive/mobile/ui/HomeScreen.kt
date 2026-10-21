@@ -353,7 +353,8 @@ fun TrackList(
                     else ListHeader(emptyList<Unit>(), null, { "" }, {}, "$count · ${formatLength(tracks.sumOf { it.durationMs })}", { vm.shuffle(tracks) }, { vm.play(tracks) })
                 }
                 itemsIndexed(tracks, key = { _, t -> t.id }, contentType = { _, _ -> "track" }) { i, t ->
-                    TrackRow(t, t.id in loved, now.trackId == t.id, now.isPlaying, actions, onClick = { vm.play(tracks, i) })
+                    // Rows glide into place when the list changes (a sort, a deletion, a new song).
+                    Box(Modifier.animateItem()) { TrackRow(t, t.id in loved, now.trackId == t.id, now.isPlaying, actions, onClick = { vm.play(tracks, i) }) }
                 }
             }
         }
@@ -438,14 +439,15 @@ private fun PlaylistsTab(vm: MainViewModel, nav: HomeNavigation, bottom: Dp, onC
         Triple(AutoPlaylist.Favorites, favorites, Icons.Rounded.Favorite),
         Triple(AutoPlaylist.RecentlyAdded, recent, Icons.Rounded.NewReleases),
         Triple(AutoPlaylist.MostPlayed, most.take(25), Icons.Rounded.TrendingUp),
-        Triple(AutoPlaylist.RecentlyPlayed, played, Icons.Rounded.History),
-        Triple(AutoPlaylist.TopRated, rated, Icons.Rounded.Star),
     )
     Box(Modifier.fillMaxSize()) {
         LazyColumn(Modifier.fillMaxSize(), contentPadding = PaddingValues(bottom = bottom + 12.dp)) {
             item {
                 LazyRow(contentPadding = PaddingValues(horizontal = 16.dp, vertical = 10.dp), horizontalArrangement = Arrangement.spacedBy(12.dp)) {
                     items(smart) { (kind, tracks, icon) -> SmartCard(kind.title, countOf(tracks.size, "track"), tracks.map { it.artworkUri }.distinct().take(4), icon) { nav.openPlaylist(kind) } }
+                    // Recently played holds streamed songs too, so it's built from its rows.
+                    item { SmartCard(AutoPlaylist.RecentlyPlayed.title, countOf(played.size, "track"), played.mapNotNull { it.art }.distinct().take(4), Icons.Rounded.History) { nav.openPlaylist(AutoPlaylist.RecentlyPlayed) } }
+                    item { SmartCard(AutoPlaylist.TopRated.title, countOf(rated.size, "track"), rated.map { it.artworkUri }.distinct().take(4), Icons.Rounded.Star) { nav.openPlaylist(AutoPlaylist.TopRated) } }
                 }
             }
             item {
@@ -475,7 +477,7 @@ private fun PlaylistsTab(vm: MainViewModel, nav: HomeNavigation, bottom: Dp, onC
 
 /** An automatic playlist as a card: up to four of its covers in a square, its name and size. */
 @Composable
-private fun SmartCard(title: String, detail: String, covers: List<Uri>, icon: ImageVector, onClick: () -> Unit) {
+private fun SmartCard(title: String, detail: String, covers: List<Any>, icon: ImageVector, onClick: () -> Unit) {
     val c = Hive.colors
     Column(Modifier.width(132.dp).pressable(onClick)) {
         Box(Modifier.size(132.dp).shadow(12.dp, HiveShape.art, ambientColor = c.accentGlow).clip(HiveShape.art).background(mix(c.accent, c.panelStrong, 0.12f))) {

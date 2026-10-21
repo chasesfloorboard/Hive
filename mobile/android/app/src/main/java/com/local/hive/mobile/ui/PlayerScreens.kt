@@ -3,6 +3,7 @@ package com.local.hive.mobile.ui
 import com.local.hive.mobile.ui.theme.HiveIcons
 import android.os.Build
 import androidx.compose.animation.Crossfade
+import androidx.compose.animation.togetherWith
 import androidx.compose.animation.animateColorAsState
 import androidx.compose.animation.core.Animatable
 import androidx.compose.animation.core.animateDpAsState
@@ -115,7 +116,7 @@ import androidx.compose.animation.core.animateFloat
 import androidx.compose.material.icons.rounded.GraphicEq
 import androidx.compose.material.icons.rounded.Lyrics
 import androidx.compose.material.icons.rounded.Info
-import androidx.compose.material.icons.outlined.Info as InfoOutline
+import androidx.compose.material.icons.rounded.Add
 import androidx.compose.material.icons.automirrored.rounded.PlaylistAdd
 import androidx.compose.runtime.mutableIntStateOf
 import androidx.compose.foundation.gestures.detectDragGestures
@@ -175,6 +176,20 @@ fun PlayerSheet(
     var dragStart by remember { mutableFloatStateOf(0f) }
     var settleMs by remember { mutableStateOf<Int?>(null) }
     var artTarget by remember { mutableStateOf<Rect?>(null) }
+    // A song changed by the buttons (or anything but a swipe) slides its cover in from the side it
+    // comes from, as a swipe does; a swipe already animates itself, so it's left alone.
+    val screenPx = with(density) { androidx.compose.ui.platform.LocalConfiguration.current.screenWidthDp.dp.toPx() }
+    var lastIndex by remember { mutableIntStateOf(now.queueIndex) }
+    var lastId by remember { mutableStateOf(now.mediaId) }
+    LaunchedEffect(now.mediaId) {
+        val from = lastIndex
+        val changed = lastId != null && lastId != now.mediaId
+        lastIndex = now.queueIndex; lastId = now.mediaId
+        if (!changed || swipe.isRunning || abs(swipe.value) > 1f) return@LaunchedEffect
+        val dir = if (now.queueIndex >= from) 1 else -1
+        swipe.snapTo(dir * screenPx * 0.3f)
+        swipe.animateTo(0f, spring(dampingRatio = 0.82f, stiffness = 420f))
+    }
     val navBottom = WindowInsets.navigationBars.asPaddingValues().calculateBottomPadding()
     val glass by animateColorAsState(mix(c.accent, c.panelStrong.copy(alpha = 0.78f), 0.09f), tween(900), label = "barGlass")
     // Frosted like Hive's player bar: what scrolls under the bar is blurred, not just tinted.
@@ -504,11 +519,11 @@ private fun FullPlayerContent(
                         BarIcon(Icons.Rounded.MoreVert, "More options", { menu = true })
                         HiveMenu(menu, { menu = false }) {
                             if (current != null) {
+                                HiveMenuItem("Song info", Icons.Rounded.Info) { menu = false; current?.let(onInfo) }
                                 HiveMenuItem("Add to playlist", Icons.AutoMirrored.Rounded.PlaylistAdd) { menu = false; current?.let(onAddToPlaylist) }
                                 HiveMenuItem("Share", Icons.Rounded.Share) { menu = false; current?.let { Share.tracks(context, listOf(it)) } }
                                 HiveMenuItem("Go to album", Icons.Rounded.Album) { menu = false; current?.let(onOpenAlbum) }
                                 HiveMenuItem("Go to artist", Icons.Rounded.Person) { menu = false; current?.let(onOpenArtist) }
-                                HiveMenuItem("Track details", Icons.Rounded.Info) { menu = false; current?.let(onInfo) }
                                 HiveMenuDivider()
                             }
                             // A song from Apple Music or Spotify that isn't on the phone can be saved to it.
@@ -567,20 +582,35 @@ private fun FullPlayerContent(
 
                 androidx.compose.animation.AnimatedVisibility(!queueOpen, enter = androidx.compose.animation.expandVertically(Motion.close()) + androidx.compose.animation.fadeIn(Motion.close()), exit = androidx.compose.animation.shrinkVertically(Motion.open()) + androidx.compose.animation.fadeOut(Motion.underFade())) {
                     // As Samsung Music lays it out: the song centred under the cover, then
-                    // add-to-playlist, the heart in the middle, and the song's info.
+                    // the heart in the middle.
                     Column(Modifier.fillMaxWidth().padding(horizontal = 22.dp).padding(top = 8.dp), horizontalAlignment = Alignment.CenterHorizontally) {
-                        Crossfade(current, animationSpec = Motion.swap(), label = "meta") { t ->
+                        androidx.compose.animation.AnimatedContent(
+                            current to now.queueIndex,
+                            transitionSpec = {
+                                val dir = if (targetState.second >= initialState.second) 1 else -1
+                                (androidx.compose.animation.slideInHorizontally(spring(dampingRatio = 0.85f, stiffness = 500f)) { dir * it / 5 } + androidx.compose.animation.fadeIn(tween(220, delayMillis = 40)))
+                                    .togetherWith(androidx.compose.animation.slideOutHorizontally(tween(160)) { -dir * it / 5 } + androidx.compose.animation.fadeOut(tween(120)))
+                            },
+                            contentKey = { it.first?.id ?: now.mediaId },
+                            label = "meta",
+                        ) { (t, _) ->
                             Column(Modifier.fillMaxWidth(), horizontalAlignment = Alignment.CenterHorizontally, verticalArrangement = Arrangement.spacedBy(3.dp)) {
                                 Text(now.title.ifBlank { "Nothing playing" }, style = HiveText.npTitle, color = c.text, maxLines = 2, overflow = TextOverflow.Ellipsis, textAlign = androidx.compose.ui.text.style.TextAlign.Center)
                                 Text(now.artist, style = HiveText.rowStrong, color = c.text.copy(alpha = 0.86f), maxLines = 1, overflow = TextOverflow.Ellipsis, textAlign = androidx.compose.ui.text.style.TextAlign.Center, modifier = Modifier.clickable { t?.let(onOpenArtist) })
                             }
                         }
-                        Row(Modifier.fillMaxWidth().padding(top = 4.dp), horizontalArrangement = Arrangement.SpaceBetween, verticalAlignment = Alignment.CenterVertically) {
-                            val t = current
-                            if (t != null) TransportButton(Icons.AutoMirrored.Rounded.PlaylistAdd, "Add to playlist", 24.dp) { onAddToPlaylist(t) } else Spacer(Modifier.size(56.dp))
-                            if (now.trackId != null) TransportButton(if (isLoved) Icons.Rounded.Favorite else Icons.Rounded.FavoriteBorder, if (isLoved) "Remove from Favorites" else "Add to Favorites", 26.dp, tint = if (isLoved) c.accent else c.text) { now.trackId?.let { vm.toggleLoved(it) } }
+                        Row(Modifier.fillMaxWidth().padding(top = 4.dp), horizontalArrangement = Arrangement.Center, verticalAlignment = Alignment.CenterVertically) {
+                            // Favoriting pops the heart; opening the player on a favorite doesn't.
+                            val heart = remember { Animatable(1f) }
+                            var lovedBefore by remember(now.trackId) { mutableStateOf(isLoved) }
+                            LaunchedEffect(isLoved, now.trackId) {
+                                if (isLoved && !lovedBefore) { heart.snapTo(0.6f); heart.animateTo(1f, spring(dampingRatio = 0.32f, stiffness = 650f)) }
+                                lovedBefore = isLoved
+                            }
+                            if (now.trackId != null) Box(Modifier.graphicsLayer { scaleX = heart.value; scaleY = heart.value }) {
+                                TransportButton(if (isLoved) Icons.Rounded.Favorite else Icons.Rounded.FavoriteBorder, if (isLoved) "Remove from Favorites" else "Add to Favorites", 26.dp, tint = if (isLoved) c.accent else c.text) { now.trackId?.let { vm.toggleLoved(it) } }
+                            }
                             else Spacer(Modifier.size(56.dp))
-                            if (t != null) TransportButton(Icons.Rounded.Info, "Song info", 22.dp) { onInfo(t) } else Spacer(Modifier.size(56.dp))
                         }
                     }
                 }
@@ -596,10 +626,10 @@ private fun FullPlayerContent(
                     if (now.isLive) Spacer(Modifier.size(48.dp)) else RepeatButton(now.repeatMode) { vm.player.cycleRepeat() }
                 }
 
-                // Lyrics on the left, what's next in the middle, the queue on the right.
+                // Add to playlist on the left, what's next in the middle, the queue on the right.
                 Row(Modifier.fillMaxWidth().padding(start = 10.dp, end = 10.dp, bottom = 8.dp).height(52.dp), verticalAlignment = Alignment.CenterVertically) {
-                    // The song's info, format and bitrate included (lyrics are a tap on the cover).
-                    current?.let { t -> TransportButton(Icons.Outlined.InfoOutline, "Song info", 22.dp) { onInfo(t) } } ?: Spacer(Modifier.size(56.dp))
+                    // Song info is in the ⋮ menu; lyrics are a tap on the cover.
+                    current?.let { t -> TransportButton(Icons.Rounded.Add, "Add to playlist", 26.dp) { onAddToPlaylist(t) } } ?: Spacer(Modifier.size(56.dp))
                     Text(
                         if (queueOpen) "${now.queueIndex + 1} of ${now.queue.size} · ${formatLength(now.queue.drop(now.queueIndex + 1).sumOf { it.durationMs })} left"
                         else upNext?.let { "Next: " + listOf(it.title, it.artist).filter { s -> s.isNotBlank() }.joinToString(" · ") } ?: "",

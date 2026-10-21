@@ -137,10 +137,10 @@ fun HiveThemed(vm: MainViewModel, content: @Composable () -> Unit) {
 private const val UNDER_DRIFT = 4
 private val openEnter = slideInHorizontally(Motion.open()) { it }
 private val openExit = slideOutHorizontally(Motion.open()) { -it / UNDER_DRIFT } + fadeOut(tween(180))
-private val closeEnter = slideInHorizontally(Motion.close()) { -it / UNDER_DRIFT } + fadeIn(tween(220, delayMillis = 60))
-private val closeExit = slideOutHorizontally(Motion.close()) { it }
-private val followEnter = slideInHorizontally(tween(Motion.CLOSE_MS, easing = LinearEasing)) { -it / UNDER_DRIFT } + fadeIn(tween(Motion.CLOSE_MS, easing = LinearEasing))
-private val followExit = slideOutHorizontally(tween(Motion.CLOSE_MS, easing = LinearEasing)) { it }
+private val closeEnter = slideInHorizontally(Motion.back()) { -it / UNDER_DRIFT } + fadeIn(tween(160))
+private val closeExit = slideOutHorizontally(Motion.back()) { it }
+private val followEnter = slideInHorizontally(tween(Motion.BACK_MS, easing = LinearEasing)) { -it / UNDER_DRIFT } + fadeIn(tween(Motion.BACK_MS, easing = LinearEasing))
+private val followExit = slideOutHorizontally(tween(Motion.BACK_MS, easing = LinearEasing)) { it }
 
 private const val ALBUM = "album/{id}"
 // An album opened from its cover: the page fades up behind the cover as it grows into place, and fades away as it shrinks back.
@@ -148,7 +148,7 @@ private const val ALBUM = "album/{id}"
 // and the new page's words arrive as the cover lands.
 private val coverEnter = fadeIn(tween(240, delayMillis = 170, easing = Motion.SineInOut60))
 private val coverExitUnder = fadeOut(tween(Motion.UNDER_FADE_MS, easing = LinearEasing))
-private val coverPopEnter = fadeIn(tween(240, delayMillis = 150, easing = Motion.SineInOut60))
+private val coverPopEnter = fadeIn(tween(200, delayMillis = 40, easing = Motion.SineInOut60))
 private val coverPopExit = fadeOut(tween(Motion.UNDER_FADE_MS, easing = LinearEasing))
 
 /** A page that knows its own transition, so its covers can be shared with the page before it. */
@@ -299,11 +299,12 @@ private fun HiveContent(vm: MainViewModel, openPlayerInitially: Boolean) {
                         }
                         page("playlist/{kind}") { entry ->
                             val kind = runCatching { AutoPlaylist.valueOf(entry.arguments?.getString("kind").orEmpty()) }.getOrDefault(AutoPlaylist.Favorites)
+                            if (kind == AutoPlaylist.RecentlyPlayed) { HistoryScreen(vm, actions, bottomPadding) { nav.popBackStack() }; return@page }
                             val flow = when (kind) {
                                 AutoPlaylist.Favorites -> vm.favorites
                                 AutoPlaylist.RecentlyAdded -> vm.recentlyAdded
                                 AutoPlaylist.MostPlayed -> vm.topMostPlayed
-                                AutoPlaylist.RecentlyPlayed -> vm.recentlyPlayed
+                                AutoPlaylist.RecentlyPlayed -> vm.recentlyAdded // shown by HistoryScreen above
                                 AutoPlaylist.TopRated -> vm.topRated
                             }
                             SongsScreen(vm, kind.title, flow, actions, bottomPadding) { nav.popBackStack() }

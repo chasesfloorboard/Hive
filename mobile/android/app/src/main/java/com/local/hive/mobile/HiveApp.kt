@@ -47,6 +47,8 @@ class HiveApp : Application(), coil3.SingletonImageLoader.Factory {
     /** Coil, with album art read at full quality (see [com.local.hive.mobile.data.AlbumArtFetcher]). */
     override fun newImageLoader(context: coil3.PlatformContext): coil3.ImageLoader = coil3.ImageLoader.Builder(context)
         .components { add(com.local.hive.mobile.data.AlbumArtFetcher.Factory(this@HiveApp)) }
+        // Room for many full-size covers, so ones already seen come back sharp instead of reloading.
+        .memoryCache { coil3.memory.MemoryCache.Builder().maxSizePercent(context, 0.35).build() }
         .build()
 
     val scope = CoroutineScope(SupervisorJob() + Dispatchers.Default)
@@ -80,6 +82,24 @@ class HiveApp : Application(), coil3.SingletonImageLoader.Factory {
         }
         override fun recordPc(pcId: String, listenedMs: Long) {
             scope.launch { database.dao().insertPlay(Play(trackId = 0, playedAt = System.currentTimeMillis(), listenedMs = listenedMs, pcId = pcId)) }
+        }
+        override fun history(item: androidx.media3.common.MediaItem) {
+            // Android Auto lists songs as "<list>|<id>".
+            val key = item.mediaId.substringAfterLast('|')
+            // Radio and podcast episodes aren't songs.
+            if (key.isBlank() || key.startsWith("radio:") || key.startsWith("pod:")) return
+            scope.launch {
+                val dao = database.dao()
+                if (key.toLongOrNull() == null) {
+                    val m = item.mediaMetadata
+                    dao.insertStreamTrackIfAbsent(com.local.hive.mobile.data.StreamTrack(
+                        key = key, source = key.substringBefore(':'), title = m.title?.toString().orEmpty(), artist = m.artist?.toString().orEmpty(),
+                        album = m.albumTitle?.toString().orEmpty(), durationMs = m.durationMs ?: 0, artworkUrl = m.artworkUri?.toString().orEmpty(),
+                        previewUrl = item.requestMetadata.extras?.getString(com.local.hive.mobile.playback.EXTRA_PREVIEW).orEmpty(), url = "",
+                    ))
+                }
+                dao.upsertHistory(com.local.hive.mobile.data.HistoryEntry(key, System.currentTimeMillis()))
+            }
         }
     }
 

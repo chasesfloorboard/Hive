@@ -72,7 +72,8 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
     val recentlyAdded = dao.recentlyAdded(AUTO_PLAYLIST_SIZE).state(emptyList())
     val mostPlayed = dao.mostPlayed(AUTO_PLAYLIST_SIZE).state(emptyList())
     val topMostPlayed = dao.mostPlayed(25).state(emptyList())
-    val recentlyPlayed = dao.recentlyPlayed(AUTO_PLAYLIST_SIZE).state(emptyList())
+    /** Recently played, library and streamed songs alike (see [com.local.hive.mobile.data.HistoryEntry]). */
+    val recentlyPlayed = dao.history(AUTO_PLAYLIST_SIZE).state(emptyList())
 
     val nowPlaying = app.player.state
     /** The live playing position (see PlayerConnection.position). */
