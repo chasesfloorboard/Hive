@@ -72,7 +72,9 @@ test('the themes folder feature lists/applies .hive-theme packs from a dedicated
   const main = fs.readFileSync(path.join(root, 'app/main/main.js'), 'utf8');
   const preload = fs.readFileSync(path.join(root, 'app/main/preload.js'), 'utf8');
   assert.match(main, /const THEMES_DIR = \(\) => path\.join\(USER_DATA\(\), 'themes'\);/);
-  assert.match(main, /ipcMain\.handle\('themes:list', async \(\) => \{/);
+  // The listing is shared with Hive Link (the phone's Appearance), so the handler calls listThemes().
+  assert.match(main, /ipcMain\.handle\('themes:list', async \(\) => listThemes\(\)\);/);
+  assert.match(main, /async function listThemes\(\) \{/);
   assert.match(main, /ipcMain\.handle\('themes:openFolder', async \(\) => \{/);
   assert.match(preload, /listThemeFolder: \(\) => ipcRenderer\.invoke\('themes:list'\)/);
   assert.match(preload, /openThemeFolder: \(\) => ipcRenderer\.invoke\('themes:openFolder'\)/);

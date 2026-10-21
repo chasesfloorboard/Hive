@@ -2605,7 +2605,8 @@ ipcMain.handle('theme:export', async (_evt, payload={}) => {
 // theme:export already writes, so a pack exported from Hive (or shared by
 // someone else) drops straight in and shows up.
 const THEMES_DIR = () => path.join(USER_DATA(), 'themes');
-ipcMain.handle('themes:list', async () => {
+ipcMain.handle('themes:list', async () => listThemes());
+async function listThemes() {
   const dir = THEMES_DIR();
   await fsp.mkdir(dir, { recursive: true, mode: 0o700 });
   let entries = [];
@@ -2623,7 +2624,7 @@ ipcMain.handle('themes:list', async () => {
   }
   themes.sort((a, b) => a.name.localeCompare(b.name));
   return { dir, themes };
-});
+}
 // Hive: convert MusicBee XML skins into .hive-theme packs in the themes
 // folder (they then appear in Settings → Appearance like any other theme).
 ipcMain.handle('themes:importMusicBeeSkins', async () => {
@@ -8061,6 +8062,20 @@ function startHiveLink() {
     acceptPhonePlays: true,
     getWrap: year => yearlyWrapData(year),
     getWrapYears: () => yearlyWrapYears(),
+    // Every theme in Hive's themes folder (stock, MusicBee skins, saved ones) for the phone's Appearance.
+    getThemes: async () => (await listThemes()).themes.map(t => ({ name: t.name, css: t.css, stock: t.stock })),
+    // A phone on the network asking to connect without a code: the person at the PC decides.
+    onPairRequest: async ({ name }) => {
+      if (!mainWindow || mainWindow.isDestroyed()) return false;
+      try { mainWindow.flashFrame(true); } catch {}
+      const { response } = await dialog.showMessageBox(mainWindow, {
+        type: 'question', buttons: ['Allow', 'Refuse'], defaultId: 0, cancelId: 1, noLink: true,
+        title: 'Hive Mobile', message: `“${name}” wants to connect to Hive`,
+        detail: 'It will sync favorites, plays and songs with this PC over your network. Allow only your own phone.'
+      });
+      try { mainWindow.flashFrame(false); } catch {}
+      return response === 0;
+    },
     // Hive Mobile searches Spotify through this PC's Spotify app when the phone isn't signed in itself.
     spotifySearch: q => searchSpotifyThroughApp(q),
     onInbox: summary => { try { mainWindow?.webContents?.send('hiveLink:inbox', summary); } catch {} },

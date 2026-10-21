@@ -17,7 +17,7 @@ const { createHiveLink, trackIdFor } = require('../app/main/hive-link');
 
 let nextPort = 48100 + Math.floor(Math.random() * 500) * 2;
 
-function setup({ acceptPhoneChanges = true, streamSong = null, coversDir = null, remote = null, getPlaylists = null, getPlays = null, spotifySearch = null, songTarget = null, onSongAdded = undefined, acceptPhonePlays = false, getWrap = null, getWrapYears = null } = {}) {
+function setup({ acceptPhoneChanges = true, streamSong = null, coversDir = null, remote = null, getPlaylists = null, getPlays = null, spotifySearch = null, songTarget = null, onSongAdded = undefined, acceptPhonePlays = false, getWrap = null, getWrapYears = null, getThemes = null, onPairRequest = null } = {}) {
   const dataDir = fs.mkdtempSync(path.join(os.tmpdir(), 'hive-link-'));
   const tracks = [
     { id: 'a1', path: '/music/Pearl Jam - Black.mp3', title: 'Black', artist: 'Pearl Jam', album: 'Ten', duration: '343.2', loved: false },
@@ -37,6 +37,8 @@ function setup({ acceptPhoneChanges = true, streamSong = null, coversDir = null,
     remote,
     getPlaylists,
     getPlays,
+    getThemes,
+    onPairRequest,
     spotifySearch,
     songTarget,
     onSongAdded,
@@ -102,6 +104,52 @@ async function waitListening(port) {
   }
   throw new Error('server did not start');
 }
+
+test('a phone can ask to connect without a code; only the PC allowing it pairs it', async t => {
+  let answer;
+  const asked = [];
+  const ctx = setup({ onPairRequest: ({ name }) => { asked.push(name); return new Promise(r => { answer = r; }); } });
+  t.after(() => ctx.link.stop());
+  await waitListening(ctx.port);
+  const req = await request(ctx.port, 'POST', '/api/pair/request', { body: { deviceName: 'Galaxy A55' } });
+  assert.equal(req.status, 202);
+  assert.deepEqual(asked, ['Galaxy A55']);
+  // A second ask while one is open is turned away (no prompt flood).
+  assert.equal((await request(ctx.port, 'POST', '/api/pair/request', { body: { deviceName: 'Other' } })).status, 429);
+  const poll = secret => request(ctx.port, 'GET', `/api/pair/request?id=${req.body.requestId}&secret=${encodeURIComponent(secret)}`);
+  assert.equal((await poll(req.body.secret)).body.status, 'pending');
+  assert.equal((await poll('wrong-secret-of-same-length-xxxxxxxxxxxxxx'.slice(0, req.body.secret.length))).status, 404);
+  assert.equal(ctx.link.devices().length, 0);
+  answer(true);
+  await new Promise(r => setTimeout(r, 20));
+  const ok = await poll(req.body.secret);
+  assert.equal(ok.body.status, 'allowed');
+  assert.ok(ok.body.token);
+  assert.equal((await request(ctx.port, 'GET', '/api/info', { token: ok.body.token })).status, 200);
+  assert.deepEqual(ctx.link.devices().map(d => d.name), ['Galaxy A55']);
+  // The token is handed over once.
+  assert.equal((await poll(req.body.secret)).status, 404);
+});
+
+test('a refused request pairs nothing', async t => {
+  const ctx = setup({ onPairRequest: async () => false });
+  t.after(() => ctx.link.stop());
+  await waitListening(ctx.port);
+  const req = await request(ctx.port, 'POST', '/api/pair/request', { body: { deviceName: 'Stranger' } });
+  await new Promise(r => setTimeout(r, 20));
+  const res = await request(ctx.port, 'GET', `/api/pair/request?id=${req.body.requestId}&secret=${encodeURIComponent(req.body.secret)}`);
+  assert.equal(res.status, 403);
+  assert.equal(ctx.link.devices().length, 0);
+});
+
+test('Hive shares its themes with a paired phone', async t => {
+  const ctx = setup({ getThemes: async () => [{ name: 'Nordic', css: ':root{--accent:#485d5f}', stock: false }] });
+  t.after(() => ctx.link.stop());
+  const token = await pair(ctx);
+  const res = await request(ctx.port, 'GET', '/api/themes', { token });
+  assert.deepEqual(res.body.themes.map(t => t.name), ['Nordic']);
+  assert.equal((await request(ctx.port, 'GET', '/api/info', { token })).body.themes, true);
+});
 
 test('pairing issues a token only for the right code, and only once', async t => {
   const ctx = setup();

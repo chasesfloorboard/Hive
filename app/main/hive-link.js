@@ -67,6 +67,7 @@ const DISCOVERY_PORT = 47801;
 const DISCOVERY_REQUEST = 'HIVELINK_DISCOVER';
 const PAIRING_TTL_MS = 5 * 60 * 1000;
 const MAX_PAIRING_ATTEMPTS = 5;
+const PAIR_REQUEST_TTL_MS = 2 * 60 * 1000;
 const MAX_EVENTS = 5000;
 const MAX_BODY_BYTES = 1024 * 1024;
 const MAX_INBOX_PLAYS = 50000;
@@ -101,7 +102,7 @@ function lanAddresses() {
   return out;
 }
 
-function createHiveLink({ dataDir, getTracks, setLove, onPaired, streamSong = null, coversDir = null, remote = null, getPlaylists = null, getPlays = null, recordPlays = null, spotifySearch = null, songTarget = null, onSongAdded = () => {}, acceptPhonePlays = false, getWrap = null, getWrapYears = null, onInbox = () => {}, log = () => {}, port = DEFAULT_PORT, discoveryPort = DISCOVERY_PORT, acceptPhoneChanges = false }) {
+function createHiveLink({ dataDir, getTracks, setLove, onPaired, streamSong = null, coversDir = null, remote = null, getPlaylists = null, getPlays = null, recordPlays = null, spotifySearch = null, songTarget = null, onSongAdded = () => {}, acceptPhonePlays = false, getWrap = null, getWrapYears = null, getThemes = null, onPairRequest = null, onInbox = () => {}, log = () => {}, port = DEFAULT_PORT, discoveryPort = DISCOVERY_PORT, acceptPhoneChanges = false }) {
   const statePath = path.join(dataDir, 'hive-link.json');
   let state = loadState();
   let server = null;
@@ -164,6 +165,7 @@ function createHiveLink({ dataDir, getTracks, setLove, onPaired, streamSong = nu
       // Song sync: whether Hive takes song files from the phone.
       songs: { receive: !!songTarget && state.receiveSongs },
       wrap: !!getWrap,
+      themes: !!getThemes,
       // Phone changes waiting for the user in Hive.
       inbox: inboxSummary()
     };
@@ -188,10 +190,14 @@ function createHiveLink({ dataDir, getTracks, setLove, onPaired, streamSong = nu
       return { status: 403, body: { error: 'Wrong pairing code.' } };
     }
     pairing = null;
+    return { status: 200, body: addDevice(body?.deviceName) };
+  }
+
+  function addDevice(deviceName) {
     const token = crypto.randomBytes(32).toString('base64url');
     const device = {
       id: crypto.randomUUID(),
-      name: String(body?.deviceName || 'Phone').slice(0, 80),
+      name: String(deviceName || 'Phone').slice(0, 80),
       tokenHash: sha256(token),
       pairedAt: Date.now(),
       lastSeen: Date.now()
@@ -199,7 +205,44 @@ function createHiveLink({ dataDir, getTracks, setLove, onPaired, streamSong = nu
     state.devices.push(device);
     saveNow();
     try { onPaired?.(device); } catch {}
-    return { status: 200, body: { token, deviceId: device.id, serverId: state.serverId, name: serverName(), seq: state.seq } };
+    return { token, deviceId: device.id, serverId: state.serverId, name: serverName(), seq: state.seq };
+  }
+
+  // Connecting without a code: a phone on the same network asks, and the
+  // person at the PC allows or refuses it once (onPairRequest asks them).
+  // The phone polls with the request's secret until it has an answer.
+  const pairRequests = new Map(); // id -> { id, secret, name, status, result, expiresAt }
+  function requestPairing(body) {
+    if (!onPairRequest) return { status: 404, body: { error: 'This Hive only pairs with a code.' } };
+    const now = Date.now();
+    for (const [id, r] of pairRequests) if (r.expiresAt < now) pairRequests.delete(id);
+    const name = String(body?.deviceName || 'Phone').slice(0, 80);
+    // One question at a time, so a device on the network can't flood the PC with prompts.
+    if ([...pairRequests.values()].some(r => r.status === 'pending')) return { status: 429, body: { error: 'Hive is already asking about another device.' } };
+    const r = { id: crypto.randomUUID(), secret: crypto.randomBytes(24).toString('base64url'), name, status: 'pending', result: null, expiresAt: now + PAIR_REQUEST_TTL_MS };
+    pairRequests.set(r.id, r);
+    Promise.resolve().then(() => onPairRequest({ id: r.id, name })).then(allow => answerPairRequest(r.id, !!allow)).catch(() => answerPairRequest(r.id, false));
+    return { status: 202, body: { requestId: r.id, secret: r.secret, expiresAt: r.expiresAt } };
+  }
+
+  function answerPairRequest(id, allow) {
+    const r = pairRequests.get(id);
+    if (!r || r.status !== 'pending') return false;
+    // An answer after the phone gave up pairs nothing.
+    if (r.expiresAt < Date.now()) { pairRequests.delete(id); return false; }
+    r.status = allow ? 'allowed' : 'refused';
+    if (allow) r.result = addDevice(r.name);
+    return true;
+  }
+
+  function pairRequestStatus(url) {
+    const r = pairRequests.get(String(url.searchParams.get('id') || ''));
+    const secret = String(url.searchParams.get('secret') || '');
+    if (!r || secret.length !== r.secret.length || !crypto.timingSafeEqual(Buffer.from(secret), Buffer.from(r.secret))) return { status: 404, body: { error: 'No such request.' } };
+    if (r.status === 'allowed') { pairRequests.delete(r.id); return { status: 200, body: { status: 'allowed', ...r.result } }; }
+    if (r.status === 'refused') { pairRequests.delete(r.id); return { status: 403, body: { status: 'refused', error: 'Hive on the PC refused this phone.' } }; }
+    if (r.expiresAt < Date.now()) { pairRequests.delete(r.id); return { status: 410, body: { status: 'expired', error: 'Nobody answered on the PC.' } }; }
+    return { status: 200, body: { status: 'pending' } };
   }
 
   function authenticate(req, url) {
@@ -530,6 +573,8 @@ function createHiveLink({ dataDir, getTracks, setLove, onPaired, streamSong = nu
     const route = `${req.method} ${url.pathname}`;
     if (route === 'GET /api/ping') return send(res, 200, { ok: true, protocol: PROTOCOL_VERSION, serverId: state.serverId });
     if (route === 'POST /api/pair') return (r => send(res, r.status, r.body))(completePairing(await readJson(req)));
+    if (route === 'POST /api/pair/request') return (r => send(res, r.status, r.body))(requestPairing(await readJson(req)));
+    if (route === 'GET /api/pair/request') return (r => send(res, r.status, r.body))(pairRequestStatus(url));
 
     const device = authenticate(req, url);
     if (!device) return send(res, 401, { error: 'Not paired with this Hive.' });
@@ -553,6 +598,9 @@ function createHiveLink({ dataDir, getTracks, setLove, onPaired, streamSong = nu
         const plays = (await readJson(req))?.plays;
         return send(res, 200, acceptPhonePlays && recordPlays ? await countPlays(device, plays) : stagePlays(device, plays));
       }
+      case 'GET /api/themes':
+        if (!getThemes) return send(res, 404, { error: 'This Hive shares no themes.' });
+        return send(res, 200, { themes: await getThemes() });
       case 'GET /api/wrap/years':
         if (!getWrapYears) return send(res, 404, { error: 'This Hive has no Yearly Wrap.' });
         return send(res, 200, { years: await getWrapYears() });
@@ -839,6 +887,7 @@ function createHiveLink({ dataDir, getTracks, setLove, onPaired, streamSong = nu
     start,
     stop,
     startPairing,
+    answerPairRequest,
     setRemoteControl,
     remoteControl: () => !!state.remoteControl,
     setReceiveSongs,
