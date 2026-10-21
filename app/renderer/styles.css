@@ -5682,3 +5682,6 @@ span.apple-track-art{display:block;background:rgba(255,255,255,.06)}
 .spotify-home-shelf { grid-auto-columns:168px; gap:12px; }
 .spotify-home-shelf .spotify-library-card { padding:7px; }
 .spotify-artist-card .spotify-library-art { border-radius:50%; }
+
+/* Spotify playlist cards open on click, like Apple Music's. */
+.spotify-library-card:has([data-sl="open"], [data-sl="import"]) { cursor: pointer; }

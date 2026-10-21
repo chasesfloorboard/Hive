@@ -2070,14 +2070,22 @@
     // app is already signed in). Import adds a playlist to Hive; Download
     // imports it and downloads its songs into Playlists/<name>.
     const libraryHost = spotifyPage.querySelector('#spotify-library');
+    // A click on a playlist card itself (not one of its buttons) opens that
+    // playlist in Hive, importing it first if needed -- as Apple Music's cards
+    // do. Cards used to react only to their small buttons.
+    const openSpotifyCard = e => {
+      const card = e.target.closest('.spotify-library-card');
+      const action = card?.querySelector('[data-sl="open"], [data-sl="import"]');
+      if (action) void spotifyLibraryAction(action, { open: true });
+    };
     spotifyPage.querySelector('#spotify-home').addEventListener('click', e => {
       const open = e.target.closest('[data-sh-open]');
       if (open) { window.open(open.dataset.shOpen, '_blank'); return; }
       const btn = e.target.closest('[data-sl]');
-      if (btn) void spotifyLibraryAction(btn);
+      if (btn) void spotifyLibraryAction(btn); else openSpotifyCard(e);
     });
-    libraryHost.addEventListener('click', e => { const btn = e.target.closest('[data-sl]'); if (btn) void spotifyLibraryAction(btn); });
-    async function spotifyLibraryAction(btn) {
+    libraryHost.addEventListener('click', e => { const btn = e.target.closest('[data-sl]'); if (btn) void spotifyLibraryAction(btn); else openSpotifyCard(e); });
+    async function spotifyLibraryAction(btn, { open = false } = {}) {
       if (btn.dataset.sl === 'connect') { await connectSpotifyForLibrary(); return; }
       if (btn.dataset.sl === 'login') {
         // The Spotify app signs in with its own window; once signed in, close
@@ -2093,6 +2101,7 @@
       if (!existing()) { const ok = await importSpotifyPlaylist(url); if (!ok) return; }
       renderSpotifyPagePlaylists(); renderSpotifyLibrary(spotifyLibraryCache); if (spotifyHomeCache) renderSpotifyHome(spotifyHomeCache);
       if (btn.dataset.sl === 'download' && existing()) downloadPlaylist(existing());
+      if (open && existing()) void openPlaylistFromSidebar(existing(), sidebarNavIdForPlaylistId(existing().id));
     }
     bindHiveBeePrefControls(spotifyPage);
     return spotifyPage;
