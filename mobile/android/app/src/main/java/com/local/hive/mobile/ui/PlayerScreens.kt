@@ -572,7 +572,6 @@ private fun FullPlayerContent(
                             Column(Modifier.fillMaxWidth(), horizontalAlignment = Alignment.CenterHorizontally, verticalArrangement = Arrangement.spacedBy(3.dp)) {
                                 Text(now.title.ifBlank { "Nothing playing" }, style = HiveText.npTitle, color = c.text, maxLines = 2, overflow = TextOverflow.Ellipsis, textAlign = androidx.compose.ui.text.style.TextAlign.Center)
                                 Text(now.artist, style = HiveText.rowStrong, color = c.text.copy(alpha = 0.86f), maxLines = 1, overflow = TextOverflow.Ellipsis, textAlign = androidx.compose.ui.text.style.TextAlign.Center, modifier = Modifier.clickable { t?.let(onOpenArtist) })
-                                if (t != null) FormatChips(t)
                             }
                         }
                         Row(Modifier.fillMaxWidth().padding(top = 4.dp), horizontalArrangement = Arrangement.SpaceBetween, verticalAlignment = Alignment.CenterVertically) {
@@ -598,7 +597,8 @@ private fun FullPlayerContent(
 
                 // Lyrics on the left, what's next in the middle, the queue on the right.
                 Row(Modifier.fillMaxWidth().padding(start = 10.dp, end = 10.dp, bottom = 8.dp).height(52.dp), verticalAlignment = Alignment.CenterVertically) {
-                    if (!now.isLive) TransportButton(Icons.Rounded.Lyrics, "Lyrics", 22.dp) { onOpenLyrics() } else Spacer(Modifier.size(56.dp))
+                    // The song's format at a glance (lyrics are a tap on the cover); a tap opens its info.
+                    current?.let { t -> FormatTab(t) { onInfo(t) } } ?: Spacer(Modifier.size(56.dp))
                     Text(
                         if (queueOpen) "${now.queueIndex + 1} of ${now.queue.size} · ${formatLength(now.queue.drop(now.queueIndex + 1).sumOf { it.durationMs })} left"
                         else upNext?.let { "Next: " + listOf(it.title, it.artist).filter { s -> s.isNotBlank() }.joinToString(" · ") } ?: "",
@@ -612,19 +612,17 @@ private fun FullPlayerContent(
     })
 }
 
-/** Small chips under the title (Hive shows format and bitrate there). */
+/** A small tab with the playing file's format and bitrate ("MP3 · ~322 kbps"), as Hive shows them. */
 @Composable
-private fun FormatChips(t: Track) {
+private fun FormatTab(t: Track, onClick: () -> Unit) {
     val c = Hive.colors
     val ext = t.fileName.substringAfterLast('.', "").uppercase().takeIf { it.isNotBlank() && it.length <= 5 }
     val kbps = if (t.durationMs > 0 && t.sizeBytes > 0) (t.sizeBytes * 8 / (t.durationMs / 1000.0) / 1000).roundToInt() else null
-    Row(Modifier.padding(top = 6.dp), horizontalArrangement = Arrangement.spacedBy(6.dp)) {
-        listOfNotNull(ext, kbps?.let { "~$it kbps" }).forEach { label ->
-            Box(Modifier.clip(RoundedCornerShape(6.dp)).background(mix(c.accent, c.panelStrong, 0.10f)).border(1.dp, c.border, RoundedCornerShape(6.dp)).padding(horizontal = 7.dp, vertical = 2.dp)) {
-                Text(label, style = HiveText.label, color = c.textDim)
-            }
-        }
-    }
+    val label = listOfNotNull(ext, kbps?.let { "~$it kbps" }).joinToString(" · ").ifBlank { "Info" }
+    Box(
+        Modifier.padding(start = 8.dp).clip(RoundedCornerShape(8.dp)).background(mix(c.accent, c.panelStrong, 0.10f))
+            .border(1.dp, c.border, RoundedCornerShape(8.dp)).clickable(onClick = onClick).padding(horizontal = 9.dp, vertical = 5.dp),
+    ) { Text(label, style = HiveText.label, color = c.textDim, maxLines = 1) }
 }
 
 @Composable
