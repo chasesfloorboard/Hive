@@ -1,5 +1,6 @@
 package com.local.hive.mobile.ui
 
+import androidx.compose.material.icons.rounded.Radio
 import com.local.hive.mobile.ui.theme.HiveIcons
 import android.net.Uri
 import androidx.compose.animation.AnimatedVisibility
@@ -217,6 +218,7 @@ private fun CollectionMenu(tracks: List<Track>, vm: MainViewModel, actions: Trac
             HiveMenuItem("Play next", Icons.AutoMirrored.Rounded.PlaylistPlay) { open = false; vm.playNext(tracks) }
             HiveMenuItem("Add to queue", Icons.AutoMirrored.Rounded.QueueMusic) { open = false; vm.addToQueue(tracks) }
             HiveMenuItem("Add to playlist", Icons.AutoMirrored.Rounded.PlaylistAdd) { open = false; actions.onAddToPlaylist(tracks) }
+            HiveMenuItem("Auto DJ", Icons.Rounded.Radio) { open = false; actions.onAutoDj(tracks) }
             HiveMenuItem("Share", Icons.Rounded.Share) { open = false; Share.tracks(context, tracks) }
         }
     }
@@ -248,7 +250,11 @@ fun ArtistScreen(
 
     HiveGlassLayers(Modifier.fillMaxSize(), content = {
         AlbumBackdrop(colors)
-        LazyColumn(Modifier.fillMaxSize(), state = list, contentPadding = PaddingValues(bottom = bottomPadding + 16.dp)) {
+        // The year groups' rows, for hold-and-drag picking of albums.
+        val grouped = albums.groupBy { it.year }
+        val rows = remember(albums) { grouped.values.flatMap { it.chunked(2) }.associate { row -> "r${row.first().albumId}" as Any to row.map { it.albumId } } }
+        val order = remember(albums) { grouped.values.flatten().map { it.albumId } }
+        LazyColumn(Modifier.fillMaxSize().albumDragSelect(list, rows, order), state = list, contentPadding = PaddingValues(bottom = bottomPadding + 16.dp)) {
             item {
                 Column(Modifier.fillMaxWidth().statusBarsPadding().padding(top = 64.dp, bottom = 18.dp), horizontalAlignment = Alignment.CenterHorizontally) {
                     val photo by produceState<String?>(null, name) { value = vm.artistImage(name) }
@@ -261,7 +267,7 @@ fun ArtistScreen(
                     }
                 }
             }
-            albums.groupBy { it.year }.forEach { (y, list2) ->
+            grouped.forEach { (y, list2) ->
                 item(key = "y$y") { YearHeading(if (y > 0) "$y" else "Unknown year") }
                 list2.chunked(2).forEach { row ->
                     item(key = "r${row.first().albumId}") {

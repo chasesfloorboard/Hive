@@ -176,6 +176,13 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
     fun addToQueue(tracks: List<Track>) = app.player.addToQueue(tracks)
     val player get() = app.player
 
+    /** Auto DJ's queue grown from [seeds] (see [com.local.hive.mobile.playback.AutoDj]). */
+    suspend fun autoDj(seeds: List<Track>): List<Track> {
+        val plays = dao.playCounts().associate { it.trackId to it.plays }
+        val library = tracks.value.ifEmpty { dao.allTracks() }
+        return kotlinx.coroutines.withContext(kotlinx.coroutines.Dispatchers.Default) { com.local.hive.mobile.playback.AutoDj.build(seeds, library, plays, lovedIds.value) }
+    }
+
     // ---- love ----
 
     fun setLoved(tracks: List<Track>, loved: Boolean) = viewModelScope.launch { app.sync.setLoved(tracks.map { it.id }, loved) }

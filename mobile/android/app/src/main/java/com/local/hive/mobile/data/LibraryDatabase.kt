@@ -200,6 +200,8 @@ data class NamedCount(val name: String, val trackCount: Int)
 
 data class PlayStats(val plays: Int, val lastPlayed: Long?)
 
+data class TrackPlays(val trackId: Long, val plays: Int)
+
 /** A play with the song it was, for Yearly Wrap. */
 data class PlayRow(val trackId: Long, val playedAt: Long, val listenedMs: Long, val title: String, val artist: String, val album: String, val albumArtist: String, val albumId: Long, val genre: String)
 
@@ -497,6 +499,10 @@ interface LibraryDao {
 
     @Query("SELECT MIN(playedAt) FROM plays")
     suspend fun firstPlay(): Long?
+
+    /** Every song's play count, for Auto DJ. */
+    @Query("SELECT trackId, COUNT(*) AS plays FROM plays GROUP BY trackId")
+    suspend fun playCounts(): List<TrackPlays>
 
     @Query("SELECT COUNT(*) AS plays, MAX(playedAt) AS lastPlayed FROM plays WHERE trackId = :trackId")
     suspend fun playStats(trackId: Long): PlayStats

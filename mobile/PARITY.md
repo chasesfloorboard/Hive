@@ -54,6 +54,8 @@ renderer views) and its state on mobile.
 | Playback engine | GStreamer, gapless | ✅ Media3 ExoPlayer, gapless |
 | Queue: view, jump, remove | `#queue-list` | ✅ |
 | Queue: drag to reorder, multi-select | queue drop targets | 🟡 drag to reorder, remove; no multi-select |
+| Auto DJ (a mix grown from songs, an album, an artist or a playlist) | | ✅ hold an artist or playlist, ⋮ on a song or page, or the selection bar: seeds first, then their artists, collaborators and same-genre artists, weighted by plays and Favorites, artists spaced out; Play or Save as playlist (`playback/AutoDj.kt`) |
+| Pick albums: hold, then drag across the grid | album multi-select | ✅ hold a cover and drag (the list scrolls at its edges); tap to add or remove while picking; the selection bar acts on all their songs |
 | Shuffle, repeat | | ✅ |
 | Playback state restored on launch | `playback-state:*` | ✅ queue, track, position, shuffle, repeat; Bluetooth resume |
 | Equaliser with presets, import presets | `equaliser:*` | ✅ 10 bands + preamp, MusicBee presets, auto by genre, save/delete; no .sde import UI yet |

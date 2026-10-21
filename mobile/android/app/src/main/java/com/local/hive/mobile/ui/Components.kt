@@ -1,5 +1,6 @@
 package com.local.hive.mobile.ui
 
+import androidx.compose.material.icons.rounded.Radio
 import com.local.hive.mobile.ui.theme.HiveIcons
 import androidx.compose.animation.AnimatedVisibility
 import androidx.compose.animation.animateColorAsState
@@ -62,6 +63,11 @@ import androidx.compose.material3.Icon
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.getValue
+import androidx.compose.runtime.rememberCoroutineScope
+import androidx.compose.foundation.gestures.scrollBy
+import kotlinx.coroutines.launch
+import androidx.compose.foundation.gestures.awaitEachGesture
+import androidx.compose.foundation.gestures.awaitFirstDown
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.setValue
@@ -303,18 +309,124 @@ data class TrackActions(
     val onDelete: (List<Track>) -> Unit = {},
     /** Set only where the song sits in a playlist the user can edit. */
     val onRemoveFromPlaylist: ((Track) -> Unit)? = null,
+    /** Auto DJ: a mix grown from these songs. */
+    val onAutoDj: (List<Track>) -> Unit = {},
 )
 
-/** Songs picked for a group action; long-press a song to start, tap to add or remove while picking. */
+/**
+ * Songs and albums picked for a group action; long-press a song or an album
+ * to start, tap to add or remove while picking. Holding an album and dragging
+ * over others picks every album between them (see [albumDragSelect]).
+ */
 class Selection {
     val tracks = androidx.compose.runtime.mutableStateListOf<Track>()
-    val active: Boolean get() = tracks.isNotEmpty()
+    val albums = androidx.compose.runtime.mutableStateListOf<Long>()
+    val active: Boolean get() = tracks.isNotEmpty() || albums.isNotEmpty()
     operator fun contains(t: Track) = tracks.any { it.id == t.id }
     fun toggle(t: Track) { if (t in this) tracks.removeAll { it.id == t.id } else tracks += t }
-    fun clear() = tracks.clear()
+    fun hasAlbum(id: Long) = id in albums
+    fun toggleAlbum(id: Long) { if (!albums.remove(id)) albums += id }
+    fun clear() { tracks.clear(); albums.clear(); dragAnchor = null }
+
+    /** The picked songs, then every song of the picked albums in album order. */
+    fun picked(library: List<Track>): List<Track> {
+        if (albums.isEmpty()) return tracks.toList()
+        val byAlbum = library.filter { it.albumId in albums }.groupBy { it.albumId }
+        val fromAlbums = albums.flatMap { id -> byAlbum[id].orEmpty().sortedWith(compareBy<Track> { it.discNumber }.thenBy { it.trackNumber }) }
+        return (tracks + fromAlbums).distinctBy { it.id }
+    }
+
+    // ---- hold and drag over albums ----
+
+    /** The album the finger went down on, while a hold-and-drag is picking. */
+    var dragAnchor: Long? = null
+        private set
+    private var dragBase: List<Long> = emptyList()
+    private var dragOver: Long? = null
+    /** The albums of the grid on screen, in order, so a drag picks the ones between. */
+    var albumOrder: List<Long> = emptyList()
+
+    fun startAlbumDrag(id: Long) {
+        dragBase = albums.filter { it != id }
+        dragAnchor = id
+        dragOver = id
+        if (id !in albums) albums += id
+    }
+
+    fun dragTo(id: Long) {
+        val anchor = dragAnchor ?: return
+        if (id == dragOver) return
+        dragOver = id
+        val from = albumOrder.indexOf(anchor)
+        val to = albumOrder.indexOf(id)
+        if (from < 0 || to < 0) return
+        val range = albumOrder.subList(minOf(from, to), maxOf(from, to) + 1)
+        val next = (dragBase + range).distinct()
+        albums.retainAll(next.toSet())
+        next.forEach { if (it !in albums) albums += it }
+    }
+
+    fun endAlbumDrag() { dragAnchor = null; dragOver = null }
 }
 
 val LocalSelection = androidx.compose.runtime.staticCompositionLocalOf<Selection?> { null }
+
+/**
+ * Hold an album, then drag: every album between it and the one under the
+ * finger is picked, and the list scrolls when the finger nears its top or
+ * bottom edge. [rows] maps each list item's key to its albums, left to right;
+ * the finger is placed by the list's own layout, so nothing extra runs per card.
+ */
+@Composable
+fun Modifier.albumDragSelect(list: androidx.compose.foundation.lazy.LazyListState, rows: Map<Any, List<Long>>, order: List<Long>): Modifier {
+    val selection = LocalSelection.current ?: return this
+    androidx.compose.runtime.SideEffect { selection.albumOrder = order }
+    val scope = rememberCoroutineScope()
+    val currentRows by androidx.compose.runtime.rememberUpdatedState(rows)
+    val edge = with(androidx.compose.ui.platform.LocalDensity.current) { 72.dp.toPx() }
+    fun albumAt(x: Float, y: Float, width: Int): Long? {
+        val info = list.layoutInfo
+        val at = y + info.viewportStartOffset
+        val item = info.visibleItemsInfo.firstOrNull { at >= it.offset && at < it.offset + it.size } ?: return null
+        val albums = currentRows[item.key] ?: return null
+        return albums.getOrNull(if (x < width / 2f) 0 else 1) ?: albums.lastOrNull()
+    }
+    return pointerInput(selection, list) {
+        awaitEachGesture {
+            awaitFirstDown(requireUnconsumed = false, pass = androidx.compose.ui.input.pointer.PointerEventPass.Initial)
+            var speed = 0f
+            var finger = androidx.compose.ui.geometry.Offset.Zero
+            var scroller: kotlinx.coroutines.Job? = null
+            try {
+                while (true) {
+                    val change = awaitPointerEvent(androidx.compose.ui.input.pointer.PointerEventPass.Initial).changes.firstOrNull() ?: break
+                    if (!change.pressed) break
+                    if (selection.dragAnchor == null) continue
+                    // Picking, not scrolling: the list doesn't get this drag.
+                    change.consume()
+                    finger = change.position
+                    albumAt(finger.x, finger.y, size.width)?.let(selection::dragTo)
+                    speed = when {
+                        finger.y < edge -> -(edge - finger.y) / edge * 28f
+                        finger.y > size.height - edge -> (finger.y - (size.height - edge)) / edge * 28f
+                        else -> 0f
+                    }
+                    if (speed != 0f && scroller?.isActive != true) scroller = scope.launch {
+                        while (speed != 0f) {
+                            list.scrollBy(speed)
+                            albumAt(finger.x, finger.y, size.width)?.let(selection::dragTo)
+                            androidx.compose.runtime.withFrameNanos { }
+                        }
+                    }
+                }
+            } finally {
+                speed = 0f
+                scroller?.cancel()
+                selection.endAlbumDrag()
+            }
+        }
+    }
+}
 
 /**
  * A song in Hive's style: rounded row, 44dp art (or the track number in an
@@ -399,6 +511,7 @@ fun TrackMenu(expanded: Boolean, loved: Boolean, onDismiss: () -> Unit, track: T
         HiveMenuItem("Play next", Icons.AutoMirrored.Rounded.PlaylistPlay) { onDismiss(); actions.onPlayNext(track) }
         HiveMenuItem("Add to queue", Icons.AutoMirrored.Rounded.QueueMusic) { onDismiss(); actions.onAddToQueue(track) }
         HiveMenuItem("Add to playlist", Icons.AutoMirrored.Rounded.PlaylistAdd) { onDismiss(); actions.onAddToPlaylist(listOf(track)) }
+        HiveMenuItem("Auto DJ", Icons.Rounded.Radio) { onDismiss(); actions.onAutoDj(listOf(track)) }
         HiveMenuItem(if (loved) "Remove from Favorites" else "Add to Favorites", if (loved) Icons.Rounded.Favorite else Icons.Rounded.FavoriteBorder) { onDismiss(); actions.onToggleLove(track) }
         HiveMenuItem("Share", Icons.Rounded.Share) { onDismiss(); Share.tracks(context, listOf(track)) }
         HiveMenuDivider()

@@ -1,5 +1,7 @@
 package com.local.hive.mobile.ui
 
+import androidx.compose.foundation.combinedClickable
+import kotlinx.coroutines.flow.first
 import com.local.hive.mobile.ui.theme.HiveIcons
 import android.net.Uri
 import androidx.compose.foundation.Image
@@ -24,6 +26,7 @@ import androidx.compose.foundation.lazy.LazyRow
 import androidx.compose.foundation.lazy.items
 import androidx.compose.foundation.lazy.itemsIndexed
 import androidx.compose.foundation.lazy.rememberLazyListState
+import androidx.compose.foundation.border
 import androidx.compose.foundation.pager.HorizontalPager
 import androidx.compose.foundation.pager.rememberPagerState
 import androidx.compose.foundation.shape.CircleShape
@@ -116,6 +119,8 @@ data class HomeNavigation(
     val openSettings: () -> Unit,
     /** Any other page by its route: "apple", "radio", "wrap", … */
     val open: (String) -> Unit,
+    /** Auto DJ from a held artist or playlist. */
+    val autoDj: (AutoDjRequest) -> Unit = {},
 )
 
 private enum class AlbumSort(val label: String) { Year("Release"), Name("Name"), Artist("Artist"), Added("Date added") }
@@ -242,7 +247,11 @@ private fun AlbumsTab(vm: MainViewModel, nav: HomeNavigation, bottom: Dp) {
             AlbumSort.Added -> listOf("" to albums.sortedByDescending { it.added })
         }
     }
-    LazyColumn(Modifier.fillMaxSize(), contentPadding = PaddingValues(bottom = bottom + 12.dp)) {
+    val list = rememberLazyListState()
+    // Each grid row's albums by its item key, and every album in order, for hold-and-drag picking.
+    val rows = remember(sections) { sections.flatMap { (_, l) -> l.chunked(2) }.associate { row -> "r${row.first().albumId}" as Any to row.map { it.albumId } } }
+    val order = remember(sections) { sections.flatMap { (_, l) -> l.map { it.albumId } } }
+    LazyColumn(Modifier.fillMaxSize().albumDragSelect(list, rows, order), state = list, contentPadding = PaddingValues(bottom = bottom + 12.dp)) {
         item { ListHeader(AlbumSort.entries, sort, { it.label }, { sort = it }, countOf(albums.size, "album")) }
         if (albums.isEmpty()) item { EmptyState("No albums yet", "Albums appear once Hive finds music on this phone.") }
         sections.forEach { (heading, list) ->
@@ -263,10 +272,24 @@ private fun AlbumsTab(vm: MainViewModel, nav: HomeNavigation, bottom: Dp) {
 @Composable
 internal fun AlbumCard(a: AlbumSummary, selected: Boolean, modifier: Modifier, onClick: () -> Unit) {
     val c = Hive.colors
-    Column(modifier.pressable(onClick)) {
+    // Hold to start picking albums (and drag over others); while picking, a tap adds or removes.
+    val selection = LocalSelection.current
+    val picked = selection?.hasAlbum(a.albumId) == true
+    val haptics = androidx.compose.ui.platform.LocalHapticFeedback.current
+    Column(modifier.pressable(
+        onClick = { if (selection?.active == true) selection.toggleAlbum(a.albumId) else onClick() },
+        onLongClick = selection?.let { s -> { haptics.performHapticFeedback(androidx.compose.ui.hapticfeedback.HapticFeedbackType.LongPress); s.startAlbumDrag(a.albumId) } },
+    )) {
         Box {
             Artwork(Uri.parse("content://media/external/audio/albumart/${a.albumId}"), Modifier.sharedCover("album-${a.albumId}").fillMaxWidth().aspectRatio(1f), HiveShape.art, Icons.Rounded.LibraryMusic, elevation = 14.dp)
-            if (selected) Box(Modifier.matchParentSize().clip(HiveShape.art).background(c.accentSoft.copy(alpha = 0.2f)))
+            if (selected || picked) Box(Modifier.matchParentSize().clip(HiveShape.art).background(c.accentSoft.copy(alpha = if (picked) 0.32f else 0.2f)))
+            // Hive's picked album: an inset 2dp accent ring and a check.
+            if (picked) {
+                Box(Modifier.matchParentSize().padding(1.dp).border(2.dp, c.accent, HiveShape.art))
+                Box(Modifier.align(Alignment.TopEnd).padding(8.dp).size(24.dp).clip(CircleShape).background(c.accent), contentAlignment = Alignment.Center) {
+                    Icon(Icons.Rounded.Check, "Picked", tint = readableOn(c.accent), modifier = Modifier.size(16.dp))
+                }
+            }
         }
         Text(a.album.ifBlank { "Unknown album" }, style = HiveText.cardTitle, color = c.text, maxLines = 2, overflow = TextOverflow.Ellipsis, modifier = Modifier.padding(top = 10.dp))
         Text(a.artist.ifBlank { "Unknown artist" }, style = HiveText.cardSub, color = c.textDim, maxLines = 1, overflow = TextOverflow.Ellipsis)
@@ -353,23 +376,25 @@ private fun ArtistsTab(vm: MainViewModel, nav: HomeNavigation, bottom: Dp) {
     LazyColumn(Modifier.fillMaxSize(), contentPadding = PaddingValues(bottom = bottom + 12.dp)) {
         item { ListHeader(ArtistSort.entries, sort, { it.label }, { sort = it }, countOf(artists.size, "artist")) }
         if (artists.isEmpty()) item { EmptyState("No artists yet", "") }
-        items(artists, key = { it.artist }) { a -> ArtistRow(vm, a) { nav.openArtist(a.artist) } }
+        items(artists, key = { it.artist }) { a ->
+            ArtistRow(vm, a, onLongClick = { nav.autoDj(AutoDjRequest(a.artist) { vm.artistTracks(a.artist).first() }) }) { nav.openArtist(a.artist) }
+        }
     }
 }
 
 @Composable
-private fun ArtistRow(vm: MainViewModel, a: ArtistSummary, onClick: () -> Unit) {
+private fun ArtistRow(vm: MainViewModel, a: ArtistSummary, onLongClick: (() -> Unit)? = null, onClick: () -> Unit) {
     // Hive's artist photo once found, the artist's album cover until then.
     val photo by produceState<String?>(null, a.artist) { value = vm.artistImage(a.artist) }
-    LibraryRow(photo ?: Uri.parse("content://media/external/audio/albumart/${a.albumId}"), Icons.Rounded.Person, a.artist, "${countOf(a.albumCount, "album")} · ${countOf(a.trackCount, "track")}", round = true, onClick = onClick)
+    LibraryRow(photo ?: Uri.parse("content://media/external/audio/albumart/${a.albumId}"), Icons.Rounded.Person, a.artist, "${countOf(a.albumCount, "album")} · ${countOf(a.trackCount, "track")}", round = true, onLongClick = onLongClick, onClick = onClick)
 }
 
 /** A row for things that aren't songs: art, name, detail line. */
 @Composable
-fun LibraryRow(art: Any?, fallback: ImageVector, title: String, subtitle: String, round: Boolean = false, trailing: String? = null, modifier: Modifier = Modifier, onClick: () -> Unit) {
+fun LibraryRow(art: Any?, fallback: ImageVector, title: String, subtitle: String, round: Boolean = false, trailing: String? = null, modifier: Modifier = Modifier, onLongClick: (() -> Unit)? = null, onClick: () -> Unit) {
     val c = Hive.colors
     Row(
-        modifier.fillMaxWidth().padding(horizontal = 8.dp).height(68.dp).clip(HiveShape.row).clickable(onClick = onClick).padding(horizontal = 10.dp),
+        modifier.fillMaxWidth().padding(horizontal = 8.dp).height(68.dp).clip(HiveShape.row).combinedClickable(onClick = onClick, onLongClick = onLongClick).padding(horizontal = 10.dp),
         verticalAlignment = Alignment.CenterVertically,
     ) {
         Artwork(art, Modifier.size(48.dp), if (round) CircleShape else HiveShape.thumb, fallback)
@@ -432,7 +457,8 @@ private fun PlaylistsTab(vm: MainViewModel, nav: HomeNavigation, bottom: Dp, onC
             }
             if (mine.isEmpty()) item { LibraryRow(null, Icons.Rounded.Add, "Create playlist", "Or add songs from any ⋮ menu", onClick = onCreate) }
             items(mine, key = { it.id }) { p ->
-                LibraryRow(playlistCover(p), Icons.AutoMirrored.Rounded.QueueMusic, p.name, listOfNotNull(countOf(p.trackCount, "track"), p.source.ifBlank { null }).joinToString(" · "), modifier = Modifier.animateItem()) { nav.openUserPlaylist(p.id) }
+                LibraryRow(playlistCover(p), Icons.AutoMirrored.Rounded.QueueMusic, p.name, listOfNotNull(countOf(p.trackCount, "track"), p.source.ifBlank { null }).joinToString(" · "), modifier = Modifier.animateItem(),
+                    onLongClick = { nav.autoDj(AutoDjRequest(p.name) { vm.playlistRows(p.id).first().mapNotNull { it.track } }) }) { nav.openUserPlaylist(p.id) }
             }
             if (link.paired && onPc.isNotEmpty()) {
                 item { Text("On ${link.serverName.ifBlank { "your PC" }}", style = HiveText.year, color = Hive.colors.text, modifier = Modifier.padding(start = 18.dp, top = 22.dp, bottom = 6.dp)) }
@@ -533,7 +559,11 @@ private fun FavoritesTab(vm: MainViewModel, nav: HomeNavigation, actions: TrackA
                             countOf(a.trackCount, "favorite song"), round = true) { nav.openArtist(a.artist) }
                     }
                 }
-                FavoriteView.Albums -> LazyColumn(Modifier.fillMaxSize(), contentPadding = PaddingValues(top = 6.dp, bottom = bottom + 12.dp)) {
+                FavoriteView.Albums -> {
+                    val list = rememberLazyListState()
+                    val rows = remember(albums) { albums.chunked(2).associate { row -> "f${row.first().albumId}" as Any to row.map { it.albumId } } }
+                    val order = remember(albums) { albums.map { it.albumId } }
+                    LazyColumn(Modifier.fillMaxSize().albumDragSelect(list, rows, order), state = list, contentPadding = PaddingValues(top = 6.dp, bottom = bottom + 12.dp)) {
                     if (albums.isEmpty()) item { EmptyState("No favorite albums yet", "Tap ♥ on an album's page to keep it here.") }
                     albums.chunked(2).forEach { row ->
                         item(key = "f${row.first().albumId}") {
@@ -542,6 +572,7 @@ private fun FavoritesTab(vm: MainViewModel, nav: HomeNavigation, actions: TrackA
                                 if (row.size == 1) Spacer(Modifier.weight(1f))
                             }
                         }
+                    }
                     }
                 }
             }

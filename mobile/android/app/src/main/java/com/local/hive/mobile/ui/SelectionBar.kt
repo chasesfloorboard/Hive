@@ -23,6 +23,9 @@ import androidx.compose.material.icons.rounded.Close
 import androidx.compose.material.icons.rounded.Delete
 import androidx.compose.material.icons.rounded.Favorite
 import androidx.compose.material.icons.rounded.PlayArrow
+import androidx.compose.material.icons.rounded.Radio
+import androidx.compose.runtime.getValue
+import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import androidx.compose.material.icons.rounded.Share
 import androidx.compose.material3.Icon
 import androidx.compose.material3.Text
@@ -41,15 +44,18 @@ import com.local.hive.mobile.ui.theme.hiveGlass
 
 /** The actions for picked songs, rising over the playbar while picking. */
 @Composable
-fun SelectionBar(vm: MainViewModel, selection: Selection, modifier: Modifier, onAddToPlaylist: (List<Track>) -> Unit, onDelete: (List<Track>) -> Unit, onToast: (String) -> Unit) {
+fun SelectionBar(vm: MainViewModel, selection: Selection, modifier: Modifier, onAddToPlaylist: (List<Track>) -> Unit, onDelete: (List<Track>) -> Unit, onToast: (String) -> Unit, onAutoDj: (List<Track>) -> Unit = {}) {
     val c = Hive.colors
+    val library by vm.tracks.collectAsStateWithLifecycle()
     AnimatedVisibility(selection.active, modifier, enter = slideInVertically { it } + fadeIn(), exit = slideOutVertically { it } + fadeOut()) {
-        val picked = selection.tracks.toList()
+        // Picked albums stand for all their songs.
+        val picked = selection.picked(library)
         val context = androidx.compose.ui.platform.LocalContext.current
         fun done(message: String) { selection.clear(); onToast(message) }
         Column(Modifier.padding(horizontal = 10.dp).fillMaxWidth().shadow(22.dp, HiveShape.menu, ambientColor = c.accentGlow).hiveGlass(HiveShape.menu, strength = 0.3f).padding(horizontal = 6.dp, vertical = 6.dp)) {
             Row(Modifier.fillMaxWidth().padding(start = 10.dp), verticalAlignment = Alignment.CenterVertically) {
-                Text(countOf(picked.size, "song") + " picked", style = HiveText.rowStrong, color = c.text, modifier = Modifier.weight(1f))
+                val what = listOfNotNull(selection.albums.size.takeIf { it > 0 }?.let { countOf(it, "album") }, selection.tracks.size.takeIf { it > 0 }?.let { countOf(it, "song") }).joinToString(" and ")
+                Text("$what picked", style = HiveText.rowStrong, color = c.text, modifier = Modifier.weight(1f))
                 Box(Modifier.size(40.dp).clip(CircleShape).clickable { onDelete(picked); selection.clear() }, contentAlignment = Alignment.Center) {
                     Icon(Icons.Rounded.Delete, "Delete from phone", tint = c.textDim, modifier = Modifier.size(20.dp))
                 }
@@ -61,6 +67,7 @@ fun SelectionBar(vm: MainViewModel, selection: Selection, modifier: Modifier, on
                 Action("Play next", Icons.AutoMirrored.Rounded.PlaylistPlay) { vm.playNext(picked); done("${countOf(picked.size, "song")} play next") }
                 Action("Queue", Icons.AutoMirrored.Rounded.QueueMusic) { vm.addToQueue(picked); done("Added ${countOf(picked.size, "song")} to the queue") }
                 Action("Playlist", Icons.AutoMirrored.Rounded.PlaylistAdd) { onAddToPlaylist(picked); selection.clear() }
+                Action("Auto DJ", Icons.Rounded.Radio) { onAutoDj(picked); selection.clear() }
                 Action("Favorite", Icons.Rounded.Favorite) { vm.setLoved(picked, true); done("Added ${countOf(picked.size, "song")} to Favorites") }
                 Action("Share", Icons.Rounded.Share) { Share.tracks(context, picked); selection.clear() }
             }
