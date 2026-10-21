@@ -115,6 +115,7 @@ import androidx.compose.animation.core.animateFloat
 import androidx.compose.material.icons.rounded.GraphicEq
 import androidx.compose.material.icons.rounded.Lyrics
 import androidx.compose.material.icons.rounded.Info
+import androidx.compose.material.icons.outlined.Info as InfoOutline
 import androidx.compose.material.icons.automirrored.rounded.PlaylistAdd
 import androidx.compose.runtime.mutableIntStateOf
 import androidx.compose.foundation.gestures.detectDragGestures
@@ -597,8 +598,8 @@ private fun FullPlayerContent(
 
                 // Lyrics on the left, what's next in the middle, the queue on the right.
                 Row(Modifier.fillMaxWidth().padding(start = 10.dp, end = 10.dp, bottom = 8.dp).height(52.dp), verticalAlignment = Alignment.CenterVertically) {
-                    // The song's format at a glance (lyrics are a tap on the cover); a tap opens its info.
-                    current?.let { t -> FormatTab(t) { onInfo(t) } } ?: Spacer(Modifier.size(56.dp))
+                    // The song's info, format and bitrate included (lyrics are a tap on the cover).
+                    current?.let { t -> TransportButton(Icons.Outlined.InfoOutline, "Song info", 22.dp) { onInfo(t) } } ?: Spacer(Modifier.size(56.dp))
                     Text(
                         if (queueOpen) "${now.queueIndex + 1} of ${now.queue.size} · ${formatLength(now.queue.drop(now.queueIndex + 1).sumOf { it.durationMs })} left"
                         else upNext?.let { "Next: " + listOf(it.title, it.artist).filter { s -> s.isNotBlank() }.joinToString(" · ") } ?: "",
@@ -610,19 +611,6 @@ private fun FullPlayerContent(
             }
         }
     })
-}
-
-/** A small tab with the playing file's format and bitrate ("MP3 · ~322 kbps"), as Hive shows them. */
-@Composable
-private fun FormatTab(t: Track, onClick: () -> Unit) {
-    val c = Hive.colors
-    val ext = t.fileName.substringAfterLast('.', "").uppercase().takeIf { it.isNotBlank() && it.length <= 5 }
-    val kbps = if (t.durationMs > 0 && t.sizeBytes > 0) (t.sizeBytes * 8 / (t.durationMs / 1000.0) / 1000).roundToInt() else null
-    val label = listOfNotNull(ext, kbps?.let { "~$it kbps" }).joinToString(" · ").ifBlank { "Info" }
-    Box(
-        Modifier.padding(start = 8.dp).clip(RoundedCornerShape(8.dp)).background(mix(c.accent, c.panelStrong, 0.10f))
-            .border(1.dp, c.border, RoundedCornerShape(8.dp)).clickable(onClick = onClick).padding(horizontal = 9.dp, vertical = 5.dp),
-    ) { Text(label, style = HiveText.label, color = c.textDim, maxLines = 1) }
 }
 
 @Composable
