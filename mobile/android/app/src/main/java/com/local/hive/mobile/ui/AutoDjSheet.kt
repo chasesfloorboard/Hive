@@ -78,15 +78,15 @@ fun AutoDjSheet(vm: MainViewModel, request: AutoDjRequest, onDismiss: () -> Unit
                     if (q.size > 6) Text("…", style = HiveText.rowSub, color = c.textDimmer)
                 }
             }
-            Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(8.dp, Alignment.End), verticalAlignment = Alignment.CenterVertically) {
-                Text("Remix", style = HiveText.rowStrong, color = if (q != null) c.textDim else c.textDimmer,
-                    modifier = Modifier.clip(HiveShape.pill).clickable(enabled = q != null) { round++ }.padding(horizontal = 12.dp, vertical = 10.dp))
-                Text("Save as playlist", style = HiveText.rowStrong, color = if (!q.isNullOrEmpty()) c.text else c.textDimmer,
+            Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(4.dp, Alignment.End), verticalAlignment = Alignment.CenterVertically) {
+                Text("Remix", style = HiveText.rowStrong, maxLines = 1, softWrap = false, color = if (q != null) c.textDim else c.textDimmer,
+                    modifier = Modifier.clip(HiveShape.pill).clickable(enabled = q != null) { round++ }.padding(horizontal = 8.dp, vertical = 10.dp))
+                Text("Save playlist", style = HiveText.rowStrong, maxLines = 1, softWrap = false, color = if (!q.isNullOrEmpty()) c.text else c.textDimmer,
                     modifier = Modifier.clip(HiveShape.pill).clickable(enabled = !q.isNullOrEmpty()) {
                         vm.createPlaylist("Auto DJ: ${request.label}", q.orEmpty()) { id -> onToast("Saved Auto DJ: ${request.label}"); onOpenPlaylist(id) }
                         onDismiss()
-                    }.padding(horizontal = 12.dp, vertical = 10.dp))
-                Text("Play", style = HiveText.rowStrong, color = readableOn(c.accent),
+                    }.padding(horizontal = 8.dp, vertical = 10.dp))
+                Text("Play", style = HiveText.rowStrong, maxLines = 1, softWrap = false, color = readableOn(c.accent),
                     modifier = Modifier.clip(HiveShape.pill).background(if (!q.isNullOrEmpty()) c.accent else c.accent.copy(alpha = 0.4f))
                         .clickable(enabled = !q.isNullOrEmpty()) { vm.play(q.orEmpty()); onDismiss() }.padding(horizontal = 18.dp, vertical = 10.dp))
             }
