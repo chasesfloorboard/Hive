@@ -270,14 +270,18 @@ interface LibraryDao {
      * Makes the table match a fresh MediaStore scan, writing only rows that
      * changed: a rescan of an unchanged 30,000-track library writes nothing.
      */
+    /** Returns how many rows were written or deleted (0: the library didn't change). */
     @Transaction
-    suspend fun replaceLibrary(tracks: List<Track>) {
-        if (tracks.isEmpty()) { deleteAllTracks(); return }
+    suspend fun replaceLibrary(tracks: List<Track>): Int {
         val existing = allTracks().associateBy { it.id }
+        if (tracks.isEmpty()) { deleteAllTracks(); return existing.size }
         // SQLite caps bound parameters, so writes and deletes go in chunks.
-        tracks.filter { existing[it.id] != it }.chunked(500).forEach { upsertTracks(it) }
+        val changed = tracks.filter { existing[it.id] != it }
+        changed.chunked(500).forEach { upsertTracks(it) }
         val keep = tracks.mapTo(HashSet()) { it.id }
-        existing.keys.filterNot { it in keep }.chunked(500).forEach { deleteTracks(it) }
+        val gone = existing.keys.filterNot { it in keep }
+        gone.chunked(500).forEach { deleteTracks(it) }
+        return changed.size + gone.size
     }
 
     @Query("DELETE FROM tracks WHERE id IN (:ids)")

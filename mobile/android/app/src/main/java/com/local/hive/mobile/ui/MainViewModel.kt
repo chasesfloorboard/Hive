@@ -30,6 +30,9 @@ import kotlinx.coroutines.flow.first
 import kotlinx.coroutines.flow.map
 import kotlinx.coroutines.flow.mapLatest
 import kotlinx.coroutines.flow.stateIn
+import kotlinx.coroutines.flow.shareIn
+import kotlinx.coroutines.flow.flowOn
+import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.launch
 
 class MainViewModel(application: Application) : AndroidViewModel(application) {
@@ -43,13 +46,15 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
      * ignored, numbers sort naturally, case and accents don't matter.
      */
     /** False until the library has been read once, so empty states don't flash during loading. */
-    val libraryLoaded: StateFlow<Boolean> = dao.tracks().map { true }.state(false)
+    // One read of the 30,000-row table, shared; sorting runs off the main thread.
+    private val trackRows = dao.tracks().shareIn(viewModelScope, SharingStarted.WhileSubscribed(5_000), replay = 1)
+    val libraryLoaded: StateFlow<Boolean> = trackRows.map { true }.state(false)
 
-    val tracks = dao.tracks().map { list -> list.sortedWith(compareBy(LibrarySort.collator) { LibrarySort.key(it.title) }) }.state(emptyList())
+    val tracks = trackRows.map { list -> LibrarySort.sorted(list) { it.title } }.flowOn(Dispatchers.Default).state(emptyList())
     val favorites = dao.lovedTracks().state(emptyList())
     val lovedIds: StateFlow<Set<Long>> = dao.loveStates().map { list -> list.filter { it.loved }.mapTo(HashSet()) { it.trackId } }.state(emptySet())
     val favoriteAlbumKeys: StateFlow<Set<String>> = dao.favoriteAlbums().map { list -> list.mapTo(HashSet()) { it.key } }.state(emptySet())
-    val albums: StateFlow<List<AlbumSummary>> = dao.albums().map { list -> list.sortedWith(compareBy(LibrarySort.collator) { LibrarySort.key(it.album) }) }.state(emptyList())
+    val albums: StateFlow<List<AlbumSummary>> = dao.albums().map { list -> LibrarySort.sorted(list) { it.album } }.flowOn(Dispatchers.Default).state(emptyList())
     /**
      * Favorite albums that are on this phone: the most recently hearted first
      * (hearting one again brings it to the top); albums hearted together, as
@@ -61,7 +66,7 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
             .sortedWith(compareByDescending<Pair<Long, AlbumSummary>> { it.first }.thenByDescending { it.second.added })
             .map { it.second }.distinctBy { it.albumId }
     }.state(emptyList())
-    val artists: StateFlow<List<ArtistSummary>> = dao.artists().map { list -> list.sortedWith(compareBy(LibrarySort.collator) { LibrarySort.key(it.artist) }) }.state(emptyList())
+    val artists: StateFlow<List<ArtistSummary>> = dao.artists().map { list -> LibrarySort.sorted(list) { it.artist } }.flowOn(Dispatchers.Default).state(emptyList())
     val genres: StateFlow<List<NamedCount>> = dao.genres().state(emptyList())
     val folders: StateFlow<List<NamedCount>> = dao.folders().state(emptyList())
     val recentlyAdded = dao.recentlyAdded(AUTO_PLAYLIST_SIZE).state(emptyList())
@@ -70,6 +75,8 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
     val recentlyPlayed = dao.recentlyPlayed(AUTO_PLAYLIST_SIZE).state(emptyList())
 
     val nowPlaying = app.player.state
+    /** The live playing position (see PlayerConnection.position). */
+    val position = app.player.position
 
     /** Colours of what is playing now, for the aura and the accent. */
     @OptIn(kotlinx.coroutines.ExperimentalCoroutinesApi::class)
@@ -287,7 +294,7 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
     val equaliser get() = app.equaliser
     val scrobbler get() = app.scrobbler
     /** The playing song's genre, for the equaliser's "Auto-Select by Genre". */
-    val currentGenre = combine(nowPlaying, tracks) { n, list -> list.firstOrNull { it.id == n.trackId }?.genre.orEmpty() }.distinctUntilChanged().state("")
+    val currentGenre = combine(nowPlaying.map { it.trackId }.distinctUntilChanged(), tracks) { id, list -> list.firstOrNull { it.id == id }?.genre.orEmpty() }.distinctUntilChanged().state("")
 
     // ---- radio ----
     val radio get() = app.radio

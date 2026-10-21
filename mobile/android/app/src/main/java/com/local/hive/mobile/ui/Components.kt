@@ -87,7 +87,8 @@ import androidx.compose.ui.unit.IntOffset
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.window.Popup
 import androidx.compose.ui.window.PopupProperties
-import coil3.compose.SubcomposeAsyncImage
+import coil3.compose.AsyncImage
+import coil3.request.crossfade
 import com.local.hive.mobile.data.Track
 import com.local.hive.mobile.ui.theme.Hive
 import com.local.hive.mobile.ui.theme.HiveShape
@@ -124,26 +125,27 @@ fun Artwork(
     val context = androidx.compose.ui.platform.LocalContext.current
     // A cover already on screen at another size stands in while this size loads, so it never blinks.
     val request = remember(model) {
-        coil3.request.ImageRequest.Builder(context).data(model).placeholderMemoryCacheKey(model?.toString()?.let { ShownCovers[it] }).build()
+        val standIn = model?.toString()?.let { ShownCovers[it] }
+        coil3.request.ImageRequest.Builder(context).data(model).placeholderMemoryCacheKey(standIn)
+            // Only a cover that wasn't standing in fades up.
+            .crossfade(if (standIn != null) 0 else 260).build()
     }
+    // AsyncImage, not SubcomposeAsyncImage: a subcomposition per row made every
+    // list row costly to compose while scrolling.
+    var shown by remember(model) { mutableStateOf(request.placeholderMemoryCacheKey != null) }
     Box(shadowed.clip(shape).background(mix(c.panelStrong.copy(alpha = 1f), c.bg, 0.6f)), contentAlignment = Alignment.Center) {
-        SubcomposeAsyncImage(
+        if (!shown) ArtPlaceholder(fallback)
+        AsyncImage(
             model = request,
             contentDescription = null,
             contentScale = ContentScale.Crop,
             modifier = Modifier.fillMaxSize(),
-            loading = { state ->
-                val stand = state.painter
-                if (stand != null) androidx.compose.foundation.Image(stand, null, Modifier.fillMaxSize(), contentScale = ContentScale.Crop) else ArtPlaceholder(fallback)
-            },
-            error = { ArtPlaceholder(fallback) },
-            success = { state ->
+            onSuccess = { state ->
+                shown = true
                 val key = state.result.memoryCacheKey
-                androidx.compose.runtime.SideEffect { if (key != null && model != null) ShownCovers[model.toString()] = key }
-                // Only a cover that wasn't standing in fades up.
-                val alpha by animateFloatAsState(1f, if (request.placeholderMemoryCacheKey != null) androidx.compose.animation.core.snap() else tween(260), label = "artIn")
-                androidx.compose.foundation.Image(state.painter, null, Modifier.fillMaxSize().alpha(alpha), contentScale = ContentScale.Crop)
+                if (key != null && model != null) ShownCovers[model.toString()] = key
             },
+            onError = { shown = false },
         )
     }
 }
@@ -515,3 +517,14 @@ fun formatLength(ms: Long): String {
     val minutes = ms / 60_000
     return if (minutes >= 60) "${minutes / 60} hr ${minutes % 60} min" else "$minutes min"
 }
+
+/**
+ * [compute] off the main thread whenever [keys] change: library-sized sorts
+ * and indexes. Until the new result is ready the previous one stays on
+ * screen ([initial] only before the first).
+ */
+@Composable
+fun <T> rememberComputed(initial: T, vararg keys: Any?, compute: () -> T): androidx.compose.runtime.State<T> =
+    androidx.compose.runtime.produceState(initial, *keys) {
+        value = kotlinx.coroutines.withContext(kotlinx.coroutines.Dispatchers.Default) { compute() }
+    }

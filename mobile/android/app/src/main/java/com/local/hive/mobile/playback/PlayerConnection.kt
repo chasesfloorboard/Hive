@@ -40,6 +40,7 @@ data class NowPlaying(
     val album: String = "",
     val artworkUri: String? = null,
     val isPlaying: Boolean = false,
+    /** Where the song was at the last player event; for a live position use [PlayerConnection.position]. */
     val positionMs: Long = 0,
     val durationMs: Long = 0,
     val shuffle: Boolean = false,
@@ -59,7 +60,19 @@ data class SleepTimer(val endsAt: Long? = null, val endOfSong: Boolean = false)
 /** The app's handle on [PlaybackService], exposing playback as state. */
 class PlayerConnection(private val context: Context, private val scope: CoroutineScope) {
     private val _state = MutableStateFlow(NowPlaying())
+    /**
+     * What is playing; changes only on player events. The position ticks in
+     * [position] instead, so the many screens watching this don't recompose
+     * twice a second during playback.
+     */
     val state: StateFlow<NowPlaying> = _state.asStateFlow()
+    private val _position = MutableStateFlow(0L)
+    /** The playing position, updated twice a second while playing. */
+    val position: StateFlow<Long> = _position.asStateFlow()
+    // The queue as QueueItems, rebuilt only when the player's timeline changes
+    // (a 6,000-song queue used to be rebuilt on every position tick).
+    private var queue: List<QueueItem> = emptyList()
+    private var queueStale = true
     private var controller: MediaController? = null
     private val pending = mutableListOf<(MediaController) -> Unit>()
     private val _sleep = MutableStateFlow<SleepTimer?>(null)
@@ -74,7 +87,10 @@ class PlayerConnection(private val context: Context, private val scope: Coroutin
             val c = runCatching { future.get() }.getOrNull() ?: return@addListener
             controller = c
             c.addListener(object : Player.Listener {
-                override fun onEvents(player: Player, events: Player.Events) = publish()
+                override fun onEvents(player: Player, events: Player.Events) {
+                    if (events.contains(Player.EVENT_TIMELINE_CHANGED)) queueStale = true
+                    publish()
+                }
                 override fun onMediaItemTransition(mediaItem: MediaItem?, reason: Int) {
                     val natural = reason == Player.MEDIA_ITEM_TRANSITION_REASON_AUTO || reason == Player.MEDIA_ITEM_TRANSITION_REASON_REPEAT
                     if (natural && _sleep.value?.endOfSong == true) { c.pause(); c.seekTo(c.currentMediaItemIndex, 0); _sleep.value = null }
@@ -88,7 +104,7 @@ class PlayerConnection(private val context: Context, private val scope: Coroutin
         // MediaController may only be touched from the main thread.
         scope.launch(Dispatchers.Main) {
             while (isActive) {
-                if (controller?.isPlaying == true) publish()
+                controller?.takeIf { it.isPlaying }?.let { _position.value = it.currentPosition.coerceAtLeast(0) }
                 delay(500)
             }
         }
@@ -171,6 +187,8 @@ class PlayerConnection(private val context: Context, private val scope: Coroutin
         val stationName = meta?.station?.toString().orEmpty()
         val icy = if (radio) c.mediaMetadata.title?.toString()?.trim()?.takeIf { it.isNotBlank() } else null
         val (liveArtist, liveTitle) = icy?.let { t -> t.indexOf(" - ").takeIf { it > 0 }?.let { t.substring(0, it).trim() to t.substring(it + 3).trim() } ?: ("" to t) } ?: ("" to "")
+        if (queueStale) { queue = (0 until c.mediaItemCount).map { c.getMediaItemAt(it).toQueueItem() }; queueStale = false }
+        _position.value = c.currentPosition.coerceAtLeast(0)
         _state.value = NowPlaying(
             mediaId = item?.mediaId,
             trackId = item?.mediaId?.toLongOrNull(),
@@ -186,7 +204,7 @@ class PlayerConnection(private val context: Context, private val scope: Coroutin
             durationMs = c.duration.coerceAtLeast(0),
             shuffle = c.shuffleModeEnabled,
             repeatMode = c.repeatMode,
-            queue = (0 until c.mediaItemCount).map { c.getMediaItemAt(it).toQueueItem() },
+            queue = queue,
             queueIndex = c.currentMediaItemIndex,
         )
     }

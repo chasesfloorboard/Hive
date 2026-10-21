@@ -37,14 +37,26 @@ import java.net.URLEncoder
  */
 class AlbumArtFetcher(private val context: Context, private val albumId: Long, private val options: Options) : Fetcher {
     override suspend fun fetch(): FetchResult? = withContext(Dispatchers.IO) {
+        // List rows and other thumbnails: Android's own ~512 px album thumbnail is
+        // plenty, and costs no song lookup or picture extraction per cache miss.
+        if (isThumbnail()) fallback()?.let { return@withContext it }
+        // The extracted picture is kept, so each album's song file is read once.
+        val kept = File(File(context.cacheDir, "embedded-art").apply { mkdirs() }, "$albumId.img")
+        if (kept.length() > 0) return@withContext result(kept.readBytes())
         val song = firstSong() ?: return@withContext fallback()
         val embedded = runCatching {
             MediaMetadataRetriever().use { r -> r.setDataSource(context, song.uri); r.embeddedPicture }
         }.getOrNull()
+        if (embedded != null && longestSide(embedded) >= SMALL) runCatching { kept.writeBytes(embedded) }
         val side = embedded?.let { longestSide(it) } ?: 0
         if (side >= SMALL) return@withContext result(embedded!!)
         upgraded(song)?.let { return@withContext result(it) }
         embedded?.let { result(it) } ?: fallback()
+    }
+
+    private fun isThumbnail(): Boolean {
+        fun px(d: coil3.size.Dimension) = (d as? coil3.size.Dimension.Pixels)?.px ?: Int.MAX_VALUE
+        return maxOf(px(options.size.width), px(options.size.height)) <= THUMBNAIL_PX
     }
 
     private data class Song(val uri: android.net.Uri, val album: String, val artist: String)
@@ -112,6 +124,8 @@ class AlbumArtFetcher(private val context: Context, private val albumId: Long, p
     companion object {
         /** Pictures smaller than this (longest side) are looked up in better quality. */
         private const val SMALL = 600
+        /** Requests up to this size (a 44 dp row is ~130 px) take the thumbnail path. */
+        private const val THUMBNAIL_PX = 256
         private val http by lazy { AppleMusic.defaultHttp() }
         private val lookups = Semaphore(2)
 

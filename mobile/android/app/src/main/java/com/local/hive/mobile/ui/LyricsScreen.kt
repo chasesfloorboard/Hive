@@ -79,9 +79,10 @@ fun LyricsScreen(vm: MainViewModel, onClose: () -> Unit) {
     val lines = remember(lyrics, preview) { if (preview) emptyList() else lyrics?.lines().orEmpty() }
 
     // The player reports its position twice a second; between reports the position is projected forward.
-    var position by remember { mutableLongStateOf(now.positionMs) }
-    LaunchedEffect(now.positionMs, now.isPlaying) {
-        val base = now.positionMs
+    val reported by vm.position.collectAsStateWithLifecycle()
+    var position by remember { mutableLongStateOf(reported) }
+    LaunchedEffect(reported, now.isPlaying) {
+        val base = reported
         val at = System.currentTimeMillis()
         position = base
         while (now.isPlaying) { delay(80); position = base + (System.currentTimeMillis() - at) }

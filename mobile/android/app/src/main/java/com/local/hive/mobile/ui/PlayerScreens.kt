@@ -363,12 +363,14 @@ private fun Modifier.screenVerticalDrag(onStart: () -> Unit, onDelta: (Float) ->
 @Composable
 private fun Playbar(vm: MainViewModel, now: NowPlaying, showArt: Boolean, modifier: Modifier, onOpen: () -> Unit, onOpenQueue: () -> Unit) {
     val c = Hive.colors
-    val progress = if (now.durationMs > 0) now.positionMs.toFloat() / now.durationMs else 0f
+    // Read while drawing only: the ticking position redraws the line, nothing else.
+    val position = vm.position.collectAsStateWithLifecycle()
     val shift = remember { Animatable(0f) }
     val scope = rememberCoroutineScope()
     Box(modifier.clickable(onClick = onOpen)) {
         Canvas(Modifier.align(Alignment.BottomCenter).fillMaxWidth().padding(horizontal = 18.dp).height(2.dp)) {
             drawRoundRect(c.text.copy(alpha = 0.08f), cornerRadius = CornerRadius(size.height))
+            val progress = if (now.durationMs > 0) position.value.toFloat() / now.durationMs else 0f
             drawRoundRect(c.accent, size = Size(size.width * progress.coerceIn(0f, 1f), size.height), cornerRadius = CornerRadius(size.height))
         }
         Row(Modifier.fillMaxSize().padding(start = 11.dp, end = 4.dp), verticalAlignment = Alignment.CenterVertically) {
@@ -572,7 +574,7 @@ private fun FullPlayerContent(
                     }
                 }
 
-                SeekBar(now, onSeek = { vm.player.seekTo(it) })
+                SeekBar(now, vm.position, onSeek = { vm.player.seekTo(it) })
 
                 Row(Modifier.fillMaxWidth().height(if (compact) 80.dp else 92.dp).padding(horizontal = 18.dp), horizontalArrangement = Arrangement.SpaceBetween, verticalAlignment = Alignment.CenterVertically) {
                     // Shuffle and repeat mean nothing to a live station; their places stay so the row doesn't jump.
@@ -626,11 +628,12 @@ internal fun TransportButton(icon: ImageVector, label: String, iconSize: Dp, act
 
 /** Hive's seek row: the control track, accent progress, a thumb that grows under the finger, tabular times. */
 @Composable
-internal fun SeekBar(now: NowPlaying, onSeek: (Long) -> Unit) {
+internal fun SeekBar(now: NowPlaying, position: kotlinx.coroutines.flow.StateFlow<Long>, onSeek: (Long) -> Unit) {
     val c = Hive.colors
     if (now.isLive) { LiveBar(now); return }
+    val positionMs by position.collectAsStateWithLifecycle()
     var scrub by remember { mutableStateOf<Float?>(null) }
-    val fraction = (scrub ?: if (now.durationMs > 0) now.positionMs.toFloat() / now.durationMs else 0f).coerceIn(0f, 1f)
+    val fraction = (scrub ?: if (now.durationMs > 0) positionMs.toFloat() / now.durationMs else 0f).coerceIn(0f, 1f)
     val thumb by animateDpAsState(if (scrub != null) 18.dp else 12.dp, spring(stiffness = 700f), label = "thumb")
     val track by animateDpAsState(if (scrub != null) 6.dp else 4.dp, spring(stiffness = 700f), label = "track")
     Column(Modifier.fillMaxWidth().padding(horizontal = 26.dp).padding(top = 18.dp)) {

@@ -10,6 +10,23 @@ object LibrarySort {
     private val leading = Regex("""^[\p{P}\p{S}\s]+""")
     private val article = Regex("""^(the|a|an)\s+""", RegexOption.IGNORE_CASE)
 
+    /**
+     * [items] in library order by [text], then [then]. Each item's key is
+     * worked out once and compared as a precomputed collation key; sorting
+     * 30,000 songs by comparing key(text) pairs ran two regexes per
+     * comparison (~450,000 times) and froze the app. Uses its own Collator, so
+     * it is safe off the main thread, where it belongs.
+     */
+    fun <T> sorted(items: List<T>, then: Comparator<T>? = null, text: (T) -> String): List<T> {
+        val c = collator.clone() as Collator
+        val keys = Array(items.size) { c.getCollationKey(key(text(items[it]))) }
+        val order = items.indices.sortedWith { a, b ->
+            val r = keys[a].compareTo(keys[b])
+            if (r != 0 || then == null) r else then.compare(items[a], items[b])
+        }
+        return order.map { items[it] }
+    }
+
     fun key(value: String): String {
         val trimmed = value.replace(leading, "")
         val withoutArticle = trimmed.replace(article, "")

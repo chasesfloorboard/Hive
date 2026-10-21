@@ -64,7 +64,7 @@ fun pcAlbums(tracks: List<PcTrack>): List<PcAlbum> = tracks.filter { it.album.is
         val first = g.first()
         PcAlbum(key, first.album, first.albumArtist.ifBlank { first.artist }, g.firstNotNullOfOrNull { it.year.take(4).ifBlank { null } }.orEmpty(), g.sortedWith(compareBy({ it.disc }, { it.track }, { it.title })))
     }
-    .sortedWith(compareBy(LibrarySort.collator) { LibrarySort.key(it.name) })
+    .let { albums -> LibrarySort.sorted(albums) { it.name } }
 
 /**
  * Hive's library on your PC, on the phone: every album and song Hive has,
@@ -81,10 +81,12 @@ fun PcLibraryScreen(vm: MainViewModel, bottomPadding: Dp, onBack: () -> Unit, on
     var query by rememberSaveable { mutableStateOf("") }
     var view by rememberSaveable { mutableStateOf(0) }
     LaunchedEffect(Unit) { reachable = runCatching { vm.pcLibrary.refresh() }.getOrDefault(false) }
-    val albums = remember(tracks) { pcAlbums(tracks) }
+    val albums by rememberComputed(emptyList(), tracks) { pcAlbums(tracks) }
+    // Songs are put in order once, off the main thread; typing only filters.
+    val songsByTitle by rememberComputed(emptyList(), tracks) { LibrarySort.sorted(tracks) { it.title } }
     val q = query.trim()
     val shownAlbums by remember(albums, q) { derivedStateOf { if (q.isEmpty()) albums else albums.filter { it.name.contains(q, true) || it.artist.contains(q, true) } } }
-    val shownSongs by remember(tracks, q) { derivedStateOf { (if (q.isEmpty()) tracks else tracks.filter { it.title.contains(q, true) || it.artist.contains(q, true) || it.album.contains(q, true) }).sortedWith(compareBy(LibrarySort.collator) { LibrarySort.key(it.title) }) } }
+    val shownSongs by remember(songsByTitle, q) { derivedStateOf { if (q.isEmpty()) songsByTitle else songsByTitle.filter { it.title.contains(q, true) || it.artist.contains(q, true) || it.album.contains(q, true) } } }
 
     Column(Modifier.fillMaxSize()) {
         PageBar("", 0f, onBack)

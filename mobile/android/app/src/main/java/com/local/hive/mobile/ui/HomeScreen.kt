@@ -148,7 +148,7 @@ fun HomeScreen(vm: MainViewModel, nav: HomeNavigation, actions: TrackActions, bo
             itemsIndexed(tabs) { i, tab -> HiveTab(tab.label, pager.currentPage == i, { scope.launch { pager.animateScrollToPage(i, animationSpec = Motion.move()) } }) }
         }
         Spacer(Modifier.height(4.dp))
-        HorizontalPager(pager, Modifier.fillMaxSize(), beyondViewportPageCount = 1, key = { tabs[it] }) { page ->
+        HorizontalPager(pager, Modifier.fillMaxSize(), beyondViewportPageCount = 0, key = { tabs[it] }) { page ->
             when (tabs[page]) {
                 HomeTab.Favorites -> FavoritesTab(vm, nav, actions, bottomPadding)
                 HomeTab.Playlists -> PlaylistsTab(vm, nav, bottomPadding) { naming = true }
@@ -232,11 +232,11 @@ fun <T> ListHeader(
 private fun AlbumsTab(vm: MainViewModel, nav: HomeNavigation, bottom: Dp) {
     val albums by vm.albums.collectAsStateWithLifecycle()
     var sort by rememberSaveable { mutableStateOf(AlbumSort.Year) }
-    val sections = remember(albums, sort) {
+    val sections by rememberComputed(emptyList<Pair<String, List<AlbumSummary>>>(), albums, sort) {
         when (sort) {
             AlbumSort.Year -> albums.groupBy { it.year }.toSortedMap(compareByDescending { it }).map { (y, list) -> (if (y > 0) "$y" else "Unknown year") to list }
             AlbumSort.Name -> listOf("" to albums)
-            AlbumSort.Artist -> listOf("" to albums.sortedWith(compareBy<AlbumSummary, String>(LibrarySort.collator) { LibrarySort.key(it.artist) }.thenBy { it.year }))
+            AlbumSort.Artist -> listOf("" to LibrarySort.sorted(albums, compareBy { it.year }) { it.artist })
             AlbumSort.Added -> listOf("" to albums.sortedByDescending { it.added })
         }
     }
@@ -273,20 +273,21 @@ internal fun AlbumCard(a: AlbumSummary, selected: Boolean, modifier: Modifier, o
 
 // ---- Tracks ----
 
+/** Songs in one of Samsung Music's orders; called off the main thread. */
+private fun sortTracks(tracks: List<Track>, sort: TrackSort): List<Track> = when (sort) {
+    TrackSort.Title -> LibrarySort.sorted(tracks) { it.title }
+    TrackSort.Artist -> LibrarySort.sorted(tracks, compareBy<Track> { it.album }.thenBy { it.trackNumber }) { it.artist }
+    TrackSort.Album -> LibrarySort.sorted(tracks, compareBy<Track> { it.discNumber }.thenBy { it.trackNumber }) { it.album }
+    TrackSort.Added -> tracks.sortedByDescending { it.dateAdded }
+    TrackSort.Length -> tracks.sortedByDescending { it.durationMs }
+}
+
 /** Every song, in any of Samsung Music's orders, with the A–Z index on name order. */
 @Composable
 private fun TracksTab(vm: MainViewModel, actions: TrackActions, bottom: Dp) {
     val all by vm.tracks.collectAsStateWithLifecycle()
     var sort by rememberSaveable { mutableStateOf(TrackSort.Title) }
-    val tracks = remember(all, sort) {
-        when (sort) {
-            TrackSort.Title -> all
-            TrackSort.Artist -> all.sortedWith(compareBy<Track, String>(LibrarySort.collator) { LibrarySort.key(it.artist) }.thenBy { it.album }.thenBy { it.trackNumber })
-            TrackSort.Album -> all.sortedWith(compareBy<Track, String>(LibrarySort.collator) { LibrarySort.key(it.album) }.thenBy { it.discNumber }.thenBy { it.trackNumber })
-            TrackSort.Added -> all.sortedByDescending { it.dateAdded }
-            TrackSort.Length -> all.sortedByDescending { it.durationMs }
-        }
-    }
+    val tracks by rememberComputed(all, all, sort) { sortTracks(all, sort) }
     TrackList(vm, tracks, actions, bottom, "No music yet", "Hive plays the music stored on this phone.", indexed = sort == TrackSort.Title,
         sortHeader = { count, shuffle, play -> ListHeader(TrackSort.entries, sort, { it.label }, { sort = it }, count, shuffle, play) })
 }
@@ -312,7 +313,7 @@ fun TrackList(
     val loaded by vm.libraryLoaded.collectAsStateWithLifecycle()
     val list = rememberLazyListState()
     val scope = rememberCoroutineScope()
-    val firstByLetter = remember(tracks, indexed) {
+    val firstByLetter by rememberComputed(emptyMap(), tracks, indexed) {
         if (!indexed) emptyMap() else buildMap { tracks.forEachIndexed { i, t -> putIfAbsent(indexLetter(LibrarySort.key(t.title)), i) } }
     }
     val showIndex = indexed && tracks.size > 30
@@ -326,7 +327,7 @@ fun TrackList(
                     if (sortHeader != null) sortHeader(count, { vm.shuffle(tracks) }, { vm.play(tracks) })
                     else ListHeader(emptyList<Unit>(), null, { "" }, {}, "$count · ${formatLength(tracks.sumOf { it.durationMs })}", { vm.shuffle(tracks) }, { vm.play(tracks) })
                 }
-                itemsIndexed(tracks, key = { _, t -> t.id }) { i, t ->
+                itemsIndexed(tracks, key = { _, t -> t.id }, contentType = { _, _ -> "track" }) { i, t ->
                     TrackRow(t, t.id in loved, now.trackId == t.id, now.isPlaying, actions, onClick = { vm.play(tracks, i) })
                 }
             }
@@ -494,15 +495,8 @@ private fun FavoritesTab(vm: MainViewModel, nav: HomeNavigation, actions: TrackA
         }, label = "favoritesView") { shown ->
             when (shown) {
                 FavoriteView.Tracks -> {
-                    val sorted = remember(tracks, sort) {
-                        when (sort) {
-                            TrackSort.Title -> tracks.sortedWith(compareBy(LibrarySort.collator) { LibrarySort.key(it.title) })
-                            TrackSort.Artist -> tracks.sortedWith(compareBy<Track, String>(LibrarySort.collator) { LibrarySort.key(it.artist) }.thenBy { it.album }.thenBy { it.trackNumber })
-                            TrackSort.Album -> tracks.sortedWith(compareBy<Track, String>(LibrarySort.collator) { LibrarySort.key(it.album) }.thenBy { it.discNumber }.thenBy { it.trackNumber })
-                            TrackSort.Added -> tracks
-                            TrackSort.Length -> tracks.sortedByDescending { it.durationMs }
-                        }
-                    }
+                    // Favorites come newest-favorited first, which is what "Added" shows here.
+                    val sorted by rememberComputed(tracks, tracks, sort) { if (sort == TrackSort.Added) tracks else sortTracks(tracks, sort) }
                     TrackList(vm, sorted, actions, bottom, "No favorite songs yet", "Tap ♥ on a song, or pair with Hive on your PC to bring your Favorites over.",
                         indexed = sort == TrackSort.Title,
                         sortHeader = { count, shuffle, play -> ListHeader(TrackSort.entries, sort, { if (it == TrackSort.Added) "Date favorited" else it.label }, { sort = it }, count, shuffle, play) })

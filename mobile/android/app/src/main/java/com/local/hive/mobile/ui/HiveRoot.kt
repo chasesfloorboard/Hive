@@ -9,7 +9,6 @@ import com.local.hive.mobile.ui.theme.hiveGlassBorder
 import android.net.Uri
 import androidx.activity.compose.BackHandler
 import androidx.compose.animation.AnimatedVisibility
-import androidx.compose.animation.SharedTransitionLayout
 import androidx.compose.animation.animateColorAsState
 import androidx.compose.animation.core.LinearEasing
 import androidx.compose.animation.core.tween
@@ -227,8 +226,10 @@ private fun HiveContent(vm: MainViewModel, openPlayerInitially: Boolean) {
                 Modifier.fillMaxSize(),
                 content = {
                     CompositionLocalProvider(LocalSelection provides selection) {
-                    SharedTransitionLayout {
-                    CompositionLocalProvider(LocalSharedScope provides this) {
+                    // No SharedTransitionLayout around the NavHost: it turns on lookahead for
+                    // every page, so each list row was measured and placed twice per frame
+                    // (a quarter of the UI thread while scrolling). Covers use the cover
+                    // enter/exit transitions below; sharedCover() is a no-op without a scope.
                     NavHost(
                         nav, startDestination = "home", modifier = Modifier.fillMaxSize().navigationBarsPadding(),
                         enterTransition = { if (targetState.destination.route == ALBUM) coverEnter else openEnter },
@@ -304,8 +305,6 @@ private fun HiveContent(vm: MainViewModel, openPlayerInitially: Boolean) {
                             }
                             SongsScreen(vm, kind.title, flow, actions, bottomPadding) { nav.popBackStack() }
                         }
-                    }
-                    }
                     }
                     }
                 },

@@ -63,6 +63,9 @@ dependencies {
     implementation(libs.palette)
     implementation(libs.serialization.json)
     implementation(libs.coroutines.android)
+    // Installs the startup and scrolling profiles Compose and the other
+    // libraries ship, so release builds start and scroll compiled, not interpreted.
+    implementation(libs.profileinstaller)
     debugImplementation(libs.compose.ui.tooling)
 
     testImplementation(libs.junit)

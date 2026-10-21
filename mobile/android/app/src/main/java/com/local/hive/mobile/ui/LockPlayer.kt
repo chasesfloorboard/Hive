@@ -107,7 +107,7 @@ fun LockPlayer(vm: MainViewModel, onUnlock: () -> Unit) {
                     Text(artist, style = HiveText.rowStrong, color = c.textDim, maxLines = 1, overflow = TextOverflow.Ellipsis, textAlign = TextAlign.Center, modifier = Modifier.padding(top = 4.dp))
                 }
             }
-            SeekBar(now, onSeek = { vm.player.seekTo(it) })
+            SeekBar(now, vm.position, onSeek = { vm.player.seekTo(it) })
             Row(Modifier.fillMaxWidth().padding(horizontal = 26.dp).height(96.dp), horizontalArrangement = Arrangement.SpaceEvenly, verticalAlignment = Alignment.CenterVertically) {
                 TransportButton(Icons.Rounded.SkipPrevious, "Previous", 38.dp) { vm.player.previous() }
                 AccentPlayButton(now.isPlaying, { vm.player.togglePlay() }, size = 74.dp)

@@ -142,18 +142,21 @@ class HiveApp : Application(), coil3.SingletonImageLoader.Factory {
     /** Re-reads MediaStore, then re-matches against Hive so new files sync too. */
     suspend fun rescanLibrary() {
         if (!canReadMusic) { Log.i(TAG, "Library scan skipped: no permission to read music"); return }
+        var changed = 0
         scanMutex.withLock {
             _scanning.value = true
             try {
                 val started = System.currentTimeMillis()
                 val tracks = withContext(Dispatchers.IO) { LibraryScanner(contentResolver).scan() }
-                database.dao().replaceLibrary(tracks)
-                Log.i(TAG, "Library scan: ${tracks.size} tracks in ${System.currentTimeMillis() - started} ms")
+                changed = database.dao().replaceLibrary(tracks)
+                Log.i(TAG, "Library scan: ${tracks.size} tracks, $changed changed, in ${System.currentTimeMillis() - started} ms")
             } finally {
                 _scanning.value = false
             }
         }
-        sync.rematch()
+        // Re-matching downloads Hive's whole library and matches every song, so
+        // it only runs when the phone's library actually changed (or never has).
+        if (changed > 0 || !linkStore.fullSyncDone) sync.rematch()
     }
 }
 
