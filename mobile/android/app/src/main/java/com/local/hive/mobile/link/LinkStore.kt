@@ -75,6 +75,11 @@ class LinkStore(context: Context) {
         get() = prefs.getBoolean("droppedPlaysRequeued", false)
         set(value) = prefs.edit { putBoolean("droppedPlaysRequeued", value) }
 
+    /** Hive opening on the same Wi-Fi as the PC finds it and connects (asking the PC once to allow this phone). */
+    var autoConnect: Boolean
+        get() = prefs.getBoolean("autoConnect", true)
+        set(value) = prefs.edit { putBoolean("autoConnect", value) }
+
     var lastSyncAt: Long
         get() = prefs.getLong("lastSyncAt", 0)
         set(value) = prefs.edit { putLong("lastSyncAt", value) }

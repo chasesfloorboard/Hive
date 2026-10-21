@@ -198,6 +198,7 @@ private fun PairedRows(vm: MainViewModel) {
     SettingRow("Favorites sync", detail) { SmallButton(if (link.syncing) "Syncing…" else "Sync now", enabled = !link.syncing, primary = true) { vm.syncNow() } }
     link.error?.let { Text(it, style = HiveText.small, color = Color(0xFFFF8A8A), modifier = Modifier.padding(horizontal = 18.dp, vertical = 4.dp)) }
     SongSyncRows(vm)
+    AutoConnectRow(vm)
     SettingRow("Unpair this phone", "Stops syncing. Favorites already here stay.") { SmallButton("Unpair") { vm.unpair() } }
 }
 
@@ -223,14 +224,14 @@ private fun SongSyncRows(vm: MainViewModel) {
         }.joinToString("\n")
     }
     if (!on) {
+        // What would be copied is worked out as soon as this shows, so the start button is right there.
+        androidx.compose.runtime.LaunchedEffect(Unit) { if (s.plan == null && !s.checking) vm.checkSongs() }
         SettingRow("Song sync", "Copies songs that are only on the phone or only on the PC to the other, on Wi-Fi. Songs you delete aren't copied back.") {
-            SmallButton(if (s.checking) "Checking…" else "Check", enabled = !s.checking) { vm.checkSongs() }
+            if (s.checking || plan == null) SmallButton(if (s.checking) "Checking…" else "Check", enabled = !s.checking) { vm.checkSongs() }
+            else if (plan.toPhone > 0 || plan.toPc > 0) SmallButton("Start song sync", primary = true) { vm.setSongSync(true) }
         }
         if (planText != null) {
             Text(planText, style = HiveText.small, color = c.textDim, modifier = Modifier.padding(horizontal = 18.dp, vertical = 4.dp))
-            if (plan.toPhone > 0 || plan.toPc > 0) Row(Modifier.padding(horizontal = 14.dp, vertical = 6.dp)) {
-                SmallButton("Start song sync", primary = true) { vm.setSongSync(true) }
-            }
         }
     } else {
         val status = when {
@@ -242,6 +243,15 @@ private fun SongSyncRows(vm: MainViewModel) {
         SettingRow("Song sync", status) { SmallButton("Turn off") { vm.setSongSync(false) } }
     }
     s.message?.let { Text(it, style = HiveText.small, color = Color(0xFFFF8A8A), modifier = Modifier.padding(horizontal = 18.dp, vertical = 4.dp)) }
+}
+
+/** "Connect automatically": Hive opening on the PC's Wi-Fi finds it and connects; the PC allows this phone once. */
+@Composable
+private fun AutoConnectRow(vm: MainViewModel) {
+    val on by vm.autoConnect.collectAsStateWithLifecycle()
+    SettingRow("Connect automatically", "When Hive opens on the same Wi-Fi as your PC, it finds Hive there and connects. The first time, Hive on the PC asks you to allow this phone.") {
+        HiveToggle(listOf("Off", "On"), if (on) 1 else 0, { i -> vm.setAutoConnect(i == 1) })
+    }
 }
 
 @Composable
@@ -256,7 +266,10 @@ private fun PairRows(vm: MainViewModel) {
     var port by remember { mutableStateOf(HiveLinkClient.DEFAULT_PORT.toString()) }
     var code by remember { mutableStateOf("") }
 
-    SettingRow("Find Hive on this Wi-Fi", "On the PC: Settings › Connections › Hive Mobile › Pair phone.") {
+    AutoConnectRow(vm)
+    linkError.connecting?.let { Text(it, style = HiveText.small, color = c.accent, modifier = Modifier.padding(horizontal = 18.dp, vertical = 4.dp)) }
+    SettingRow("Or pair with a code", "On the PC: Settings › Connections › Hive Mobile › Pair phone.") {}
+    SettingRow("Find Hive on this Wi-Fi", "") {
         if (discovering) CircularProgressIndicator(Modifier.size(18.dp), strokeWidth = 2.dp, color = c.accent)
         else SmallButton("Search") { vm.discover() }
     }
@@ -328,6 +341,7 @@ private fun ThemeRows(vm: MainViewModel) {
     val context = androidx.compose.ui.platform.LocalContext.current
     val current by vm.themeName.collectAsStateWithLifecycle()
     var note by remember { mutableStateOf<String?>(null) }
+    val packs by vm.themePacks.collectAsStateWithLifecycle()
     val importer = androidx.activity.compose.rememberLauncherForActivityResult(androidx.activity.result.contract.ActivityResultContracts.OpenDocument()) { uri ->
         if (uri == null) return@rememberLauncherForActivityResult
         val name = uri.lastPathSegment?.substringAfterLast('/')?.substringBeforeLast('.') ?: "Imported theme"
@@ -335,7 +349,7 @@ private fun ThemeRows(vm: MainViewModel) {
         if (pack == null) note = "That file isn't a Hive theme." else { vm.applyTheme(pack); note = null }
     }
     androidx.compose.foundation.lazy.LazyRow(contentPadding = PaddingValues(horizontal = 16.dp, vertical = 6.dp), horizontalArrangement = Arrangement.spacedBy(10.dp)) {
-        items(vm.themePacks) { pack -> ThemeSwatch(pack, pack.name == current) { vm.applyTheme(pack) } }
+        items(packs) { pack -> ThemeSwatch(pack, pack.name == current) { vm.applyTheme(pack) } }
     }
     SettingRow("Import a theme", "A .hive-theme from Hive on your PC, or a CSS file of Hive's variables.") {
         SmallButton("Import") { importer.launch(arrayOf("*/*")) }

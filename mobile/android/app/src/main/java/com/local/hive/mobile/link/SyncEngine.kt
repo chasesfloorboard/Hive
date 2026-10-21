@@ -32,6 +32,8 @@ data class LinkStatus(
     /** Phone changes and plays waiting in Hive on the PC for the user to apply. */
     val waitingOnPc: Int = 0,
     val error: String? = null,
+    /** While connecting automatically: what's happening ("Waiting for you to allow…"). */
+    val connecting: String? = null,
 )
 
 /**
@@ -51,7 +53,10 @@ class SyncEngine(
     private val scope: CoroutineScope,
     /** After each successful sync: song sync piggybacks on it (see SongSync). */
     private val afterSync: () -> Unit = {},
+    /** Hive's themes (MusicBee skins and all), fetched once per launch. */
+    private val onThemes: (List<PcTheme>) -> Unit = {},
 ) {
+    private var themesFetched = false
     private val mutex = Mutex()
     private val _streams = MutableStateFlow<PcStreams?>(null)
     /** Set while Hive on the PC is reachable: how the phone can stream through it. */
@@ -70,9 +75,48 @@ class SyncEngine(
 
     // ---- pairing ----
 
+    private val deviceName get() = listOf(Build.MANUFACTURER.replaceFirstChar { it.uppercase() }, Build.MODEL).joinToString(" ")
+
     suspend fun pair(host: String, port: Int, code: String): Result<Unit> = runCatchingNotCancelled {
-        val deviceName = listOf(Build.MANUFACTURER.replaceFirstChar { it.uppercase() }, Build.MODEL).joinToString(" ")
-        val response = client.pair(host, port, code, deviceName)
+        paired(host, port, client.pair(host, port, code, deviceName))
+    }
+
+    private var autoConnecting = false
+
+    /**
+     * "Connect automatically": an unpaired phone looks for Hive on this
+     * network and asks it to let the phone in; the PC asks its user once.
+     * Paired phones already find their Hive again on every sync.
+     */
+    suspend fun autoConnect() {
+        if (store.pairing != null || !store.autoConnect || autoConnecting) return
+        autoConnecting = true
+        try {
+            val hive = client.discover().firstOrNull() ?: return
+            _status.update { it.copy(connecting = "Found ${hive.name}. Allow this phone in Hive on the PC…", error = null) }
+            val ticket = client.requestConnect(hive.host, hive.port, deviceName)
+            repeat(70) {
+                kotlinx.coroutines.delay(2_000)
+                val answer = runCatching { client.connectAnswer(hive.host, hive.port, ticket) }.getOrNull() ?: return@repeat
+                when (answer.status) {
+                    "pending" -> Unit
+                    "allowed" -> { paired(hive.host, hive.port, PairResponse(answer.token, answer.deviceId, answer.serverId, answer.name, answer.seq)); return }
+                    else -> { _status.update { it.copy(connecting = null, error = answer.error ?: "Hive on the PC didn't allow this phone.") }; return }
+                }
+            }
+            _status.update { it.copy(connecting = null, error = "Nobody answered in Hive on the PC.") }
+        } catch (e: CancellationException) {
+            throw e
+        } catch (e: Exception) {
+            // A busy PC (already asking about another device) or no answer: try again next time Hive opens.
+            _status.update { it.copy(connecting = null) }
+        } finally {
+            autoConnecting = false
+            if (store.pairing != null) _status.update { it.copy(connecting = null) }
+        }
+    }
+
+    private suspend fun paired(host: String, port: Int, response: PairResponse) {
         val conn = HiveLinkClient.Connection(host, port, response.token)
         val info = runCatching { client.info(conn) }.getOrNull()
         store.pairing = Pairing(
@@ -126,6 +170,7 @@ class SyncEngine(
                 store.lastSyncAt = System.currentTimeMillis()
                 _status.update { it.copy(error = null, lastSyncAt = store.lastSyncAt, host = conn.host) }
                 afterSync()
+                if (!themesFetched) runCatching { client.themes(conn) }.onSuccess { themesFetched = true; onThemes(it) }
             } catch (e: CancellationException) {
                 throw e
             } catch (e: HiveLinkException) {

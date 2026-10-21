@@ -59,7 +59,7 @@ import java.util.concurrent.TimeUnit
 @Serializable data class InboxSummary(val loves: Int = 0, val plays: Int = 0)
 /** Song sync on the PC: whether Hive takes song files from the phone. */
 @Serializable data class SongCaps(val receive: Boolean = false)
-@Serializable data class InfoResponse(val serverId: String, val name: String, val port: Int, val seq: Long, val addresses: List<HiveAddress> = emptyList(), val streams: StreamCaps = StreamCaps(), val remote: Boolean = false, val plays: Boolean = false, val inbox: InboxSummary = InboxSummary(), val songs: SongCaps = SongCaps(), val wrap: Boolean = false)
+@Serializable data class InfoResponse(val serverId: String, val name: String, val port: Int, val seq: Long, val addresses: List<HiveAddress> = emptyList(), val streams: StreamCaps = StreamCaps(), val remote: Boolean = false, val plays: Boolean = false, val inbox: InboxSummary = InboxSummary(), val songs: SongCaps = SongCaps(), val wrap: Boolean = false, val themes: Boolean = false)
 /** One year's Yearly Wrap as Hive on the PC counts it (its plays, imports and this phone's). */
 @Serializable data class PcWrap(
     val year: Int,
@@ -113,6 +113,12 @@ import java.util.concurrent.TimeUnit
 )
 @Serializable private data class RemoteCommand(val command: String, val positionMs: Long? = null, val volume: Double? = null)
 @Serializable private data class PairRequest(val code: String, val deviceName: String)
+@Serializable private data class ConnectRequest(val deviceName: String)
+@Serializable data class ConnectTicket(val requestId: String, val secret: String)
+@Serializable data class ConnectAnswer(val status: String = "", val token: String = "", val deviceId: String = "", val serverId: String = "", val name: String = "", val seq: Long = 0, val error: String? = null)
+/** A theme from Hive's themes folder (stock, MusicBee skins, saved). */
+@Serializable data class PcTheme(val name: String, val css: String, val stock: Boolean = false)
+@Serializable private data class ThemesResponse(val themes: List<PcTheme> = emptyList())
 @Serializable private data class DiscoveryReply(val hivelink: Int, val serverId: String, val name: String, val port: Int)
 
 class HiveLinkException(message: String, val status: Int = 0) : IOException(message)
@@ -182,6 +188,26 @@ class HiveLinkClient(private val http: OkHttpClient = defaultHttp()) {
             json.decodeFromString(PairResponse.serializer(), read(it))
         }
     }
+
+    /** Asks Hive to let this phone connect without a code; the person at the PC answers. */
+    suspend fun requestConnect(host: String, port: Int, deviceName: String): ConnectTicket = withContext(Dispatchers.IO) {
+        val body = json.encodeToString(ConnectRequest.serializer(), ConnectRequest(deviceName)).toRequestBody(jsonType)
+        http.newCall(Request.Builder().url(base(host, port) + "/api/pair/request").post(body).build()).execute().use {
+            json.decodeFromString(ConnectTicket.serializer(), read(it))
+        }
+    }
+
+    /** "pending", "allowed" (with the pairing), or "refused"/"expired". */
+    suspend fun connectAnswer(host: String, port: Int, ticket: ConnectTicket): ConnectAnswer = withContext(Dispatchers.IO) {
+        val url = base(host, port) + "/api/pair/request?id=${java.net.URLEncoder.encode(ticket.requestId, "UTF-8")}&secret=${java.net.URLEncoder.encode(ticket.secret, "UTF-8")}"
+        http.newCall(Request.Builder().url(url).build()).execute().use { res ->
+            val text = res.body.string()
+            runCatching { json.decodeFromString(ConnectAnswer.serializer(), text) }.getOrNull()?.let { if (res.code == 404) it.copy(status = "expired") else it }
+                ?: ConnectAnswer(status = "expired")
+        }
+    }
+
+    suspend fun themes(conn: Connection): List<PcTheme> = get(conn, "/api/themes", ThemesResponse.serializer()).themes
 
     suspend fun info(conn: Connection): InfoResponse = get(conn, "/api/info", InfoResponse.serializer())
 

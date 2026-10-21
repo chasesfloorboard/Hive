@@ -66,7 +66,7 @@ class HiveApp : Application(), coil3.SingletonImageLoader.Factory {
     val scrobbler by lazy { com.local.hive.mobile.stream.Scrobbler(this) }
     val artistImages by lazy { com.local.hive.mobile.stream.ArtistImages(this) }
     val linkStore by lazy { LinkStore(this) }
-    val sync by lazy { SyncEngine(database.dao(), linkStore, HiveLinkClient(), scope, afterSync = { if (linkStore.songSync) com.local.hive.mobile.link.SongSync.schedule(this) }) }
+    val sync by lazy { SyncEngine(database.dao(), linkStore, HiveLinkClient(), scope, afterSync = { if (linkStore.songSync) com.local.hive.mobile.link.SongSync.schedule(this) }, onThemes = { themes.setPcThemes(it) }) }
     val songSync by lazy { com.local.hive.mobile.link.SongSync(this, database.dao(), linkStore, HiveLinkClient(), sync) }
     private val playerConnection = lazy { PlayerConnection(this, scope) }
     val player by playerConnection
@@ -110,7 +110,7 @@ class HiveApp : Application(), coil3.SingletonImageLoader.Factory {
         // covers the rest of the time.
         ProcessLifecycleOwner.get().lifecycle.addObserver(object : DefaultLifecycleObserver {
             override fun onStart(owner: LifecycleOwner) {
-                scope.launch { sync.syncNow() }
+                scope.launch { sync.syncNow(); sync.autoConnect() }
                 sync.startLive()
             }
             override fun onStop(owner: LifecycleOwner) = sync.stopLive()

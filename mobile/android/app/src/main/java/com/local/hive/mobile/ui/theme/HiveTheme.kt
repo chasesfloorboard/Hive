@@ -182,13 +182,32 @@ class ThemeStore(private val context: Context) {
 
     val css: String get() = prefs.getString("css", null) ?: bundledCss()
 
-    /** "Your Hive theme" (the one from Hive on the PC), then Hive's stock themes. */
-    val packs: List<ThemePack> by lazy {
-        listOf(ThemePack(YOUR_THEME, bundledCss())) + runCatching {
+    private val stockPacks: List<ThemePack> by lazy {
+        runCatching {
             context.assets.list("themes").orEmpty().sorted().mapNotNull { f ->
                 ThemePack.parse(context.assets.open("themes/$f").bufferedReader().readText(), f.substringBefore('.'))
             }
         }.getOrDefault(emptyList())
+    }
+    private val pcFile = java.io.File(context.filesDir, "pc-themes.json")
+    private val themeJson = kotlinx.serialization.json.Json { ignoreUnknownKeys = true }
+    private fun loadPc(): List<com.local.hive.mobile.link.PcTheme> = runCatching {
+        themeJson.decodeFromString(kotlinx.serialization.builtins.ListSerializer(com.local.hive.mobile.link.PcTheme.serializer()), pcFile.readText())
+    }.getOrDefault(emptyList())
+    private fun packsFrom(pc: List<com.local.hive.mobile.link.PcTheme>): List<ThemePack> {
+        val fromPc = pc.filter { it.css.contains("--") }.map { ThemePack(it.name, it.css) }
+        val names = fromPc.map { it.name.lowercase() }.toSet()
+        return (listOf(ThemePack(YOUR_THEME, bundledCss())) + stockPacks.filter { it.name.lowercase() !in names } + fromPc)
+            .let { all -> all.take(1) + all.drop(1).sortedBy { it.name.lowercase() } }
+    }
+
+    /** "Your Hive theme" (the one from Hive on the PC), then every theme in Hive's themes folder (MusicBee skins included) and Hive's stock themes. */
+    private val _packs = MutableStateFlow(emptyList<ThemePack>())
+    val packs: StateFlow<List<ThemePack>> get() { if (_packs.value.isEmpty()) _packs.value = packsFrom(loadPc()); return _packs.asStateFlow() }
+
+    fun setPcThemes(themes: List<com.local.hive.mobile.link.PcTheme>) {
+        runCatching { pcFile.writeText(themeJson.encodeToString(kotlinx.serialization.builtins.ListSerializer(com.local.hive.mobile.link.PcTheme.serializer()), themes)) }
+        _packs.value = packsFrom(themes)
     }
 
     fun apply(css: String, name: String = "Custom") {

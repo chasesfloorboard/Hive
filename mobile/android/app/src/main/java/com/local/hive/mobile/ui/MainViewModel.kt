@@ -457,6 +457,16 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
     fun unpair() = viewModelScope.launch { setSongSync(false); app.sync.unpair() }
     fun syncNow() = viewModelScope.launch { app.sync.syncNow() }
 
+    // ---- connect automatically ----
+
+    private val _autoConnect = MutableStateFlow(app.linkStore.autoConnect)
+    val autoConnect: StateFlow<Boolean> = _autoConnect.asStateFlow()
+    fun setAutoConnect(on: Boolean) {
+        app.linkStore.autoConnect = on
+        _autoConnect.value = on
+        if (on) viewModelScope.launch { app.sync.autoConnect() }
+    }
+
     // ---- song sync ----
 
     val songSync = app.songSync.state
