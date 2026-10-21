@@ -548,7 +548,9 @@ private fun FullPlayerContent(
                             .offset(x, y)
                             .size(size)
                             .onGloballyPositioned { co -> onArtPlaced(Rect(co.localToRoot(Offset.Zero), co.localToRoot(Offset(co.size.width.toFloat(), co.size.height.toFloat())))) }
-                            .then(if (!queueOpen) Modifier.songSwipe(swipe, scope, onNext = { vm.player.next() }, onPrevious = { vm.player.previous() }) else Modifier.clickable { onQueueChange(false) }),
+                            // Swipe the cover to change songs; tap it for the lyrics.
+                            .then(if (!queueOpen) Modifier.songSwipe(swipe, scope, onNext = { vm.player.next() }, onPrevious = { vm.player.previous() })
+                                .pointerInput(now.isLive) { detectTapGestures { if (!now.isLive) onOpenLyrics() } } else Modifier.clickable { onQueueChange(false) }),
                     )
                     if (q > 0f) {
                         Column(Modifier.offset(20.dp + small + 14.dp, 4.dp).height(small).padding(end = 96.dp).alpha(q), verticalArrangement = Arrangement.Center) {
@@ -563,15 +565,23 @@ private fun FullPlayerContent(
                 }
 
                 androidx.compose.animation.AnimatedVisibility(!queueOpen, enter = androidx.compose.animation.expandVertically(Motion.close()) + androidx.compose.animation.fadeIn(Motion.close()), exit = androidx.compose.animation.shrinkVertically(Motion.open()) + androidx.compose.animation.fadeOut(Motion.underFade())) {
-                    Row(Modifier.fillMaxWidth().padding(start = 26.dp, end = 14.dp, top = 8.dp), verticalAlignment = Alignment.CenterVertically) {
-                        Crossfade(current, animationSpec = Motion.swap(), modifier = Modifier.weight(1f), label = "meta") { t ->
-                            Column(verticalArrangement = Arrangement.spacedBy(3.dp)) {
-                                Text(now.title.ifBlank { "Nothing playing" }, style = HiveText.npTitle, color = c.text, maxLines = 2, overflow = TextOverflow.Ellipsis)
-                                Text(now.artist, style = HiveText.rowStrong, color = c.text.copy(alpha = 0.86f), maxLines = 1, overflow = TextOverflow.Ellipsis, modifier = Modifier.clickable { t?.let(onOpenArtist) })
+                    // As Samsung Music lays it out: the song centred under the cover, then
+                    // add-to-playlist, the heart in the middle, and the song's info.
+                    Column(Modifier.fillMaxWidth().padding(horizontal = 22.dp).padding(top = 8.dp), horizontalAlignment = Alignment.CenterHorizontally) {
+                        Crossfade(current, animationSpec = Motion.swap(), label = "meta") { t ->
+                            Column(Modifier.fillMaxWidth(), horizontalAlignment = Alignment.CenterHorizontally, verticalArrangement = Arrangement.spacedBy(3.dp)) {
+                                Text(now.title.ifBlank { "Nothing playing" }, style = HiveText.npTitle, color = c.text, maxLines = 2, overflow = TextOverflow.Ellipsis, textAlign = androidx.compose.ui.text.style.TextAlign.Center)
+                                Text(now.artist, style = HiveText.rowStrong, color = c.text.copy(alpha = 0.86f), maxLines = 1, overflow = TextOverflow.Ellipsis, textAlign = androidx.compose.ui.text.style.TextAlign.Center, modifier = Modifier.clickable { t?.let(onOpenArtist) })
                                 if (t != null) FormatChips(t)
                             }
                         }
-                        if (now.trackId != null) TransportButton(if (isLoved) Icons.Rounded.Favorite else Icons.Rounded.FavoriteBorder, if (isLoved) "Remove from Favorites" else "Add to Favorites", 26.dp, tint = if (isLoved) c.accent else c.text) { now.trackId?.let { vm.toggleLoved(it) } }
+                        Row(Modifier.fillMaxWidth().padding(top = 4.dp), horizontalArrangement = Arrangement.SpaceBetween, verticalAlignment = Alignment.CenterVertically) {
+                            val t = current
+                            if (t != null) TransportButton(Icons.AutoMirrored.Rounded.PlaylistAdd, "Add to playlist", 24.dp) { onAddToPlaylist(t) } else Spacer(Modifier.size(56.dp))
+                            if (now.trackId != null) TransportButton(if (isLoved) Icons.Rounded.Favorite else Icons.Rounded.FavoriteBorder, if (isLoved) "Remove from Favorites" else "Add to Favorites", 26.dp, tint = if (isLoved) c.accent else c.text) { now.trackId?.let { vm.toggleLoved(it) } }
+                            else Spacer(Modifier.size(56.dp))
+                            if (t != null) TransportButton(Icons.Rounded.Info, "Song info", 22.dp) { onInfo(t) } else Spacer(Modifier.size(56.dp))
+                        }
                     }
                 }
 
