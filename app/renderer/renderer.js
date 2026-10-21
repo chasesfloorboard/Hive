@@ -9767,14 +9767,14 @@
         // same serialized background queue as image replacements/deletions. This
         // prevents rapid front/back swaps from racing and overwriting one another.
         queueBackgroundMetadataTask(`Saving artwork metadata ${index + 1}`, async () => {
-          for (const track of editingTracks) {
+          await forEachTrackPlaybackSafe(editingTracks, async track => {
             const data = await window.beehive.readTags(track.path);
             const targetIndex = artworkEditorIndexForSlot(data?.pictures || [], stableSlot);
             if (targetIndex < 0) throw new Error(`The ${artworkEditorSlotLabel(stableSlot)} is not present in one of the selected files.`);
             await window.beehive.modifyArtwork(track.path, { action:'update', index:targetIndex, pictureType:type, comment }, { background: true });
-          }
+          });
           el.tagStatus.textContent = 'Artwork metadata saved.';
-        }, null, { protectPlayback: true, bulkWrite: true, paths: editingTracks.map(track => track.path) });
+        }, null, { bulkWrite: true, paths: editingTracks.map(track => track.path) });
       };
       card.querySelector('[data-artwork-type]')?.addEventListener('change', persistArtworkMeta);
       card.querySelector('[data-artwork-comment]')?.addEventListener('change', persistArtworkMeta);
@@ -9960,6 +9960,28 @@
   // path before committing the atomic metadata replacement. The UI remains
   // optimistic, so the user still sees the artwork disappear immediately; only
   // the final disk commit waits for a playback-safe window.
+  // Artwork writes go file by file, the playing file last: only that one
+  // waits for playback to move on. Waiting for every selected file up front
+  // held a whole album's write while any of its songs was the current track
+  // (paused counts too), so a cover added while listening never landed.
+  async function forEachTrackPlaybackSafe(tracks, write) {
+    const playing = String(currentQueue[currentIndex]?.path || '');
+    const ordered = [...tracks].sort((a, b) => (String(a?.path) === playing) - (String(b?.path) === playing));
+    for (const track of ordered) {
+      await waitForPlaybackSafeArtworkWrite([track.path]);
+      await write(track);
+    }
+  }
+
+  // A picture just chosen, named as the covers cache names it, so the cover
+  // views can show it before the files are saved. Its file path isn't a cover
+  // name: mbcover:// looked for it inside the covers folder and every view
+  // (and the 4-second cover rotation) showed a broken image.
+  async function cachedCoverFor(chosen) {
+    try { return (await window.beehive.cacheCover?.(chosen.path)) || chosen.dataUrl || chosen.path; }
+    catch { return chosen.dataUrl || chosen.path; }
+  }
+
   async function waitForPlaybackSafeArtworkWrite(paths) {
     const protectedPaths = new Set((Array.isArray(paths) ? paths : [paths])
       .map(p => String(p || '')).filter(Boolean));
@@ -10114,12 +10136,13 @@
       renderArtworkEditorList();
       // The album/library view uses the same editing track objects, so update
       // every selected track optimistically instead of waiting for the disk scan.
+      const shown = await cachedCoverFor(chosen);
       for (const track of editingTracks) {
         const pictures = Array.isArray(track.covers) ? track.covers.slice() : [];
         const targetIndex = artworkEditorIndexForSlot(pictures, slot);
-        if (targetIndex >= 0) pictures[targetIndex] = { ...pictures[targetIndex], file: chosen.path, type: normalizeArtworkType(type), description: comment };
+        if (targetIndex >= 0) pictures[targetIndex] = { ...pictures[targetIndex], file: shown, type: normalizeArtworkType(type), description: comment };
         track.covers = pictures;
-        track.cover = pictures.find(p => normalizeArtworkType(p?.type || 'Other') === 'Cover (Front)')?.file || pictures[0]?.file || track.cover || chosen.path;
+        track.cover = pictures.find(p => normalizeArtworkType(p?.type || 'Other') === 'Cover (Front)')?.file || pictures[0]?.file || track.cover || shown;
         clearAutomaticCoverVisual(track);
       }
       applyLibrary(library);
@@ -10145,14 +10168,14 @@
       }
       el.tagStatus.textContent = `${artworkEditorSlotLabel(slot)} updated. Saving in background…`;
       queueBackgroundMetadataTask(`Replacing ${artworkEditorSlotLabel(slot)}`, async () => {
-        for (const track of editingTracks) {
+        await forEachTrackPlaybackSafe(editingTracks, async track => {
           const data = await window.beehive.readTags(track.path);
           const targetIndex = artworkEditorIndexForSlot(data?.pictures || [], slot);
           if (targetIndex < 0) throw new Error(`The ${artworkEditorSlotLabel(slot)} is not present in one of the selected files.`);
           await window.beehive.modifyArtwork(track.path, { action:'replace', index:targetIndex, imagePath:chosen.path, pictureType:type, comment }, { background: true });
-        }
+        });
         el.tagStatus.textContent = `${artworkEditorSlotLabel(slot)} saved.`;
-      }, null, { protectPlayback: true, bulkWrite: true, paths: editingTracks.map(track => track.path) });
+      }, null, { bulkWrite: true, paths: editingTracks.map(track => track.path) });
     } catch (err) { el.tagStatus.textContent = err.message || 'Could not replace artwork.'; }
   }
 
@@ -10196,14 +10219,14 @@
       }
       el.tagStatus.textContent = `${artworkEditorSlotLabel(slot)} removed. Saving in background…`;
       queueBackgroundMetadataTask(`Deleting ${artworkEditorSlotLabel(slot)}`, async () => {
-        for (const track of editingTracks) {
+        await forEachTrackPlaybackSafe(editingTracks, async track => {
           const data = await window.beehive.readTags(track.path);
           const targetIndex = artworkEditorIndexForSlot(data?.pictures || [], slot);
           if (targetIndex < 0) throw new Error(`The ${artworkEditorSlotLabel(slot)} is not present in one of the selected files.`);
           await window.beehive.modifyArtwork(track.path, { action:'delete', index:targetIndex }, { background: true });
-        }
+        });
         el.tagStatus.textContent = `${artworkEditorSlotLabel(slot)} deleted.`;
-      }, null, { protectPlayback: true, bulkWrite: true, paths: editingTracks.map(track => track.path) });
+      }, null, { bulkWrite: true, paths: editingTracks.map(track => track.path) });
     } catch (err) { el.tagStatus.textContent = err.message || 'Could not delete artwork.'; }
   }
 
@@ -10230,10 +10253,11 @@
     artworkEditorSelected = -1000 - Number(slot.id);
     renderArtworkEditorList();
 
+    const shown = await cachedCoverFor(chosen);
     for (const track of editingTracks) {
-      const pictures = [...(Array.isArray(track.covers) ? track.covers : []), { file: chosen.path, type: normalizedType, description: normalizedComment, mime: chosen.mime || 'image/jpeg' }];
+      const pictures = [...(Array.isArray(track.covers) ? track.covers : []), { file: shown, type: normalizedType, description: normalizedComment, mime: chosen.mime || 'image/jpeg' }];
       track.covers = pictures;
-      track.cover = pictures.find(p => normalizeArtworkType(p?.type || 'Other') === 'Cover (Front)')?.file || pictures[0]?.file || chosen.path;
+      track.cover = pictures.find(p => normalizeArtworkType(p?.type || 'Other') === 'Cover (Front)')?.file || pictures[0]?.file || shown;
       clearAutomaticCoverVisual(track);
     }
     applyLibrary(library);
@@ -10246,9 +10270,9 @@
     }
     el.tagStatus.textContent = `${artworkTypeLabel(normalizedType)} selected for this slot. Saving in background…`;
     queueBackgroundMetadataTask(`Adding ${artworkTypeLabel(normalizedType)}`, async () => {
-      for (const track of editingTracks) {
+      await forEachTrackPlaybackSafe(editingTracks, async track => {
         await window.beehive.modifyArtwork(track.path, { action:'add', imagePath:chosen.path, pictureType:normalizedType, comment:normalizedComment }, { background: true });
-      }
+      });
       // Only discard the slot preview after every selected file has accepted the
       // image. reloadArtworkEditor will then show the actual embedded picture and
       // create the next blank slot at the end.
@@ -10257,7 +10281,7 @@
       slot.previewPath = '';
       slot.pending = false;
       el.tagStatus.textContent = `${artworkTypeLabel(normalizedType)} added.`;
-    }, null, { protectPlayback: true, bulkWrite: true, paths: editingTracks.map(track => track.path) });
+    }, null, { bulkWrite: true, paths: editingTracks.map(track => track.path) });
   }
 
   async function addArtworkItem() {

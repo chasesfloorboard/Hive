@@ -2068,6 +2068,22 @@ ipcMain.handle('ytmusic:download', async (_evt, track = {}) => {
   if (cover && cover.startsWith(require('os').tmpdir())) fsp.unlink(cover).catch(() => {});
   return { path: file, existed: false };
 });
+// A picture the artwork editor just chose, copied into the covers cache under
+// its content hash (the scanner's naming), so cover views can show it while
+// the background write embeds it. Returns the cover name.
+ipcMain.handle('artwork:cacheCover', async (_evt, imagePath) => {
+  const source = path.resolve(String(imagePath || ''));
+  if (!/\.(jpe?g|png|webp|gif|bmp)$/i.test(source)) return null;
+  const info = await fsp.stat(source).catch(() => null);
+  if (!info?.isFile() || !info.size || info.size > 50 * 1024 * 1024) return null;
+  const data = await fsp.readFile(source);
+  const ext = path.extname(source).toLowerCase().replace('.jpeg', '.jpg');
+  const name = `${crypto.createHash('sha1').update(data).digest('hex')}${ext}`;
+  await fsp.mkdir(COVERS_DIR(), { recursive: true });
+  const target = path.join(COVERS_DIR(), name);
+  if (!fs.existsSync(target)) await fsp.writeFile(target, data);
+  return name;
+});
 // Pick an image for a playlist (Favorites included). It is copied into
 // Hive's covers cache under a content hash, so the original can move.
 ipcMain.handle('playlist:chooseImage', async () => {

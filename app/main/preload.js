@@ -280,5 +280,6 @@ contextBridge.exposeInMainWorld('beehive', {
   onGstreamerEvent: (cb) => { const listener = (_evt, payload) => cb(payload); ipcRenderer.on('gstreamer:event', listener); return () => ipcRenderer.removeListener('gstreamer:event', listener); },
 
   fileUrl: (absPath) => `mbfile://${encodeURIComponent(absPath)}`,
+  cacheCover: (imagePath) => ipcRenderer.invoke('artwork:cacheCover', imagePath),
   coverUrl: (coverFile) => (coverFile ? `mbcover://${encodeURIComponent(coverFile)}` : null)
 });

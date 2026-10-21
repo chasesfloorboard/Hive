@@ -99,6 +99,9 @@ def first(v):
 
 def norm_type(v):
     s = str(v or '').strip().lower()
+    # FLAC and WMA pictures carry the bare type number (8 is Artist); without
+    # this only 3 and 4 had names and the rest showed as "8".
+    if s.isdigit(): return ID3_TO_LABEL.get(int(s), 'Other')
     if s in ('3','cover (front)','album cover','front cover','front','cover','picturetype.cover_front','picturetype.cover front'): return 'Cover (Front)'
     if s in ('4','cover (back)','album cover (back)','back cover','back','picturetype.cover_back','picturetype.cover back'): return 'Cover (Back)'
     # Mutagen's enum string representation is e.g. PictureType.LEAFLET_PAGE.
@@ -193,6 +196,10 @@ def read_artwork(path, include_data=True):
             data=bytes(p)
             mime='image/png' if getattr(p,'imageformat',None) == MP4Cover.FORMAT_PNG else 'image/jpeg'
             add_picture(data, 'Cover (Front)' if i == 0 else 'Other', mime, '', i)
+    elif ext == '.wma':
+        from mutagen.asf import ASF
+        for i,p in enumerate(asf_pictures(ASF(path))):
+            add_picture(p['data'], p['type'], p['mime'], p['desc'], i)
     else:
         f=File(path)
         if f and getattr(f,'pictures',None):
@@ -235,6 +242,12 @@ def artwork_contains_hash(path, wanted_hash):
         data_list=[bytes(p.data) for p in tag.getall('APIC')] if tag else []
     elif ext in ('.m4a','.mp4','.m4b'):
         f=MP4(path); data_list=[bytes(p) for p in ((f.tags or {}).get('covr',[]) if f.tags else [])]
+    elif ext == '.wav':
+        from mutagen.wave import WAVE
+        tag=WAVE(path).tags; data_list=[bytes(p.data) for p in tag.getall('APIC')] if tag else []
+    elif ext == '.wma':
+        from mutagen.asf import ASF
+        data_list=[p['data'] for p in asf_pictures(ASF(path))]
     else:
         f=File(path); data_list=[bytes(p.data) for p in (getattr(f,'pictures',None) or [])]
     return any(hashlib.sha256(data).hexdigest().lower() == wanted for data in data_list)
@@ -599,7 +612,7 @@ def protected_metadata_fingerprint(path):
         tags = getattr(f, 'tags', None) if f else None
         if tags:
             for key in sorted(tags.keys(), key=str):
-                if str(key).lower().startswith('apic') or str(key).lower() == 'covr':
+                if str(key).lower().startswith('apic') or str(key).lower() in ('covr', 'wm/picture'):
                     continue
                 rows.append((str(key), str(tags[key])))
     payload = json.dumps(rows, ensure_ascii=False, sort_keys=True, separators=(',', ':'))
@@ -689,7 +702,14 @@ def apply_artwork_mp3(id3, op):
             replacement.desc=old[index].desc
             old[index]=replacement
         else:
-            old[index].type=type_id(ptype); old[index].desc=old[index].desc if old[index].desc else unique_apic_desc(id3,desc)
+            old[index].type=type_id(ptype)
+            # A changed comment is saved (it used to be ignored), still unique
+            # among the other pictures, since APIC frames are keyed by it.
+            if visible_apic_desc(old[index].desc) != desc:
+                taken = {p.desc for i, p in enumerate(old) if i != index}
+                candidate = desc
+                while candidate in taken: candidate += _APIC_HIDDEN_SUFFIX
+                old[index].desc = candidate
         id3.delall('APIC')
         for picture in old: id3.add(picture)
     elif action=='delete':
@@ -840,6 +860,75 @@ def write_metadata(path, tags, artwork=None):
         else:f.tags[key]=str(v)
     f.save()
 
+# ---- WMA (ASF) pictures -------------------------------------------------------
+# WM/Picture values are bytes: type (1), data size (uint32 LE), MIME and
+# description (UTF-16LE, each ending in a 2-byte null), then the image.
+
+def _asf_cstring(raw, pos):
+    end = pos
+    while end + 1 < len(raw) and raw[end:end + 2] != b'\x00\x00': end += 2
+    return raw[pos:end].decode('utf-16-le', 'replace'), end + 2
+
+def asf_pictures(f):
+    import struct
+    out = []
+    for value in (f.tags or {}).get('WM/Picture', []) if f.tags else []:
+        raw = bytes(value.value)
+        ptype = raw[0]; size = struct.unpack('<I', raw[1:5])[0]
+        mime, pos = _asf_cstring(raw, 5)
+        desc, pos = _asf_cstring(raw, pos)
+        out.append({'type': ptype, 'mime': mime or 'image/jpeg', 'desc': desc, 'data': raw[pos:pos + size]})
+    return out
+
+def asf_picture_value(pic):
+    import struct
+    from mutagen.asf import ASFByteArrayAttribute
+    raw = bytes([int(pic['type']) & 0xff]) + struct.pack('<I', len(pic['data'])) + \
+        (pic['mime'] or 'image/jpeg').encode('utf-16-le') + b'\x00\x00' + (pic['desc'] or '').encode('utf-16-le') + b'\x00\x00' + pic['data']
+    return ASFByteArrayAttribute(raw)
+
+def apply_artwork_asf(f, op):
+    """The artwork editor's actions for WMA, with FLAC's semantics."""
+    action=str(op.get('action','')).lower()
+    image=op.get('imagePath')
+    ptype=norm_type(op.get('pictureType','Cover (Front)'))
+    desc=str(op.get('comment','') or '')
+    def make(path, t, d):
+        return {'type': type_id(t), 'mime': mimetypes.guess_type(path)[0] or 'image/jpeg', 'desc': d, 'data': Path(path).read_bytes()}
+    old=asf_pictures(f)
+    def at(index):
+        if not (0<=index<len(old)): raise RuntimeError('Artwork item no longer exists.')
+        return index
+    if action=='add':
+        wanted=hashlib.sha256(Path(image).read_bytes()).hexdigest() if image else ''
+        if not any(hashlib.sha256(p['data']).hexdigest() == wanted for p in old): old.append(make(image,ptype,desc))
+    elif action=='replace': old[at(int(op.get('index',-1)))]=make(image,ptype,desc)
+    elif action=='update':
+        i=at(int(op.get('index',-1))); old[i]['type']=type_id(ptype); old[i]['desc']=desc
+    elif action=='delete': del old[at(int(op.get('index',-1)))]
+    elif action=='remove_front':
+        indexes=[i for i,p in enumerate(old) if norm_type(p['type'])=='Cover (Front)'] or ([0] if old else [])
+        old=[p for i,p in enumerate(old) if i not in set(indexes)]
+    elif action=='remove_all': old=[]
+    elif action=='write':
+        fronts=[i for i,p in enumerate(old) if norm_type(p['type'])=='Cover (Front)']
+        if fronts: old[fronts[0]]=make(image,ptype,desc)
+        else: old.insert(0,make(image,ptype,desc))
+    elif action=='replace_slot':
+        target=norm_type(op.get('slotType','Other')); occurrence=max(1,int(op.get('occurrence',1) or 1))
+        matches=[i for i,p in enumerate(old) if norm_type(p['type'])==target]
+        if occurrence > len(matches): raise RuntimeError('Artwork item no longer exists.')
+        old[matches[occurrence-1]]=make(image,ptype,desc)
+    elif action=='arrange':
+        arranged, rest = arranged_pictures(old, op.get('order'), lambda p: p['data'])
+        for picture, wanted_type, _desc in arranged: picture['type'] = type_id(wanted_type)
+        old = [p for p, _t, _d in arranged] + rest
+    else: raise RuntimeError('Unknown artwork action.')
+    if f.tags is None: f.add_tags()
+    if old: f.tags['WM/Picture'] = [asf_picture_value(p) for p in old]
+    elif 'WM/Picture' in f.tags: del f.tags['WM/Picture']
+    return f
+
 def modify_artwork(path, op):
     ext=Path(path).suffix.lower()
     if ext=='.flac':
@@ -847,9 +936,19 @@ def modify_artwork(path, op):
     if ext=='.mp3':
         try:id3=ID3(path)
         except ID3NoHeaderError:id3=ID3()
-        apply_artwork_mp3(id3,op); id3.save(v2_version=4,v1=0); return
+        # A fresh ID3() has no filename bound; save to the path (see write_metadata).
+        apply_artwork_mp3(id3,op); id3.save(path,v2_version=4,v1=0); return
     if ext in ('.m4a','.mp4','.m4b'):
         f=MP4(path); apply_artwork_mp4(f,op); f.save(); return
+    if ext=='.wav':
+        # The "id3 " RIFF chunk is real ID3, as write_metadata already treats it.
+        from mutagen.wave import WAVE
+        f=WAVE(path)
+        if f.tags is None: f.add_tags()
+        apply_artwork_mp3(f.tags,op); f.save(v2_version=4); return
+    if ext=='.wma':
+        from mutagen.asf import ASF
+        f=ASF(path); apply_artwork_asf(f,op); f.save(); return
     raise RuntimeError(f'Native artwork editing is not implemented for {ext or "this format"}.')
 
 def replace_front(path,image,ptype='Cover (Front)',comment=''):
