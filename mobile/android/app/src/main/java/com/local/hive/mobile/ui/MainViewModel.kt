@@ -120,13 +120,46 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
     }
     suspend fun artistImage(name: String) = app.artistImages.lookup(name)
 
-    /** Years with plays on this phone, newest first. */
+    // ---- Yearly Wrap: Hive's own when paired, so phone and PC show the same ----
+
+    private val wrapCache get() = java.io.File(app.filesDir, "pc-wrap").apply { mkdirs() }
+
+    /** The paired Hive's Wrap for [year]: fresh (after sending this phone's plays) or as last fetched. */
+    private suspend fun pcWrapJson(year: Int): String? {
+        if (app.linkStore.pairing == null) return null
+        val cached = java.io.File(wrapCache, "$year.json")
+        val conn = app.sync.pcConnection()
+        if (conn != null) {
+            app.sync.syncNow() // this phone's newest plays first, so they're in the numbers
+            runCatching { linkClient.wrapJson(conn, year) }.getOrNull()?.let { fresh ->
+                runCatching { cached.writeText(fresh) }
+                return fresh
+            }
+        }
+        return cached.takeIf { it.exists() }?.readText()
+    }
+
+    /** Years with a Wrap, newest first: Hive's when paired, else this phone's. */
     suspend fun wrapYears(): List<Int> {
+        if (app.linkStore.pairing != null) {
+            val cached = java.io.File(wrapCache, "years.txt")
+            val pc = app.sync.pcConnection()?.let { conn -> runCatching { linkClient.wrapYears(conn) }.getOrNull() }
+                ?.also { runCatching { cached.writeText(it.joinToString(",")) } }
+                ?: cached.takeIf { it.exists() }?.readText()?.split(',')?.mapNotNull { it.trim().toIntOrNull() }
+            if (!pc.isNullOrEmpty()) return pc
+        }
         val first = dao.firstPlay() ?: return listOf(java.time.Year.now().value)
         val from = java.time.Instant.ofEpochMilli(first).atZone(java.time.ZoneId.systemDefault()).year
         return (java.time.Year.now().value downTo from).toList()
     }
     suspend fun wrap(year: Int): Wrap {
+        pcWrapJson(year)?.let { text ->
+            runCatching { linkClient.parseWrap(text) }.getOrNull()?.let { pc ->
+                return kotlinx.coroutines.withContext(kotlinx.coroutines.Dispatchers.Default) {
+                    Wrap.fromPc(pc, dao.albums().first()) { name -> pcLibrary.coverFor(name) }
+                }
+            }
+        }
         val zone = java.time.ZoneId.systemDefault()
         val from = java.time.LocalDate.of(year, 1, 1).atStartOfDay(zone).toInstant().toEpochMilli()
         val to = java.time.LocalDate.of(year + 1, 1, 1).atStartOfDay(zone).toInstant().toEpochMilli()

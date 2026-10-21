@@ -360,7 +360,10 @@ private class PlayCounter(
         val duration = durationMs.takeIf { it > 0 } ?: return
         if (listenedMs >= minOf(duration / 2, 4 * 60_000L)) {
             counted = true
+            // Library songs by their phone id; songs streamed from Hive on the PC by
+            // their id there, so they count in Hive's Wrap too.
             key.toLongOrNull()?.let { recorder.record(it, listenedMs) }
+                ?: key.takeIf { it.startsWith("pc:") }?.let { recorder.recordPc(it.removePrefix("pc:"), listenedMs) }
             // Previews (30 s) are not real listens.
             listen?.takeIf { duration > 45_000 }?.let { l -> scope.launch { scrobbler.scrobble(l.copy(durationMs = l.durationMs.takeIf { it > 0 } ?: duration)) } }
         }
@@ -369,4 +372,6 @@ private class PlayCounter(
 
 fun interface PlayRecorder {
     fun record(trackId: Long, listenedMs: Long)
+    /** A song streamed from Hive on the PC, by its id there. */
+    fun recordPc(pcId: String, listenedMs: Long) {}
 }

@@ -59,13 +59,39 @@ import java.util.concurrent.TimeUnit
 @Serializable data class InboxSummary(val loves: Int = 0, val plays: Int = 0)
 /** Song sync on the PC: whether Hive takes song files from the phone. */
 @Serializable data class SongCaps(val receive: Boolean = false)
-@Serializable data class InfoResponse(val serverId: String, val name: String, val port: Int, val seq: Long, val addresses: List<HiveAddress> = emptyList(), val streams: StreamCaps = StreamCaps(), val remote: Boolean = false, val plays: Boolean = false, val inbox: InboxSummary = InboxSummary(), val songs: SongCaps = SongCaps())
+@Serializable data class InfoResponse(val serverId: String, val name: String, val port: Int, val seq: Long, val addresses: List<HiveAddress> = emptyList(), val streams: StreamCaps = StreamCaps(), val remote: Boolean = false, val plays: Boolean = false, val inbox: InboxSummary = InboxSummary(), val songs: SongCaps = SongCaps(), val wrap: Boolean = false)
+/** One year's Yearly Wrap as Hive on the PC counts it (its plays, imports and this phone's). */
+@Serializable data class PcWrap(
+    val year: Int,
+    val totalSeconds: Double = 0.0,
+    val totalPlays: Int = 0,
+    val uniqueArtists: Int = 0,
+    val uniqueAlbums: Int = 0,
+    val longestStreak: Int = 0,
+    val topTrack: PcWrapTrack? = null,
+    val topArtists: List<PcWrapArtist> = emptyList(),
+    val topAlbums: List<PcWrapAlbum> = emptyList(),
+    val topGenres: List<PcWrapGenre> = emptyList(),
+    val topDay: PcWrapDay? = null,
+    val monthly: List<PcWrapMonth> = emptyList(),
+    val topMonth: PcWrapMonth? = null,
+)
+/** [key] is "title\u0000artist". Covers are names for /api/cover, or https addresses. */
+@Serializable data class PcWrapTrack(val key: String, val plays: Int, val album: String = "", val cover: String? = null)
+@Serializable data class PcWrapArtist(val name: String, val plays: Int, val cover: String? = null)
+@Serializable data class PcWrapAlbum(val album: String, val artist: String = "", val plays: Int, val cover: String? = null)
+@Serializable data class PcWrapGenre(val name: String, val seconds: Double = 0.0)
+@Serializable data class PcWrapDay(val date: String, val seconds: Double = 0.0)
+@Serializable data class PcWrapMonth(val month: String, val seconds: Double = 0.0)
+@Serializable data class WrapYears(val years: List<Int> = emptyList())
+
 /** Hive's answer to a song sent from the phone: "saved", or "exists" (it already had it). */
 @Serializable data class SongUpload(val status: String, val id: String = "")
 /** A play, as sent to Hive ([clientId] is this phone's own id for it) or fetched from it. */
 @Serializable data class PlayOut(val clientId: String, val id: String, val playedAt: Long, val listenedMs: Long)
 @Serializable data class PlaysRequest(val plays: List<PlayOut>)
-@Serializable data class PlaysStaged(val staged: Int = 0)
+/** Hive's answer to phone plays: [counted] at once, or [staged] for review; [unknown] songs it doesn't have (by clientId). */
+@Serializable data class PlaysStaged(val staged: Int = 0, val counted: Int = 0, val unknown: List<String> = emptyList())
 @Serializable data class PlayIn(val id: String, val playedAt: Long, val listenedMs: Long = 0, val eventId: String = "")
 @Serializable data class PlaysResponse(val plays: List<PlayIn> = emptyList())
 /** A song in one of Hive's playlists: a library song ([id]) or a streamed one ([key] with its details). */
@@ -206,6 +232,13 @@ class HiveLinkClient(private val http: OkHttpClient = defaultHttp()) {
             )
         }
     }
+
+    /** One year's Wrap from Hive, as JSON (kept as is so the phone can show it offline). */
+    suspend fun wrapJson(conn: Connection, year: Int): String = withContext(Dispatchers.IO) {
+        http.newCall(authed(conn, "/api/wrap?year=$year").build()).execute().use { read(it) }
+    }
+    fun parseWrap(text: String): PcWrap = json.decodeFromString(PcWrap.serializer(), text)
+    suspend fun wrapYears(conn: Connection): List<Int> = get(conn, "/api/wrap/years", WrapYears.serializer()).years
 
     suspend fun playlists(conn: Connection): List<PcPlaylist> = get(conn, "/api/playlists", PlaylistsResponse.serializer()).playlists
 

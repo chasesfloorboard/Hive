@@ -69,7 +69,11 @@ import java.time.format.DateTimeFormatter
 import java.time.format.TextStyle
 import java.util.Locale
 
-/** A year of listening on this phone, as Hive's Yearly Wrap counts it. */
+/**
+ * A year of listening as Hive's Yearly Wrap counts it: Hive on the PC's own
+ * Wrap when paired ([fromPc]: its plays, imports and this phone's, the same
+ * numbers the PC shows), otherwise this phone's plays.
+ */
 data class Wrap(
     val year: Int,
     val listenedMs: Long,
@@ -84,10 +88,44 @@ data class Wrap(
     val months: List<Long>,
     val biggestDay: Pair<LocalDate, Long>?,
     val biggestMonth: Pair<Int, Long>?,
+    val fromPc: Boolean = false,
 ) {
-    data class Ranked(val name: String, val sub: String, val plays: Int, val albumId: Long)
+    /** [cover]: a picture address from the PC, for albums this phone doesn't have. */
+    data class Ranked(val name: String, val sub: String, val plays: Int, val albumId: Long, val cover: String? = null)
 
     companion object {
+        /**
+         * Hive's Wrap, as Hive counted it. Covers come from this phone's copy of
+         * the album when it has one (they show offline), else from the PC.
+         */
+        fun fromPc(pc: com.local.hive.mobile.link.PcWrap, phoneAlbums: List<com.local.hive.mobile.data.AlbumSummary>, coverUrl: (String) -> String?): Wrap {
+            val byName = phoneAlbums.groupBy { LibrarySort.fold(it.album) }
+            fun albumId(album: String, artist: String): Long {
+                val same = byName[LibrarySort.fold(album)].orEmpty()
+                return (same.firstOrNull { LibrarySort.fold(it.artist) == LibrarySort.fold(artist) } ?: same.firstOrNull())?.albumId ?: 0
+            }
+            fun cover(name: String?) = name?.takeIf { it.isNotBlank() }?.let { if (it.startsWith("https://")) it else coverUrl(it) }
+            fun ms(seconds: Double) = (seconds * 1000).toLong()
+            val months = MutableList(12) { 0L }
+            pc.monthly.forEach { m -> m.month.substringAfter('-').toIntOrNull()?.takeIf { it in 1..12 }?.let { months[it - 1] = ms(m.seconds) } }
+            val top = pc.topTrack?.let { t ->
+                val (title, artist) = t.key.split('\u0000').let { it.getOrElse(0) { "" } to it.getOrElse(1) { "" } }
+                Ranked(title, artist, t.plays, albumId(t.album, artist), cover(t.cover))
+            }
+            return Wrap(
+                year = pc.year, listenedMs = ms(pc.totalSeconds), plays = pc.totalPlays,
+                artists = pc.uniqueArtists, albums = pc.uniqueAlbums, longestStreak = pc.longestStreak,
+                topTrack = top,
+                topArtists = pc.topArtists.map { Ranked(it.name, "", it.plays, 0, cover(it.cover)) },
+                topAlbums = pc.topAlbums.map { Ranked(it.album, it.artist, it.plays, albumId(it.album, it.artist), cover(it.cover)) },
+                topGenre = pc.topGenres.firstOrNull()?.name,
+                months = months,
+                biggestDay = pc.topDay?.let { d -> runCatching { LocalDate.parse(d.date) to ms(d.seconds) }.getOrNull() },
+                biggestMonth = pc.topMonth?.let { m -> m.month.substringAfter('-').toIntOrNull()?.let { it to ms(m.seconds) } },
+                fromPc = true,
+            )
+        }
+
         fun from(year: Int, rows: List<PlayRow>): Wrap {
             val zone = ZoneId.systemDefault()
             fun day(r: PlayRow) = Instant.ofEpochMilli(r.playedAt).atZone(zone).toLocalDate()
@@ -114,6 +152,8 @@ data class Wrap(
 }
 
 private fun art(albumId: Long) = android.net.Uri.parse("content://media/external/audio/albumart/$albumId")
+/** The phone's copy of the album's cover, else the PC's. */
+private fun art(r: Wrap.Ranked): Any = if (r.albumId > 0 || r.cover == null) art(r.albumId) else r.cover
 
 private fun hours(ms: Long): String {
     val minutes = ms / 60_000
@@ -142,7 +182,7 @@ fun YearlyWrapScreen(vm: MainViewModel, bottomPadding: Dp, onBack: () -> Unit) {
         when {
             w == null -> Box(Modifier.fillMaxSize(), contentAlignment = Alignment.Center) { CircularProgressIndicator(Modifier.size(22.dp), strokeWidth = 2.dp, color = c.accent) }
             w.plays == 0 -> Box(Modifier.fillMaxSize().padding(32.dp), contentAlignment = Alignment.Center) {
-                EmptyState("Not enough listening yet", "Hive builds your Wrap from the songs you play on this phone. Play some music and come back.")
+                EmptyState("Not enough listening yet", "Hive builds your Wrap from the songs you play. Play some music and come back.")
             }
             else -> HorizontalPager(pager, Modifier.fillMaxSize().drawWithContent { layer.record { this@drawWithContent.drawContent() }; drawLayer(layer) }) { page ->
                 // A story slide: the words start a third of the way down and fill the width, as a phone holds them.
@@ -155,15 +195,15 @@ fun YearlyWrapScreen(vm: MainViewModel, bottomPadding: Dp, onBack: () -> Unit) {
                 ) {
                     Spacer(Modifier.weight(0.35f))
                     when (page) {
-                        0 -> { Eyebrow("Hive · Yearly Wrap"); Big("${w.year}"); Title("Your year in music."); Sub("A look at what you actually listened to on this phone, kept on this phone.") }
+                        0 -> { Eyebrow("Hive · Yearly Wrap"); Big("${w.year}"); Title("Your year in music."); Sub(if (w.fromPc) "Everything you played, in Hive on your PC and on this phone." else "A look at what you actually listened to on this phone, kept on this phone.") }
                         1 -> { Eyebrow("Listening time"); Big(hours(w.listenedMs)); Sub("spent with music"); Cards(listOf("Plays" to "%,d".format(w.plays), "Artists" to "%,d".format(w.artists), "Albums" to "%,d".format(w.albums), "Longest streak" to countOf(w.longestStreak, "day"))) }
                         2 -> w.topTrack?.let { t ->
-                            Artwork(art(t.albumId), Modifier.fillMaxWidth(0.8f).aspectRatio(1f), HiveShape.art, Icons.Rounded.LibraryMusic, elevation = 30.dp)
+                            Artwork(art(t), Modifier.fillMaxWidth(0.8f).aspectRatio(1f), HiveShape.art, Icons.Rounded.LibraryMusic, elevation = 30.dp)
                             Spacer(Modifier.height(24.dp)); Eyebrow("Your top track"); Title(t.name); Sub(t.sub); Cards(listOf("Played" to countOf(t.plays, "time")))
                         }
                         3 -> w.topArtists.firstOrNull()?.let { a ->
                             val photo by produceState<String?>(null, a.name) { value = vm.artistImage(a.name) }
-                            Artwork(photo ?: art(a.albumId), Modifier.fillMaxWidth(0.72f).aspectRatio(1f), CircleShape, Icons.Rounded.LibraryMusic, elevation = 30.dp)
+                            Artwork(photo ?: art(a), Modifier.fillMaxWidth(0.72f).aspectRatio(1f), CircleShape, Icons.Rounded.LibraryMusic, elevation = 30.dp)
                             Spacer(Modifier.height(26.dp)); Eyebrow("The artist who shaped your year"); Title(a.name); Cards(listOf("Plays" to "%,d".format(a.plays), "Of your year" to "${(a.plays * 100 / w.plays.coerceAtLeast(1))}%"))
                         }
                         4 -> { Eyebrow("The records you returned to"); Title("Your top albums."); Spacer(Modifier.height(14.dp)); w.topAlbums.forEachIndexed { i, a -> Rank(i + 1, a) } }
@@ -178,7 +218,7 @@ fun YearlyWrapScreen(vm: MainViewModel, bottomPadding: Dp, onBack: () -> Unit) {
                         else -> {
                             Eyebrow("That's your year"); Title("The music stays with you.")
                             Cards(listOf("Top artist" to (w.topArtists.firstOrNull()?.name ?: "—"), "Top track" to (w.topTrack?.name ?: "—"), "Top album" to (w.topAlbums.firstOrNull()?.name ?: "—"), "Top genre" to (w.topGenre ?: "—")))
-                            Sub("Hive keeps this on your phone. No account is needed.")
+                            Sub(if (w.fromPc) "Counted by Hive on your PC, with this phone's plays in it." else "Hive keeps this on your phone. No account is needed.")
                         }
                     }
                     Spacer(Modifier.weight(0.65f))
@@ -241,7 +281,7 @@ private fun Rank(n: Int, a: Wrap.Ranked) {
     val c = Hive.colors
     Row(Modifier.fillMaxWidth().padding(vertical = 6.dp), verticalAlignment = Alignment.CenterVertically) {
         Text("$n", style = HiveText.year.copy(fontSize = 22.sp), color = c.accent, modifier = Modifier.width(30.dp))
-        Artwork(art(a.albumId), Modifier.size(52.dp), HiveShape.thumb)
+        Artwork(art(a), Modifier.size(52.dp), HiveShape.thumb)
         Column(Modifier.weight(1f).padding(horizontal = 12.dp)) {
             Text(a.name, style = HiveText.rowStrong, color = c.text, maxLines = 1, overflow = TextOverflow.Ellipsis)
             Text(a.sub, style = HiveText.small, color = c.textDim, maxLines = 1, overflow = TextOverflow.Ellipsis)

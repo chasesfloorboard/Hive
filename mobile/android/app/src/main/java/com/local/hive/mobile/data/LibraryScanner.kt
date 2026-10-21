@@ -28,6 +28,7 @@ class LibraryScanner(private val resolver: ContentResolver) {
             }
         }.toTypedArray()
 
+        var scanned = false
         val out = ArrayList<Track>()
         resolver.query(
             MediaStore.Audio.Media.EXTERNAL_CONTENT_URI,
@@ -36,6 +37,7 @@ class LibraryScanner(private val resolver: ContentResolver) {
             null,
             null,
         )?.use { c ->
+            scanned = true
             fun idx(name: String) = c.getColumnIndex(name)
             val iId = idx(MediaStore.Audio.Media._ID)
             val iTitle = idx(MediaStore.Audio.Media.TITLE)
@@ -80,6 +82,9 @@ class LibraryScanner(private val resolver: ContentResolver) {
                 )
             }
         }
+        // No answer at all is "MediaStore can't be asked right now", never "no music":
+        // returning nothing would empty the library.
+        if (!scanned) throw java.io.IOException("MediaStore didn't answer")
         return AlbumMerge.apply(out)
     }
 

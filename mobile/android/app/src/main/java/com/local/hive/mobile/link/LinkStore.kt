@@ -70,6 +70,11 @@ class LinkStore(context: Context) {
         get() = prefs.getBoolean("songSync", false)
         set(value) = prefs.edit { putBoolean("songSync", value) }
 
+    /** Plays of phone-only songs that older versions dropped have been queued again (once). */
+    var droppedPlaysRequeued: Boolean
+        get() = prefs.getBoolean("droppedPlaysRequeued", false)
+        set(value) = prefs.edit { putBoolean("droppedPlaysRequeued", value) }
+
     var lastSyncAt: Long
         get() = prefs.getLong("lastSyncAt", 0)
         set(value) = prefs.edit { putLong("lastSyncAt", value) }

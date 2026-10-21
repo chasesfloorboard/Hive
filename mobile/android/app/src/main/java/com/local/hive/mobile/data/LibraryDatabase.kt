@@ -171,7 +171,12 @@ data class Play(
     val synced: Boolean = false,
     /** A play made in Hive on the PC, brought here so both count the same listening; never sent back. */
     @androidx.room.ColumnInfo(defaultValue = "0") val fromPc: Boolean = false,
+    /** A song streamed from Hive on the PC (not on this phone): its id there. [trackId] is 0. */
+    val pcId: String? = null,
 )
+
+/** A play ready to go to Hive on the PC, with the song's id there. */
+data class PlayToSend(val rowId: Long, val playedAt: Long, val listenedMs: Long, val pcId: String)
 
 data class AlbumSummary(
     val albumId: Long,
@@ -454,12 +459,28 @@ interface LibraryDao {
     @Upsert
     suspend fun insertPlay(play: Play)
 
-    /** Plays made here that Hive on the PC hasn't been given yet. */
-    @Query("SELECT * FROM plays WHERE synced = 0 AND fromPc = 0 ORDER BY playedAt LIMIT 2000")
-    suspend fun unsentPlays(): List<Play>
+    /**
+     * Plays made here that Hive on the PC hasn't been given yet and can count:
+     * songs matched to one of Hive's, or streamed from it. Plays of songs only
+     * on this phone wait (song sync may copy the song over) without holding
+     * back the rest.
+     */
+    @Query(
+        "SELECT p.rowId, p.playedAt, p.listenedMs, COALESCE(p.pcId, m.pcId) AS pcId FROM plays p LEFT JOIN pc_match m ON m.trackId = p.trackId " +
+            "WHERE p.synced = 0 AND p.fromPc = 0 AND COALESCE(p.pcId, m.pcId) IS NOT NULL ORDER BY p.playedAt LIMIT 2000"
+    )
+    suspend fun playsToSend(): List<PlayToSend>
 
     @Query("UPDATE plays SET synced = 1 WHERE rowId IN (:ids)")
     suspend fun markPlaysSent(ids: List<Long>)
+
+    /**
+     * Plays an older Hive Mobile marked sent without sending: songs Hive
+     * didn't have. Run once, right after a full match, when every play whose
+     * song still has no match can only have been one of those.
+     */
+    @Query("UPDATE plays SET synced = 0 WHERE synced = 1 AND fromPc = 0 AND pcId IS NULL AND trackId NOT IN (SELECT trackId FROM pc_match)")
+    suspend fun unsendUnmatchedPlays(): Int
 
     @androidx.room.Insert
     suspend fun insertPlays(plays: List<Play>)
@@ -495,9 +516,9 @@ interface LibraryDao {
 
 @Database(
     entities = [Track::class, LoveState::class, PcMatch::class, Play::class, FavoriteAlbum::class, Playlist::class, PlaylistEntry::class, StreamTrack::class, Rating::class, SyncedSong::class],
-    version = 6,
+    version = 7,
     exportSchema = true,
-    autoMigrations = [AutoMigration(from = 1, to = 2), AutoMigration(from = 2, to = 3), AutoMigration(from = 3, to = 4), AutoMigration(from = 4, to = 5), AutoMigration(from = 5, to = 6)],
+    autoMigrations = [AutoMigration(from = 1, to = 2), AutoMigration(from = 2, to = 3), AutoMigration(from = 3, to = 4), AutoMigration(from = 4, to = 5), AutoMigration(from = 5, to = 6), AutoMigration(from = 6, to = 7)],
 )
 abstract class LibraryDatabase : RoomDatabase() {
     abstract fun dao(): LibraryDao

@@ -71,8 +71,13 @@ class HiveApp : Application(), coil3.SingletonImageLoader.Factory {
     val player by lazy { PlayerConnection(this, scope) }
     val pcLibrary by lazy { com.local.hive.mobile.link.PcLibrary(this, HiveLinkClient(), linkStore, sync) }
     val themes by lazy { ThemeStore(this) }
-    val playRecorder = PlayRecorder { trackId, listenedMs ->
-        scope.launch { database.dao().insertPlay(Play(trackId = trackId, playedAt = System.currentTimeMillis(), listenedMs = listenedMs)) }
+    val playRecorder = object : PlayRecorder {
+        override fun record(trackId: Long, listenedMs: Long) {
+            scope.launch { database.dao().insertPlay(Play(trackId = trackId, playedAt = System.currentTimeMillis(), listenedMs = listenedMs)) }
+        }
+        override fun recordPc(pcId: String, listenedMs: Long) {
+            scope.launch { database.dao().insertPlay(Play(trackId = 0, playedAt = System.currentTimeMillis(), listenedMs = listenedMs, pcId = pcId)) }
+        }
     }
 
     private val scanMutex = Mutex()
@@ -147,7 +152,15 @@ class HiveApp : Application(), coil3.SingletonImageLoader.Factory {
             _scanning.value = true
             try {
                 val started = System.currentTimeMillis()
-                val tracks = withContext(Dispatchers.IO) { LibraryScanner(contentResolver).scan() }
+                // The music volume can be away for a moment (while the phone starts,
+                // during an update, a remount): keep the library as it is and look again.
+                val tracks = try {
+                    withContext(Dispatchers.IO) { LibraryScanner(contentResolver).scan() }
+                } catch (e: kotlinx.coroutines.CancellationException) { throw e } catch (e: Exception) {
+                    Log.w(TAG, "Library scan failed, trying again soon: ${e.message}")
+                    scope.launch { delay(30_000); requestRescan(delayMs = 0) }
+                    return
+                }
                 changed = database.dao().replaceLibrary(tracks)
                 Log.i(TAG, "Library scan: ${tracks.size} tracks, $changed changed, in ${System.currentTimeMillis() - started} ms")
             } finally {

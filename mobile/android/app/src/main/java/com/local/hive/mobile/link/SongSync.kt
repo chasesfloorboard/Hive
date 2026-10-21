@@ -149,6 +149,9 @@ class SongSync(
                 budget -= song.size
             }
             for (track in uploads) step("${track.title} — ${track.artist}", onProgress) { upload(conn, track) }
+            // Songs Hive just took are new there: matching again (once Hive has
+            // scanned them) lets plays waiting on them count in Hive's Wrap.
+            if (uploads.isNotEmpty()) sync.matchAgainNextSync()
             if (!pcTakesSongs && plan.toPc.isNotEmpty()) _state.update { it.copy(message = "Hive on the PC isn't taking songs from the phone (Settings › Connections there).") }
             true
         } catch (e: CancellationException) {

@@ -145,6 +145,9 @@ class SyncEngine(
     private inline fun <T> runCatchingNotCancelled(block: () -> T): Result<T> =
         try { Result.success(block()) } catch (e: CancellationException) { throw e } catch (e: Exception) { Result.failure(e) }
 
+    /** The next sync re-matches everything: Hive's library gained songs (song sync sent some). */
+    fun matchAgainNextSync() { store.fullSyncDone = false }
+
     /** Re-matches every phone track after a library rescan. */
     suspend fun rematch() {
         if (store.pairing == null) return
@@ -188,6 +191,10 @@ class SyncEngine(
         step("adopt ${adopt.size} love states")
         store.lastSeq = library.seq
         store.fullSyncDone = true
+        if (!store.droppedPlaysRequeued) {
+            android.util.Log.i("HiveSync", "re-queued ${dao.unsendUnmatchedPlays()} plays of songs Hive didn't have")
+            store.droppedPlaysRequeued = true
+        }
         _status.update { it.copy(matchedTracks = matches.size, pcTracks = library.tracks.size) }
     }
 
@@ -200,14 +207,19 @@ class SyncEngine(
         val info = runCatchingNotCancelled { client.info(conn) }.getOrNull() ?: return
         _status.update { it.copy(waitingOnPc = info.inbox.loves + info.inbox.plays) }
         if (!info.plays) return
-        val pcIdFor = dao.allMatches().associate { it.trackId to it.pcId }
-        val unsent = dao.unsentPlays()
-        // Plays of songs the PC doesn't have stay here; there's nothing there to count them against.
-        val (matched, phoneOnly) = unsent.partition { pcIdFor[it.trackId] != null }
-        if (phoneOnly.isNotEmpty()) dao.markPlaysSent(phoneOnly.map { it.rowId })
-        for (chunk in matched.chunked(500)) {
-            client.sendPlays(conn, chunk.map { PlayOut("${store.pairing?.deviceId}:${it.rowId}", pcIdFor.getValue(it.trackId), it.playedAt, it.listenedMs) })
-            dao.markPlaysSent(chunk.map { it.rowId })
+        // Hive counts them at once (or keeps them for review, older Hive). A play
+        // Hive doesn't know the song of stays here and goes again later.
+        while (true) {
+            val batch = dao.playsToSend().takeIf { it.isNotEmpty() } ?: break
+            var sent = 0
+            for (chunk in batch.chunked(500)) {
+                val answer = client.sendPlays(conn, chunk.map { PlayOut("${store.pairing?.deviceId}:${it.rowId}", it.pcId, it.playedAt, it.listenedMs) })
+                val unknown = answer.unknown.toHashSet()
+                val done = chunk.filter { "${store.pairing?.deviceId}:${it.rowId}" !in unknown }.map { it.rowId }
+                dao.markPlaysSent(done)
+                sent += done.size
+            }
+            if (sent == 0 || batch.size < 2000) break
         }
         val trackFor = dao.allMatches().groupBy({ it.pcId }, { it.trackId })
         val fetched = client.plays(conn, store.lastPcPlayAt)
@@ -215,7 +227,7 @@ class SyncEngine(
             .filter { dao.playCountAt(it.trackId, it.playedAt) == 0 }
         if (fresh.isNotEmpty()) dao.insertPlays(fresh)
         fetched.maxOfOrNull { it.playedAt }?.let { store.lastPcPlayAt = maxOf(store.lastPcPlayAt, it) }
-        _status.update { it.copy(waitingOnPc = info.inbox.loves + info.inbox.plays + matched.size) }
+        _status.update { it.copy(waitingOnPc = info.inbox.loves + info.inbox.plays) }
     }
 
     private suspend fun pullChanges(conn: HiveLinkClient.Connection) {
