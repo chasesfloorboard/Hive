@@ -83,6 +83,18 @@ fun SettingsScreen(vm: MainViewModel, bottomPadding: Dp, onOpenEqualiser: () -> 
                     SettingRow("Prevent clipping", "Never raise a song past its own peak.") {
                         HiveToggle(listOf("Off", "On"), if (eq.clippingGuard) 1 else 0, { i -> vm.equaliser.update { it.copy(clippingGuard = i == 1) } })
                     }
+                    // Hive's crossfade: the end of one song fades into the next, as on the PC.
+                    val fades = listOf(0, 2_000, 4_000, 6_000, 8_000, 12_000)
+                    SettingRow("Crossfade", if (eq.crossfadeMs == 0) "Off: songs follow each other without a gap." else "The last ${eq.crossfadeMs / 1000} seconds of a song fade into the next.") {}
+                    HiveToggle(listOf("Off", "2 s", "4 s", "6 s", "8 s", "12 s"), fades.indexOf(fades.lastOrNull { it <= eq.crossfadeMs } ?: 0), { i -> vm.equaliser.update { it.copy(crossfadeMs = fades[i]) } }, Modifier.padding(horizontal = 16.dp))
+                    if (eq.crossfadeMs > 0) {
+                        SettingRow("Not within an album", "Songs of the same album play straight on, gapless.") {
+                            HiveToggle(listOf("Off", "On"), if (eq.crossfadeExcludeAlbums) 1 else 0, { i -> vm.equaliser.update { it.copy(crossfadeExcludeAlbums = i == 1) } })
+                        }
+                        SettingRow("Crossfade when skipping", "Skipping to the next song fades too.") {
+                            HiveToggle(listOf("Off", "On"), if (eq.crossfadeOnSkip) 1 else 0, { i -> vm.equaliser.update { it.copy(crossfadeOnSkip = i == 1) } })
+                        }
+                    }
                 }
             }
             item {

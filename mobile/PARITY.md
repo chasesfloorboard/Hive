@@ -62,6 +62,7 @@ renderer views) and its state on mobile.
 | Lock screen, notification, Bluetooth controls | MPRIS, tray | ✅ MediaSession |
 | Mini player window | `miniplayer:*` | ✅ mini player bar |
 | Sleep timer | | ✅ 15–90 min with fade-out, end of song |
+| Crossfade (length, not within an album, when skipping) | `crossfade.*` | ✅ companion player fades the outgoing song out while the next fades in, as on the PC; no per-song "Do not crossfade" (that tag isn't readable on the phone) |
 
 ## Now playing
 

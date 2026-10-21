@@ -96,19 +96,24 @@ class PlaybackService : MediaLibraryService() {
             if (toPc) spec.withAdditionalHeaders(mapOf("Authorization" to "Bearer ${pairing!!.token}")) else spec
         }
         // Hive's equaliser runs inside the audio sink, ahead of every output.
-        val renderers = object : DefaultRenderersFactory(this) {
+        fun renderers(processor: EqualiserProcessor) = object : DefaultRenderersFactory(this) {
             override fun buildAudioSink(context: Context, enableFloatOutput: Boolean, enableAudioTrackPlaybackParams: Boolean): AudioSink =
-                DefaultAudioSink.Builder(context).setAudioProcessors(arrayOf<AudioProcessor>(equaliser)).build()
+                DefaultAudioSink.Builder(context).setAudioProcessors(arrayOf<AudioProcessor>(processor)).build()
         }
-        val player = ExoPlayer.Builder(this, renderers)
+        val musicAttributes = AudioAttributes.Builder().setUsage(C.USAGE_MEDIA).setContentType(C.AUDIO_CONTENT_TYPE_MUSIC).build()
+        val player = ExoPlayer.Builder(this, renderers(equaliser))
             .setMediaSourceFactory(DefaultMediaSourceFactory(dataSources))
-            .setAudioAttributes(
-                AudioAttributes.Builder().setUsage(C.USAGE_MEDIA).setContentType(C.AUDIO_CONTENT_TYPE_MUSIC).build(),
-                /* handleAudioFocus = */ true,
-            )
+            .setAudioAttributes(musicAttributes, /* handleAudioFocus = */ true)
             .setHandleAudioBecomingNoisy(true)
             .setWakeMode(C.WAKE_MODE_LOCAL)
             .build()
+        // The crossfade's companion plays the outgoing song under the main player's audio focus.
+        crossfader = Crossfader(scope, player, equaliser, app.equaliser.state, newCompanion = { processor ->
+            ExoPlayer.Builder(this, renderers(processor))
+                .setMediaSourceFactory(DefaultMediaSourceFactory(dataSources))
+                .setAudioAttributes(musicAttributes, /* handleAudioFocus = */ false)
+                .build()
+        }, stopsAtSongEnd = { app.stopsAtSongEnd })
         player.addListener(PlayCounter(app.playRecorder, app.scrobbler, scope, player))
         // With music playing, Hive's lock-screen player is opened as the screen goes off, so it's there when it comes on.
         screenOff = object : android.content.BroadcastReceiver() {
@@ -220,7 +225,12 @@ class PlaybackService : MediaLibraryService() {
         fun <T> future(block: suspend () -> T): ListenableFuture<T> = SettableFuture.create<T>().also { f ->
             scope.launch { runCatching { withContext(Dispatchers.IO) { block() } }.fold({ f.set(it) }, { f.setException(it) }) }
         }
-        session = MediaLibrarySession.Builder(this, player, object : MediaLibrarySession.Callback {
+        // Skipping forward goes through the crossfade when "Crossfade when skipping" is on.
+        val sessionPlayer = object : androidx.media3.common.ForwardingPlayer(player) {
+            override fun seekToNext() { if (!crossfader.skip()) super.seekToNext() }
+            override fun seekToNextMediaItem() { if (!crossfader.skip()) super.seekToNextMediaItem() }
+        }
+        session = MediaLibrarySession.Builder(this, sessionPlayer, object : MediaLibrarySession.Callback {
             // Bluetooth play or the system's media controls after a reboot resume the saved queue.
             override fun onPlaybackResumption(mediaSession: MediaSession, controller: MediaSession.ControllerInfo): ListenableFuture<MediaItemsWithStartPosition> =
                 future { memory.restore()?.let { MediaItemsWithStartPosition(it.items, it.index, it.positionMs) } ?: throw UnsupportedOperationException("Nothing to resume") }
@@ -270,6 +280,7 @@ class PlaybackService : MediaLibraryService() {
     override fun onGetSession(controllerInfo: MediaSession.ControllerInfo): MediaLibrarySession? = session
 
     private lateinit var libraryBrowser: LibraryBrowser
+    private lateinit var crossfader: Crossfader
     private var lastSearch: List<MediaItem> = emptyList()
 
     override fun onTaskRemoved(rootIntent: Intent?) {
@@ -282,6 +293,7 @@ class PlaybackService : MediaLibraryService() {
     override fun onDestroy() {
         screenOff?.let { runCatching { unregisterReceiver(it) } }
         session?.player?.let { memory.saveCursor(it) }
+        if (::crossfader.isInitialized) crossfader.close()
         scope.cancel()
         session?.run {
             player.release()

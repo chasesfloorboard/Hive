@@ -68,7 +68,10 @@ class HiveApp : Application(), coil3.SingletonImageLoader.Factory {
     val linkStore by lazy { LinkStore(this) }
     val sync by lazy { SyncEngine(database.dao(), linkStore, HiveLinkClient(), scope, afterSync = { if (linkStore.songSync) com.local.hive.mobile.link.SongSync.schedule(this) }) }
     val songSync by lazy { com.local.hive.mobile.link.SongSync(this, database.dao(), linkStore, HiveLinkClient(), sync) }
-    val player by lazy { PlayerConnection(this, scope) }
+    private val playerConnection = lazy { PlayerConnection(this, scope) }
+    val player by playerConnection
+    /** A sleep timer is set to stop at the end of this song (no crossfade into the next). */
+    val stopsAtSongEnd: Boolean get() = playerConnection.isInitialized() && player.sleep.value?.endOfSong == true
     val pcLibrary by lazy { com.local.hive.mobile.link.PcLibrary(this, HiveLinkClient(), linkStore, sync) }
     val themes by lazy { ThemeStore(this) }
     val playRecorder = object : PlayRecorder {

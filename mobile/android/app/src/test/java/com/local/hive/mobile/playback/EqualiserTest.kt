@@ -35,6 +35,31 @@ class EqualiserTest {
 
     private fun db(ratio: Double) = 20 * kotlin.math.log10(ratio)
 
+    /** A crossfade's fade-in starts at the seek's flush: silent first, rising, then full, two channels alike. */
+    @Test fun crossfadeFadesTheNextSongIn() {
+        val eq = EqualiserProcessor()
+        eq.configure(AudioProcessor.AudioFormat(rate, 2, C.ENCODING_PCM_FLOAT))
+        eq.fadeInOnNextFlush(1000)
+        eq.flush(AudioProcessor.StreamMetadata.DEFAULT)
+        val frames = rate * 2
+        val input = ByteBuffer.allocateDirect(frames * 2 * 4).order(ByteOrder.nativeOrder())
+        repeat(frames * 2) { input.putFloat(0.5f) }
+        input.flip()
+        eq.queueInput(input)
+        val out = eq.output
+        val v = FloatArray(frames * 2) { out.getFloat() }
+        assertEquals(0f, v[0], 1e-4f)
+        assertEquals(v[0], v[1], 0f)
+        assertEquals(0.5f * sin(PI / 4).toFloat(), v[rate], 0.01f) // halfway: equal power
+        assertEquals(0.5f, v[2 * rate + 2], 1e-4f) // after a second, untouched
+        assertEquals(0.5f, v.last(), 1e-4f)
+        // A later flush (a plain seek) doesn't fade again.
+        eq.flush(AudioProcessor.StreamMetadata.DEFAULT)
+        val again = ByteBuffer.allocateDirect(8).order(ByteOrder.nativeOrder()).apply { putFloat(0.5f); putFloat(0.5f); flip() }
+        eq.queueInput(again)
+        assertEquals(0.5f, eq.output.getFloat(), 1e-4f)
+    }
+
     @Test fun flatLeavesTheSignalAlone() = assertEquals(0.0, db(gainAt(1000.0, EqState.BUILT_IN.first())), 0.05)
 
     @Test fun aBandBoostsItsOwnFrequencyByItsGain() {

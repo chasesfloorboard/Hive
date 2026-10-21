@@ -33,6 +33,12 @@ data class EqState(
     val replayGain: String = "off",
     /** Never raise a song past its own peak. */
     val clippingGuard: Boolean = true,
+    /** Crossfade length in ms, 0 for off (Hive's crossfade.ms). */
+    val crossfadeMs: Int = 0,
+    /** No crossfade between songs of the same album. */
+    val crossfadeExcludeAlbums: Boolean = true,
+    /** Skipping forward crossfades too. */
+    val crossfadeOnSkip: Boolean = false,
 ) {
     val presets: List<EqPreset> get() = BUILT_IN + custom
 
@@ -192,6 +198,17 @@ class EqualiserProcessor : BaseAudioProcessor() {
     /** The song's ReplayGain as a linear factor (1 for none). */
     fun setSongGain(linear: Float) { songGain = linear; dirty = true }
 
+    /** The same curve and song gain in [other] (a crossfade's companion player). */
+    fun copyTo(other: EqualiserProcessor) { other.setCurve(target); other.setSongGain(songGain) }
+
+    // A crossfade's fade-in: armed before the player seeks to the next song, it
+    // starts with the flush that seek causes, so it begins on that song's first sample.
+    @Volatile private var armedFadeMs = 0
+    private var fadeFrames = 0
+    private var fadeDone = 0
+
+    fun fadeInOnNextFlush(ms: Int) { armedFadeMs = ms }
+
     override fun onConfigure(inputAudioFormat: AudioProcessor.AudioFormat): AudioProcessor.AudioFormat {
         if (inputAudioFormat.encoding != C.ENCODING_PCM_16BIT && inputAudioFormat.encoding != C.ENCODING_PCM_FLOAT) throw AudioProcessor.UnhandledAudioFormatException(inputAudioFormat)
         channels = inputAudioFormat.channelCount
@@ -225,12 +242,17 @@ class EqualiserProcessor : BaseAudioProcessor() {
         if (size == 0) return
         val out = replaceOutputBuffer(size).order(ByteOrder.nativeOrder())
         val input = inputBuffer.order(ByteOrder.nativeOrder())
-        if (filters.isEmpty() && preampGain == 1f) { out.put(input); out.flip(); return }
+        val fading = fadeDone < fadeFrames
+        if (filters.isEmpty() && preampGain == 1f && !fading) { out.put(input); out.flip(); return }
         val float = encoding == C.ENCODING_PCM_FLOAT
         var ch = 0
+        var gain = preampGain
         while (input.hasRemaining()) {
             var x = if (float) input.getFloat() else input.getShort() / 32768f
-            x *= preampGain
+            // Equal-power fade-in (sine), per frame.
+            if (ch == 0 && fadeDone < fadeFrames) { gain = preampGain * sin(fadeDone.toFloat() / fadeFrames * PI.toFloat() / 2); fadeDone++ }
+            else if (ch == 0 && fadeDone == fadeFrames) gain = preampGain
+            x *= gain
             for (b in filters.indices) {
                 val f = filters[b]
                 val k = b * channels + ch
@@ -245,6 +267,11 @@ class EqualiserProcessor : BaseAudioProcessor() {
         out.flip()
     }
 
-    override fun onFlush() { z1.fill(0f); z2.fill(0f) }
+    override fun onFlush() {
+        z1.fill(0f); z2.fill(0f)
+        val ms = armedFadeMs
+        armedFadeMs = 0
+        fadeFrames = (rate.toLong() * ms / 1000).toInt(); fadeDone = 0
+    }
     override fun onReset() { filters = emptyArray(); z1 = FloatArray(0); z2 = FloatArray(0); dirty = true }
 }
