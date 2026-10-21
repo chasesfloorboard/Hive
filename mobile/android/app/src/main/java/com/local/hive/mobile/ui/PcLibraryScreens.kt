@@ -1,5 +1,6 @@
 package com.local.hive.mobile.ui
 
+import com.local.hive.mobile.ui.theme.HiveIcons
 import androidx.compose.animation.core.animateFloatAsState
 import androidx.compose.animation.core.tween
 import androidx.compose.foundation.background
@@ -119,7 +120,7 @@ fun PcLibraryScreen(vm: MainViewModel, bottomPadding: Dp, onBack: () -> Unit, on
                     item {
                         Row(Modifier.fillMaxWidth().padding(start = 18.dp, end = 12.dp, bottom = 6.dp), verticalAlignment = Alignment.CenterVertically) {
                             HiveLabel(countOf(shownSongs.size, "song"), Modifier.weight(1f))
-                            ControlButton(Icons.Rounded.Shuffle, "Shuffle", { vm.playPc(shownSongs, shuffle = true) }, size = 38.dp)
+                            ControlButton(HiveIcons.Shuffle, "Shuffle", { vm.playPc(shownSongs, shuffle = true) }, size = 38.dp)
                         }
                     }
                     itemsIndexed(shownSongs, key = { _, t -> t.id }) { i, t -> PcTrackRow(vm, t, now.mediaId == "pc:${t.id}", now.isPlaying, null) { vm.playPc(shownSongs, i) } }
@@ -151,7 +152,7 @@ fun PcAlbumScreen(vm: MainViewModel, key: String, bottomPadding: Dp, onBack: () 
                         Text(album.artist, style = HiveText.rowStrong, color = c.accent, modifier = Modifier.padding(top = 6.dp))
                         Text(listOfNotNull(album.year.ifBlank { null }, countOf(album.tracks.size, "track"), formatLength(album.tracks.sumOf { it.duration })).joinToString(" · "), style = HiveText.small, color = c.textDim, modifier = Modifier.padding(top = 4.dp))
                         Row(Modifier.padding(top = 18.dp), horizontalArrangement = Arrangement.spacedBy(12.dp), verticalAlignment = Alignment.CenterVertically) {
-                            ControlButton(Icons.Rounded.Shuffle, "Shuffle", { vm.playPc(album.tracks, shuffle = true) }, size = 46.dp)
+                            ControlButton(HiveIcons.Shuffle, "Shuffle", { vm.playPc(album.tracks, shuffle = true) }, size = 46.dp)
                             AccentPlayButton(false, { vm.playPc(album.tracks) }, size = 58.dp)
                             ControlButton(Icons.AutoMirrored.Rounded.QueueMusic, "Add to queue", { vm.addToQueuePc(album.tracks) }, size = 46.dp)
                         }

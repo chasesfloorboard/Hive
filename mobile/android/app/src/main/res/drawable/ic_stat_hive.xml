@@ -1,0 +1,10 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!-- The Hive H for the status bar: white on transparent, as notification icons must be. -->
+<vector xmlns:android="http://schemas.android.com/apk/res/android"
+    android:width="24dp" android:height="24dp"
+    android:viewportWidth="24" android:viewportHeight="24">
+    <group android:translateX="12" android:translateY="12" android:scaleX="0.02" android:scaleY="0.02">
+        <path android:pathData="M-170,-420 L-170,-98 L0,-190 L170,-98 L170,-420 L449,-259 L449,259 L170,420 L170,98 L0,190 L-170,98 L-170,420 L-449,259 L-449,-259 Z" android:fillColor="#FFFFFFFF"
+            android:strokeColor="#FFFFFFFF" android:strokeWidth="40" android:strokeLineJoin="round" />
+    </group>
+</vector>

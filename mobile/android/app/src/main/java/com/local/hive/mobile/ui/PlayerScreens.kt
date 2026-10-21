@@ -1,5 +1,6 @@
 package com.local.hive.mobile.ui
 
+import com.local.hive.mobile.ui.theme.HiveIcons
 import android.os.Build
 import androidx.compose.animation.Crossfade
 import androidx.compose.animation.animateColorAsState
@@ -390,9 +391,9 @@ private fun Playbar(vm: MainViewModel, now: NowPlaying, showArt: Boolean, modifi
                     }
                 }
             }
-            BarIcon(Icons.Rounded.SkipPrevious, "Previous", { vm.player.previous() })
+            BarIcon(HiveIcons.Previous, "Previous", { vm.player.previous() })
             AccentPlayButton(now.isPlaying, { vm.player.togglePlay() }, size = 42.dp)
-            BarIcon(Icons.Rounded.SkipNext, "Next", { vm.player.next() })
+            BarIcon(HiveIcons.Next, "Next", { vm.player.next() })
             BarIcon(Icons.AutoMirrored.Rounded.QueueMusic, "Queue", onOpenQueue, tint = c.textDim)
         }
     }
@@ -578,11 +579,11 @@ private fun FullPlayerContent(
 
                 Row(Modifier.fillMaxWidth().height(if (compact) 80.dp else 92.dp).padding(horizontal = 18.dp), horizontalArrangement = Arrangement.SpaceBetween, verticalAlignment = Alignment.CenterVertically) {
                     // Shuffle and repeat mean nothing to a live station; their places stay so the row doesn't jump.
-                    if (now.isLive) Spacer(Modifier.size(48.dp)) else TransportButton(Icons.Rounded.Shuffle, "Shuffle", 24.dp, active = now.shuffle) { vm.player.toggleShuffle() }
-                    TransportButton(Icons.Rounded.SkipPrevious, "Previous", 36.dp) { vm.player.previous() }
+                    if (now.isLive) Spacer(Modifier.size(48.dp)) else ShuffleButton(now.shuffle) { vm.player.toggleShuffle() }
+                    TransportButton(HiveIcons.Previous, "Previous", 36.dp) { vm.player.previous() }
                     AccentPlayButton(now.isPlaying, { vm.player.togglePlay() }, size = 72.dp)
-                    TransportButton(Icons.Rounded.SkipNext, "Next", 36.dp) { vm.player.next() }
-                    if (now.isLive) Spacer(Modifier.size(48.dp)) else TransportButton(if (now.repeatMode == Player.REPEAT_MODE_ONE) Icons.Rounded.RepeatOne else Icons.Rounded.Repeat, "Repeat", 24.dp, active = now.repeatMode != Player.REPEAT_MODE_OFF) { vm.player.cycleRepeat() }
+                    TransportButton(HiveIcons.Next, "Next", 36.dp) { vm.player.next() }
+                    if (now.isLive) Spacer(Modifier.size(48.dp)) else RepeatButton(now.repeatMode) { vm.player.cycleRepeat() }
                 }
 
                 // Lyrics on the left, what's next in the middle, the queue on the right.
@@ -624,6 +625,19 @@ internal fun TransportButton(icon: ImageVector, label: String, iconSize: Dp, act
         Icon(icon, label, tint = shown, modifier = Modifier.size(iconSize))
         if (active == true) Box(Modifier.align(Alignment.BottomCenter).padding(bottom = 6.dp).size(4.dp).clip(CircleShape).background(c.accent))
     }
+}
+
+/** Hive's shuffle button, as on the PC: straight arrows when off, crossed (and lit) when on. */
+@Composable
+internal fun ShuffleButton(on: Boolean, onClick: () -> Unit) =
+    TransportButton(if (on) HiveIcons.Shuffle else HiveIcons.ShuffleOff, if (on) "Shuffle on" else "Shuffle off", 26.dp, active = on, onClick = onClick)
+
+/** Hive's repeat button, as on the PC: off (struck through), the whole queue, or one song. */
+@Composable
+internal fun RepeatButton(mode: Int, onClick: () -> Unit) = when (mode) {
+    Player.REPEAT_MODE_ONE -> TransportButton(HiveIcons.RepeatOne, "Repeat single song", 26.dp, active = true, onClick = onClick)
+    Player.REPEAT_MODE_ALL -> TransportButton(HiveIcons.RepeatAll, "Repeat queue", 26.dp, active = true, onClick = onClick)
+    else -> TransportButton(HiveIcons.RepeatOff, "Play through and stop", 26.dp, active = false, onClick = onClick)
 }
 
 /** Hive's seek row: the control track, accent progress, a thumb that grows under the finger, tabular times. */

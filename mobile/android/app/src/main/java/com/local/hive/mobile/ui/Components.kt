@@ -1,5 +1,6 @@
 package com.local.hive.mobile.ui
 
+import com.local.hive.mobile.ui.theme.HiveIcons
 import androidx.compose.animation.AnimatedVisibility
 import androidx.compose.animation.animateColorAsState
 import androidx.compose.animation.core.MutableTransitionState
@@ -253,7 +254,7 @@ fun AccentPlayButton(playing: Boolean, onClick: () -> Unit, size: Dp = 44.dp) {
         contentAlignment = Alignment.Center,
     ) {
         androidx.compose.animation.Crossfade(playing, animationSpec = tween(160), label = "play") { p ->
-            Icon(if (p) Icons.Rounded.Pause else Icons.Rounded.PlayArrow, if (p) "Pause" else "Play", tint = readableOn(c.accent), modifier = Modifier.size(size * 0.55f))
+            Icon(if (p) HiveIcons.Pause else HiveIcons.Play, if (p) "Pause" else "Play", tint = readableOn(c.accent), modifier = Modifier.size(size * 0.55f))
         }
     }
 }

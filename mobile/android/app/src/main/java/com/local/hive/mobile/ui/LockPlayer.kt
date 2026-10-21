@@ -1,9 +1,13 @@
 package com.local.hive.mobile.ui
 
+import com.local.hive.mobile.ui.theme.HiveIcons
 import android.os.Build
 import androidx.compose.animation.Crossfade
 import androidx.compose.animation.core.Animatable
 import androidx.compose.foundation.background
+import androidx.compose.ui.draw.clip
+import androidx.compose.runtime.mutableStateOf
+import androidx.compose.foundation.gestures.detectTapGestures
 import androidx.compose.foundation.gestures.detectVerticalDragGestures
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
@@ -58,8 +62,9 @@ import kotlin.math.abs
 /**
  * Hive over the lock screen while music plays, as Samsung Music's lock
  * player: the time and date, the cover lit and blurred behind (swipe it to
- * change songs), the song, the seek bar and the controls. Swiping up hands
- * over to the phone's own unlock.
+ * change songs, tap it for the lyrics, tap the lyrics for the cover again),
+ * the song, the seek bar, and the controls with shuffle and repeat. Swiping
+ * up hands over to the phone's own unlock.
  */
 @Composable
 fun LockPlayer(vm: MainViewModel, onUnlock: () -> Unit) {
@@ -70,6 +75,7 @@ fun LockPlayer(vm: MainViewModel, onUnlock: () -> Unit) {
     val swipe = remember { Animatable(0f) }
     val scope = rememberCoroutineScope()
     var lift by remember { mutableFloatStateOf(0f) }
+    var showLyrics by remember { mutableStateOf(false) }
 
     Box(
         Modifier.fillMaxSize().background(c.bg).pointerInput(Unit) {
@@ -94,13 +100,21 @@ fun LockPlayer(vm: MainViewModel, onUnlock: () -> Unit) {
             Text(clock.format(DateTimeFormatter.ofPattern(pattern)), style = HiveText.heroTitle.copy(fontSize = 76.sp, lineHeight = 80.sp, fontWeight = FontWeight.Light), color = c.text, modifier = Modifier.padding(top = 28.dp))
             Text(clock.format(DateTimeFormatter.ofPattern("EEEE, MMMM d")), style = HiveText.rowStrong, color = c.text.copy(alpha = 0.85f))
             Spacer(Modifier.weight(1f))
-            Artwork(
-                now.artworkUri,
-                Modifier.fillMaxWidth(0.78f).aspectRatio(1f)
-                    .songSwipe(swipe, scope, onNext = { vm.player.next() }, onPrevious = { vm.player.previous() })
-                    .graphicsLayer { translationX = swipe.value; alpha = 1f - (abs(swipe.value) / size.width).coerceIn(0f, 0.9f) },
-                HiveShape.art, Icons.Rounded.MusicNote, glow = aura?.primary ?: c.accentGlow, elevation = 34.dp,
-            )
+            // The cover and the lyrics share one place; a tap on either shows the other.
+            Crossfade(showLyrics, label = "lockCoverLyrics", modifier = Modifier.fillMaxWidth(0.82f).aspectRatio(1f)) { lyrics ->
+                if (lyrics) {
+                    LyricsBody(vm, Modifier.fillMaxSize().clip(HiveShape.art).background(c.bg.copy(alpha = 0.35f)), onTap = { showLyrics = false }, compact = true)
+                } else Box(Modifier.fillMaxSize(), contentAlignment = Alignment.Center) {
+                    Artwork(
+                        now.artworkUri,
+                        Modifier.fillMaxWidth(0.95f).aspectRatio(1f)
+                            .songSwipe(swipe, scope, onNext = { vm.player.next() }, onPrevious = { vm.player.previous() })
+                            .pointerInput(Unit) { detectTapGestures { showLyrics = true } }
+                            .graphicsLayer { translationX = swipe.value; alpha = 1f - (abs(swipe.value) / size.width).coerceIn(0f, 0.9f) },
+                        HiveShape.art, Icons.Rounded.MusicNote, glow = aura?.primary ?: c.accentGlow, elevation = 34.dp,
+                    )
+                }
+            }
             Crossfade(now.title to now.artist, label = "lockText", modifier = Modifier.padding(top = 26.dp)) { (title, artist) ->
                 Column(horizontalAlignment = Alignment.CenterHorizontally) {
                     Text(title.ifBlank { "Nothing playing" }, style = HiveText.npTitle, color = c.text, maxLines = 1, modifier = Modifier.padding(horizontal = 26.dp), overflow = TextOverflow.Ellipsis, textAlign = TextAlign.Center)
@@ -108,10 +122,13 @@ fun LockPlayer(vm: MainViewModel, onUnlock: () -> Unit) {
                 }
             }
             SeekBar(now, vm.position, onSeek = { vm.player.seekTo(it) })
-            Row(Modifier.fillMaxWidth().padding(horizontal = 26.dp).height(96.dp), horizontalArrangement = Arrangement.SpaceEvenly, verticalAlignment = Alignment.CenterVertically) {
-                TransportButton(Icons.Rounded.SkipPrevious, "Previous", 38.dp) { vm.player.previous() }
+            Row(Modifier.fillMaxWidth().padding(horizontal = 18.dp).height(96.dp), horizontalArrangement = Arrangement.SpaceEvenly, verticalAlignment = Alignment.CenterVertically) {
+                // As in the player: shuffle and repeat mean nothing to a live station, but keep their places.
+                if (now.isLive) Spacer(Modifier.size(48.dp)) else ShuffleButton(now.shuffle) { vm.player.toggleShuffle() }
+                TransportButton(HiveIcons.Previous, "Previous", 38.dp) { vm.player.previous() }
                 AccentPlayButton(now.isPlaying, { vm.player.togglePlay() }, size = 74.dp)
-                TransportButton(Icons.Rounded.SkipNext, "Next", 38.dp) { vm.player.next() }
+                TransportButton(HiveIcons.Next, "Next", 38.dp) { vm.player.next() }
+                if (now.isLive) Spacer(Modifier.size(48.dp)) else RepeatButton(now.repeatMode) { vm.player.cycleRepeat() }
             }
             Spacer(Modifier.weight(0.5f))
             Icon(Icons.Rounded.KeyboardArrowUp, null, tint = c.textDim, modifier = Modifier.size(22.dp))

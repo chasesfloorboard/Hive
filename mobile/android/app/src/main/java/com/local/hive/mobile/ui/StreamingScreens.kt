@@ -1,5 +1,6 @@
 package com.local.hive.mobile.ui
 
+import com.local.hive.mobile.ui.theme.HiveIcons
 import android.content.Intent
 import android.net.Uri
 import androidx.compose.animation.core.animateFloatAsState
@@ -195,8 +196,8 @@ fun AppleArtistScreen(vm: MainViewModel, url: String, bottomPadding: Dp, onBack:
                             Text(a.name, style = HiveText.heroTitle, color = c.text, textAlign = TextAlign.Center, modifier = Modifier.padding(top = 18.dp))
                             Text("Artist", style = HiveText.small, color = c.textDim)
                             if (a.songs.isNotEmpty()) Row(Modifier.fillMaxWidth().padding(top = 18.dp), horizontalArrangement = Arrangement.spacedBy(10.dp)) {
-                                PillButton("Play", Icons.Rounded.PlayArrow, accent = true, modifier = Modifier.weight(1f)) { vm.playStreams(a.songs.map { it.toStream() }) }
-                                PillButton("Shuffle", Icons.Rounded.Shuffle, accent = false, modifier = Modifier.weight(1f)) { vm.playStreams(a.songs.map { it.toStream() }.shuffled()) }
+                                PillButton("Play", HiveIcons.Play, accent = true, modifier = Modifier.weight(1f)) { vm.playStreams(a.songs.map { it.toStream() }) }
+                                PillButton("Shuffle", HiveIcons.Shuffle, accent = false, modifier = Modifier.weight(1f)) { vm.playStreams(a.songs.map { it.toStream() }.shuffled()) }
                             }
                         }
                     }
@@ -406,7 +407,7 @@ private fun ServiceCollectionScreen(
                             if (col.description.isNotBlank()) Text(col.description, style = HiveText.small, color = c.textDim, textAlign = TextAlign.Center, maxLines = if (showAll) Int.MAX_VALUE else 3, overflow = TextOverflow.Ellipsis,
                                 modifier = Modifier.padding(top = 10.dp).clickable { showAll = !showAll })
                             Row(Modifier.padding(top = 18.dp), horizontalArrangement = Arrangement.spacedBy(12.dp), verticalAlignment = Alignment.CenterVertically) {
-                                ControlButton(Icons.Rounded.Shuffle, "Shuffle", { vm.playStreams(col.songs, shuffle = true) }, size = 46.dp)
+                                ControlButton(HiveIcons.Shuffle, "Shuffle", { vm.playStreams(col.songs, shuffle = true) }, size = 46.dp)
                                 AccentPlayButton(false, { vm.playStreams(col.songs) }, size = 58.dp)
                                 ControlButton(Icons.AutoMirrored.Rounded.PlaylistAdd, "Import as playlist", {
                                     if (!importing) {

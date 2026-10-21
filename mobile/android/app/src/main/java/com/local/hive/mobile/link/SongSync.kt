@@ -254,7 +254,7 @@ class SongSyncWorker(context: Context, params: WorkerParameters) : CoroutineWork
             })
         }
         val notification = NotificationCompat.Builder(applicationContext, CHANNEL)
-            .setSmallIcon(android.R.drawable.stat_sys_download)
+            .setSmallIcon(com.local.hive.mobile.R.drawable.ic_stat_hive)
             .setContentTitle(if (state.total > 0) "Syncing songs with Hive · ${state.done} of ${state.total}" else "Syncing songs with Hive")
             .setContentText(state.current)
             .setProgress(state.total, state.done, state.total == 0)

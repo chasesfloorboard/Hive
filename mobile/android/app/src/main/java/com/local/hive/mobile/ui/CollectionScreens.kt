@@ -1,5 +1,6 @@
 package com.local.hive.mobile.ui
 
+import com.local.hive.mobile.ui.theme.HiveIcons
 import android.net.Uri
 import androidx.compose.animation.AnimatedVisibility
 import androidx.compose.animation.core.animateFloatAsState
@@ -140,8 +141,8 @@ fun AlbumScreen(
                     if (artist.isNotBlank()) Text(artist, style = HiveText.rowStrong, color = c.accent, modifier = Modifier.padding(top = 6.dp).clip(HiveShape.pill).clickable { onOpenArtist(artist) }.padding(horizontal = 8.dp, vertical = 2.dp))
                     Text(listOfNotNull(year.takeIf { it > 0 }?.toString(), countOf(tracks.size, "track"), formatLength(tracks.sumOf { it.durationMs })).joinToString(" · "), style = HiveText.small, color = c.textDim, modifier = Modifier.padding(top = 4.dp))
                     Row(Modifier.fillMaxWidth().padding(top = 20.dp), horizontalArrangement = Arrangement.spacedBy(10.dp), verticalAlignment = Alignment.CenterVertically) {
-                        PillButton("Play", Icons.Rounded.PlayArrow, accent = true, modifier = Modifier.weight(1f)) { vm.play(tracks) }
-                        PillButton("Shuffle", Icons.Rounded.Shuffle, accent = false, modifier = Modifier.weight(1f)) { vm.shuffle(tracks) }
+                        PillButton("Play", HiveIcons.Play, accent = true, modifier = Modifier.weight(1f)) { vm.play(tracks) }
+                        PillButton("Shuffle", HiveIcons.Shuffle, accent = false, modifier = Modifier.weight(1f)) { vm.shuffle(tracks) }
                         ControlButton(if (favorite) Icons.Rounded.Favorite else Icons.Rounded.FavoriteBorder, if (favorite) "Remove album from Favorites" else "Add album to Favorites", { vm.toggleFavoriteAlbum(title, artist) }, size = 46.dp, tint = if (favorite) c.accent else null)
                     }
                 }
@@ -255,8 +256,8 @@ fun ArtistScreen(
                     Text(name.ifBlank { "Unknown artist" }, style = HiveText.heroTitle, color = c.text, textAlign = TextAlign.Center, modifier = Modifier.padding(top = 18.dp, start = 24.dp, end = 24.dp))
                     Text("${countOf(albums.size, "album")} · ${countOf(tracks.size, "track")}", style = HiveText.small, color = c.textDim, modifier = Modifier.padding(top = 4.dp))
                     Row(Modifier.fillMaxWidth().padding(top = 18.dp, start = 24.dp, end = 24.dp), horizontalArrangement = Arrangement.spacedBy(10.dp)) {
-                        PillButton("Play", Icons.Rounded.PlayArrow, accent = true, modifier = Modifier.weight(1f)) { vm.play(tracks) }
-                        PillButton("Shuffle", Icons.Rounded.Shuffle, accent = false, modifier = Modifier.weight(1f)) { vm.shuffle(tracks) }
+                        PillButton("Play", HiveIcons.Play, accent = true, modifier = Modifier.weight(1f)) { vm.play(tracks) }
+                        PillButton("Shuffle", HiveIcons.Shuffle, accent = false, modifier = Modifier.weight(1f)) { vm.shuffle(tracks) }
                     }
                 }
             }

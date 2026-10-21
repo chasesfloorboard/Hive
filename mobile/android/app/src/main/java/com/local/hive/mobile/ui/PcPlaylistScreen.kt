@@ -1,5 +1,6 @@
 package com.local.hive.mobile.ui
 
+import com.local.hive.mobile.ui.theme.HiveIcons
 import androidx.compose.animation.core.animateFloatAsState
 import androidx.compose.animation.core.tween
 import androidx.compose.foundation.layout.Arrangement
@@ -78,7 +79,7 @@ fun PcPlaylistScreen(vm: MainViewModel, id: String, bottomPadding: Dp, onBack: (
                         Text(p.name, style = HiveText.heroTitle, color = c.text, textAlign = TextAlign.Center, maxLines = 2, overflow = TextOverflow.Ellipsis, modifier = Modifier.padding(top = 4.dp))
                         Text(listOf(countOf(p.songs.size, "song"), "${rows.count { it.first != null }} on this phone").joinToString(" · "), style = HiveText.small, color = c.textDim, modifier = Modifier.padding(top = 6.dp))
                         Row(Modifier.padding(top = 18.dp), horizontalArrangement = Arrangement.spacedBy(12.dp), verticalAlignment = Alignment.CenterVertically) {
-                            ControlButton(Icons.Rounded.Shuffle, "Shuffle", { vm.playPcPlaylist(p.songs, shuffle = true) }, size = 46.dp)
+                            ControlButton(HiveIcons.Shuffle, "Shuffle", { vm.playPcPlaylist(p.songs, shuffle = true) }, size = 46.dp)
                             AccentPlayButton(false, { vm.playPcPlaylist(p.songs) }, size = 58.dp)
                             ControlButton(Icons.AutoMirrored.Rounded.PlaylistAdd, "Copy to this phone", {
                                 if (!copying) { copying = true; vm.copyPcPlaylist(p) { newId, msg -> copying = false; onToast(msg); onOpenPlaylist(newId) } }

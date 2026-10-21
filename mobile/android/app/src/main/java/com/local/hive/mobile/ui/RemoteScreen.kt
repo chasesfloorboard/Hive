@@ -1,5 +1,6 @@
 package com.local.hive.mobile.ui
 
+import com.local.hive.mobile.ui.theme.HiveIcons
 import androidx.compose.foundation.Canvas
 import androidx.compose.foundation.gestures.detectHorizontalDragGestures
 import androidx.compose.foundation.gestures.detectTapGestures
@@ -84,9 +85,9 @@ fun RemoteScreen(vm: MainViewModel, bottomPadding: Dp, onBack: () -> Unit, onToa
             Text(listOf(s.artist, s.album).filter { it.isNotBlank() }.joinToString(" · "), style = HiveText.small, color = c.textDim, maxLines = 1, overflow = TextOverflow.Ellipsis, modifier = Modifier.padding(top = 4.dp))
             RemoteBar(s.position, s.duration) { vm.pcRemote("seek", positionMs = it); state = s.copy(position = it) }
             Row(Modifier.padding(top = 18.dp), horizontalArrangement = Arrangement.spacedBy(22.dp), verticalAlignment = Alignment.CenterVertically) {
-                ControlButton(Icons.Rounded.SkipPrevious, "Previous on the PC", { vm.pcRemote("previous") }, size = 52.dp)
+                ControlButton(HiveIcons.Previous, "Previous on the PC", { vm.pcRemote("previous") }, size = 52.dp)
                 AccentPlayButton(s.playing, { vm.pcRemote("toggle"); state = s.copy(playing = !s.playing) }, size = 72.dp)
-                ControlButton(Icons.Rounded.SkipNext, "Next on the PC", { vm.pcRemote("next") }, size = 52.dp)
+                ControlButton(HiveIcons.Next, "Next on the PC", { vm.pcRemote("next") }, size = 52.dp)
             }
             Row(Modifier.fillMaxWidth().padding(top = 22.dp), verticalAlignment = Alignment.CenterVertically) {
                 Icon(Icons.AutoMirrored.Rounded.VolumeUp, "Volume on the PC", tint = c.textDim, modifier = Modifier.size(20.dp))

@@ -1,5 +1,6 @@
 package com.local.hive.mobile.ui
 
+import com.local.hive.mobile.ui.theme.HiveIcons
 import android.net.Uri
 import androidx.compose.foundation.Image
 import androidx.compose.foundation.background
@@ -220,7 +221,7 @@ fun <T> ListHeader(
             }
         }
         Text(count, style = HiveText.small, color = c.textDim, modifier = Modifier.weight(1f).padding(start = if (sort != null) 6.dp else 10.dp))
-        if (onShuffle != null) ControlButton(Icons.Rounded.Shuffle, "Shuffle", onShuffle, size = 38.dp)
+        if (onShuffle != null) ControlButton(HiveIcons.Shuffle, "Shuffle", onShuffle, size = 38.dp)
         if (onPlay != null) { Spacer(Modifier.width(8.dp)); AccentPlayButton(false, onPlay, size = 38.dp) }
     }
 }

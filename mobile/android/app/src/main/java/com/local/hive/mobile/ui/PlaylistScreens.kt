@@ -1,5 +1,6 @@
 package com.local.hive.mobile.ui
 
+import com.local.hive.mobile.ui.theme.HiveIcons
 import android.net.Uri
 import androidx.compose.animation.core.animateFloatAsState
 import androidx.compose.animation.core.tween
@@ -331,7 +332,7 @@ fun PlaylistScreen(vm: MainViewModel, id: Long, actions: TrackActions, bottomPad
                         style = HiveText.small, color = c.textDim, modifier = Modifier.padding(top = 6.dp),
                     )
                     Row(Modifier.padding(top = 18.dp), horizontalArrangement = Arrangement.spacedBy(12.dp), verticalAlignment = Alignment.CenterVertically) {
-                        ControlButton(Icons.Rounded.Shuffle, "Shuffle", { vm.playRows(rows, shuffle = true) }, size = 46.dp)
+                        ControlButton(HiveIcons.Shuffle, "Shuffle", { vm.playRows(rows, shuffle = true) }, size = 46.dp)
                         AccentPlayButton(false, { vm.playRows(rows) }, size = 58.dp)
                         ControlButton(if (editing) Icons.Rounded.Check else Icons.Rounded.Edit, if (editing) "Done editing" else "Edit playlist", { if (editing) finishEditing() else editing = true }, size = 46.dp, tint = if (editing) c.accent else null)
                     }
