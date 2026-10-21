@@ -2352,7 +2352,8 @@
     try { await decodeTrack(next); } catch {}
   }
   function playbackSettingEnabled(track, key) {
-    const direct = track?.[key] ?? track?.[key.replace(/^BEEHIVE_/, '').replace(/_([A-Z])/g, (_,c)=>c.toUpperCase())];
+    // BEEHIVE_DO_NOT_CROSSFADE -> doNotCrossfade, the name the tag editor sets on save.
+    const direct = track?.[key] ?? track?.[key.replace(/^BEEHIVE_/, '').toLowerCase().replace(/_([a-z])/g, (_,c)=>c.toUpperCase())];
     const custom = track?.customTags?.[key] ?? track?.customTags?.[String(key).toUpperCase()];
     return /^(1|true|yes)$/i.test(String(direct ?? custom ?? ''));
   }
@@ -3376,7 +3377,7 @@
     { key:'genre', label:'Genre', defaultWidth:140, minWidth:90, type:'string', get:t=>String(t?.genre || ''), sortGet:t=>String(t?.genre || '') },
     { key:'year', label:'Year', defaultWidth:70, minWidth:55, type:'number', get:t=>String(t?.year || ''), sortGet:t=>Number(t?.year || 0) },
     { key:'track', label:'Track #', defaultWidth:75, minWidth:55, type:'number', get:t=>formatTrackNumber(t), sortGet:t=>Number(t?.track || 0) },
-    { key:'disc', label:'Disc #', defaultWidth:70, minWidth:55, type:'number', get:t=>formatDiscNumber(t), sortGet:t=>Number(t?.disc || 0) },
+    { key:'disc', label:'Disc #', defaultWidth:70, minWidth:55, type:'number', get:t=>formatDiscNumber(t), sortGet:t=>Number(t?.disc || t?.disk || 0) },
     { key:'composer', label:'Composer', defaultWidth:150, minWidth:100, type:'string', get:t=>String(t?.composer || ''), sortGet:t=>String(t?.composer || '') },
     { key:'publisher', label:'Publisher', defaultWidth:150, minWidth:100, type:'string', get:t=>String(t?.publisher || ''), sortGet:t=>String(t?.publisher || '') },
     { key:'comment', label:'Comment', defaultWidth:180, minWidth:100, type:'string', get:t=>normalizeMetadataText(t?.comment), sortGet:t=>normalizeMetadataText(t?.comment) },
@@ -4886,7 +4887,8 @@
   }
 
   function formatDiscNumber(t) {
-    const n = Number(t?.disc);
+    // The scanner stores the disc number as `disk`; MusicBrainz matches set both.
+    const n = Number(t?.disc || t?.disk);
     if (!Number.isFinite(n) || n <= 0) return '';
     const total = Number(t?.discCount);
     return Number.isFinite(total) && total > 0 ? `${n}/${total}` : String(n);
@@ -8534,8 +8536,8 @@
     el.diskDeleteMessage.textContent = label;
     el.diskDeleteDetail.textContent = detail;
     el.diskDeleteFinalDetail.textContent = count === 1
-      ? `The file “${String(selectedTracks[0].title || selectedTracks[0].path.split(/[\\/]/).pop() || 'this file')}” will be permanently deleted from disk.`
-      : `${count} audio files will be permanently deleted from disk.`;
+      ? `The file “${String(selectedTracks[0].title || selectedTracks[0].path.split(/[\\/]/).pop() || 'this file')}” will be moved to the Trash.`
+      : `${count} audio files will be moved to the Trash.`;
 
     closeModal(el.diskDeleteFinalModal);
     openModal(el.diskDeleteModal);
@@ -8940,7 +8942,8 @@
       const codec = String(t.codec || '').replace(/MPEG 1 Layer 3/i, 'MP3');
       return [codec, kbps, Number(t.playCount) ? `${t.playCount} plays` : ''].filter(Boolean).join(' · ');
     };
-    const extras = () => groups.flatMap((g, gi) => g.filter((_, ti) => ti !== (keepIndex.get(gi) ?? 0)));
+    // Only the groups on screen: copies the user never saw are never deleted or listed.
+    const extras = () => groups.slice(0, 400).flatMap((g, gi) => g.filter((_, ti) => ti !== (keepIndex.get(gi) ?? 0)));
     const render = () => {
       groups = DUP.findDuplicates(library.tracks.filter(isLocalPlaybackTrack), {
         matchAlbum: m.querySelector('#dup-album').checked, ignoreVersions: m.querySelector('#dup-versions').checked, toleranceSeconds: Number(m.querySelector('#dup-tolerance').value)
@@ -8950,7 +8953,7 @@
       status.textContent = groups.length ? `${groups.length.toLocaleString()} groups · ${extra.toLocaleString()} extra copies. Click a copy to keep it instead.` : 'No duplicates found.';
       list.innerHTML = groups.slice(0, 400).map((g, gi) => `<div class="duplicates-group" data-group="${gi}"><div class="duplicates-head">${escapeHtml(g[0].artist || 'Unknown artist')} — ${escapeHtml(g[0].title || '')}</div>`
         + g.map((t, ti) => `<button type="button" class="duplicates-item${ti === 0 ? ' keep' : ''}" data-track="${ti}" title="${escapeHtml(t.path)}"><b>${ti === 0 ? 'Keep' : 'Extra'}</b><span>${escapeHtml(String(t.path).split(/[\\/]/).slice(-2).join('/'))}</span><small>${escapeHtml(fmt(t))}</small></button>`).join('')
-        + `</div>`).join('') + (groups.length > 400 ? `<div class="organise-more">Showing the first 400 groups.</div>` : '');
+        + `</div>`).join('') + (groups.length > 400 ? `<div class="organise-more">Showing the first 400 groups. Deleting or listing extra copies covers only these; run it again for the rest.</div>` : '');
       m.querySelector('#dup-delete').disabled = m.querySelector('#dup-playlist').disabled = !groups.length;
     };
     list.onclick = e => {
@@ -9407,6 +9410,26 @@
   function mergeEditorValues(values) {
     const normalized = values.map(editorComparable);
     return normalized.every(v => v === normalized[0]) ? (values[0] ?? '') : '';
+  }
+
+  // Tag editor checkboxes over a selection: checked/unchecked when every file
+  // agrees, indeterminate when they differ. Save writes a checkbox to a
+  // selection only when the user actually changed it (see tagCheckboxChanged).
+  const isTrueTagValue = v => /^(1|true|yes)$/i.test(String(v || ''));
+  function setMergedCheck(id, values) {
+    const node = document.getElementById(id);
+    if (!node) return;
+    const states = values.map(isTrueTagValue);
+    const mixed = states.some(v => v !== states[0]);
+    node.checked = !mixed && !!states[0];
+    node.indeterminate = mixed;
+    node.dataset.mixed = mixed ? '1' : '';
+    node.dataset.initial = node.checked ? '1' : '';
+  }
+  function tagCheckboxChanged(node) {
+    if (!node) return false;
+    if (node.dataset.mixed === '1') return !node.indeterminate;
+    return (node.checked ? '1' : '') !== (node.dataset.initial || '');
   }
 
   let artworkEditorPictures = [];
@@ -10329,34 +10352,25 @@
     setMerged('tag-lyrics', lyricValues, bulkMode, multiValueGhost);
     renderTagEditorLyricsPreview(tagLyricsPayload.text, { embedded: true, source: 'Embedded' });
     setTagLyricsEditing(false);
-    const noLyrics = nativeTagValue(firstData.native, 'NO_LYRICS');
-    const noLyricsNode = document.getElementById('tag-no-lyrics');
-    if (noLyricsNode) noLyricsNode.checked = /^(1|true|yes)$/i.test(String(noLyrics || ''));
+    setMergedCheck('tag-no-lyrics', loaded.map(item => nativeTagValue(item.data?.native, 'NO_LYRICS')));
 
     const embeddedPcount = editorTextValue(firstCommon, firstData.native || {}, 'pcount');
     setMerged('tag-pcount', loaded.map(item => editorTextValue(item.data?.common || {}, item.data?.native || {}, 'pcount')), bulkMode, multiValueGhost);
-    const trackParts = String(firstCommon?.track?.of || '').trim();
-    const discParts = String(firstCommon?.disk?.of || '').trim();
-    set('tag-track-total', trackParts);
-    set('tag-disc-total', discParts);
+    // Totals, sorting and the option checkboxes follow the same rule as the
+    // fields above: shown only when every selected file agrees. Filling them
+    // from the first file made Save copy its values onto the whole selection.
+    setMerged('tag-track-total', loaded.map(item => String(item.data?.common?.track?.of || '').trim()), bulkMode, multiValueGhost);
+    setMerged('tag-disc-total', loaded.map(item => String(item.data?.common?.disk?.of || '').trim()), bulkMode, multiValueGhost);
     const trackRating = Number(t.rating || firstCommon?.rating || 0);
     const ratingText = value => `${'★'.repeat(Math.max(0, Math.min(5, value)))}${'☆'.repeat(5 - Math.max(0, Math.min(5, value)))}`;
     const trackRatingNode = document.getElementById('tag-track-rating-display');
     if (trackRatingNode) trackRatingNode.textContent = ratingText(trackRating);
-    set('tag-sort-title', editorTextValue(firstCommon, firstData.native, 'title'));
-    set('tag-sort-title-as', editorSortValue(firstData.native, 'title', editorTextValue(firstCommon, firstData.native, 'title')));
-    set('tag-sort-album', editorTextValue(firstCommon, firstData.native, 'album'));
-    set('tag-sort-album-as', editorSortValue(firstData.native, 'album', editorTextValue(firstCommon, firstData.native, 'album')));
-    set('tag-sort-albumArtist', editorTextValue(firstCommon, firstData.native, 'albumartist'));
-    set('tag-sort-albumArtist-as', editorSortValue(firstData.native, 'albumartist', editorTextValue(firstCommon, firstData.native, 'albumartist')));
-    set('tag-sort-artist', editorTextValue(firstCommon, firstData.native, 'artist'));
-    set('tag-sort-artist-as', editorSortValue(firstData.native, 'artist', editorTextValue(firstCommon, firstData.native, 'artist')));
-    set('tag-sort-composer', editorTextValue(firstCommon, firstData.native, 'composer'));
-    set('tag-sort-composer-as', editorSortValue(firstData.native, 'composer', editorTextValue(firstCommon, firstData.native, 'composer')));
-    const customSorting = document.getElementById('tag-custom-sorting');
-    if (customSorting) customSorting.checked = /^(1|true|yes)$/i.test(String(nativeTagValue(firstData.native, 'BEEHIVE_CUSTOM_SORTING') || ''));
-    const compilationNode = document.getElementById('tag-compilation');
-    if (compilationNode) compilationNode.checked = /^(1|true|yes)$/i.test(String(editorTextValue(firstCommon, firstData.native, 'compilation') || ''));
+    for (const [idPart, key] of [['title','title'], ['album','album'], ['albumArtist','albumartist'], ['artist','artist'], ['composer','composer']]) {
+      setMerged(`tag-sort-${idPart}`, loaded.map(item => editorTextValue(item.data?.common || {}, item.data?.native || {}, key)), bulkMode, multiValueGhost);
+      setMerged(`tag-sort-${idPart}-as`, loaded.map(item => editorSortValue(item.data?.native, key, editorTextValue(item.data?.common || {}, item.data?.native || {}, key))), bulkMode, multiValueGhost);
+    }
+    setMergedCheck('tag-custom-sorting', loaded.map(item => nativeTagValue(item.data?.native, 'BEEHIVE_CUSTOM_SORTING')));
+    setMergedCheck('tag-compilation', loaded.map(item => editorTextValue(item.data?.common || {}, item.data?.native || {}, 'compilation')));
 
     const f=firstData.format||{}, stat=firstData.stat||{};
     const prop=(id,v)=>{const n=document.getElementById(id);if(n)n.textContent=(v===undefined||v===null||v==='')?'—':String(v);};
@@ -10407,12 +10421,9 @@
     }
     set('tag-artwork-comment', firstPicture?.description || '');
     await reloadArtworkEditor();
-    const settingValues = {
-      'tag-exclude-playback': nativeTagValue(firstData.native, 'BEEHIVE_EXCLUDE_PLAYBACK'),
-      'tag-do-not-crossfade': nativeTagValue(firstData.native, 'BEEHIVE_DO_NOT_CROSSFADE'),
-      'tag-remember-position': nativeTagValue(firstData.native, 'BEEHIVE_REMEMBER_POSITION')
-    };
-    Object.entries(settingValues).forEach(([id, value]) => { const node=document.getElementById(id); if(node) node.checked=/^(1|true|yes)$/i.test(String(value||'')); });
+    for (const [id, tagKey] of [['tag-exclude-playback','BEEHIVE_EXCLUDE_PLAYBACK'], ['tag-do-not-crossfade','BEEHIVE_DO_NOT_CROSSFADE'], ['tag-remember-position','BEEHIVE_REMEMBER_POSITION']]) {
+      setMergedCheck(id, loaded.map(item => nativeTagValue(item.data?.native, tagKey)));
+    }
     el.tagStatus.textContent = bulkMode ? `${editingTracks.length} files loaded from disk. Blank fields mean the selected files differ.` : (t.path||'');
     if (!bulkMode) void refreshTagEditorLyrics(t);
   }
@@ -18330,8 +18341,7 @@
         const compilationFieldNode = document.getElementById('tag-compilation');
         if (compilationFieldNode) {
           const shownCompilation = compilationFieldNode.checked ? '1' : '';
-          const originalCompilation = mergeEditorValues(editingTagSnapshots.map(item => editorTextValue(item.data?.common || {}, item.data?.native || {}, 'compilation')));
-          if (!bulk || editorComparable(shownCompilation) !== editorComparable(originalCompilation)) perTrack.compilation = shownCompilation;
+          if (!bulk || tagCheckboxChanged(compilationFieldNode)) perTrack.compilation = shownCompilation;
         }
         // ReplayGain is intentionally represented by real metadata field names.
         // These writes also make the Settings tab useful for existing files without
@@ -18363,8 +18373,7 @@
         if(!bulk || enteredCustomJson!==mergedCustomJson) Object.assign(perTrack, advancedOnly);
         const noLyricsNode = document.getElementById('tag-no-lyrics');
         const noLyricsValue = noLyricsNode?.checked ? '1' : '';
-        const originalNoLyrics = mergeEditorValues(editingTagSnapshots.map(item => nativeTagValue(item.data?.native, 'NO_LYRICS')));
-        if (!bulk || noLyricsValue !== editorComparable(originalNoLyrics)) perTrack.NO_LYRICS = noLyricsValue;
+        if (!bulk || tagCheckboxChanged(noLyricsNode)) perTrack.NO_LYRICS = noLyricsValue;
         const shownStart=v('tag-start-time'), shownEnd=v('tag-end-time'), shownLyricsOffset=v('tag-lyrics-offset');
         const originalStart=track.startTime || nativeTagValue(native,'START_TIME');
         const originalEnd=track.endTime || nativeTagValue(native,'END_TIME');
@@ -18377,8 +18386,7 @@
         }
         if(!bulk || shownLyricsOffset!==editorComparable(originalLyricsOffset)) perTrack.BEEHIVE_LYRICS_OFFSET=shownLyricsOffset;
         const sortEnabled = document.getElementById('tag-custom-sorting')?.checked ? '1' : '';
-        const originalSortEnabled = mergeEditorValues(editingTagSnapshots.map(item => nativeTagValue(item.data?.native, 'BEEHIVE_CUSTOM_SORTING')));
-        if (!bulk || sortEnabled !== editorComparable(originalSortEnabled)) perTrack.BEEHIVE_CUSTOM_SORTING = sortEnabled;
+        if (!bulk || tagCheckboxChanged(document.getElementById('tag-custom-sorting'))) perTrack.BEEHIVE_CUSTOM_SORTING = sortEnabled;
         const sortFields = [
           ['TSOT','tag-sort-title-as','title'], ['TSOA','tag-sort-album-as','album'],
           ['TSO2','tag-sort-albumArtist-as','albumartist'], ['TSOP','tag-sort-artist-as','artist'], ['TSOC','tag-sort-composer-as','composer']
@@ -18386,7 +18394,12 @@
         for (const [tagKey, id, fieldKey] of sortFields) {
           const node = document.getElementById(id);
           const shown = node?.value.trim() || '';
-          const original = editorSortValue(native, fieldKey, editorTextValue(common, native, fieldKey));
+          // Bulk: compared with the value shared by the whole selection (blank
+          // when the files differ), not this file's own, so an untouched field
+          // never copies one file's sort value onto the others.
+          const original = bulk
+            ? mergeEditorValues(editingTagSnapshots.map(item => editorSortValue(item.data?.native, fieldKey, editorTextValue(item.data?.common || {}, item.data?.native || {}, fieldKey))))
+            : editorSortValue(native, fieldKey, editorTextValue(common, native, fieldKey));
           if (!bulk || shown !== editorComparable(original)) perTrack[tagKey] = shown;
         }
         const settingFields = [
@@ -18397,8 +18410,7 @@
         for (const [tagKey, id] of settingFields) {
           const node = document.getElementById(id);
           const shown = node?.checked ? '1' : '';
-          const original = mergeEditorValues(editingTagSnapshots.map(item => nativeTagValue(item.data?.native, tagKey)));
-          if (!bulk || shown !== editorComparable(original)) perTrack[tagKey] = shown;
+          if (!bulk || tagCheckboxChanged(node)) perTrack[tagKey] = shown;
         }
         // For a multi-selection, preserve each track's title/track/disc unless
         // the user explicitly changed that field. This matches the safe editing

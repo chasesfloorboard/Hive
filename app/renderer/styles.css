@@ -5018,6 +5018,9 @@ html[data-hive-theme="light"] .modal-overlay { --accent: #0A84FF; }
    cards that showed as a hard square box around whatever was hovered. Rows
    here only ever have their divider line, and no hover box. */
 #settings-modal .settings-row { border-top: 0; border-left: 0; border-right: 0; }
+/* display:flex above beats the hidden attribute (Hive Link's pairing-code and
+   phone-changes rows rely on it). */
+#settings-modal .settings-row[hidden] { display: none; }
 #settings-modal .settings-row:hover {
   background: transparent;
   border-bottom-color: color-mix(in srgb, var(--border) 70%, transparent);

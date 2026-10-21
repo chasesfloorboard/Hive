@@ -641,6 +641,10 @@
               <span class="settings-row-text"><span class="settings-row-label">Let paired phones control playback</span><span class="settings-hint">Hive Mobile can show what's playing here, play and pause, skip, seek and set the volume, and take over the song. It never changes your library.</span></span>
               <input type="checkbox" id="hive-link-remote" />
             </label>
+            <label class="settings-row">
+              <span class="settings-row-text"><span class="settings-row-label">Take songs from paired phones</span><span class="settings-hint">Song sync: a song you add on the phone that Hive doesn't have is copied into your first music folder as Artist/Album. Songs Hive already has are never copied twice, and nothing is ever deleted.</span></span>
+              <input type="checkbox" id="hive-link-receive-songs" checked />
+            </label>
           </section>
 
           <section class="settings-section">
@@ -920,9 +924,9 @@
 
   <div id="disk-delete-final-modal" class="modal-overlay hidden">
     <div class="modal glass disk-delete-modal disk-delete-final-modal">
-      <div class="modal-header"><h3>This is permanent</h3><button class="modal-close" aria-label="Close" id="disk-delete-final-close" data-close type="button">✕</button></div>
+      <div class="modal-header"><h3>Move to Trash?</h3><button class="modal-close" aria-label="Close" id="disk-delete-final-close" data-close type="button">✕</button></div>
       <div class="modal-body">
-        <div class="disk-delete-warning">This is permanent. Are you sure?</div>
+        <div class="disk-delete-warning">The files leave your library. You can restore them from the Trash. Are you sure?</div>
         <div id="disk-delete-final-detail" class="disk-delete-detail"></div>
         <div class="disk-delete-actions">
           <button id="disk-delete-final-no" class="modal-action secondary" type="button">No</button>

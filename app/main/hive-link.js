@@ -27,6 +27,10 @@
 //   GET  /api/stream/song?key=…    a song Hive doesn't have (Apple Music,
 //                                  Spotify), streamed from YouTube Music
 //                                  through Hive, as Hive itself plays them
+//   PUT  /api/songs?title=…        a song file from the phone that Hive doesn't
+//                                  have (song sync): saved into the library
+//                                  as <Artist>/<Album>/, unless Hive already
+//                                  has the same song or receiving is off
 //
 // Love itself stays where Hive keeps it: in the music files. Phone changes
 // go through the same setLove path as the heart button, so the embedded tag,
@@ -49,6 +53,7 @@ const os = require('os');
 const path = require('path');
 const { Readable } = require('stream');
 const zlib = require('zlib');
+const { createIndex } = require('./song-match');
 
 const PROTOCOL_VERSION = 1;
 const DEFAULT_PORT = 47800;
@@ -59,6 +64,8 @@ const MAX_PAIRING_ATTEMPTS = 5;
 const MAX_EVENTS = 5000;
 const MAX_BODY_BYTES = 1024 * 1024;
 const MAX_INBOX_PLAYS = 50000;
+const MAX_SONG_BYTES = 1024 * 1024 * 1024;
+const SONG_EXTENSIONS = new Set(['mp3', 'flac', 'm4a', 'mp4', 'aac', 'ogg', 'oga', 'opus', 'wav', 'aiff', 'aif', 'wv', 'ape', 'wma', 'alac']);
 
 // The inbox as saved: Love by song id, plays in a list. Anything malformed is dropped.
 function cleanInbox(raw) {
@@ -87,7 +94,7 @@ function lanAddresses() {
   return out;
 }
 
-function createHiveLink({ dataDir, getTracks, setLove, onPaired, streamSong = null, coversDir = null, remote = null, getPlaylists = null, getPlays = null, recordPlays = null, spotifySearch = null, onInbox = () => {}, log = () => {}, port = DEFAULT_PORT, discoveryPort = DISCOVERY_PORT, acceptPhoneChanges = false }) {
+function createHiveLink({ dataDir, getTracks, setLove, onPaired, streamSong = null, coversDir = null, remote = null, getPlaylists = null, getPlays = null, recordPlays = null, spotifySearch = null, songTarget = null, onSongAdded = () => {}, onInbox = () => {}, log = () => {}, port = DEFAULT_PORT, discoveryPort = DISCOVERY_PORT, acceptPhoneChanges = false }) {
   const statePath = path.join(dataDir, 'hive-link.json');
   let state = loadState();
   let server = null;
@@ -108,10 +115,11 @@ function createHiveLink({ dataDir, getTracks, setLove, onPaired, streamSong = nu
         events: Array.isArray(raw.events) ? raw.events : [],
         lastChangeAt: raw.lastChangeAt && typeof raw.lastChangeAt === 'object' ? raw.lastChangeAt : {},
         remoteControl: !!raw.remoteControl,
+        receiveSongs: raw.receiveSongs !== false,
         inbox: cleanInbox(raw.inbox)
       };
     } catch {
-      return { serverId: crypto.randomUUID(), devices: [], seq: 0, events: [], lastChangeAt: {}, inbox: cleanInbox(null) };
+      return { serverId: crypto.randomUUID(), devices: [], seq: 0, events: [], lastChangeAt: {}, receiveSongs: true, inbox: cleanInbox(null) };
     }
   }
 
@@ -143,6 +151,8 @@ function createHiveLink({ dataDir, getTracks, setLove, onPaired, streamSong = nu
       remote: !!remote && !!state.remoteControl,
       plays: !!getPlays,
       spotifySearch: !!spotifySearch,
+      // Song sync: whether Hive takes song files from the phone.
+      songs: { receive: !!songTarget && state.receiveSongs },
       // Phone changes waiting for the user in Hive.
       inbox: inboxSummary()
     };
@@ -245,16 +255,33 @@ function createHiveLink({ dataDir, getTracks, setLove, onPaired, streamSong = nu
   async function applyLoveChanges(device, changes) {
     if (!acceptPhoneChanges) {
       // Kept for the user to confirm in Hive; the newest change per song wins.
-      const staged = Array.isArray(changes) ? changes.slice(0, 500) : [];
-      for (const c of staged) {
+      // The phone keeps resending a change until it's settled, so each answer
+      // says where it stands: still waiting ("staged"), done ("unchanged",
+      // after the user applied it), or overruled ("stale", after the user
+      // discarded it or changed the song in Hive since), with Hive's state.
+      const tracks = await getTracks();
+      const byId = new Map(tracks.map(t => [trackIdFor(t), t]));
+      const results = [];
+      let staged = 0;
+      for (const c of Array.isArray(changes) ? changes.slice(0, 500) : []) {
         const id = String(c?.id || '');
-        if (!id) continue;
+        const key = c?.clientChangeId ?? null;
+        const track = byId.get(id);
+        if (!track) { results.push({ clientChangeId: key, id, status: 'not-found' }); continue; }
         const at = num(c?.at) || Date.now();
-        const prior = state.inbox.loves[id];
-        if (!prior || prior.at <= at) state.inbox.loves[id] = { id, loved: !!c.loved, at, deviceId: device.id };
+        const loved = !!c.loved;
+        const pcLoved = track.loved === true || track.loved === 'True';
+        const waiting = state.inbox.loves[id];
+        if (pcLoved === loved && !waiting) { results.push({ clientChangeId: key, id, status: 'unchanged', loved }); continue; }
+        if (num(state.lastChangeAt[id]) >= at) {
+          results.push({ clientChangeId: key, id, status: 'stale', loved: pcLoved, at: state.lastChangeAt[id] });
+          continue;
+        }
+        if (!waiting || waiting.at <= at) { state.inbox.loves[id] = { id, loved, at, deviceId: device.id }; staged++; }
+        results.push({ clientChangeId: key, id, status: 'staged' });
       }
-      inboxChanged();
-      return { seq: state.seq, results: staged.map(c => ({ clientChangeId: c?.clientChangeId ?? null, id: String(c?.id || ''), status: 'staged' })) };
+      if (staged) inboxChanged();
+      return { seq: state.seq, results };
     }
     const tracks = await getTracks();
     const byId = new Map(tracks.map(t => [trackIdFor(t), t]));
@@ -369,7 +396,14 @@ function createHiveLink({ dataDir, getTracks, setLove, onPaired, streamSong = nu
   }
 
   function discardInbox({ loves = true, plays = true } = {}) {
-    if (loves) state.inbox.loves = {};
+    if (loves) {
+      // Hive's state is the decision now: the phone's resend of a discarded
+      // change is answered "stale" and the phone takes Hive's state back.
+      for (const change of Object.values(state.inbox.loves)) {
+        state.lastChangeAt[change.id] = Math.max(num(state.lastChangeAt[change.id]), change.at);
+      }
+      state.inbox.loves = {};
+    }
     if (plays) state.inbox.plays = [];
     inboxChanged();
     saveNow();
@@ -398,6 +432,7 @@ function createHiveLink({ dataDir, getTracks, setLove, onPaired, streamSong = nu
         rating: num(t.rating),
         playCount: num(t.playCount),
         file: path.basename(String(t.path)),
+        size: num(t.fileSize),
         cover: /^[a-f0-9]{40}\.(jpe?g|png|webp)$/i.test(String(t.cover || '')) ? String(t.cover) : ''
       }));
     const json = JSON.stringify({ seq: state.seq, tracks: rows });
@@ -502,11 +537,74 @@ function createHiveLink({ dataDir, getTracks, setLove, onPaired, streamSong = nu
         return streamExternalSong(req, res, url.searchParams);
       case 'GET /api/events':
         return openEvents(req, res, device);
+      case 'PUT /api/songs':
+        return receiveSong(req, res, url.searchParams, device);
       case 'POST /api/unpair':
         unpair(device.id);
         return send(res, 200, { ok: true });
       default:
         return send(res, 404, { error: 'Unknown endpoint.' });
+    }
+  }
+
+  // ---- song sync: files from the phone ------------------------------------
+  // The phone sends songs Hive doesn't have. Hive checks again with its own
+  // copy of the phone's matcher (a stale phone view must not make duplicates),
+  // asks main.js where the song goes in the library, writes it to a hidden
+  // part file beside it and renames it into place, so the library watcher and
+  // a half-sent song never meet.
+
+  function setReceiveSongs(on) { state.receiveSongs = !!on; saveSoon(); }
+
+  async function receiveSong(req, res, params, device) {
+    const refuse = (status, error) => { req.resume(); return send(res, status, { error }); };
+    if (!songTarget || !state.receiveSongs) return refuse(403, "Hive isn't taking songs from the phone. Turn it on in Settings → Connections.");
+    const ext = String(params.get('ext') || '').toLowerCase().replace(/^\./, '');
+    if (!SONG_EXTENSIONS.has(ext)) return refuse(415, 'That is not a song file Hive plays.');
+    const size = Number(req.headers['content-length']);
+    if (!Number.isFinite(size) || size <= 0) return refuse(411, 'The song needs its length.');
+    if (size > MAX_SONG_BYTES) return refuse(413, 'That file is too big for a song.');
+    const meta = {
+      title: text(params.get('title')).slice(0, 300), artist: text(params.get('artist')).slice(0, 300),
+      albumArtist: text(params.get('albumArtist')).slice(0, 300), album: text(params.get('album')).slice(0, 300),
+      track: num(params.get('track')), disc: num(params.get('disc')), year: text(params.get('year')).slice(0, 10),
+      durationMs: num(params.get('duration')), ext
+    };
+    if (!meta.title) return refuse(400, 'The song needs a title.');
+    const tracks = (await getTracks()).filter(t => t?.path && !/^[a-z]+:/i.test(String(t.path)));
+    const existing = createIndex(tracks.map(t => ({ key: trackIdFor(t), title: text(t.title), artist: text(t.artist), albumArtist: text(t.albumArtist), durationMs: Math.round(num(t.duration) * 1000) }))).match(meta);
+    if (existing) { req.resume(); return send(res, 200, { status: 'exists', id: existing.key }); }
+    let target;
+    try { target = await songTarget(meta); } catch (err) { return refuse(507, err?.message || String(err)); }
+    const part = path.join(path.dirname(target), `.${path.basename(target)}.hivelink-part`);
+    try {
+      await fs.promises.mkdir(path.dirname(target), { recursive: true });
+      let received = 0;
+      await new Promise((resolve, reject) => {
+        const out = fs.createWriteStream(part, { flags: 'wx' });
+        req.on('data', chunk => {
+          received += chunk.length;
+          if (received > size) { req.destroy(); out.destroy(); reject(new Error('More data than the song length.')); }
+        });
+        req.on('close', () => { if (!req.complete) { out.destroy(); reject(new Error('The phone stopped sending.')); } });
+        req.on('error', reject);
+        out.on('error', reject);
+        out.on('finish', resolve);
+        req.pipe(out);
+      });
+      if (received !== size) throw new Error('The song arrived incomplete.');
+      // The target may have appeared meanwhile (another phone, a download):
+      // never overwrite a file.
+      let final = target;
+      for (let n = 2; fs.existsSync(final); n += 1) final = target.replace(/(\.[^.\/]+)$/, ` (${n})$1`);
+      await fs.promises.rename(part, final);
+      log(`Hive Link: song from ${device.name} saved`, final);
+      try { await onSongAdded(final); } catch (err) { log('Hive Link song-added hook failed', err?.message || String(err)); }
+      return send(res, 200, { status: 'saved' });
+    } catch (err) {
+      try { await fs.promises.unlink(part); } catch {}
+      if (res.headersSent || res.destroyed) return;
+      return send(res, 500, { error: err?.message || String(err) });
     }
   }
 
@@ -678,6 +776,8 @@ function createHiveLink({ dataDir, getTracks, setLove, onPaired, streamSong = nu
     startPairing,
     setRemoteControl,
     remoteControl: () => !!state.remoteControl,
+    setReceiveSongs,
+    receiveSongs: () => !!state.receiveSongs,
     unpair,
     notifyLoveChanged,
     info,

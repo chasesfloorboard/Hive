@@ -2472,13 +2472,6 @@ ipcMain.handle('mpris:update', async (_evt, payload = {}) => {
         track: String(track.path),
         candidates: coverCandidates,
         coversDir: COVERS_DIR(),
-    getPlaylists: async () => readJsonSafe(PLAYLISTS_PATH(), []),
-    // Remote control from the phone (off until allowed in Settings): Hive's own
-    // MPRIS command channel, and the state the player reports to it.
-    remote: {
-      state: () => lastPlaybackState,
-      command: command => { try { if (mainWindow && !mainWindow.isDestroyed()) mainWindow.webContents.send('mpris:command', String(command)); } catch {} }
-    },
         artworkPath
       });
     }
@@ -2998,7 +2991,8 @@ ipcMain.handle('tracks:deleteFromDisk', async (_evt, filePaths = []) => {
   const errors = missing.slice();
   for (const p of existing) {
     try {
-      await fsp.unlink(p);
+      // To the Trash, so a mistaken delete (e.g. Find duplicates) can be undone.
+      await shell.trashItem(p);
       deleted.push(p);
     } catch (err) {
       errors.push({ path: p, error: err?.message || String(err) });
@@ -7996,6 +7990,19 @@ async function updateCachedLoved(paths, loved) {
 // Started once the app is ready; see app/main/hive-link.js for the protocol.
 let hiveLink = null;
 
+async function hiveLinkSongTarget(meta = {}) {
+  const config = await readJsonSafe(CONFIG_PATH(), { folders: [] });
+  const folder = (Array.isArray(config.folders) ? config.folders : []).map(resolveConfiguredFolder).find(f => f && fs.existsSync(f));
+  if (!folder) throw new Error('Add a music folder in Hive (Settings → Library) first.');
+  const clean = (v, fallback) => (String(v || '').replace(/\s*:\s*/g, ' - ').replace(/[\\/*?"<>|\x00-\x1f]/g, '_').replace(/\s+/g, ' ').trim().replace(/^\.+/, '').slice(0, 120) || fallback);
+  const artist = clean(meta.albumArtist || String(meta.artist || '').split(/,|&| feat\.? /i)[0], 'Unknown Artist');
+  const album = clean(meta.album, 'Unknown Album');
+  const n = Number(meta.track) || 0;
+  const target = path.join(folder, artist, album, `${n ? String(n).padStart(2, '0') + ' - ' : ''}${clean(meta.title, 'Untitled')}.${meta.ext}`);
+  if (!isPathInsideFolder(target, folder)) throw new Error('That song would land outside your music folder.');
+  return target;
+}
+
 function startHiveLink() {
   if (hiveLink) return;
   hiveLink = createHiveLink({
@@ -8007,6 +8014,18 @@ function startHiveLink() {
       const sender = mainWindow && !mainWindow.isDestroyed() ? mainWindow.webContents : null;
       await setLoveForSingleTrack(sender ? { sender } : null, trackPath, loved);
       try { sender?.send('library:scanTrack', [{ path: trackPath, loved: !!loved, loveHydrated: true }]); } catch {}
+    },
+    getPlaylists: async () => readJsonSafe(PLAYLISTS_PATH(), []),
+    // Song sync: where a song from the phone goes, by the same rules as a
+    // YouTube Music download (first music folder, <Artist>/<Album>/), and the
+    // library watcher's own path to pick it up.
+    songTarget: hiveLinkSongTarget,
+    onSongAdded: songPath => notifyLibraryFilesystemChange('hive-link-song', songPath),
+    // Remote control from the phone (off until allowed in Settings): Hive's own
+    // MPRIS command channel, and the state the player reports to it.
+    remote: {
+      state: () => lastPlaybackState,
+      command: command => { try { if (mainWindow && !mainWindow.isDestroyed()) mainWindow.webContents.send('mpris:command', String(command)); } catch {} }
     },
     // Phone changes don't touch the PC library by themselves: they wait in
     // Hive Link's inbox until the user applies them in Settings.
@@ -8066,6 +8085,10 @@ ipcMain.handle('hiveLink:discardInbox', async (_evt, what = {}) => (hiveLink ? h
 ipcMain.handle('hiveLink:remoteControl', async (_evt, on) => {
   if (typeof on === 'boolean') hiveLink?.setRemoteControl(on);
   return !!hiveLink?.remoteControl();
+});
+ipcMain.handle('hiveLink:receiveSongs', async (_evt, on) => {
+  if (typeof on === 'boolean') hiveLink?.setReceiveSongs(on);
+  return !!hiveLink?.receiveSongs();
 });
 ipcMain.handle('hiveLink:unpair', async (_evt, deviceId) => !!hiveLink?.unpair(String(deviceId || '')));
 

@@ -17,7 +17,7 @@ const { createHiveLink, trackIdFor } = require('../app/main/hive-link');
 
 let nextPort = 48100 + Math.floor(Math.random() * 500) * 2;
 
-function setup({ acceptPhoneChanges = true, streamSong = null, coversDir = null, remote = null, getPlaylists = null, getPlays = null, spotifySearch = null } = {}) {
+function setup({ acceptPhoneChanges = true, streamSong = null, coversDir = null, remote = null, getPlaylists = null, getPlays = null, spotifySearch = null, songTarget = null, onSongAdded = undefined } = {}) {
   const dataDir = fs.mkdtempSync(path.join(os.tmpdir(), 'hive-link-'));
   const tracks = [
     { id: 'a1', path: '/music/Pearl Jam - Black.mp3', title: 'Black', artist: 'Pearl Jam', album: 'Ten', duration: '343.2', loved: false },
@@ -38,6 +38,8 @@ function setup({ acceptPhoneChanges = true, streamSong = null, coversDir = null,
     getPlaylists,
     getPlays,
     spotifySearch,
+    songTarget,
+    onSongAdded,
     recordPlays: async plays => { recorded.push(...plays); },
     getTracks: async () => tracks,
     setLove: async (trackPath, loved) => {
@@ -409,4 +411,134 @@ test('the phone searches Spotify through the PC, and hears when Spotify is not r
   running = false;
   assert.equal((await request(ctx.port, 'GET', '/api/spotify/search?q=halsey', { token })).status, 503);
   assert.equal((await request(ctx.port, 'GET', '/api/info', { token })).body.spotifySearch, true);
+});
+
+// The playlists and remote-control hooks were once pasted into an unrelated
+// console.info() object in main.js instead of the createHiveLink() options,
+// so /api/playlists answered [] and /api/remote 403 even with remote control
+// allowed. The unit tests above inject both directly and couldn't see that.
+test('main.js hands Hive Link its playlists and remote-control hooks', () => {
+  const main = fs.readFileSync(path.join(__dirname, '../app/main/main.js'), 'utf8');
+  const start = main.indexOf('hiveLink = createHiveLink({');
+  assert.ok(start > 0);
+  let depth = 0, end = main.indexOf('{', start);
+  for (let i = end; i < main.length; i += 1) {
+    if (main[i] === '{') depth += 1;
+    else if (main[i] === '}' && --depth === 0) { end = i; break; }
+  }
+  const options = main.slice(start, end);
+  assert.match(options, /\bgetPlaylists:/);
+  assert.match(options, /\bremote:\s*\{/);
+  assert.doesNotMatch(main.slice(main.indexOf("console.info('[MPRIS] artwork resolution'"), main.indexOf("console.info('[MPRIS] artwork resolution'") + 400), /getPlaylists|remote:/);
+});
+
+// The phone resends a staged Love until it's settled. If "staged" were final,
+// the phone's next full sync copied Hive's old state back over the change and
+// a phone Love was undone the next time the app opened.
+test('a resent staged Love reports staged, then unchanged once applied, or stale once discarded', async t => {
+  const ctx = setup({ acceptPhoneChanges: false });
+  t.after(() => ctx.link.stop());
+  await waitListening(ctx.port);
+  const token = await pair(ctx);
+  const send = async (id, loved, at) => (await request(ctx.port, 'POST', '/api/love', { token, body: { changes: [{ clientChangeId: 7, id, loved, at }] } })).body.results[0];
+
+  assert.equal((await send('a1', true, 1000)).status, 'staged');
+  assert.equal((await send('a1', true, 1000)).status, 'staged', 'still waiting in the inbox');
+  await ctx.link.applyInbox({});
+  assert.deepEqual(await send('a1', true, 1000), { clientChangeId: 7, id: 'a1', status: 'unchanged', loved: true });
+
+  assert.equal((await send('b2', false, 2000)).status, 'staged');
+  ctx.link.discardInbox({});
+  const overruled = await send('b2', false, 2000);
+  assert.equal(overruled.status, 'stale');
+  assert.equal(overruled.loved, true, "the phone takes Hive's state back");
+  assert.equal(ctx.tracks[1].loved, true);
+  assert.equal((await send('b2', false, 3000)).status, 'staged', 'a newer phone change is a new request');
+});
+
+// ---- song sync: files from the phone ----
+
+function putSong(port, token, query, data, { length = data.length } = {}) {
+  return new Promise((resolve, reject) => {
+    const req = http.request({ host: '127.0.0.1', port, method: 'PUT', path: `/api/songs?${new URLSearchParams(query)}`,
+      headers: { Authorization: `Bearer ${token}`, 'Content-Length': length } }, res => {
+      const chunks = [];
+      res.on('data', c => chunks.push(c));
+      res.on('end', () => resolve({ status: res.statusCode, body: JSON.parse(Buffer.concat(chunks).toString() || '{}') }));
+    });
+    req.on('error', reject);
+    req.end(data);
+  });
+}
+
+function songSetup() {
+  const music = fs.mkdtempSync(path.join(os.tmpdir(), 'hive-link-music-'));
+  const added = [];
+  const ctx = setup({
+    songTarget: async meta => path.join(music, meta.artist || 'Unknown Artist', meta.album || 'Unknown Album', `${meta.title}.${meta.ext}`),
+    onSongAdded: async p => { added.push(p); }
+  });
+  return { ...ctx, music, added };
+}
+
+test('a song the PC lacks is saved into the library and announced; no part file is left', async t => {
+  const ctx = songSetup();
+  t.after(() => ctx.link.stop());
+  await waitListening(ctx.port);
+  const token = await pair(ctx);
+  const data = Buffer.from('fake audio bytes '.repeat(1000));
+  const res = await putSong(ctx.port, token, { title: 'Alive', artist: 'Pearl Jam', album: 'Ten', duration: 341000, ext: 'm4a' }, data);
+  assert.deepEqual([res.status, res.body.status], [200, 'saved']);
+  const saved = path.join(ctx.music, 'Pearl Jam', 'Ten', 'Alive.m4a');
+  assert.deepEqual(fs.readFileSync(saved), data);
+  assert.deepEqual(ctx.added, [saved]);
+  assert.deepEqual(fs.readdirSync(path.dirname(saved)), ['Alive.m4a']);
+
+  // Same name again (a different recording): kept beside it, never overwritten.
+  const again = await putSong(ctx.port, token, { title: 'Alive', artist: 'Pearl Jam', album: 'Ten', duration: 600000, ext: 'm4a' }, Buffer.from('other'));
+  assert.equal(again.body.status, 'saved');
+  assert.deepEqual(fs.readdirSync(path.dirname(saved)).sort(), ['Alive (2).m4a', 'Alive.m4a']);
+  assert.deepEqual(fs.readFileSync(saved), data);
+});
+
+test('a song Hive already has is not saved again, even under another format', async t => {
+  const ctx = songSetup();
+  t.after(() => ctx.link.stop());
+  await waitListening(ctx.port);
+  const token = await pair(ctx);
+  const res = await putSong(ctx.port, token, { title: 'Black', artist: 'Pearl Jam', album: 'Ten', duration: 343500, ext: 'm4a' }, Buffer.from('x'.repeat(50)));
+  assert.deepEqual(res.body, { status: 'exists', id: 'a1' });
+  assert.deepEqual(fs.readdirSync(ctx.music), []);
+  assert.deepEqual(ctx.added, []);
+});
+
+test('songs are refused when receiving is off, or when they are not audio', async t => {
+  const ctx = songSetup();
+  t.after(() => ctx.link.stop());
+  await waitListening(ctx.port);
+  const token = await pair(ctx);
+  assert.equal((await request(ctx.port, 'GET', '/api/info', { token })).body.songs.receive, true);
+  assert.equal((await putSong(ctx.port, token, { title: 'x', artist: 'y', ext: 'exe' }, Buffer.from('MZ'))).status, 415);
+  ctx.link.setReceiveSongs(false);
+  assert.equal((await request(ctx.port, 'GET', '/api/info', { token })).body.songs.receive, false);
+  assert.equal((await putSong(ctx.port, token, { title: 'New', artist: 'Someone', ext: 'mp3' }, Buffer.from('abc'))).status, 403);
+  assert.deepEqual(fs.readdirSync(ctx.music), []);
+});
+
+test('a song cut off mid-send leaves nothing behind', async t => {
+  const ctx = songSetup();
+  t.after(() => ctx.link.stop());
+  await waitListening(ctx.port);
+  const token = await pair(ctx);
+  await new Promise(resolve => {
+    const req = http.request({ host: '127.0.0.1', port: ctx.port, method: 'PUT', path: `/api/songs?${new URLSearchParams({ title: 'Cut', artist: 'Off', album: 'A', ext: 'mp3' })}`,
+      headers: { Authorization: `Bearer ${token}`, 'Content-Length': 100000 } });
+    req.on('error', () => resolve());
+    req.write(Buffer.alloc(5000));
+    setTimeout(() => { req.destroy(); resolve(); }, 100);
+  });
+  await new Promise(r => setTimeout(r, 200));
+  const dir = path.join(ctx.music, 'Off', 'A');
+  assert.deepEqual(fs.existsSync(dir) ? fs.readdirSync(dir) : [], []);
+  assert.deepEqual(ctx.added, []);
 });

@@ -65,6 +65,11 @@
   });
 
   const remote = document.getElementById('hive-link-remote');
+  const receiveSongs = document.getElementById('hive-link-receive-songs');
+  if (receiveSongs && api.hiveLinkReceiveSongs) {
+    api.hiveLinkReceiveSongs().then(on => { receiveSongs.checked = !!on; }).catch(() => {});
+    receiveSongs.addEventListener('change', () => { api.hiveLinkReceiveSongs(receiveSongs.checked).catch(() => {}); });
+  }
   if (remote && api.hiveLinkRemoteControl) {
     api.hiveLinkRemoteControl().then(on => { remote.checked = !!on; }).catch(() => {});
     remote.addEventListener('change', () => { api.hiveLinkRemoteControl(remote.checked).catch(() => {}); });
