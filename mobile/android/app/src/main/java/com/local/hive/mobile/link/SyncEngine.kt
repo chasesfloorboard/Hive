@@ -49,6 +49,8 @@ class SyncEngine(
     private val store: LinkStore,
     private val client: HiveLinkClient,
     private val scope: CoroutineScope,
+    /** After each successful sync: song sync piggybacks on it (see SongSync). */
+    private val afterSync: () -> Unit = {},
 ) {
     private val mutex = Mutex()
     private val _streams = MutableStateFlow<PcStreams?>(null)
@@ -58,6 +60,8 @@ class SyncEngine(
     private val _status = MutableStateFlow(LinkStatus())
     val status: StateFlow<LinkStatus> = _status.asStateFlow()
     private var liveJob: Job? = null
+    /** Pending Love changes Hive has received and holds in its inbox: sent, not yet settled. */
+    private var stagedLove = 0
     private var activeHost: String? = null
 
     init {
@@ -94,6 +98,8 @@ class SyncEngine(
         connection()?.let { client.unpair(it) }
         store.pairing = null
         dao.clearMatches()
+        // Another PC is another library: what was "on both" no longer says anything.
+        dao.clearSyncedSongs()
         activeHost = null
         _status.value = LinkStatus()
     }
@@ -119,6 +125,7 @@ class SyncEngine(
                 syncPlays(conn)
                 store.lastSyncAt = System.currentTimeMillis()
                 _status.update { it.copy(error = null, lastSyncAt = store.lastSyncAt, host = conn.host) }
+                afterSync()
             } catch (e: CancellationException) {
                 throw e
             } catch (e: HiveLinkException) {
@@ -129,7 +136,7 @@ class SyncEngine(
             } catch (e: Exception) {
                 _status.update { it.copy(error = e.message ?: e.javaClass.simpleName) }
             } finally {
-                _status.update { it.copy(syncing = false, pendingChanges = dao.pendingLove().size) }
+                _status.update { it.copy(syncing = false, pendingChanges = (dao.pendingLove().size - stagedLove).coerceAtLeast(0)) }
             }
         }
     }
@@ -220,6 +227,7 @@ class SyncEngine(
 
     private suspend fun pushPending(conn: HiveLinkClient.Connection) {
         val pending = dao.pendingLove()
+        stagedLove = 0
         if (pending.isEmpty()) return
         val pcIdFor = dao.allMatches().associate { it.trackId to it.pcId }
         // A phone-only song has nothing to sync with; it stays Loved here.
@@ -229,11 +237,16 @@ class SyncEngine(
         for (chunk in matched.chunked(200)) {
             val response = client.sendLove(conn, chunk.map { LoveChange(it.trackId, pcIdFor.getValue(it.trackId), it.loved, it.changedAt) })
             val byTrack = chunk.associateBy { it.trackId }
+            stagedLove += response.results.count { it.status == "staged" }
             val resolved = response.results.mapNotNull { r ->
                 val mine = byTrack[r.clientChangeId] ?: return@mapNotNull null
                 when (r.status) {
-                    // "staged": Hive keeps it for the user to apply on the PC; it's delivered.
-                    "applied", "unchanged", "not-found", "staged" -> mine.copy(pending = false)
+                    // "staged": waiting in Hive's inbox for the user. It stays pending (and
+                    // is resent) until Hive answers "unchanged" (applied) or "stale"
+                    // (discarded); settling it early let the next full sync copy Hive's
+                    // old state over it and undo the phone's change.
+                    "staged" -> null
+                    "applied", "unchanged", "not-found" -> mine.copy(pending = false)
                     "stale" -> LoveState(mine.trackId, r.loved ?: mine.loved, r.at ?: mine.changedAt, pending = false)
                     else -> null // "failed": keep it pending and try again next sync
                 }

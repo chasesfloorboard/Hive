@@ -414,8 +414,20 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
         }
     }
 
-    fun unpair() = viewModelScope.launch { app.sync.unpair() }
+    fun unpair() = viewModelScope.launch { setSongSync(false); app.sync.unpair() }
     fun syncNow() = viewModelScope.launch { app.sync.syncNow() }
+
+    // ---- song sync ----
+
+    val songSync = app.songSync.state
+    private val _songSyncOn = MutableStateFlow(app.linkStore.songSync)
+    val songSyncOn: StateFlow<Boolean> = _songSyncOn.asStateFlow()
+    fun checkSongs() = viewModelScope.launch { app.songSync.check() }
+    fun setSongSync(on: Boolean) {
+        app.linkStore.songSync = on
+        _songSyncOn.value = on
+        if (on) com.local.hive.mobile.link.SongSync.schedule(app) else com.local.hive.mobile.link.SongSync.cancel(app)
+    }
 
     // ---- theme ----
 

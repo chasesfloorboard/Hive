@@ -32,7 +32,7 @@ class LinkStore(context: Context) {
         set(value) = prefs.edit {
             if (value == null) {
                 remove("token"); remove("serverId"); remove("name"); remove("port"); remove("deviceId"); remove("hosts")
-                remove("lastSeq"); remove("lastSyncAt"); remove("fullSyncDone"); remove("lastPcPlayAt")
+                remove("lastSeq"); remove("lastSyncAt"); remove("fullSyncDone"); remove("lastPcPlayAt"); remove("songSync")
             } else {
                 putString("token", value.token)
                 putString("serverId", value.serverId)
@@ -61,6 +61,14 @@ class LinkStore(context: Context) {
     var lastSeq: Long
         get() = prefs.getLong("lastSeq", 0)
         set(value) = prefs.edit { putLong("lastSeq", value) }
+
+    /**
+     * Song sync is on: songs on one side only are copied to the other on
+     * Wi-Fi. Off until the user has seen the first plan and started it.
+     */
+    var songSync: Boolean
+        get() = prefs.getBoolean("songSync", false)
+        set(value) = prefs.edit { putBoolean("songSync", value) }
 
     var lastSyncAt: Long
         get() = prefs.getLong("lastSyncAt", 0)

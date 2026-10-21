@@ -43,6 +43,8 @@ import java.util.concurrent.TimeUnit
     val genre: String = "",
     val file: String = "",
     val cover: String = "",
+    /** File size in bytes (0 from an older Hive). */
+    val size: Long = 0,
 )
 @Serializable data class LibraryResponse(val seq: Long, val tracks: List<PcTrack>)
 @Serializable data class LoveEvent(val seq: Long, val id: String, val loved: Boolean, val at: Long, val origin: String = "")
@@ -55,7 +57,11 @@ import java.util.concurrent.TimeUnit
 @Serializable data class StreamCaps(val track: Boolean = false, val song: Boolean = false)
 /** Phone changes waiting in Hive on the PC for the user to apply. */
 @Serializable data class InboxSummary(val loves: Int = 0, val plays: Int = 0)
-@Serializable data class InfoResponse(val serverId: String, val name: String, val port: Int, val seq: Long, val addresses: List<HiveAddress> = emptyList(), val streams: StreamCaps = StreamCaps(), val remote: Boolean = false, val plays: Boolean = false, val inbox: InboxSummary = InboxSummary())
+/** Song sync on the PC: whether Hive takes song files from the phone. */
+@Serializable data class SongCaps(val receive: Boolean = false)
+@Serializable data class InfoResponse(val serverId: String, val name: String, val port: Int, val seq: Long, val addresses: List<HiveAddress> = emptyList(), val streams: StreamCaps = StreamCaps(), val remote: Boolean = false, val plays: Boolean = false, val inbox: InboxSummary = InboxSummary(), val songs: SongCaps = SongCaps())
+/** Hive's answer to a song sent from the phone: "saved", or "exists" (it already had it). */
+@Serializable data class SongUpload(val status: String, val id: String = "")
 /** A play, as sent to Hive ([clientId] is this phone's own id for it) or fetched from it. */
 @Serializable data class PlayOut(val clientId: String, val id: String, val playedAt: Long, val listenedMs: Long)
 @Serializable data class PlaysRequest(val plays: List<PlayOut>)
@@ -209,6 +215,34 @@ class HiveLinkClient(private val http: OkHttpClient = defaultHttp()) {
         val body = json.encodeToString(RemoteCommand.serializer(), RemoteCommand(command, positionMs, volume)).toRequestBody(jsonType)
         http.newCall(authed(conn, "/api/remote").post(body).build()).execute().use { read(it) }
     }
+
+    /** Streams a library song's file from the PC into [out]. */
+    suspend fun downloadTrack(conn: Connection, id: String, out: java.io.OutputStream) = withContext(Dispatchers.IO) {
+        val q = java.net.URLEncoder.encode(id, "UTF-8")
+        transferHttp.newCall(authed(conn, "/api/stream/track?id=$q").build()).execute().use { res ->
+            if (!res.isSuccessful) read(res)
+            res.body.byteStream().use { it.copyTo(out, 1 shl 16) }
+        }
+    }
+
+    /**
+     * Sends a song file to Hive ([size] bytes from [open]), with its tags so
+     * Hive can file it and check it doesn't already have it.
+     */
+    suspend fun uploadSong(conn: Connection, meta: Map<String, String>, ext: String, size: Long, open: () -> java.io.InputStream): SongUpload = withContext(Dispatchers.IO) {
+        val query = (meta + ("ext" to ext)).entries.joinToString("&") { (k, v) -> "$k=" + java.net.URLEncoder.encode(v, "UTF-8") }
+        val body = object : okhttp3.RequestBody() {
+            override fun contentType() = "application/octet-stream".toMediaType()
+            override fun contentLength() = size
+            override fun writeTo(sink: okio.BufferedSink) { open().use { input -> sink.outputStream().let { input.copyTo(it, 1 shl 16); it.flush() } } }
+        }
+        transferHttp.newCall(authed(conn, "/api/songs?$query").put(body).build()).execute().use {
+            json.decodeFromString(SongUpload.serializer(), read(it))
+        }
+    }
+
+    // Song files take minutes on slow Wi-Fi; only a stalled connection should time out.
+    private val transferHttp by lazy { http.newBuilder().readTimeout(2, TimeUnit.MINUTES).writeTimeout(2, TimeUnit.MINUTES).build() }
 
     suspend fun unpair(conn: Connection) = withContext(Dispatchers.IO) {
         runCatching { http.newCall(authed(conn, "/api/unpair").post(ByteArray(0).toRequestBody()).build()).execute().close() }

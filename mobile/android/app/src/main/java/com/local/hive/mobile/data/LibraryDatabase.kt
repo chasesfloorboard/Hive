@@ -142,6 +142,18 @@ data class Rating(
     val fromPc: Boolean = false,
 )
 
+/**
+ * Song sync's memory: a song (by [key], see SongSync.keyOf) that has been on
+ * both the phone and the PC. When one side later lacks it, it was deleted
+ * there on purpose, so it is not copied back. Keys are tag-based, so the
+ * ledger survives MediaStore renumbering and files moving on the PC.
+ */
+@Entity(tableName = "synced_songs")
+data class SyncedSong(
+    @PrimaryKey val key: String,
+    val since: Long,
+)
+
 /** Which Hive (PC) track a phone track is the same song as. */
 @Entity(tableName = "pc_match", indices = [Index("pcId")])
 data class PcMatch(
@@ -270,6 +282,17 @@ interface LibraryDao {
 
     @Query("DELETE FROM tracks WHERE id IN (:ids)")
     suspend fun deleteTracks(ids: List<Long>)
+
+    // ---- song sync ----
+
+    @Query("SELECT key FROM synced_songs")
+    suspend fun syncedSongKeys(): List<String>
+
+    @androidx.room.Insert(onConflict = androidx.room.OnConflictStrategy.IGNORE)
+    suspend fun addSyncedSongs(songs: List<SyncedSong>)
+
+    @Query("DELETE FROM synced_songs")
+    suspend fun clearSyncedSongs()
 
     // ---- love ----
 
@@ -467,10 +490,10 @@ interface LibraryDao {
 }
 
 @Database(
-    entities = [Track::class, LoveState::class, PcMatch::class, Play::class, FavoriteAlbum::class, Playlist::class, PlaylistEntry::class, StreamTrack::class, Rating::class],
-    version = 5,
+    entities = [Track::class, LoveState::class, PcMatch::class, Play::class, FavoriteAlbum::class, Playlist::class, PlaylistEntry::class, StreamTrack::class, Rating::class, SyncedSong::class],
+    version = 6,
     exportSchema = true,
-    autoMigrations = [AutoMigration(from = 1, to = 2), AutoMigration(from = 2, to = 3), AutoMigration(from = 3, to = 4), AutoMigration(from = 4, to = 5)],
+    autoMigrations = [AutoMigration(from = 1, to = 2), AutoMigration(from = 2, to = 3), AutoMigration(from = 3, to = 4), AutoMigration(from = 4, to = 5), AutoMigration(from = 5, to = 6)],
 )
 abstract class LibraryDatabase : RoomDatabase() {
     abstract fun dao(): LibraryDao

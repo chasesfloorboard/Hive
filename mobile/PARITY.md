@@ -129,7 +129,8 @@ renderer views) and its state on mobile.
 | Feature | Mobile |
 |---|---|
 | Pair over Wi-Fi with a code | ✅ |
-| Favorites sync both ways, newest change wins | ✅ |
+| Favorites sync both ways, newest change wins | ✅ phone changes stay pending until Hive applies (or the user discards) them in its inbox |
+| Song sync: songs on one side only are copied to the other | ✅ both ways, on Wi-Fi, in the background (`link/SongSync.kt`, Hive's `PUT /api/songs`). Tag matching shared with Hive (`test/fixtures/song-match-vectors.json`); a ledger of songs seen on both keeps deletions deleted. First run shows the plan and waits for "Start song sync". Verified end to end on the emulator against the real Hive Link server: both directions byte-identical, automatic pickup of a new phone song, a phone deletion not re-downloaded |
 | Play from the PC library on the phone (streaming) | ✅ PC library page: albums with covers, songs, search, album pages; streams from Hive; kept on the phone, refreshed by ETag |
 | Hand off playback between phone and PC | 🟡 PC → phone ("Play on this phone": same song and position, the phone's copy or streamed; the PC pauses). Phone → PC needs a small change in Hive's renderer |
 | Remote control Hive on the PC | ✅ now playing, play/pause, skip, seek, volume; off until allowed in Hive's settings |

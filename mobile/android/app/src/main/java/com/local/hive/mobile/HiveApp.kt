@@ -66,7 +66,8 @@ class HiveApp : Application(), coil3.SingletonImageLoader.Factory {
     val scrobbler by lazy { com.local.hive.mobile.stream.Scrobbler(this) }
     val artistImages by lazy { com.local.hive.mobile.stream.ArtistImages(this) }
     val linkStore by lazy { LinkStore(this) }
-    val sync by lazy { SyncEngine(database.dao(), linkStore, HiveLinkClient(), scope) }
+    val sync by lazy { SyncEngine(database.dao(), linkStore, HiveLinkClient(), scope, afterSync = { if (linkStore.songSync) com.local.hive.mobile.link.SongSync.schedule(this) }) }
+    val songSync by lazy { com.local.hive.mobile.link.SongSync(this, database.dao(), linkStore, HiveLinkClient(), sync) }
     val player by lazy { PlayerConnection(this, scope) }
     val pcLibrary by lazy { com.local.hive.mobile.link.PcLibrary(this, HiveLinkClient(), linkStore, sync) }
     val themes by lazy { ThemeStore(this) }

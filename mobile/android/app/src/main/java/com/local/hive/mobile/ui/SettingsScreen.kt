@@ -185,7 +185,51 @@ private fun PairedRows(vm: MainViewModel) {
     }.joinToString("\n")
     SettingRow("Favorites sync", detail) { SmallButton(if (link.syncing) "Syncing…" else "Sync now", enabled = !link.syncing, primary = true) { vm.syncNow() } }
     link.error?.let { Text(it, style = HiveText.small, color = Color(0xFFFF8A8A), modifier = Modifier.padding(horizontal = 18.dp, vertical = 4.dp)) }
+    SongSyncRows(vm)
     SettingRow("Unpair this phone", "Stops syncing. Favorites already here stay.") { SmallButton("Unpair") { vm.unpair() } }
+}
+
+/**
+ * Song sync: songs on one side only are copied to the other on Wi-Fi. The
+ * first time, the user sees what would be copied before anything moves.
+ */
+@Composable
+private fun SongSyncRows(vm: MainViewModel) {
+    val c = Hive.colors
+    val context = androidx.compose.ui.platform.LocalContext.current
+    val on by vm.songSyncOn.collectAsStateWithLifecycle()
+    val s by vm.songSync.collectAsStateWithLifecycle()
+    fun size(bytes: Long) = android.text.format.Formatter.formatShortFileSize(context, bytes)
+    fun songs(n: Int) = if (n == 1) "1 song" else "%,d songs".format(n)
+    val plan = s.plan
+    val planText = plan?.let { p ->
+        // Nothing to copy also covers songs deleted on one side on purpose.
+        if (p.toPhone == 0 && p.toPc == 0) "Up to date: nothing to copy."
+        else buildList {
+            if (p.toPhone > 0) add("${songs(p.toPhone)} (${size(p.bytesToPhone)}) from the PC to this phone")
+            if (p.toPc > 0) add("${songs(p.toPc)} (${size(p.bytesToPc)}) from this phone to the PC" + if (p.pcTakesSongs) "" else " — Hive isn't taking songs right now (Settings › Connections on the PC)")
+        }.joinToString("\n")
+    }
+    if (!on) {
+        SettingRow("Song sync", "Copies songs that are only on the phone or only on the PC to the other, on Wi-Fi. Songs you delete aren't copied back.") {
+            SmallButton(if (s.checking) "Checking…" else "Check", enabled = !s.checking) { vm.checkSongs() }
+        }
+        if (planText != null) {
+            Text(planText, style = HiveText.small, color = c.textDim, modifier = Modifier.padding(horizontal = 18.dp, vertical = 4.dp))
+            if (plan.toPhone > 0 || plan.toPc > 0) Row(Modifier.padding(horizontal = 14.dp, vertical = 6.dp)) {
+                SmallButton("Start song sync", primary = true) { vm.setSongSync(true) }
+            }
+        }
+    } else {
+        val status = when {
+            s.running && s.total > 0 -> "Copying ${s.done + 1} of ${s.total}" + if (s.current.isNotBlank()) "\n${s.current}" else ""
+            s.running || s.checking -> "Checking…"
+            planText != null -> planText + if ((plan?.toPhone ?: 0) + (plan?.toPc ?: 0) > 0) "\nWaiting for Wi-Fi" else ""
+            else -> "On. Songs copy over Wi-Fi when Hive is open on the PC."
+        } + if (s.failed > 0) "\n${s.failed} couldn't be copied; they'll be tried again." else ""
+        SettingRow("Song sync", status) { SmallButton("Turn off") { vm.setSongSync(false) } }
+    }
+    s.message?.let { Text(it, style = HiveText.small, color = Color(0xFFFF8A8A), modifier = Modifier.padding(horizontal = 18.dp, vertical = 4.dp)) }
 }
 
 @Composable

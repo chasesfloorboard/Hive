@@ -1,0 +1,14 @@
+{
+  "_comment": "Shared by test/song-match.test.js (Hive) and TrackMatcherTest.kt (Hive Mobile): both matchers must give these answers.",
+  "normalize": [["Beyoncé", "beyonce"], ["Together (feat. Nikki Nair)", "together"], ["Song ft. Someone", "song"], ["  Don't Stop!  ", "dontstop"]],
+  "cases": [
+    { "name": "feat credits and punctuation", "candidates": [["pc1", "Together (feat. Nikki Nair, Jessy Lanza & Prentiss)", "The Avalanches", "", 200000]], "query": ["Together", "The Avalanches", "", 201000], "expect": "pc1" },
+    { "name": "multi-artist tags overlap", "candidates": [["pc1", "Voices", "Flume", "", 200000]], "query": ["Voices", "Flume/KUČKA/SOPHIE", "", 200000], "expect": "pc1" },
+    { "name": "same title, different artist", "candidates": [["pc1", "Black", "Sevdaliza", "", 200000]], "query": ["Black", "Pearl Jam", "", 343000], "expect": null },
+    { "name": "duration picks the live version", "candidates": [["studio", "Debaser", "Pixies", "", 172000], ["live", "Debaser", "Pixies", "", 260000]], "query": ["Debaser", "Pixies", "", 258500], "expect": "live" },
+    { "name": "duration picks the studio version", "candidates": [["studio", "Debaser", "Pixies", "", 172000], ["live", "Debaser", "Pixies", "", 260000]], "query": ["Debaser", "Pixies", "", 171000], "expect": "studio" },
+    { "name": "far-off duration is another recording", "candidates": [["pc1", "Huge", "Boris", "", 201000]], "query": ["Huge", "Boris", "", 600000], "expect": null },
+    { "name": "unicode artist", "candidates": [["pc1", "James Bonb D - Nipples", "Orange Doll 橘娃娃", "", 200000]], "query": ["James Bonb D - Nipples", "Orange Doll 橘娃娃", "", 200000], "expect": "pc1" },
+    { "name": "album artist counts", "candidates": [["pc1", "Intro", "", "The xx", 120000]], "query": ["Intro", "The xx", "", 121000], "expect": "pc1" }
+  ]
+}
