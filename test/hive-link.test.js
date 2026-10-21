@@ -17,7 +17,7 @@ const { createHiveLink, trackIdFor } = require('../app/main/hive-link');
 
 let nextPort = 48100 + Math.floor(Math.random() * 500) * 2;
 
-function setup({ acceptPhoneChanges = true, streamSong = null, coversDir = null, remote = null, getPlaylists = null, getPlays = null, spotifySearch = null, songTarget = null, onSongAdded = undefined } = {}) {
+function setup({ acceptPhoneChanges = true, streamSong = null, coversDir = null, remote = null, getPlaylists = null, getPlays = null, spotifySearch = null, songTarget = null, onSongAdded = undefined, acceptPhonePlays = false, getWrap = null, getWrapYears = null } = {}) {
   const dataDir = fs.mkdtempSync(path.join(os.tmpdir(), 'hive-link-'));
   const tracks = [
     { id: 'a1', path: '/music/Pearl Jam - Black.mp3', title: 'Black', artist: 'Pearl Jam', album: 'Ten', duration: '343.2', loved: false },
@@ -40,6 +40,9 @@ function setup({ acceptPhoneChanges = true, streamSong = null, coversDir = null,
     spotifySearch,
     songTarget,
     onSongAdded,
+    acceptPhonePlays,
+    getWrap,
+    getWrapYears,
     recordPlays: async plays => { recorded.push(...plays); },
     getTracks: async () => tracks,
     setLove: async (trackPath, loved) => {
@@ -541,4 +544,60 @@ test('a song cut off mid-send leaves nothing behind', async t => {
   const dir = path.join(ctx.music, 'Off', 'A');
   assert.deepEqual(fs.existsSync(dir) ? fs.readdirSync(dir) : [], []);
   assert.deepEqual(ctx.added, []);
+});
+
+// ---- Yearly Wrap: phone plays count at once, and the phone shows Hive's Wrap ----
+
+test('with acceptPhonePlays, phone plays count at once and a resend never counts twice', async t => {
+  const ctx = setup({ acceptPhonePlays: true });
+  t.after(() => ctx.link.stop());
+  await waitListening(ctx.port);
+  const token = await pair(ctx);
+  const plays = [{ clientId: '1', id: 'a1', playedAt: 5000, listenedMs: 200000 }, { clientId: '2', id: 'gone', playedAt: 6000, listenedMs: 1 }];
+  const first = (await request(ctx.port, 'POST', '/api/plays', { token, body: { plays } })).body;
+  assert.deepEqual(first, { staged: 0, counted: 1, unknown: ['2'] });
+  assert.deepEqual(ctx.recorded.map(p => [p.track.title, p.playedAt]), [['Black', 5000]]);
+  assert.deepEqual(ctx.link.inboxSummary(), { loves: 0, plays: 0 }, 'nothing waits in the inbox');
+  const again = (await request(ctx.port, 'POST', '/api/plays', { token, body: { plays } })).body;
+  assert.equal(again.counted, 0);
+  assert.equal(ctx.recorded.length, 1);
+});
+
+test('counted play ids survive a restart', async t => {
+  const ctx = setup({ acceptPhonePlays: true });
+  await waitListening(ctx.port);
+  const token = await pair(ctx);
+  const plays = [{ clientId: '9', id: 'a1', playedAt: 7000, listenedMs: 1000 }];
+  await request(ctx.port, 'POST', '/api/plays', { token, body: { plays } });
+  ctx.link.stop();
+  await new Promise(r => setTimeout(r, 700)); // the state save is debounced
+  const again = createHiveLink({ dataDir: ctx.dataDir, port: ctx.port, discoveryPort: ctx.port + 1, getTracks: async () => ctx.tracks, setLove: async () => {}, acceptPhonePlays: true, recordPlays: async p => { ctx.recorded.push(...p); } });
+  again.start();
+  t.after(() => again.stop());
+  await waitListening(ctx.port);
+  assert.equal((await request(ctx.port, 'POST', '/api/plays', { token, body: { plays } })).body.counted, 0);
+  assert.equal(ctx.recorded.length, 1);
+});
+
+test("the phone gets Hive's own Wrap, with covers it can fetch and no recent-plays list", async t => {
+  const wrap = {
+    year: 2026, totalSeconds: 3600, totalPlays: 12, uniqueArtists: 3, uniqueAlbums: 4, longestStreak: 2,
+    topTrack: { key: 'Black\u0000Pearl Jam', plays: 5, album: 'Ten', cover: 'mbcover://' + 'a'.repeat(40) + '.jpg' },
+    topArtists: [{ name: 'Pearl Jam', plays: 5, cover: '/home/me/.covers/' + 'b'.repeat(40) + '.png' }],
+    topAlbums: [{ album: 'Ten', artist: 'Pearl Jam', plays: 5, cover: 'https://example.com/ten.jpg' }],
+    rows: [{ title: 'secret' }]
+  };
+  const ctx = setup({ getWrap: async year => ({ ...wrap, year }), getWrapYears: async () => [2026, 2025] });
+  t.after(() => ctx.link.stop());
+  await waitListening(ctx.port);
+  const token = await pair(ctx);
+  assert.equal((await request(ctx.port, 'GET', '/api/info', { token })).body.wrap, true);
+  assert.deepEqual((await request(ctx.port, 'GET', '/api/wrap/years', { token })).body, { years: [2026, 2025] });
+  const got = (await request(ctx.port, 'GET', '/api/wrap?year=2025', { token })).body;
+  assert.equal(got.year, 2025);
+  assert.equal(got.totalPlays, 12);
+  assert.equal(got.rows, undefined);
+  assert.equal(got.topTrack.cover, 'a'.repeat(40) + '.jpg');
+  assert.equal(got.topArtists[0].cover, 'b'.repeat(40) + '.png');
+  assert.equal(got.topAlbums[0].cover, 'https://example.com/ten.jpg');
 });

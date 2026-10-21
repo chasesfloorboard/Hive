@@ -27,6 +27,10 @@
 //   GET  /api/stream/song?key=…    a song Hive doesn't have (Apple Music,
 //                                  Spotify), streamed from YouTube Music
 //                                  through Hive, as Hive itself plays them
+//   GET  /api/wrap/years           years Hive has a Yearly Wrap for
+//   GET  /api/wrap?year=           one year's Wrap, exactly as Hive shows it
+//                                  (Hive's plays, imports and the phone's), so
+//                                  the phone shows the same numbers
 //   PUT  /api/songs?title=…        a song file from the phone that Hive doesn't
 //                                  have (song sync): saved into the library
 //                                  as <Artist>/<Album>/, unless Hive already
@@ -44,6 +48,8 @@
 // changes are not applied: they wait in the inbox ("staged"), and the user
 // looks them over in Hive and applies or discards them. Phone plays always
 // wait there; applied, they join Hive's own listening history and Wrapped.
+// With acceptPhonePlays, phone plays skip the inbox and count at once (each
+// play's id is remembered, so a resend never counts twice); Love still waits.
 
 const crypto = require('crypto');
 const dgram = require('dgram');
@@ -64,6 +70,7 @@ const MAX_PAIRING_ATTEMPTS = 5;
 const MAX_EVENTS = 5000;
 const MAX_BODY_BYTES = 1024 * 1024;
 const MAX_INBOX_PLAYS = 50000;
+const MAX_COUNTED_PLAY_IDS = 100000;
 const MAX_SONG_BYTES = 1024 * 1024 * 1024;
 const SONG_EXTENSIONS = new Set(['mp3', 'flac', 'm4a', 'mp4', 'aac', 'ogg', 'oga', 'opus', 'wav', 'aiff', 'aif', 'wv', 'ape', 'wma', 'alac']);
 
@@ -94,7 +101,7 @@ function lanAddresses() {
   return out;
 }
 
-function createHiveLink({ dataDir, getTracks, setLove, onPaired, streamSong = null, coversDir = null, remote = null, getPlaylists = null, getPlays = null, recordPlays = null, spotifySearch = null, songTarget = null, onSongAdded = () => {}, onInbox = () => {}, log = () => {}, port = DEFAULT_PORT, discoveryPort = DISCOVERY_PORT, acceptPhoneChanges = false }) {
+function createHiveLink({ dataDir, getTracks, setLove, onPaired, streamSong = null, coversDir = null, remote = null, getPlaylists = null, getPlays = null, recordPlays = null, spotifySearch = null, songTarget = null, onSongAdded = () => {}, acceptPhonePlays = false, getWrap = null, getWrapYears = null, onInbox = () => {}, log = () => {}, port = DEFAULT_PORT, discoveryPort = DISCOVERY_PORT, acceptPhoneChanges = false }) {
   const statePath = path.join(dataDir, 'hive-link.json');
   let state = loadState();
   let server = null;
@@ -116,10 +123,11 @@ function createHiveLink({ dataDir, getTracks, setLove, onPaired, streamSong = nu
         lastChangeAt: raw.lastChangeAt && typeof raw.lastChangeAt === 'object' ? raw.lastChangeAt : {},
         remoteControl: !!raw.remoteControl,
         receiveSongs: raw.receiveSongs !== false,
+        countedPlays: Array.isArray(raw.countedPlays) ? raw.countedPlays.map(String).slice(-MAX_COUNTED_PLAY_IDS) : [],
         inbox: cleanInbox(raw.inbox)
       };
     } catch {
-      return { serverId: crypto.randomUUID(), devices: [], seq: 0, events: [], lastChangeAt: {}, receiveSongs: true, inbox: cleanInbox(null) };
+      return { serverId: crypto.randomUUID(), devices: [], seq: 0, events: [], lastChangeAt: {}, receiveSongs: true, countedPlays: [], inbox: cleanInbox(null) };
     }
   }
 
@@ -149,10 +157,13 @@ function createHiveLink({ dataDir, getTracks, setLove, onPaired, streamSong = nu
       addresses: lanAddresses(),
       streams: { track: true, song: !!streamSong },
       remote: !!remote && !!state.remoteControl,
-      plays: !!getPlays,
+      // Plays go both ways: the phone sends its own when Hive can record them,
+      // and fetches Hive's when Hive shares them.
+      plays: !!getPlays || !!recordPlays,
       spotifySearch: !!spotifySearch,
       // Song sync: whether Hive takes song files from the phone.
       songs: { receive: !!songTarget && state.receiveSongs },
+      wrap: !!getWrap,
       // Phone changes waiting for the user in Hive.
       inbox: inboxSummary()
     };
@@ -320,6 +331,32 @@ function createHiveLink({ dataDir, getTracks, setLove, onPaired, streamSong = nu
 
   // Plays made on the phone wait here until the user applies them; each is
   // known by the phone's own id for it, so a resend never counts twice.
+  // Counted at once (acceptPhonePlays): resolved to library songs and handed
+  // to Hive's listening history. A play whose song Hive doesn't have comes
+  // back as "unknown" for the phone to keep and send again later.
+  const countedPlayIds = new Set(state.countedPlays);
+  async function countPlays(device, plays) {
+    const tracks = await getTracks();
+    const byId = new Map(tracks.map(t => [trackIdFor(t), t]));
+    const ready = [], unknown = [];
+    for (const p of Array.isArray(plays) ? plays.slice(0, 5000) : []) {
+      const clientId = String(p?.clientId ?? '');
+      const playedAt = num(p?.playedAt);
+      const key = `${device.id}:${clientId}`;
+      if (!clientId || !playedAt || countedPlayIds.has(key)) continue;
+      const track = byId.get(String(p?.id || ''));
+      if (!track) { unknown.push(clientId); continue; }
+      ready.push({ id: trackIdFor(track), playedAt, listenedMs: Math.max(0, num(p?.listenedMs)), deviceId: device.id, clientId, track });
+    }
+    if (ready.length) {
+      await recordPlays(ready);
+      for (const p of ready) { const key = `${device.id}:${p.clientId}`; countedPlayIds.add(key); state.countedPlays.push(key); }
+      if (state.countedPlays.length > MAX_COUNTED_PLAY_IDS) state.countedPlays.splice(0, state.countedPlays.length - MAX_COUNTED_PLAY_IDS);
+      saveSoon();
+    }
+    return { staged: 0, counted: ready.length, unknown };
+  }
+
   function stagePlays(device, plays) {
     const seen = new Set(state.inbox.plays.map(p => `${p.deviceId}:${p.clientId}`));
     let added = 0;
@@ -512,8 +549,17 @@ function createHiveLink({ dataDir, getTracks, setLove, onPaired, streamSong = nu
         const body = await readJson(req);
         return send(res, 200, await applyLoveChanges(device, body?.changes));
       }
-      case 'POST /api/plays':
-        return send(res, 200, stagePlays(device, (await readJson(req))?.plays));
+      case 'POST /api/plays': {
+        const plays = (await readJson(req))?.plays;
+        return send(res, 200, acceptPhonePlays && recordPlays ? await countPlays(device, plays) : stagePlays(device, plays));
+      }
+      case 'GET /api/wrap/years':
+        if (!getWrapYears) return send(res, 404, { error: 'This Hive has no Yearly Wrap.' });
+        return send(res, 200, { years: await getWrapYears() });
+      case 'GET /api/wrap': {
+        if (!getWrap) return send(res, 404, { error: 'This Hive has no Yearly Wrap.' });
+        return send(res, 200, wrapForPhone(await getWrap(num(url.searchParams.get('year')) || new Date().getFullYear())));
+      }
       case 'GET /api/plays':
         return send(res, 200, await playsSince(num(url.searchParams.get('since'))));
       case 'GET /api/spotify/search': {
@@ -545,6 +591,25 @@ function createHiveLink({ dataDir, getTracks, setLove, onPaired, streamSong = nu
       default:
         return send(res, 404, { error: 'Unknown endpoint.' });
     }
+  }
+
+  // ---- Yearly Wrap ---------------------------------------------------------
+  // Hive's Wrap as is, minus the recent-plays list; covers become names the
+  // phone fetches from /api/cover (or https addresses, passed through).
+  function wrapCover(value) {
+    const v = String(value || '');
+    if (/^https:\/\//i.test(v)) return v;
+    const name = path.basename(v.replace(/^mbcover:\/\/+/i, '').split(/[?#]/)[0]);
+    return COVER_FILE.test(name) ? name : '';
+  }
+  function wrapForPhone(w) {
+    const { rows, ...rest } = w || {};
+    return {
+      ...rest,
+      topTrack: rest.topTrack ? { ...rest.topTrack, cover: wrapCover(rest.topTrack.cover) } : null,
+      topArtists: (rest.topArtists || []).map(a => ({ ...a, cover: wrapCover(a.cover) })),
+      topAlbums: (rest.topAlbums || []).map(a => ({ ...a, cover: wrapCover(a.cover) }))
+    };
   }
 
   // ---- song sync: files from the phone ------------------------------------

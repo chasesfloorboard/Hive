@@ -5502,7 +5502,9 @@ ipcMain.handle('musicbee:applyLibraryImport', async (evt, folder) => withStatsMu
     settings: planned.source.settings, importedPresets, equaliserPresets: importedPresets ? await listEqualiserPresets() : null };
 }));
 
-ipcMain.handle('yearly-wrap:getYears', async () => {
+ipcMain.handle('yearly-wrap:getYears', async () => yearlyWrapYears());
+// Shared by the Wrap window and Hive Link (the phone shows the same Wrap).
+async function yearlyWrapYears() {
   const events = await readJsonSafe(LISTENING_EVENTS_PATH(), []);
   const state = await readJsonSafe(MUSICBEE_WRAPPED_IMPORTS_PATH(), { years: {} });
   const years = new Set();
@@ -5510,7 +5512,7 @@ ipcMain.handle('yearly-wrap:getYears', async () => {
   for (const y of Object.keys(state?.years || {})) { const n = Number(y); if (n >= 1900 && n <= 3000) years.add(n); }
   years.add(new Date().getFullYear());
   return [...years].sort((a,b) => b-a);
-});
+}
 
 ipcMain.handle('history:get', async () => {
   const history = await readJsonSafe(HISTORY_PATH(), []);
@@ -5744,7 +5746,9 @@ ipcMain.handle('track:recordPlay', async (_evt, trackPath, meta = {}) => withSta
 }));
 
 
-ipcMain.handle('yearly-wrap:getData', async (_evt, requestedYear) => {
+ipcMain.handle('yearly-wrap:getData', async (_evt, requestedYear) => yearlyWrapData(requestedYear));
+// One year's Wrap, for the Wrap window and for Hive Link (the phone shows the same).
+async function yearlyWrapData(requestedYear) {
   const year = Number.isInteger(Number(requestedYear)) ? Number(requestedYear) : new Date().getFullYear();
   const events = await readJsonSafe(LISTENING_EVENTS_PATH(), []);
   const history = await readJsonSafe(HISTORY_PATH(), []);
@@ -5849,7 +5853,7 @@ ipcMain.handle('yearly-wrap:getData', async (_evt, requestedYear) => {
     longestStreak, monthly:monthRows,
     rows: rows.slice(0,100).map(e=>({playedAt:e.playedAt,title:e.title,artist:e.artist,album:e.album,duration:e.duration,cover:e.cover || e.artworkUrl || null,source:e.source || ''}))
   };
-});
+}
 
 async function readLibraryTracksForPlayCountSync() {
   const libraryCache = (await libraryCacheStore.get()) || { tracks: [] };
@@ -8036,6 +8040,11 @@ function startHiveLink() {
       return (Array.isArray(events) ? events : []).filter(e => e && e.path && Number(e.playedAt) > since && e.source !== 'hive-mobile' && e.source !== 'musicbee-wrapped');
     },
     recordPlays: recordPhonePlays,
+    // Plays from the phone count at once (Yearly Wrap, play counts, history);
+    // only Love changes wait in the inbox for review.
+    acceptPhonePlays: true,
+    getWrap: year => yearlyWrapData(year),
+    getWrapYears: () => yearlyWrapYears(),
     // Hive Mobile searches Spotify through this PC's Spotify app when the phone isn't signed in itself.
     spotifySearch: q => searchSpotifyThroughApp(q),
     onInbox: summary => { try { mainWindow?.webContents?.send('hiveLink:inbox', summary); } catch {} },
