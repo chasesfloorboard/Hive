@@ -11,7 +11,9 @@ import kotlin.random.Random
  *
  * The seeds play first (a long seed, like a whole artist, is cut to its
  * best-loved songs). The rest is drawn from the seeds' artists, the artists
- * they appear with ("A feat. B", "A & B"), and artists sharing their genres,
+ * they appear with ("A feat. B", "A & B"), and artists in their genres or
+ * next to them (Ambient also finds Dark Ambient, Drone and Modern Classical;
+ * broad tags like Electronic count for less than specific ones),
  * leaning towards songs that were played often or are Favorites and towards
  * the seeds' years. No song comes twice, the same artist is spaced out, and
  * no artist takes more than a third of the songs that follow the seeds.
@@ -39,8 +41,14 @@ object AutoDj {
         // Artists the seeds' artists share songs with.
         val collaborators = library.filter { t -> artistsOf(t).any { it in seedArtists } }.flatMapTo(HashSet()) { artistsOf(it) } - seedArtists
         val seedGenres = distinctSeeds.flatMapTo(HashSet()) { genresOf(it) }
-        // Artists with songs in the seeds' genres.
-        val genreArtists = library.filter { t -> genresOf(t).any { it in seedGenres } }.flatMapTo(HashSet()) { artistsOf(it) } - seedArtists - collaborators
+        val affinityCache = HashMap<String, Double>()
+        fun affinity(t: Track) = genresOf(t).maxOfOrNull { g -> affinityCache.getOrPut(g) { genreAffinity(g, seedGenres) } } ?: 0.0
+        // Artists with songs in the seeds' genres or next to them, by how close the closest is.
+        val genreArtists = HashMap<String, Double>()
+        for (t in library) {
+            val a = affinity(t).takeIf { it >= 0.3 } ?: continue
+            for (artist in artistsOf(t)) if (artist !in seedArtists && artist !in collaborators) genreArtists[artist] = maxOf(genreArtists[artist] ?: 0.0, a)
+        }
         val years = distinctSeeds.map { it.year }.filter { it > 0 }.sorted()
         val year = years.getOrNull(years.size / 2) ?: 0
 
@@ -51,10 +59,9 @@ object AutoDj {
             var s = when {
                 artists.any { it in seedArtists } -> 3.0
                 artists.any { it in collaborators } -> 2.0
-                artists.any { it in genreArtists } -> 1.0
-                else -> return 0.0
+                else -> artists.maxOfOrNull { genreArtists[it] ?: 0.0 }?.takeIf { it > 0 } ?: return 0.0
             }
-            if (genresOf(t).any { it in seedGenres }) s += 1.0
+            s += affinity(t)
             if (year > 0 && t.year > 0) s += (0.6 - abs(t.year - year) * 0.1).coerceAtLeast(0.0)
             return s + weight(t) * 0.6
         }
@@ -89,7 +96,51 @@ object AutoDj {
         (listOf(t.artist, t.albumArtist).flatMap { it.split(SPLIT) })
             .map { it.trim().lowercase() }.filter { it.isNotEmpty() && it != "various artists" && it != "<unknown>" }.toSet()
 
-    private fun genresOf(t: Track): Set<String> = t.genre.split(Regex("[;/,|]+")).map { it.trim().lowercase() }.filter { it.isNotEmpty() }.toSet()
+    private fun genresOf(t: Track): Set<String> = t.genre.split(Regex("[;/,|]+")).map { normalGenre(it) }.filter { it.isNotEmpty() }.toSet()
+
+    private fun normalGenre(g: String) = g.lowercase().replace('-', ' ').replace("&", "and").replace(Regex("[^a-z0-9 ]+"), "").replace(Regex("\\s+"), " ").trim()
+        .replace("hiphop", "hip hop").replace("drum n bass", "drum and bass").replace("dnb", "drum and bass")
+
+    /**
+     * How close genre [g] is to the seeds' genres, 0 to 1: the same genre 1;
+     * one inside the other ("dark ambient" and "ambient") 0.8; the same family
+     * (ambient and drone) 0.6. Broad tags (Electronic, Rock, Pop...) count
+     * half, so they don't swamp the specific ones.
+     */
+    fun genreAffinity(g: String, seeds: Set<String>): Double {
+        val gn = normalGenre(g)
+        if (gn.isEmpty()) return 0.0
+        val gw = gn.split(' ').toSet()
+        var best = 0.0
+        for (seed in seeds) {
+            val sn = normalGenre(seed)
+            val sw = sn.split(' ').toSet()
+            val a = when {
+                gn == sn -> 1.0
+                (gw.containsAll(sw) || sw.containsAll(gw)) && (gw - GENERIC).isNotEmpty() && (sw - GENERIC).isNotEmpty() -> 0.8
+                FAMILIES.any { f -> f.any { it == gn || it in gw } && f.any { it == sn || it in sw } } -> 0.6
+                else -> 0.0
+            }
+            best = maxOf(best, if (gn in BROAD || sn in BROAD) a * 0.5 else a)
+        }
+        return best
+    }
+
+    private val GENERIC = setOf("music", "and", "the", "new", "post", "neo", "alternative", "experimental")
+    private val BROAD = setOf("electronic", "electronica", "rock", "pop", "hip hop", "rap", "alternative", "indie", "experimental", "dance", "other", "misc", "soundtrack", "world", "instrumental")
+    private val FAMILIES = listOf(
+        setOf("ambient", "drone", "new age", "modern classical", "neoclassical", "minimalism", "minimal", "field recordings", "space music", "berlin school", "kosmische", "lowercase", "tape music", "sound collage", "illbient", "dark ambient"),
+        setOf("idm", "downtempo", "trip hop", "chillout", "glitch", "microsound", "electronica", "braindance"),
+        setOf("house", "techno", "dubstep", "drum and bass", "jungle", "footwork", "juke", "garage", "uk garage", "breakcore", "breakbeat", "trance", "electro", "bass"),
+        setOf("hip hop", "rap", "trap", "cloud rap", "phonk", "drill", "memphis", "horrorcore", "boom bap", "abstract hip hop"),
+        setOf("rock", "indie rock", "alternative rock", "grunge", "post grunge", "garage rock", "psychedelic rock", "math rock", "slowcore", "post rock"),
+        setOf("shoegaze", "dream pop", "slowcore", "ambient pop", "noise pop", "post rock"),
+        setOf("metal", "doom", "sludge", "black metal", "death metal", "nu metal", "post metal", "drone metal"),
+        setOf("punk", "post punk", "hardcore", "post hardcore", "emo", "midwest emo", "screamo", "skramz"),
+        setOf("noise", "harsh noise", "industrial", "power electronics", "japanoise", "noise rock"),
+        setOf("jazz", "fusion", "soul", "funk", "rnb", "r and b", "neo soul", "spiritual jazz"),
+        setOf("pop", "synthpop", "electropop", "art pop", "hyperpop", "indie pop", "j pop", "k pop"),
+    )
 
     /** The same song from two files (an album copy and a single) counts once. */
     private fun key(t: Track) = t.title.lowercase().replace(Regex("\\(.*?\\)|\\[.*?]"), "").replace(Regex("[^\\p{L}\\p{N}]+"), "") + "\u0000" + t.artist.lowercase()

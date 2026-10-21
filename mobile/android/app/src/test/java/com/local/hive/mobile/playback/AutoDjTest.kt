@@ -59,4 +59,24 @@ class AutoDjTest {
         assertEquals(setOf("bones", "xavier wulf"), AutoDj.artistsOf(collab))
         assertEquals(setOf("a", "b"), AutoDj.artistsOf(song("x", "A feat. B")))
     }
+
+    @Test fun aGenreFindsItsNeighboursAndBroadTagsCountLess() {
+        assertEquals(1.0, AutoDj.genreAffinity("Ambient", setOf("ambient")), 0.0)
+        assertEquals(0.8, AutoDj.genreAffinity("Dark Ambient", setOf("ambient")), 0.0)
+        assertEquals(0.6, AutoDj.genreAffinity("Drone", setOf("ambient")), 0.0)
+        assertEquals(0.0, AutoDj.genreAffinity("Death Metal", setOf("ambient")), 0.0)
+        assertEquals(0.5, AutoDj.genreAffinity("Electronic", setOf("electronic")), 0.0)
+        assertEquals(0.0, AutoDj.genreAffinity("New Wave", setOf("new age")), 0.0)
+    }
+
+    @Test fun anAmbientSeedReachesDroneButNotMetal() {
+        val seeds = listOf(song("1/1", "Biosphere", genre = "Ambient"), song("Substrata", "Biosphere", genre = "Ambient"))
+        val library = seeds + listOf(
+            song("Harmony", "Tim Hecker", genre = "Drone"), song("Disintegration", "Basinski", genre = "Dark Ambient"),
+            song("Angel", "Morbid", genre = "Death Metal"), song("Hit", "Pop Star", genre = "Pop"),
+        )
+        val q = AutoDj.build(seeds, library, random = kotlin.random.Random(1)).map { it.artist }
+        assertTrue("Tim Hecker" in q && "Basinski" in q)
+        assertTrue("Morbid" !in q && "Pop Star" !in q)
+    }
 }
