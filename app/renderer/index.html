@@ -618,7 +618,7 @@
         <!-- ================= CONNECTIONS ================= -->
         <div id="settings-panel-connections" class="settings-tab-panel" role="tabpanel" aria-labelledby="settings-tab-connections" tabindex="0" data-settings-panel="connections">
           <section class="settings-section" id="hive-link-section">
-            <header class="settings-section-head"><h4 class="settings-section-title">Hive Mobile</h4><p class="settings-section-desc">Keep Favorites in sync with Hive on your phone, over Wi-Fi.</p></header>
+            <header class="settings-section-head"><h4 class="settings-section-title">Hive Mobile</h4><p class="settings-section-desc">Hive on your phone, over Wi-Fi or USB. Your PC's Favorites and plays reach the phone; what you do on the phone waits here until you apply it.</p></header>
             <div class="settings-row">
               <span class="settings-row-text"><span class="settings-row-label">Pair a phone</span><span id="hive-link-pair-hint" class="settings-hint" aria-live="polite">In Hive on your phone, open ⋮ › Settings › Find Hive on this Wi-Fi, then enter the code shown here.</span></span>
               <span class="settings-row-control"><button id="hive-link-pair-btn" class="sidebar-add" type="button">Pair phone</button></span>
@@ -628,6 +628,15 @@
               <span id="hive-link-code-value" class="settings-row-control" style="font-size:28px;font-weight:600;letter-spacing:0.18em;font-variant-numeric:tabular-nums"></span>
             </div>
             <div id="hive-link-devices"></div>
+            <div id="hive-link-inbox" class="settings-row" hidden>
+              <span class="settings-row-text"><span class="settings-row-label">From your phone</span><span id="hive-link-inbox-summary" class="settings-hint" aria-live="polite"></span></span>
+              <span class="settings-row-control" style="display:flex;gap:8px">
+                <button id="hive-link-inbox-review" class="sidebar-add" type="button">Review</button>
+                <button id="hive-link-inbox-apply" class="sidebar-add" type="button">Apply</button>
+                <button id="hive-link-inbox-discard" class="sidebar-add" type="button">Discard</button>
+              </span>
+            </div>
+            <div id="hive-link-inbox-list" hidden style="max-height:320px;overflow:auto;margin:0 0 8px;padding:0 4px"></div>
             <label class="settings-row">
               <span class="settings-row-text"><span class="settings-row-label">Let paired phones control playback</span><span class="settings-hint">Hive Mobile can show what's playing here, play and pause, skip, seek and set the volume, and take over the song. It never changes your library.</span></span>
               <input type="checkbox" id="hive-link-remote" />
@@ -1262,6 +1271,7 @@
   <script src="duplicates.js"></script>
   <script src="../main/file-organiser.js"></script>
   <script src="colorExtract.js"></script>
+  <script src="drag-out.js"></script>
   <script src="renderer.js"></script>
   <script src="hive-link-settings.js"></script>
 </body>

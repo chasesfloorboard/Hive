@@ -2014,6 +2014,7 @@ const appleMusic = require('./apple-music').create({ net });
 ipcMain.handle('applemusic:search', async (_evt, term) => appleMusic.search(term));
 ipcMain.handle('applemusic:collection', async (_evt, url) => appleMusic.getCollection(url));
 ipcMain.handle('applemusic:browse', async () => appleMusic.browse());
+ipcMain.handle('applemusic:artist', async (_evt, url) => appleMusic.artist(url));
 ipcMain.handle('applemusic:artwork', async (_evt, url) => appleMusic.collectionArtwork(url));
 
 // Hive 2.0 YouTube Music streaming for Apple Music / Spotify playlists.
@@ -2925,19 +2926,31 @@ const LIBRARY_BOUNDARY_ERROR = 'File is outside a configured Beehive library fol
 ipcMain.on('files:startDrag', (evt, filePaths = []) => {
   const paths = Array.from(new Set((Array.isArray(filePaths) ? filePaths : [filePaths]).map(p => String(p || '')).filter(Boolean)))
     .filter(p => { try { return fs.existsSync(p) && fs.statSync(p).isFile(); } catch { return false; } });
-  if (!paths.length) return;
+  if (!paths.length) { if (!evt.sender.isDestroyed()) evt.sender.send('files:dragEnded'); return; }
   try {
     // Electron's native file drag exposes the real filesystem paths to the OS,
     // which lets targets such as Discord, a DAW, Nautilus, etc. receive the
-    // actual music files instead of a web URL.
-    evt.sender.startDrag({
-      files: paths,
-      icon: nativeImage.createEmpty()
-    });
+    // actual music files instead of a web URL. The page cancels its own HTML
+    // drag first (renderer/drag-out.js), since only one drag can run at once.
+    evt.sender.startDrag({ files: paths, icon: fileDragIcon() });
   } catch (err) {
     crashDebug('Native file drag failed', { message: err?.message || String(err) });
   }
+  // On Linux and Windows the drag runs to its drop inside startDrag, so the
+  // page can now forget what it was dragging.
+  if (!evt.sender.isDestroyed()) evt.sender.send('files:dragEnded');
 });
+
+// The picture under the pointer while files are dragged out: Hive's logo, small.
+let cachedFileDragIcon = null;
+function fileDragIcon() {
+  if (cachedFileDragIcon) return cachedFileDragIcon;
+  try {
+    const logo = nativeImage.createFromPath(hiveLogoPath());
+    cachedFileDragIcon = logo.isEmpty() ? nativeImage.createEmpty() : logo.resize({ width: 48, height: 48, quality: 'best' });
+  } catch { cachedFileDragIcon = nativeImage.createEmpty(); }
+  return cachedFileDragIcon;
+}
 
 ipcMain.handle('file:showInBrowser', async (_evt, filePath) => {
   const target = path.resolve(String(filePath || ''));
@@ -5514,7 +5527,11 @@ ipcMain.handle('history:get', async () => {
 // intentionally keeps only the latest entry per track for the History view. Each
 // event represents one actual playback session and stores the measured listening
 // duration so the Wrap can report minutes without guessing.
-ipcMain.handle('listening:record', async (_evt, payload = {}) => {
+ipcMain.handle('listening:record', async (_evt, payload = {}) => recordListeningEvent(payload));
+
+// One playback session into listening-events.json and the per-year Wrapped
+// store: Hive's own plays, and the phone's once the user applies them.
+async function recordListeningEvent(payload = {}) {
   const event = {
     id: crypto.randomUUID(),
     playedAt: Number(payload.playedAt) || Date.now(),
@@ -5567,7 +5584,37 @@ ipcMain.handle('listening:record', async (_evt, payload = {}) => {
     } catch {}
   } catch (err) { console.warn('Could not update local Wrapped data store:', err?.message || err); }
   return { ok:true, id:event.id };
-});
+}
+
+// Plays from Hive Mobile the user chose to keep: each is a listening event
+// (source "hive-mobile", at the time it was played) and counts toward the
+// song's play count, as a play in Hive would. Files aren't written.
+async function recordPhonePlays(plays) {
+  const counted = new Map();
+  for (const p of [...plays].sort((a, b) => a.playedAt - b.playedAt)) {
+    const t = p.track || {};
+    await recordListeningEvent({
+      playedAt: p.playedAt, duration: Math.round((Number(p.listenedMs) || 0) / 1000), trackDuration: Number(t.duration) || 0,
+      path: String(t.path || ''), title: t.title, artist: t.artist, album: t.album, albumArtist: t.albumArtist, genre: t.genre,
+      cover: /^data:/i.test(String(t.cover || '')) ? null : t.cover, source: 'hive-mobile', completed: true
+    });
+    const c = counted.get(t.path) || { n: 0, last: 0 };
+    counted.set(t.path, { n: c.n + 1, last: Math.max(c.last, p.playedAt) });
+  }
+  const updates = [];
+  await withStatsMutation(async () => {
+    const stats = await readJsonSafe(STATS_PATH(), {});
+    for (const [trackPath, c] of counted) {
+      const entry = stats[trackPath] || { playCount: 0, lastPlayedAt: 0 };
+      entry.playCount = Number(entry.playCount || 0) + c.n;
+      entry.lastPlayedAt = Math.max(Number(entry.lastPlayedAt || 0), c.last);
+      stats[trackPath] = entry;
+      updates.push({ path: trackPath, playCount: entry.playCount, lastPlayedAt: entry.lastPlayedAt });
+    }
+    await writeJsonSafe(STATS_PATH(), stats);
+  });
+  try { mainWindow?.webContents?.send('library:scanTrack', updates); } catch {}
+}
 
 
 async function readEmbeddedPlayCount(trackPath) {
@@ -7636,9 +7683,19 @@ function findSpotifyTrackList(value) {
 }
 
 const spotifyOembedArtCache = new Map();
-ipcMain.handle('playlists:importSpotify', async (_evt, input) => {
-  const id = spotifyPlaylistId(input);
+ipcMain.handle('playlists:importSpotify', async (_evt, input) => importSpotifyPlaylistFrom(input));
+
+// A Spotify playlist's songs: from the signed-in Spotify app when its bridge
+// is running (private playlists, the whole list), else Spotify's public page.
+// Browsing asks for the public page only, so it never waits on the app.
+async function importSpotifyPlaylistFrom(input, { useBridge = true } = {}) {
+  // An album (from search) reads from its own public page, the same way.
+  const albumId = String(input || '').match(/(?:open\.spotify\.com\/(?:embed\/)?album\/|^spotify:album:)([A-Za-z0-9]{22})/i)?.[1] || '';
+  const kind = albumId ? 'album' : 'playlist';
+  const id = albumId || spotifyPlaylistId(input);
   if (!id) throw new Error('Enter a valid Spotify playlist URL.');
+  let bridgeError = '';
+  if (useBridge && !albumId) {
 
   // Prefer the Spicetify session. This lets Hive import private playlists and
   // the user's complete playlist without asking Hive to own Spotify credentials.
@@ -7648,7 +7705,6 @@ ipcMain.handle('playlists:importSpotify', async (_evt, input) => {
   const bridgeLive = () => Date.now() - spotifyBridgeLastPollAt < 3000;
   const startedLive = bridgeLive();
   const deadline = Date.now() + (startedLive ? 120000 : 3500);
-  let bridgeError = '';
   while (Date.now() < deadline) {
     const current = spotifyBridgeState;
     if (current?.playlist?.commandId === commandId) {
@@ -7659,10 +7715,11 @@ ipcMain.handle('playlists:importSpotify', async (_evt, input) => {
     if (startedLive && !bridgeLive()) break; // Spotify was closed mid-import
     await new Promise(resolve => setTimeout(resolve, 100));
   }
+  }
 
   // Public fallback keeps the button useful even before the Spicetify extension
   // has been applied. Private playlists intentionally require the Spotify client.
-  const url = `https://open.spotify.com/embed/playlist/${id}`;
+  const url = `https://open.spotify.com/embed/${kind}/${id}`;
   const response = await net.fetch(url, { headers: { 'User-Agent': 'Mozilla/5.0' } });
   if (!response.ok) throw new Error(`Spotify returned HTTP ${response.status}. Open Spotify and sign in, then try again.`);
   const html = await response.text();
@@ -7717,7 +7774,58 @@ ipcMain.handle('playlists:importSpotify', async (_evt, input) => {
   const entitySources = Array.isArray(entity?.coverArt?.sources) ? entity.coverArt.sources : [];
   const largest = entitySources.slice().sort((a, b) => (Number(b?.width) || 0) - (Number(a?.width) || 0))[0]?.url || '';
   const cover = (/^https?:\/\//i.test(String(largest)) ? String(largest) : '') || tracks.find(t => /^https?:\/\//i.test(String(t.cover || t.artworkUrl || '')))?.cover || '';
-  return { id, name, sourceUrl: `https://open.spotify.com/playlist/${id}`, cover, artworkUrl:cover, tracks, likelyTruncated: rows.length >= 100, source: 'spotify' };
+  // An album page lists its songs without the album's name or cover; they come from the album.
+  if (albumId) for (const t of tracks) { if (!t.album) t.album = name; if (!t.cover && cover) { t.cover = cover; t.artworkUrl = cover; } }
+  return { id, kind, name, sourceUrl: `https://open.spotify.com/${kind}/${id}`, cover, artworkUrl:cover, tracks, likelyTruncated: rows.length >= 100, source: 'spotify' };
+}
+
+// Search Spotify through the signed-in Spotify app (Hive's add-on), starting
+// the app in the background when it isn't running. Without it, nothing:
+// Spotify has no search for visitors who aren't signed in.
+ipcMain.handle('spotify:search', async (_evt, query) => searchSpotifyThroughApp(query));
+async function searchSpotifyThroughApp(query) {
+  if (SPOTIFY_DEVELOPMENT_PAUSED) return { connected: false };
+  const q = String(query || '').trim();
+  if (!q) return { connected: true, data: { tracks: [], albums: [], artists: [], playlists: [] } };
+  if (Date.now() - spotifyBridgeLastPollAt > 3000) {
+    try { await launchSpotifyOrLogin(); } catch {}
+    for (let i = 0; i < 40 && Date.now() - spotifyBridgeLastPollAt > 3000; i++) await new Promise(r => setTimeout(r, 500));
+  }
+  return askSpotifyBridge({ type: 'search', query: q }, 20000);
+}
+
+// Spotify's own playlists, the same set Hive Mobile shows: no account or app
+// needed, read from Spotify's public link previews. Plus today's Top 50 as a
+// song list, as the Apple Music page shows its new songs. Kept for 6 hours.
+const SPOTIFY_EDITORIAL = [
+  '37i9dQZF1DXcBWIGoYBM5M', '37i9dQZF1DX4JAvHpjipBk', '37i9dQZEVXbMDoHDwVN2tF', '37i9dQZEVXbLRQDuF5jeBp',
+  '37i9dQZF1DX0XUsuxWHRQd', '37i9dQZF1DX10zKzsJ2jva', '37i9dQZF1DX1lVhptIYRda', '37i9dQZF1DX4dyzvuaRJ0n',
+  '37i9dQZF1DWXRqgorJj26U', '37i9dQZF1DX5Ejj0EkURtP', '37i9dQZF1DWWMOmoXKqHTD', '37i9dQZF1DX4sWSpwq3LiO',
+];
+// Spotify's 300 px images as their 640 px versions (album and editorial covers).
+const largerSpotifyImage = url => String(url || '')
+  .replace(/^https:\/\/image-cdn-[a-z]+\.spotifycdn\.com\/image\//, 'https://i.scdn.co/image/')
+  .replace('ab67616d00001e02', 'ab67616d0000b273').replace('ab67616d00004851', 'ab67616d0000b273')
+  .replace('ab67706f00000002', 'ab67706f00000003');
+let spotifyBrowseCache = null;
+ipcMain.handle('spotify:browse', async () => {
+  if (spotifyBrowseCache && Date.now() - spotifyBrowseCache.at < 6 * 60 * 60 * 1000) return spotifyBrowseCache.shelves;
+  const cards = (await Promise.all(SPOTIFY_EDITORIAL.map(async id => {
+    try {
+      const res = await net.fetch(`https://open.spotify.com/oembed?url=${encodeURIComponent(`https://open.spotify.com/playlist/${id}`)}`, { headers: { 'User-Agent': 'Hive/2.0 (music player)' } });
+      const info = res.ok ? await res.json() : null;
+      if (!info?.title) return null;
+      return { id, name: String(info.title), subtitle: 'Spotify', cover: largerSpotifyImage(info.thumbnail_url), url: `https://open.spotify.com/playlist/${id}` };
+    } catch { return null; }
+  }))).filter(Boolean);
+  const shelves = [];
+  if (cards.length) shelves.push({ title: 'Spotify playlists', kind: 'playlists', items: cards });
+  try {
+    const top = await importSpotifyPlaylistFrom('https://open.spotify.com/playlist/37i9dQZEVXbMDoHDwVN2tF', { useBridge: false });
+    if (top?.tracks?.length) shelves.push({ title: 'Top songs worldwide', kind: 'songs', items: top.tracks.slice(0, 20).map(t => ({ ...t, cover: largerSpotifyImage(t.cover), artworkUrl: largerSpotifyImage(t.artworkUrl) })) });
+  } catch {}
+  if (shelves.length) spotifyBrowseCache = { at: Date.now(), shelves };
+  return shelves;
 });
 
 ipcMain.handle('playlists:delete', async (_evt, id) => withJsonFileLock(PLAYLISTS_PATH(), async () => {
@@ -7900,8 +8008,18 @@ function startHiveLink() {
       await setLoveForSingleTrack(sender ? { sender } : null, trackPath, loved);
       try { sender?.send('library:scanTrack', [{ path: trackPath, loved: !!loved, loveHydrated: true }]); } catch {}
     },
-    // Hive Mobile is not ready to change the PC library yet: phone Love stays on the phone.
+    // Phone changes don't touch the PC library by themselves: they wait in
+    // Hive Link's inbox until the user applies them in Settings.
     acceptPhoneChanges: false,
+    // Hive's own listening (not imports, not plays that came from the phone).
+    getPlays: async since => {
+      const events = await readJsonSafe(LISTENING_EVENTS_PATH(), []);
+      return (Array.isArray(events) ? events : []).filter(e => e && e.path && Number(e.playedAt) > since && e.source !== 'hive-mobile' && e.source !== 'musicbee-wrapped');
+    },
+    recordPlays: recordPhonePlays,
+    // Hive Mobile searches Spotify through this PC's Spotify app when the phone isn't signed in itself.
+    spotifySearch: q => searchSpotifyThroughApp(q),
+    onInbox: summary => { try { mainWindow?.webContents?.send('hiveLink:inbox', summary); } catch {} },
     coversDir: COVERS_DIR(),
     // Apple Music and Spotify songs Hive Mobile lacks play from YouTube Music
     // through Hive, sharing Hive's own matches (ytm:apple:…, ytm:spotify:…).
@@ -7918,6 +8036,11 @@ function startHiveLink() {
     log: (...args) => scanLog(args.map(String).join(' '))
   });
   hiveLink.start();
+  // A phone plugged in by USB (with USB debugging) reaches Hive Link through the cable.
+  try {
+    const { createUsbBridge } = require('./usb-bridge');
+    createUsbBridge({ port: hiveLink.info().port, log: (...args) => scanLog(args.map(String).join(' ')) }).start();
+  } catch (err) { scanLog('Hive Link USB bridge unavailable', err?.message || String(err)); }
 }
 
 async function showHiveLinkPairing() {
@@ -7936,6 +8059,10 @@ async function showHiveLinkPairing() {
 
 ipcMain.handle('hiveLink:pair', async () => hiveLink?.startPairing() || null);
 ipcMain.handle('hiveLink:devices', async () => hiveLink?.devices() || []);
+ipcMain.handle('hiveLink:inbox', async () => (hiveLink ? hiveLink.inbox() : { loves: [], plays: [] }));
+ipcMain.handle('hiveLink:applyInbox', async (_evt, what = {}) => (hiveLink ? hiveLink.applyInbox(what) : null));
+ipcMain.handle('hiveLink:discardInbox', async (_evt, what = {}) => (hiveLink ? hiveLink.discardInbox(what) : null));
+
 ipcMain.handle('hiveLink:remoteControl', async (_evt, on) => {
   if (typeof on === 'boolean') hiveLink?.setRemoteControl(on);
   return !!hiveLink?.remoteControl();

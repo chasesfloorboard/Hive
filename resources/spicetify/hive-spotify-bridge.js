@@ -298,8 +298,53 @@
     }
   }
 
+  // Spotify's own search: songs, artists, albums and playlists for a term.
+  // The app always carries its quick-search query (its full search page loads
+  // its own only when opened), which answers with plenty when asked for 40.
+  // Spotify's Web API refuses the app's sign-in (429), so it isn't used.
+  async function sendSearch(command) {
+    try {
+      const GQL = Spicetify?.GraphQL;
+      // The search query's name has changed between Spotify versions.
+      const defs = GQL?.Definitions || {};
+      const name = ['searchDesktop', 'searchModalResults', 'searchTopResultsList', 'searchFullResults'].find(n => defs[n]) || Object.keys(defs).find(n => /^search/i.test(n) && !/suggest|autocomplete/i.test(n));
+      const def = name ? defs[name] : null;
+      if (!GQL?.Request || !def) throw new Error(`This Spotify version does not expose search (it has: ${Object.keys(defs).filter(n => /search/i.test(n)).join(', ') || 'no search queries'}).`);
+      const res = await GQL.Request(def, {
+        searchTerm: String(command.query || '').slice(0, 200), offset: 0, limit: 30, numberOfTopResults: 40,
+        includeAudiobooks: false, includeArtistHasConcertsField: false, includePreReleases: true, includeLocalConcertsField: false, includeAuthors: false,
+      });
+      const s = res?.data?.searchV2 || {};
+      const names = list => (list?.items || []).map(a => a?.profile?.name).filter(Boolean).join(', ');
+      // Results come as separate lists (tracksV2, albumsV2, …) or as one mixed
+      // "top results" list, depending on the query; every list is read and
+      // each item filed by its kind.
+      const entries = [];
+      for (const value of Object.values(s)) {
+        if (!value || typeof value !== 'object') continue;
+        for (const list of [value.items, value.itemsV2]) if (Array.isArray(list)) entries.push(...list);
+      }
+      const tracks = [], albums = [], artists = [], playlists = [], seen = new Set();
+      for (const entry of entries) {
+        const d = entry?.item?.data || entry?.data || entry?.item || entry;
+        const uri = String(d?.uri || '');
+        if (!uri || seen.has(uri)) continue;
+        seen.add(uri);
+        const kind = uri.split(':')[1];
+        if (kind === 'track') tracks.push({ uri, title: String(d.name || ''), artist: names(d.artists), album: String(d.albumOfTrack?.name || ''), duration: Number(d.duration?.totalMilliseconds || 0), image: firstImage(d.albumOfTrack?.coverArt) });
+        else if (kind === 'album') albums.push({ uri, name: String(d.name || ''), subtitle: names(d.artists), image: firstImage(d.coverArt) });
+        else if (kind === 'artist') artists.push({ uri, name: String(d.profile?.name || ''), image: firstImage(d.visuals?.avatarImage) });
+        else if (kind === 'playlist') playlists.push({ uri, name: String(d.name || ''), subtitle: String(d.ownerV2?.data?.name || ''), image: firstImage(d.images) });
+      }
+      await post('/result', { commandId: Number(command.id), data: { tracks, albums, artists, playlists, query: name } });
+    } catch (err) {
+      await post('/result', { commandId: Number(command.id), error: String(err?.message || err) });
+    }
+  }
+
   async function execute(command) {
     const type = command?.command?.type;
+    if (type === 'search') return sendSearch({ ...command.command, id: command.id });
     if (type === 'getHome') return sendHome({ ...command.command, id: command.id });
     if (type === 'getPlaylist') return importPlaylist(command.command);
     if (type === 'getLibraryPlaylists') return sendLibraryPlaylists(command.command.id ? command.command : { ...command.command, id: command.id });

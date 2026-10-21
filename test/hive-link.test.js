@@ -17,7 +17,7 @@ const { createHiveLink, trackIdFor } = require('../app/main/hive-link');
 
 let nextPort = 48100 + Math.floor(Math.random() * 500) * 2;
 
-function setup({ acceptPhoneChanges = true, streamSong = null, coversDir = null, remote = null, getPlaylists = null } = {}) {
+function setup({ acceptPhoneChanges = true, streamSong = null, coversDir = null, remote = null, getPlaylists = null, getPlays = null, spotifySearch = null } = {}) {
   const dataDir = fs.mkdtempSync(path.join(os.tmpdir(), 'hive-link-'));
   const tracks = [
     { id: 'a1', path: '/music/Pearl Jam - Black.mp3', title: 'Black', artist: 'Pearl Jam', album: 'Ten', duration: '343.2', loved: false },
@@ -25,6 +25,7 @@ function setup({ acceptPhoneChanges = true, streamSong = null, coversDir = null,
     { path: 'ytm:abc', title: 'Streamed', artist: 'Someone', loved: false }
   ];
   const setLoveCalls = [];
+  const recorded = [];
   const port = nextPort; nextPort += 2;
   const link = createHiveLink({
     dataDir,
@@ -35,6 +36,9 @@ function setup({ acceptPhoneChanges = true, streamSong = null, coversDir = null,
     coversDir,
     remote,
     getPlaylists,
+    getPlays,
+    spotifySearch,
+    recordPlays: async plays => { recorded.push(...plays); },
     getTracks: async () => tracks,
     setLove: async (trackPath, loved) => {
       setLoveCalls.push([trackPath, loved]);
@@ -44,7 +48,7 @@ function setup({ acceptPhoneChanges = true, streamSong = null, coversDir = null,
     }
   });
   link.start();
-  return { link, tracks, setLoveCalls, port, dataDir };
+  return { link, tracks, setLoveCalls, recorded, port, dataDir };
 }
 
 function rawGet(port, urlPath, token, headers = {}) {
@@ -164,14 +168,15 @@ test('a phone Love goes through setLove and is logged with the phone as origin',
   assert.deepEqual(changes.body.changes.map(c => [c.id, c.loved, c.at, c.origin]), [['a1', true, 1000, deviceId]]);
 });
 
-test('while phone changes are off, phone Love is held and nothing is written', async t => {
+test('while phone changes are off, phone Love waits in the inbox and nothing is written', async t => {
   const ctx = setup({ acceptPhoneChanges: false });
   t.after(() => ctx.link.stop());
   await waitListening(ctx.port);
   const token = await pair(ctx);
 
   const res = await request(ctx.port, 'POST', '/api/love', { token, body: { changes: [{ clientChangeId: 1, id: 'a1', loved: true, at: 1000 }] } });
-  assert.deepEqual(res.body.results.map(r => r.status), ['held']);
+  assert.deepEqual(res.body.results.map(r => r.status), ['staged']);
+  assert.deepEqual(ctx.link.inboxSummary(), { loves: 1, plays: 0 });
   assert.equal(ctx.setLoveCalls.length, 0);
   assert.equal(ctx.tracks[0].loved, false);
   const changes = await request(ctx.port, 'GET', '/api/love/changes?since=0', { token });
@@ -337,4 +342,71 @@ test('track ids fall back to a path hash when the library has none', () => {
   assert.equal(trackIdFor({ id: 'x' }), 'x');
   assert.equal(trackIdFor({ path: '/a.mp3' }), trackIdFor({ path: '/a.mp3' }));
   assert.notEqual(trackIdFor({ path: '/a.mp3' }), trackIdFor({ path: '/b.mp3' }));
+});
+
+test('inbox: applying writes Love through setLove and hands plays to Hive, discarding writes nothing', async t => {
+  const ctx = setup({ acceptPhoneChanges: false });
+  t.after(() => ctx.link.stop());
+  await waitListening(ctx.port);
+  const token = await pair(ctx);
+
+  await request(ctx.port, 'POST', '/api/love', { token, body: { changes: [{ clientChangeId: 1, id: 'a1', loved: true, at: 1000 }, { clientChangeId: 2, id: 'a1', loved: false, at: 900 }] } });
+  const plays = [{ clientId: '1', id: 'a1', playedAt: 5000, listenedMs: 200000 }, { clientId: '2', id: 'b2', playedAt: 6000, listenedMs: 100000 }];
+  assert.equal((await request(ctx.port, 'POST', '/api/plays', { token, body: { plays } })).body.staged, 2);
+  // A resend of the same plays is not counted again.
+  assert.equal((await request(ctx.port, 'POST', '/api/plays', { token, body: { plays } })).body.staged, 0);
+
+  const box = await ctx.link.inbox();
+  assert.equal(box.loves.length, 1);
+  assert.equal(box.loves[0].loved, true, 'the newer of two changes to one song wins');
+  assert.equal(box.loves[0].device, 'Galaxy A55');
+  assert.deepEqual(box.plays.map(p => p.track.title), ['Huge', 'Black']);
+
+  const result = await ctx.link.applyInbox({});
+  assert.deepEqual([result.lovesApplied, result.playsApplied, result.loves, result.plays], [1, 2, 0, 0]);
+  assert.deepEqual(ctx.setLoveCalls, [[path.resolve('/music/Pearl Jam - Black.mp3'), true]]);
+  assert.deepEqual(ctx.recorded.map(p => [p.track.title, p.playedAt]).sort(), [['Black', 5000], ['Huge', 6000]]);
+
+  await request(ctx.port, 'POST', '/api/plays', { token, body: { plays: [{ clientId: '3', id: 'a1', playedAt: 7000, listenedMs: 1 }] } });
+  assert.deepEqual(ctx.link.discardInbox({}), { loves: 0, plays: 0 });
+  assert.equal(ctx.recorded.length, 2);
+});
+
+test('the inbox survives a restart', async t => {
+  const ctx = setup({ acceptPhoneChanges: false });
+  await waitListening(ctx.port);
+  const token = await pair(ctx);
+  await request(ctx.port, 'POST', '/api/plays', { token, body: { plays: [{ clientId: '9', id: 'b2', playedAt: 1234, listenedMs: 5 }] } });
+  ctx.link.stop();
+  await new Promise(r => setTimeout(r, 700));
+  const again = createHiveLink({ dataDir: ctx.dataDir, port: ctx.port, discoveryPort: ctx.port + 1, getTracks: async () => ctx.tracks, setLove: async () => {} });
+  t.after(() => again.stop());
+  assert.deepEqual(again.inboxSummary(), { loves: 0, plays: 1 });
+});
+
+test("the phone gets Hive's own plays for library songs since a time", async t => {
+  const ctx = setup({ getPlays: async since => [
+    { id: 'e1', path: '/music/Huge.mp3', playedAt: 2000, duration: 180 },
+    { id: 'e2', path: '/music/gone.mp3', playedAt: 3000, duration: 10 },
+  ].filter(e => e.playedAt > since) });
+  t.after(() => ctx.link.stop());
+  await waitListening(ctx.port);
+  const token = await pair(ctx);
+  const res = await request(ctx.port, 'GET', '/api/plays?since=1000', { token });
+  assert.deepEqual(res.body.plays, [{ id: 'b2', playedAt: 2000, listenedMs: 180000, eventId: 'e1' }]);
+  assert.equal((await request(ctx.port, 'GET', '/api/info', { token })).body.plays, true);
+});
+
+test('the phone searches Spotify through the PC, and hears when Spotify is not running', async t => {
+  let running = true;
+  const ctx = setup({ spotifySearch: async q => running ? { connected: true, data: { tracks: [{ uri: 'spotify:track:x', title: q }], albums: [], artists: [], playlists: [] } } : { connected: false } });
+  t.after(() => ctx.link.stop());
+  await waitListening(ctx.port);
+  const token = await pair(ctx);
+  const res = await request(ctx.port, 'GET', '/api/spotify/search?q=halsey', { token });
+  assert.equal(res.status, 200);
+  assert.equal(res.body.tracks[0].title, 'halsey');
+  running = false;
+  assert.equal((await request(ctx.port, 'GET', '/api/spotify/search?q=halsey', { token })).status, 503);
+  assert.equal((await request(ctx.port, 'GET', '/api/info', { token })).body.spotifySearch, true);
 });
