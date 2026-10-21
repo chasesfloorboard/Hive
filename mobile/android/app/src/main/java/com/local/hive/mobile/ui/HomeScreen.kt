@@ -74,6 +74,7 @@ import androidx.compose.ui.res.painterResource
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.Dp
 import androidx.compose.ui.unit.dp
+import androidx.compose.ui.unit.sp
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import com.local.hive.mobile.R
 import com.local.hive.mobile.data.AlbumSummary
@@ -470,7 +471,25 @@ private fun SmartCard(title: String, detail: String, covers: List<Uri>, icon: Im
 
 // ---- Favorites ----
 
-private enum class FavoriteView(val label: String) { Tracks("Tracks"), Albums("Albums") }
+private enum class FavoriteView(val label: String) { Tracks("Tracks"), Albums("Albums"), Artists("Artists") }
+
+/** Which Favorites to show: the current one as a heading with ▾, the rest in a menu with their counts. */
+@Composable
+private fun FavoriteViewPicker(view: FavoriteView, counts: Map<FavoriteView, Int>, onPick: (FavoriteView) -> Unit) {
+    val c = Hive.colors
+    var open by remember { mutableStateOf(false) }
+    Box(Modifier.padding(start = 10.dp, top = 6.dp, bottom = 2.dp)) {
+        Row(Modifier.height(44.dp).clip(HiveShape.pill).clickable { open = true }.padding(start = 10.dp, end = 6.dp), verticalAlignment = Alignment.CenterVertically) {
+            Text(view.label, style = HiveText.rowStrong.copy(fontSize = 19.sp), color = c.text)
+            Icon(Icons.Rounded.ArrowDropDown, "Show favorite tracks, albums or artists", tint = c.textDim, modifier = Modifier.size(24.dp))
+        }
+        HiveMenu(open, { open = false }) {
+            FavoriteView.entries.forEach { v ->
+                HiveMenuItem("${v.label} · ${"%,d".format(counts[v] ?: 0)}", if (v == view) Icons.Rounded.Check else null) { open = false; onPick(v) }
+            }
+        }
+    }
+}
 
 /**
  * Favorites with Samsung Music's switch at the top: Tracks is every song
@@ -483,12 +502,16 @@ private fun FavoritesTab(vm: MainViewModel, nav: HomeNavigation, actions: TrackA
     val albums by vm.favoriteAlbums.collectAsStateWithLifecycle()
     var view by rememberSaveable { mutableStateOf(FavoriteView.Tracks) }
     var sort by rememberSaveable { mutableStateOf(TrackSort.Added) }
+    // The artists of favorite songs, most favorited first.
+    val artists by rememberComputed(emptyList(), tracks) {
+        tracks.filter { it.artist.isNotBlank() }.groupBy { it.artist }
+            .map { (name, songs) -> ArtistSummary(name, songs.first().albumId, songs.distinctBy { it.albumId }.size, songs.size) }
+            .let { list -> LibrarySort.sorted(list) { it.artist } }
+            .sortedByDescending { it.trackCount } // stable: equal counts stay in name order
+    }
+    val counts = mapOf(FavoriteView.Tracks to tracks.size, FavoriteView.Albums to albums.size, FavoriteView.Artists to artists.size)
     Column(Modifier.fillMaxSize()) {
-        HiveToggle(
-            FavoriteView.entries.map { "${it.label} · ${if (it == FavoriteView.Tracks) tracks.size else albums.size}" },
-            view.ordinal, { view = FavoriteView.entries[it] },
-            Modifier.padding(start = 16.dp, end = 16.dp, top = 6.dp, bottom = 2.dp),
-        )
+        FavoriteViewPicker(view, counts) { view = it }
         androidx.compose.animation.AnimatedContent(view, transitionSpec = {
             val dir = if (targetState.ordinal > initialState.ordinal) 1 else -1
             (androidx.compose.animation.slideInHorizontally(Motion.move()) { it / 6 * dir } + androidx.compose.animation.fadeIn(Motion.swap()))
@@ -501,6 +524,14 @@ private fun FavoritesTab(vm: MainViewModel, nav: HomeNavigation, actions: TrackA
                     TrackList(vm, sorted, actions, bottom, "No favorite songs yet", "Tap ♥ on a song, or pair with Hive on your PC to bring your Favorites over.",
                         indexed = sort == TrackSort.Title,
                         sortHeader = { count, shuffle, play -> ListHeader(TrackSort.entries, sort, { if (it == TrackSort.Added) "Date favorited" else it.label }, { sort = it }, count, shuffle, play) })
+                }
+                FavoriteView.Artists -> LazyColumn(Modifier.fillMaxSize(), contentPadding = PaddingValues(top = 6.dp, bottom = bottom + 12.dp)) {
+                    if (artists.isEmpty()) item { EmptyState("No favorite artists yet", "Artists show up here once you ♥ their songs.") }
+                    items(artists, key = { it.artist }) { a ->
+                        val photo by produceState<String?>(null, a.artist) { value = vm.artistImage(a.artist) }
+                        LibraryRow(photo ?: Uri.parse("content://media/external/audio/albumart/${a.albumId}"), Icons.Rounded.Person, a.artist,
+                            countOf(a.trackCount, "favorite song"), round = true) { nav.openArtist(a.artist) }
+                    }
                 }
                 FavoriteView.Albums -> LazyColumn(Modifier.fillMaxSize(), contentPadding = PaddingValues(top = 6.dp, bottom = bottom + 12.dp)) {
                     if (albums.isEmpty()) item { EmptyState("No favorite albums yet", "Tap ♥ on an album's page to keep it here.") }
