@@ -1,15 +1,13 @@
 <?xml version="1.0" encoding="utf-8"?>
 <!-- Hive's minimal mark (resources/hive-minimal-black.png on the PC): the
-     hexagon, drawn as an outline so it shows on the dark icon, around the H
-     of two half-hexagons. Drawn at the image's scale around the centre; the
-     round joins soften the corners as the mark's are. -->
+     hexagon around the H of two half-hexagons, at the image's own scale
+     around the centre. Round-joined strokes soften the corners as the mark's
+     are. One colour, as themed and status-bar icons need: the hexagon with the H cut out of it. -->
 <vector xmlns:android="http://schemas.android.com/apk/res/android"
     android:width="24dp" android:height="24dp"
     android:viewportWidth="24" android:viewportHeight="24">
-    <group android:translateX="12" android:translateY="12" android:scaleX="0.017" android:scaleY="0.017">
-        <path android:pathData="M0,-660 L571.6,-330 L571.6,330 L0,660 L-571.6,330 L-571.6,-330 Z" android:strokeColor="#FFFFFFFF"
-            android:strokeWidth="58" android:strokeLineJoin="round" />
-        <path android:pathData="M-170,-420 L-170,-98 L0,-190 L170,-98 L170,-420 L449,-259 L449,259 L170,420 L170,98 L0,190 L-170,98 L-170,420 L-449,259 L-449,-259 Z" android:fillColor="#FFFFFFFF"
-            android:strokeColor="#FFFFFFFF" android:strokeWidth="40" android:strokeLineJoin="round" />
+    <group android:translateX="12" android:translateY="12" android:scaleX="0.0175" android:scaleY="0.0175">
+        <path android:pathData="M0,-640 L554.3,-320 L554.3,320 L0,640 L-554.3,320 L-554.3,-320 Z M-170,-420 L-170,-98 L0,-190 L170,-98 L170,-420 L449,-259 L449,259 L170,420 L170,98 L0,190 L-170,98 L-170,420 L-449,259 L-449,-259 Z" android:fillColor="#FFFFFFFF" android:fillType="evenOdd" />
+        <path android:pathData="M0,-640 L554.3,-320 L554.3,320 L0,640 L-554.3,320 L-554.3,-320 Z" android:strokeColor="#FFFFFFFF" android:strokeWidth="70" android:strokeLineJoin="round" />
     </group>
 </vector>
