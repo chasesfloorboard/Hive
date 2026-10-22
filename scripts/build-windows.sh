@@ -78,7 +78,9 @@ bsdtar -xf "$PY_ZIP" -C "$STAGE/python-runtime"
 echo "== Clean source export"
 SRC="$WORK/app-src"
 rm -rf "$SRC"; mkdir -p "$SRC"
-(cd "$ROOT" && git ls-files -z --cached --others --exclude-standard | grep -zv -e '__pycache__/' -e '\.pyc$' \
+# Committed files only: anything else in the checkout (personal files, test
+# data) must never ship. The Android app's source (mobile/) isn't part of it.
+(cd "$ROOT" && git ls-files -z --cached | grep -zv -e '__pycache__/' -e '\.pyc$' -e '^mobile/' \
   | while IFS= read -r -d '' f; do [ -e "$f" ] && printf '%s\0' "$f"; done \
   | tar --null -T - -cf -) | tar -xf - -C "$SRC"
 # Production dependencies only, no install scripts: nothing Hive ships needs a
