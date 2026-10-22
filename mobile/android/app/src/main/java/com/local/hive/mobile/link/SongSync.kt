@@ -193,9 +193,6 @@ class SongSync(
         val announced = store.announcedDeleted
         val fresh = (found.fromPc + found.fromPhone).filter { it.key !in announced }
         if (fresh.isEmpty()) return
-        // Many "deletions" at once look like a library that couldn't be read, not a person deleting
-        // songs: they're listed in Settings, never announced.
-        if (fresh.size > MAX_ANNOUNCED_DELETIONS) return
         store.announcedDeleted = announced + fresh.map { it.key }
         announce(found)
     }
@@ -218,14 +215,33 @@ class SongSync(
             d.fromPc.size.takeIf { it > 0 }?.let { "${songs(it)} deleted on your PC" },
             d.fromPhone.size.takeIf { it > 0 }?.let { "${songs(it)} deleted on this phone" },
         ).joinToString(" · ")
+        // Many "deletions" at once more likely mean a library that couldn't be read than a person
+        // deleting songs: still announced, with a warning to look before deleting anything.
+        val unusual = d.count > UNUSUAL_DELETIONS
         val notification = NotificationCompat.Builder(context, DELETIONS_CHANNEL)
             .setSmallIcon(com.local.hive.mobile.R.drawable.ic_stat_hive)
-            .setContentTitle("Delete them on the other side too?")
+            .setContentTitle(if (unusual) "Check these before deleting anything" else "Delete them on the other side too?")
             .setContentText(text)
+            .setStyle(NotificationCompat.BigTextStyle().bigText(text + if (unusual) "\nThat's a lot at once: a library that couldn't be read looks like this too. Nothing is deleted unless you choose it." else "\nNothing is deleted unless you choose it."))
             .setContentIntent(open)
             .setAutoCancel(true)
             .build()
         runCatching { nm.notify(DELETIONS_NOTIFICATION_ID, notification) }
+    }
+
+    /** Says what was just deleted, and where: every deletion gets a notification, whoever asked for it. */
+    fun announceDeleted(songs: List<GoneSong>, where: String) {
+        if (songs.isEmpty()) return
+        val nm = context.getSystemService(NotificationManager::class.java)
+        val names = songs.take(5).joinToString(", ") { "${it.title} — ${it.artist}".trimEnd(' ', '—') } + if (songs.size > 5) " and ${songs.size - 5} more" else ""
+        val notification = NotificationCompat.Builder(context, DELETIONS_CHANNEL)
+            .setSmallIcon(com.local.hive.mobile.R.drawable.ic_stat_hive)
+            .setContentTitle((if (songs.size == 1) "1 song" else "${songs.size} songs") + " deleted $where")
+            .setContentText(names)
+            .setStyle(NotificationCompat.BigTextStyle().bigText(names))
+            .setAutoCancel(true)
+            .build()
+        runCatching { nm.notify(DELETED_NOTIFICATION_ID, notification) }
     }
 
     /** Copy these back to the side they were deleted on, so both sides match again. */
@@ -245,12 +261,14 @@ class SongSync(
     suspend fun deleteOnPc(songs: List<GoneSong>): Int {
         val conn = sync.pcConnection() ?: throw IOException("Can't reach Hive on the PC. Is it open?")
         val deleted = client.deleteSongs(conn, songs.mapNotNull { it.pc?.id }).toSet()
-        drop(songs.filter { it.pc?.id in deleted })
+        val gone = songs.filter { it.pc?.id in deleted }
+        drop(gone)
+        announceDeleted(gone, "on your PC (in its Trash)")
         return deleted.size
     }
 
     /** These were deleted from this phone (after Android asked the user). */
-    fun deletedOnPhone(songs: List<GoneSong>) = drop(songs)
+    fun deletedOnPhone(songs: List<GoneSong>) { drop(songs); announceDeleted(songs, "from this phone") }
 
     private fun drop(songs: List<GoneSong>) {
         val keys = songs.map { it.key }.toSet()
@@ -370,7 +388,8 @@ class SongSync(
         private const val WORK = "hive-song-sync"
         private const val DELETIONS_CHANNEL = "hive-song-deletions"
         private const val DELETIONS_NOTIFICATION_ID = 4712
-        private const val MAX_ANNOUNCED_DELETIONS = 40
+        private const val UNUSUAL_DELETIONS = 40
+        private const val DELETED_NOTIFICATION_ID = 4713
 
         /** Runs song sync in the background on Wi-Fi (or any unmetered network). */
         fun schedule(context: Context) {
