@@ -310,8 +310,9 @@ fun PlayerSheet(
         if (to != null && p > 0f) {
             val eased = Motion.SineInOut80.transform(p)
             val r = androidx.compose.ui.geometry.lerp(from, to, eased)
+            val frame = rotatingCover(now.artworkUri, now.trackId)
             Artwork(
-                now.artworkUri,
+                frame.current,
                 Modifier
                     .offset { IntOffset((r.left + swipe.value * p).roundToInt(), r.top.roundToInt()) }
                     .requiredSize(with(density) { r.width.toDp() }, with(density) { r.height.toDp() })
@@ -320,6 +321,7 @@ fun PlayerSheet(
                 if (now.isLive) Icons.Rounded.Radio else Icons.Rounded.MusicNote,
                 glow = aura?.primary ?: c.accentGlow,
                 elevation = lerpDp(0.dp, 36.dp, eased),
+                replacing = frame.previous,
             )
         }
     }
@@ -399,8 +401,9 @@ private fun Playbar(vm: MainViewModel, now: NowPlaying, showArt: Boolean, modifi
                     .graphicsLayer { translationX = shift.value; alpha = 1f - (abs(shift.value) / size.width).coerceIn(0f, 1f) },
                 verticalAlignment = Alignment.CenterVertically,
             ) {
+                val barFrame = rotatingCover(now.artworkUri, now.trackId)
                 Crossfade(now.artworkUri, animationSpec = Motion.swap(), modifier = Modifier.alpha(if (showArt) 1f else 0f), label = "barArt") { art ->
-                    Artwork(art, Modifier.size(MiniArt), RoundedCornerShape(8.dp), if (now.isLive) Icons.Rounded.Radio else Icons.Rounded.MusicNote)
+                    Artwork(if (art == now.artworkUri) barFrame.current else art, Modifier.size(MiniArt), RoundedCornerShape(8.dp), if (now.isLive) Icons.Rounded.Radio else Icons.Rounded.MusicNote, replacing = barFrame.previous)
                 }
                 Crossfade(now.title to now.artist, animationSpec = Motion.swap(), modifier = Modifier.weight(1f), label = "barText") { (title, artist) ->
                     Column(Modifier.padding(horizontal = 12.dp), verticalArrangement = Arrangement.spacedBy(1.dp)) {
@@ -814,7 +817,9 @@ private fun QueueList(vm: MainViewModel, modifier: Modifier) {
                         Box(Modifier.size(6.dp).clip(CircleShape).background(if (playing) c.accent else Color.Transparent))
                         Spacer(Modifier.width(8.dp))
                         Box(contentAlignment = Alignment.Center) {
-                            Artwork(t.artworkUri, Modifier.size(40.dp).then(if (playing) Modifier.border(1.dp, c.accentSoft, HiveShape.thumb) else Modifier))
+                            // The playing song's row turns with the player's cover, as Hive's queue does on the PC.
+                            val frame = if (playing) rotatingCover(t.artworkUri, t.trackId) else CoverFrame(t.artworkUri, null)
+                            Artwork(frame.current, Modifier.size(40.dp).then(if (playing) Modifier.border(1.dp, c.accentSoft, HiveShape.thumb) else Modifier), replacing = frame.previous)
                             if (isPicked) Box(Modifier.size(40.dp).clip(HiveShape.thumb).background(c.accent.copy(alpha = 0.85f)), contentAlignment = Alignment.Center) {
                                 Icon(Icons.Rounded.Check, "Picked", tint = readableOn(c.accent), modifier = Modifier.size(20.dp))
                             }

@@ -105,13 +105,15 @@ fun LockPlayer(vm: MainViewModel, onUnlock: () -> Unit) {
                 if (lyrics) {
                     LyricsBody(vm, Modifier.fillMaxSize().clip(HiveShape.art).background(c.bg.copy(alpha = 0.35f)), onTap = { showLyrics = false }, compact = true)
                 } else Box(Modifier.fillMaxSize(), contentAlignment = Alignment.Center) {
+                    val frame = rotatingCover(now.artworkUri, now.trackId)
                     Artwork(
-                        now.artworkUri,
+                        frame.current,
                         Modifier.fillMaxWidth(0.95f).aspectRatio(1f)
                             .songSwipe(swipe, scope, onNext = { vm.player.next() }, onPrevious = { vm.player.previous() })
                             .pointerInput(Unit) { detectTapGestures { showLyrics = true } }
                             .graphicsLayer { translationX = swipe.value; alpha = 1f - (abs(swipe.value) / size.width).coerceIn(0f, 0.9f) },
                         HiveShape.art, Icons.Rounded.MusicNote, glow = aura?.primary ?: c.accentGlow, elevation = 34.dp,
+                        replacing = frame.previous,
                     )
                 }
             }

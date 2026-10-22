@@ -127,6 +127,8 @@ fun Artwork(
     fallback: ImageVector = Icons.Rounded.MusicNote,
     glow: Color? = null,
     elevation: Dp = 0.dp,
+    /** The picture this one replaces (a cover carousel's last frame): it stays up and fades into this one. */
+    replacing: Any? = null,
 ) {
     val c = Hive.colors
     val shadowed = if (elevation > 0.dp) modifier.shadow(elevation, shape, ambientColor = glow ?: Color.Black, spotColor = glow ?: Color.Black) else modifier
@@ -134,10 +136,11 @@ fun Artwork(
     // A cover already on screen at another size stands in while this size loads, so it never blinks;
     // the sharpest copy drawn so far, never a list row's thumbnail once a bigger one was shown.
     val request = remember(model) {
-        val standIn = model?.toString()?.let { ShownCovers[it]?.first }
+        val own = model?.toString()?.let { ShownCovers[it]?.first }
+        val standIn = own ?: replacing?.toString()?.let { ShownCovers[it]?.first }
         coil3.request.ImageRequest.Builder(context).data(model).placeholderMemoryCacheKey(standIn)
-            // Only a cover that wasn't standing in fades up.
-            .crossfade(if (standIn != null) 0 else 260).build()
+            // Only a cover that wasn't standing in fades up; a carousel frame fades over the last one.
+            .crossfade(when { own != null -> 0; standIn != null -> 600; else -> 260 }).build()
     }
     // AsyncImage, not SubcomposeAsyncImage: a subcomposition per row made every
     // list row costly to compose while scrolling.
@@ -158,6 +161,35 @@ fun Artwork(
             onError = { shown = false },
         )
     }
+}
+
+/** A cover carousel's frame: what to draw now, and the frame it replaces (to fade from). */
+data class CoverFrame(val current: Any?, val previous: Any?)
+
+/** How long each picture of a song shows in the cover carousel, as on the PC. */
+const val COVER_ROTATE_MS = 4_000L
+
+/**
+ * Hive's cover carousel: a song with several distinct pictures embedded
+ * (a back cover, an alternate) cycles through them every 4 seconds, as on
+ * the PC. Every surface keys off the same wall-clock tick, so the player,
+ * the bar and the album page change together. Other songs show [base].
+ */
+@Composable
+fun rotatingCover(base: Any?, trackId: Long?): CoverFrame {
+    val context = androidx.compose.ui.platform.LocalContext.current
+    val pictures by androidx.compose.runtime.produceState(emptyList<java.io.File>(), trackId) {
+        value = trackId?.let { com.local.hive.mobile.data.EmbeddedPictures.forTrack(context, it) }.orEmpty()
+    }
+    if (pictures.size < 2) return CoverFrame(base, null)
+    val tick by androidx.compose.runtime.produceState(System.currentTimeMillis() / COVER_ROTATE_MS, pictures) {
+        while (true) {
+            kotlinx.coroutines.delay(COVER_ROTATE_MS - System.currentTimeMillis() % COVER_ROTATE_MS)
+            value = System.currentTimeMillis() / COVER_ROTATE_MS
+        }
+    }
+    val n = pictures.size
+    return CoverFrame(pictures[(tick % n).toInt()], pictures[((tick - 1) % n + n).toInt() % n])
 }
 
 /** The sharpest memory-cache entry each cover has been drawn from, with its size in pixels. */
