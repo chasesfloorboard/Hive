@@ -26,6 +26,8 @@ WORK="${HIVE_WIN_WORK:-$ROOT/build/windows}"
 ZIG_VERSION=0.16.0
 PYTHON_VERSION=3.13.15
 ELECTRON_BUILDER=electron-builder@26.15.3
+# Hive 2.0's sound tools: the equaliser (equalizer-nbands), balance
+# (audiopanorama, in audiofx) and tempo/pitch (pitch, in soundtouch).
 # Playback (playbin, volume, spectrum, format/rate conversion), Windows output
 # (WASAPI via autoaudiosink), and decoders: MP3, FLAC, Ogg Vorbis/Opus,
 # WavPack, WAV, AIFF, MP4/M4A AAC, Matroska, WMA/ASF, Musepack, Speex, plus
@@ -33,7 +35,8 @@ ELECTRON_BUILDER=electron-builder@26.15.3
 # Linux build gets from the system (covers every extension in main.js AUDIO_EXTS).
 PLUGINS=(coreelements playback typefindfunctions audioconvert audioresample volume spectrum
   autodetect wasapi wasapi2 audioparsers id3demux apetag flac mpg123 ogg vorbis opus
-  wavpack wavparse isomp4 fdkaac aiff matroska asf musepack speex libav)
+  wavpack wavparse isomp4 fdkaac aiff matroska asf musepack speex libav
+  equalizer audiofx soundtouch)
 # Command-line tools Hive runs, which Linux has installed system-wide: ffmpeg
 # (pre-play integrity check, corrupt-file repair, downloaded cover art) and
 # metaflac (FLAC Love verification). main.js puts GStreamer/bin on PATH.

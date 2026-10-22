@@ -42,7 +42,21 @@ function safeSegment(text, fallback = 'Unknown') {
   s = s.replace(/[. ]+$/, '');
   if (s === '.' || s === '..') s = '';
   if (s.length > 120) s = s.slice(0, 120).trim();
-  return s || fallback;
+  return notReserved(s) || fallback;
+}
+
+// Windows refuses these names as files or folders, with or without an extension.
+const RESERVED = /^(con|prn|aux|nul|com[1-9]|lpt[1-9])(\..*)?$/i;
+function notReserved(s) { return RESERVED.test(s) ? `${s}_` : s; }
+
+// One file or folder name that works on Windows, exFAT and Linux alike, keeping
+// as much of the text as it can: ":" becomes " - ", other forbidden characters
+// "_"; no leading dot, no trailing dots or spaces, no reserved device name.
+// Used for downloads and for songs received from the phone.
+function safeName(text, fallback = 'Untitled') {
+  let s = String(text ?? '').replace(/\s*:\s*/g, ' - ').replace(/[\\/*?"<>|\u0000-\u001f]/g, '_').replace(/\s+/g, ' ').trim();
+  s = s.replace(/^[. ]+/, '').slice(0, 120).replace(/[. ]+$/, '');
+  return notReserved(s) || fallback;
 }
 
 function fieldValue(track, name) {
@@ -148,7 +162,7 @@ function planOrganise(tracks, { root, template = DEFAULT_TEMPLATE, exists = () =
   return moves;
 }
 
-const api = { DEFAULT_TEMPLATE, targetRelativePath, planOrganise, safeSegment, evaluate };
+const api = { DEFAULT_TEMPLATE, targetRelativePath, planOrganise, safeSegment, safeName, evaluate };
 if (typeof module === 'object' && module.exports) module.exports = api;
 else if (typeof window !== 'undefined') window.HiveTemplates = api;
 })();

@@ -10,17 +10,23 @@ const os = require('os');
 const path = require('path');
 
 function findAdb() {
+  // Windows: adb.exe, where Android Studio puts the SDK (%LOCALAPPDATA%\Android\Sdk) or a platform-tools folder on PATH.
+  const windows = process.platform === 'win32';
+  const adb = windows ? 'adb.exe' : 'adb';
+  const onPath = String(process.env.PATH || '').split(path.delimiter).filter(Boolean).map(dir => path.join(dir, adb));
   const candidates = [
-    process.env.ANDROID_HOME && path.join(process.env.ANDROID_HOME, 'platform-tools', 'adb'),
-    process.env.ANDROID_SDK_ROOT && path.join(process.env.ANDROID_SDK_ROOT, 'platform-tools', 'adb'),
-    path.join(os.homedir(), 'Android', 'Sdk', 'platform-tools', 'adb'),
-    '/usr/bin/adb', '/usr/local/bin/adb', '/opt/android-sdk/platform-tools/adb',
+    process.env.ANDROID_HOME && path.join(process.env.ANDROID_HOME, 'platform-tools', adb),
+    process.env.ANDROID_SDK_ROOT && path.join(process.env.ANDROID_SDK_ROOT, 'platform-tools', adb),
+    windows && process.env.LOCALAPPDATA && path.join(process.env.LOCALAPPDATA, 'Android', 'Sdk', 'platform-tools', adb),
+    path.join(os.homedir(), 'Android', 'Sdk', 'platform-tools', adb),
+    ...(windows ? [] : ['/usr/bin/adb', '/usr/local/bin/adb', '/opt/android-sdk/platform-tools/adb']),
+    ...onPath,
   ].filter(Boolean);
   return candidates.find(p => { try { fs.accessSync(p, fs.constants.X_OK); return true; } catch { return false; } }) || null;
 }
 
 function run(adb, args, timeout = 8000) {
-  return new Promise(resolve => execFile(adb, args, { timeout }, (err, stdout) => resolve(err ? null : String(stdout || ''))));
+  return new Promise(resolve => execFile(adb, args, { timeout, windowsHide: true }, (err, stdout) => resolve(err ? null : String(stdout || ''))));
 }
 
 /** Phones attached and authorized, by serial. */

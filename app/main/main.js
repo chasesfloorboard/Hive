@@ -51,7 +51,7 @@ const { planOrganise, DEFAULT_TEMPLATE: ORGANISE_DEFAULT_TEMPLATE } = require('.
 const ReplayGainAnalyser = require('./replaygain-analyser');
 const FileConverter = require('./file-converter');
 const MusicBeeSkins = require('./musicbee-skins');
-const { targetRelativePath: organiserRelativePath } = require('./file-organiser');
+const { targetRelativePath: organiserRelativePath, safeName: organiserSafeName } = require('./file-organiser');
 const { parseMusicBeeLibrary, parseMusicBeePlaylist, parseMusicBeeAutoPlaylist, buildMusicBeeImportPlan, createTrackMatcher, parseMusicBeeSettings, mapMusicBeeSettings } = require('./musicbee-library');
 const { selectPreferredLyrics, lyricsSearchTitle } = require('./lyrics-provider');
 const { autoUpdater } = require('electron-updater');
@@ -2030,7 +2030,7 @@ ipcMain.handle('ytmusic:download', async (_evt, track = {}) => {
   const config = await readJsonSafe(CONFIG_PATH(), { folders: [] });
   const folder = (Array.isArray(config.folders) ? config.folders : []).map(resolveConfiguredFolder).find(f => f && fs.existsSync(f));
   if (!folder) throw new Error('Add a music folder in Settings → Library first.');
-  const clean = (v, fallback) => (String(v || '').replace(/\s*:\s*/g, ' - ').replace(/[\\/*?"<>|\x00-\x1f]/g, '_').replace(/\s+/g, ' ').trim().replace(/^\.+/, '').slice(0, 120) || fallback);
+  const clean = (v, fallback) => organiserSafeName(v, fallback);
   const artist = clean(track.albumArtist || String(track.artist || '').split(/,|&| feat\.? /i)[0], 'Unknown Artist');
   const album = clean(track.album, 'Unknown Album');
   const n = Number(track.track) || 0;
@@ -4130,7 +4130,7 @@ const METADATA_SCAN_VERSION = 2;
 // Records created by the Uint8Array artwork fix need one bounded artwork
 // hydration pass when their cached cover reference is absent. Records with a
 // valid hashed cover reference remain incremental and are not reparsed.
-const ARTWORK_SCAN_VERSION = 1;
+const ARTWORK_SCAN_VERSION = 2;
 
 function isFavoriteLoveValue(value) {
   const v = String(value ?? '').trim().toUpperCase();
@@ -4770,7 +4770,9 @@ ipcMain.handle('library:scan', async (evt, options = {}) => {
     if (!info) continue;
     const old = oldByPath.get(info.path);
     const hasArtworkReference = !!old?.cover || (Array.isArray(old?.covers) && old.covers.some(item => item?.file));
-    const artworkNeedsRepair = !hasArtworkReference && Number(old?.artworkScanVersion || 0) < ARTWORK_SCAN_VERSION;
+    // Version 2: WMA covers were misread (music-metadata 11, see asf-pictures.js), so WMA files
+    // are read again once even when they have a cover reference -- it points at a broken image.
+    const artworkNeedsRepair = (!hasArtworkReference || /\.(wma|asf)$/i.test(info.path)) && Number(old?.artworkScanVersion || 0) < ARTWORK_SCAN_VERSION;
     const same = !forceFull && !artworkNeedsRepair && old && Number(old.fileMtimeMs || 0) === info.mtimeMs && Number(old.fileCtimeMs || 0) === info.ctimeMs && Number(old.fileSize || 0) === info.size && Number(old.metadataScanVersion || 0) >= METADATA_SCAN_VERSION;
     if (same) unchanged.push({ ...old, fileMtimeMs: info.mtimeMs, fileCtimeMs: info.ctimeMs, fileSize: info.size, artworkScanVersion: ARTWORK_SCAN_VERSION });
     else changed.push(info);
@@ -8030,7 +8032,7 @@ async function hiveLinkSongTarget(meta = {}) {
   const config = await readJsonSafe(CONFIG_PATH(), { folders: [] });
   const folder = (Array.isArray(config.folders) ? config.folders : []).map(resolveConfiguredFolder).find(f => f && fs.existsSync(f));
   if (!folder) throw new Error('Add a music folder in Hive (Settings → Library) first.');
-  const clean = (v, fallback) => (String(v || '').replace(/\s*:\s*/g, ' - ').replace(/[\\/*?"<>|\x00-\x1f]/g, '_').replace(/\s+/g, ' ').trim().replace(/^\.+/, '').slice(0, 120) || fallback);
+  const clean = (v, fallback) => organiserSafeName(v, fallback);
   const artist = clean(meta.albumArtist || String(meta.artist || '').split(/,|&| feat\.? /i)[0], 'Unknown Artist');
   const album = clean(meta.album, 'Unknown Album');
   const n = Number(meta.track) || 0;
@@ -8043,6 +8045,9 @@ function startHiveLink() {
   if (hiveLink) return;
   hiveLink = createHiveLink({
     dataDir: USER_DATA(),
+    // HIVE_LINK_PORT runs a test copy beside a real Hive (as HIVE_DATA_ROOT does for its data);
+    // discovery takes the next port.
+    ...(Number(process.env.HIVE_LINK_PORT) > 0 ? { port: Number(process.env.HIVE_LINK_PORT), discoveryPort: Number(process.env.HIVE_LINK_PORT) + 1 } : {}),
     getTracks: async () => ((await libraryCacheStore.get()) || {}).tracks || [],
     // A phone Love goes through the heart button's own path, then the open
     // window is told, the same way the metadata job queue reports Love.
@@ -8224,7 +8229,9 @@ async function readLoveStateFromDisk(trackPath) {
     const meta = await (await ensureMM()).parseFile(filePath, { duration: false, skipCovers: true });
     for (const tagList of Object.values(meta.native || {})) {
       for (const tag of (Array.isArray(tagList) ? tagList : [])) {
-        const desc = String(tag?.value?.description || '').trim().toUpperCase();
+        // ID3 keeps the field's name in a TXXX description; Vorbis comments (Ogg, Opus)
+        // and WMA keep it as the tag's own name, with the value as plain text.
+        const desc = String(tag?.value?.description || tag?.id || '').trim().toUpperCase();
         if (!isBeehiveLoveFieldName(desc)) continue;
         const value = String(tag?.value?.text ?? tag?.value ?? '').trim().toUpperCase();
         if (isFavoriteLoveValue(value)) return true;

@@ -10,6 +10,7 @@ const { readWavMusicBeeTags: readSharedWavMusicBeeTags } = require('../main/wav-
 const { readMp3MusicBeeLove: readSharedMp3MusicBeeLove } = require('../main/musicbee-love');
 const { readLovedFromNativeTags } = require('../main/hive-love');
 const { readMp4MoovBytes } = require('../main/mp4-atoms');
+const { readAsfPictures } = require('../main/asf-pictures');
 
 let mm;
 let metadataLib;
@@ -592,7 +593,10 @@ async function parseTrack(filePath, coversDir) {
   }
   const common = meta.common || {}, format = meta.format || {}, native = meta.native || {};
   let covers = [];
-  try { covers = await extractAndCacheCovers(common.picture,coversDir); } catch { covers = []; }
+  // WMA pictures are read from the ASF header directly: music-metadata 11 misreads them (see asf-pictures.js).
+  let pictures = common.picture;
+  if (/\.(wma|asf)$/i.test(filePath)) { try { pictures = await readAsfPictures(filePath); } catch {} }
+  try { covers = await extractAndCacheCovers(pictures,coversDir); } catch { covers = []; }
 
   let loved = false, rating = 0, ratingRaw = 0;
   // Beehive rating authority: only the exact fields Beehive writes are

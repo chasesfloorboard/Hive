@@ -36,3 +36,14 @@ test('plan never targets an existing file that is not itself moving', () => {
   const moves = planOrganise([{ ...track, path: '/music/a.mp3' }], { root: '/music', template: '<Title>', exists: p => p === path.resolve('/music/Pump Up the Jam.mp3') });
   assert.equal(rel(path.relative('/music', moves[0].to)), 'Pump Up the Jam (2).mp3');
 });
+
+test('names work on Windows: no forbidden characters, trailing dots or reserved device names', () => {
+  const { safeName, safeSegment } = require('../app/main/file-organiser');
+  assert.equal(safeName('Knxwledge.'), 'Knxwledge');
+  assert.equal(safeName('AC/DC: Live?'), 'AC_DC - Live_');
+  assert.equal(safeName('CON'), 'CON_');
+  assert.equal(safeName('nul.txt'), 'nul.txt_');
+  assert.equal(safeName('  '), 'Untitled');
+  assert.equal(safeSegment('com1'), 'com1_');
+  assert.equal(safeSegment('Knxwledge.'), 'Knxwledge');
+});

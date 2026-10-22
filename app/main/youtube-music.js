@@ -90,28 +90,35 @@ function create({ userDataDir, net }) {
   let mbChain = Promise.resolve();
   let mbLast = 0;
 
+  // Windows runs yt-dlp.exe (its own standalone build); Linux the yt-dlp zipapp.
+  const WINDOWS = process.platform === 'win32';
+  const YTDLP = WINDOWS ? 'yt-dlp.exe' : 'yt-dlp';
+
   function ytDlpPath() {
     const candidates = [
       process.env.HIVE_YTDLP,
-      path.join(userDataDir, 'bin', 'yt-dlp'),
-      path.join(process.env.HOME || '', '.local', 'bin', 'yt-dlp'),
-      '/usr/local/bin/yt-dlp', '/usr/bin/yt-dlp'
+      path.join(userDataDir, 'bin', YTDLP),
+      ...(WINDOWS ? [] : [path.join(process.env.HOME || '', '.local', 'bin', 'yt-dlp'), '/usr/local/bin/yt-dlp', '/usr/bin/yt-dlp'])
     ].filter(Boolean);
     return candidates.find(p => { try { fs.accessSync(p, fs.constants.X_OK); return true; } catch { return false; } }) || '';
   }
 
-  // yt-dlp needs a JavaScript runtime for YouTube; Node is always present
-  // with Hive's toolchain, deno is used when installed.
+  // yt-dlp needs a JavaScript runtime for YouTube. deno is used when installed;
+  // otherwise Hive's own Electron runs as Node (ELECTRON_RUN_AS_NODE), so it works
+  // on machines without Node.js too -- most Windows ones.
   function runtimeArgs() {
-    const hasDeno = ['/usr/bin/deno', path.join(process.env.HOME || '', '.deno', 'bin', 'deno')].some(p => fs.existsSync(p));
-    return hasDeno ? [] : ['--js-runtimes', 'node'];
+    const home = process.env.HOME || process.env.USERPROFILE || '';
+    const hasDeno = [WINDOWS ? '' : '/usr/bin/deno', path.join(home, '.deno', 'bin', WINDOWS ? 'deno.exe' : 'deno')].some(p => p && fs.existsSync(p));
+    if (hasDeno) return [];
+    return ['--js-runtimes', process.versions.electron ? `node:${process.execPath}` : 'node'];
   }
+  const runtimeEnv = () => (process.versions.electron ? { ...process.env, ELECTRON_RUN_AS_NODE: '1' } : process.env);
 
   function ytDlp(args, timeoutMs = 45000) {
     const bin = ytDlpPath();
     if (!bin) return Promise.reject(Object.assign(new Error('yt-dlp is not installed. Hive needs it to stream from YouTube Music (Settings → Connections → YouTube Music → Install).'), { code: 'NO_YTDLP' }));
     return new Promise((resolve, reject) => {
-      execFile(bin, [...runtimeArgs(), '--no-warnings', '--no-playlist', ...args], { timeout: timeoutMs, maxBuffer: 32 * 1024 * 1024 }, (err, stdout, stderr) => {
+      execFile(bin, [...runtimeArgs(), '--no-warnings', '--no-playlist', ...args], { timeout: timeoutMs, maxBuffer: 32 * 1024 * 1024, env: runtimeEnv(), windowsHide: true }, (err, stdout, stderr) => {
         if (err) return reject(new Error(String(stderr || err.message).trim().split('\n').pop() || 'yt-dlp failed'));
         resolve(stdout);
       });
@@ -121,9 +128,9 @@ function create({ userDataDir, net }) {
   async function installYtDlp() {
     const dir = path.join(userDataDir, 'bin');
     await fsp.mkdir(dir, { recursive: true });
-    const res = await net.fetch('https://github.com/yt-dlp/yt-dlp/releases/latest/download/yt-dlp', { headers: { 'User-Agent': 'Hive/2.0' } });
+    const res = await net.fetch(`https://github.com/yt-dlp/yt-dlp/releases/latest/download/${YTDLP}`, { headers: { 'User-Agent': 'Hive/2.0' } });
     if (!res.ok) throw new Error(`Download failed (${res.status})`);
-    const target = path.join(dir, 'yt-dlp');
+    const target = path.join(dir, YTDLP);
     await fsp.writeFile(`${target}.tmp`, Buffer.from(await res.arrayBuffer()), { mode: 0o755 });
     await fsp.rename(`${target}.tmp`, target);
     return status();

@@ -1332,7 +1332,10 @@ def write_love(path, loved):
     if f.tags is None: raise RuntimeError(f'No writable metadata container for {ext}')
     aliases=('LOVE RATING','LOVE','LOVERATING','MUSICBEE/LOVE RATING','MUSICBEE/LOVERATING','MUSICBEE LOVE RATING')
     for key in list(f.tags.keys()):
-        if str(key).strip().upper() in aliases: f.tags.pop(key,None)
+        # Vorbis comments and ASF tags take no default in pop(): delete instead.
+        if str(key).strip().upper() in aliases:
+            try: del f.tags[key]
+            except KeyError: pass
     if loved: f.tags['LOVE RATING']='L'
     f.save()
 
