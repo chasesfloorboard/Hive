@@ -13,6 +13,7 @@ import androidx.activity.viewModels
 import androidx.core.content.ContextCompat
 import com.local.hive.mobile.ui.HiveRoot
 import com.local.hive.mobile.ui.MainViewModel
+import kotlinx.coroutines.launch
 
 class MainActivity : ComponentActivity() {
     private val vm: MainViewModel by viewModels()
@@ -33,6 +34,7 @@ class MainActivity : ComponentActivity() {
         )
         (application as HiveApp).player.connect()
         val openPlayer = intent?.getBooleanExtra(EXTRA_OPEN_PLAYER, false) == true
+        if (intent?.getBooleanExtra(EXTRA_OPEN_DELETIONS, false) == true) vm.openDeletions.value = true
         setContent { HiveRoot(vm, openPlayer) }
 
         val wanted = buildList {
@@ -41,14 +43,27 @@ class MainActivity : ComponentActivity() {
         }
         val missing = wanted.filter { ContextCompat.checkSelfPermission(this, it) != PackageManager.PERMISSION_GRANTED }
         if (missing.isNotEmpty()) permissions.launch(missing.toTypedArray())
+        handleSpotifyReturn(intent)
     }
 
     override fun onNewIntent(intent: Intent) {
         super.onNewIntent(intent)
         setIntent(intent)
+        if (intent.getBooleanExtra(EXTRA_OPEN_DELETIONS, false)) vm.openDeletions.value = true
+        handleSpotifyReturn(intent)
+    }
+
+    private fun handleSpotifyReturn(intent: Intent?) {
+        val data = intent?.data ?: return
+        if (data.scheme == "hive-mobile" && data.host == "spotify-auth") {
+            val app = application as HiveApp
+            app.scope.launch { app.spotifyAccount.complete(data) }
+        }
     }
 
     companion object {
         const val EXTRA_OPEN_PLAYER = "open_player"
+        /** Opens the deleted-songs choice (from its notification). */
+        const val EXTRA_OPEN_DELETIONS = "open_deletions"
     }
 }

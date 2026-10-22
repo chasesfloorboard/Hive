@@ -1,0 +1,6 @@
+{
+  "format": "hive-theme",
+  "version": 1,
+  "name": "Dark",
+  "css": ":root {\n  --bg: #090a0d;\n  --panel: rgba(19,20,25,.72);\n  --panel-strong: rgba(15,16,21,.88);\n  --border: rgba(255,255,255,.09);\n  --text: #f0eff3;\n  --text-dim: #a3a1ad;\n  --text-dimmer: #6e6c77;\n  --accent: #b9bac2;\n  --accent-soft: rgba(205,207,220,.35);\n  --accent-glow: rgba(190,195,215,.24);\n  --ambient-a: rgba(110,115,145,.18);\n  --ambient-b: rgba(55,65,95,.15);\n  --radius: 14px;\n  --blur: 24px;\n}\n"
+}

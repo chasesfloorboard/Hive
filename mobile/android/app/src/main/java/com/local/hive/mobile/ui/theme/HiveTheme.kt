@@ -1,6 +1,7 @@
 package com.local.hive.mobile.ui.theme
 
 import android.content.Context
+import androidx.compose.ui.graphics.luminance
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.darkColorScheme
 import androidx.compose.runtime.Composable
@@ -62,7 +63,7 @@ data class HiveColors(
             val vars = ThemeCss.rootVariables(css)
             fun c(name: String, fallback: Color) = vars[name]?.let { ThemeCss.parseColor(it, vars) } ?: fallback
             fun d(name: String, fallback: Dp) = vars[name]?.let { ThemeCss.parsePx(it) }?.dp ?: fallback
-            return HiveColors(
+            return readable(HiveColors(
                 bg = c("bg", base.bg),
                 panel = c("panel", base.panel),
                 panelStrong = c("panel-strong", base.panelStrong),
@@ -77,20 +78,45 @@ data class HiveColors(
                 ambientB = c("ambient-b", base.ambientB),
                 radius = d("radius", base.radius),
                 blur = d("blur", base.blur),
-            )
+            ))
+        }
+
+        /**
+         * A theme's text made readable on its own background: text at least
+         * 4.5:1 (WCAG body text), dim text 3:1, dimmest 2:1, the accent 3:1 (it's
+         * used for text and icons too). Colours that already pass are left alone;
+         * the others move toward white on dark themes or black on light ones,
+         * just far enough. (MusicBee skins especially set text near their background.)
+         */
+        fun readable(t: HiveColors): HiveColors = t.copy(
+            text = contrasted(t.text, t.bg, 4.5f),
+            textDim = contrasted(t.textDim, t.bg, 3f),
+            textDimmer = contrasted(t.textDimmer, t.bg, 2f),
+            accent = contrasted(t.accent, t.bg, 3f),
+        )
+
+        fun contrast(a: Color, b: Color): Float {
+            val la = a.luminance(); val lb = b.luminance()
+            return (maxOf(la, lb) + 0.05f) / (minOf(la, lb) + 0.05f)
+        }
+
+        fun contrasted(fg: Color, bg: Color, min: Float): Color {
+            val solid = fg.copy(alpha = 1f)
+            if (contrast(solid, bg) >= min) return fg
+            val toward = if (bg.luminance() > 0.4f) Color.Black else Color.White
+            var step = 0.05f
+            while (step <= 1f) {
+                val c = androidx.compose.ui.graphics.lerp(solid, toward, step)
+                if (contrast(c, bg) >= min) return c.copy(alpha = fg.alpha.coerceAtLeast(0.9f))
+                step += 0.05f
+            }
+            return toward
         }
     }
 
     /** Hive's --control-bg: 5% accent into the strong panel, here composited over the background. */
     val control: Color get() = mix(accent, mix(panelStrong.copy(alpha = 1f), bg, panelStrong.alpha), 0.05f)
 }
-
-private fun mix(a: Color, b: Color, amountOfA: Float) = Color(
-    red = a.red * amountOfA + b.red * (1 - amountOfA),
-    green = a.green * amountOfA + b.green * (1 - amountOfA),
-    blue = a.blue * amountOfA + b.blue * (1 - amountOfA),
-    alpha = a.alpha * amountOfA + b.alpha * (1 - amountOfA),
-)
 
 internal fun hsl(h: Float, s: Float, l: Float, a: Float): Color {
     val c = (1 - abs(2 * l - 1)) * s
@@ -160,23 +186,85 @@ object ThemeCss {
     private val NAMED = mapOf("white" to Color.White, "black" to Color.Black, "transparent" to Color.Transparent)
 }
 
+/** A theme as Hive packs it: a name and its CSS variables. */
+data class ThemePack(val name: String, val css: String) {
+    val colors: HiveColors get() = HiveColors.fromCss(css)
+
+    companion object {
+        /** A .hive-theme file ({"format":"hive-theme","name":…,"css":…}) or plain CSS. */
+        fun parse(text: String, fallbackName: String): ThemePack? {
+            val trimmed = text.trim()
+            if (trimmed.startsWith("{")) {
+                val o = runCatching { kotlinx.serialization.json.Json.parseToJsonElement(trimmed) as kotlinx.serialization.json.JsonObject }.getOrNull() ?: return null
+                fun str(k: String) = (o[k] as? kotlinx.serialization.json.JsonPrimitive)?.content
+                val css = str("css") ?: return null
+                return ThemePack(str("name") ?: fallbackName, css)
+            }
+            return if (trimmed.contains("--")) ThemePack(fallbackName, trimmed) else null
+        }
+    }
+}
+
 /** The active theme: the CSS Hive applies on the PC, bundled or synced. */
 class ThemeStore(private val context: Context) {
     private val prefs = context.getSharedPreferences("hive-theme", Context.MODE_PRIVATE)
     private val _colors = MutableStateFlow(load())
     val colors: StateFlow<HiveColors> = _colors.asStateFlow()
+    private val _name = MutableStateFlow(prefs.getString("name", null) ?: YOUR_THEME)
+    val name: StateFlow<String> = _name.asStateFlow()
 
     val css: String get() = prefs.getString("css", null) ?: bundledCss()
 
-    fun apply(css: String) {
-        prefs.edit { putString("css", css) }
+    private val stockPacks: List<ThemePack> by lazy {
+        runCatching {
+            context.assets.list("themes").orEmpty().sorted().mapNotNull { f ->
+                ThemePack.parse(context.assets.open("themes/$f").bufferedReader().readText(), f.substringBefore('.'))
+            }
+        }.getOrDefault(emptyList())
+    }
+    private val pcFile = java.io.File(context.filesDir, "pc-themes.json")
+    private val themeJson = kotlinx.serialization.json.Json { ignoreUnknownKeys = true }
+    private fun loadPc(): List<com.local.hive.mobile.link.PcTheme> = runCatching {
+        themeJson.decodeFromString(kotlinx.serialization.builtins.ListSerializer(com.local.hive.mobile.link.PcTheme.serializer()), pcFile.readText())
+    }.getOrDefault(emptyList())
+    private fun packsFrom(pc: List<com.local.hive.mobile.link.PcTheme>): List<ThemePack> {
+        val fromPc = pc.filter { it.css.contains("--") }.map { ThemePack(it.name, it.css) }
+        val names = fromPc.map { it.name.lowercase() }.toSet()
+        return (listOf(ThemePack(YOUR_THEME, bundledCss())) + stockPacks.filter { it.name.lowercase() !in names } + fromPc)
+            .let { all -> all.take(1) + all.drop(1).sortedBy { it.name.lowercase() } }
+    }
+
+    /** "Your Hive theme" (the one from Hive on the PC), then every theme in Hive's themes folder (MusicBee skins included) and Hive's stock themes. */
+    private val _packs = MutableStateFlow(emptyList<ThemePack>())
+    val packs: StateFlow<List<ThemePack>> get() { if (_packs.value.isEmpty()) _packs.value = packsFrom(loadPc()); return _packs.asStateFlow() }
+
+    fun setPcThemes(themes: List<com.local.hive.mobile.link.PcTheme>) {
+        runCatching { pcFile.writeText(themeJson.encodeToString(kotlinx.serialization.builtins.ListSerializer(com.local.hive.mobile.link.PcTheme.serializer()), themes)) }
+        _packs.value = packsFrom(themes)
+    }
+
+    /** The accent: the theme's own, or (true) taken from the playing song's cover. */
+    private val _accentFromCover = MutableStateFlow(prefs.getBoolean("accentFromCover", prefs.getString("name", null) == null))
+    val accentFromCover: StateFlow<Boolean> = _accentFromCover.asStateFlow()
+    fun setAccentFromCover(on: Boolean) { prefs.edit { putBoolean("accentFromCover", on) }; _accentFromCover.value = on }
+
+    fun apply(css: String, name: String = "Custom") {
+        prefs.edit { putString("css", css); putString("name", name) }
+        // Choosing a theme shows its own accent; the cover can take over again in Appearance.
+        setAccentFromCover(false)
         _colors.value = HiveColors.fromCss(css)
+        _name.value = name
     }
 
     fun reset() {
-        prefs.edit { remove("css") }
+        prefs.edit { remove("css"); remove("name") }
+        // Your Hive theme takes its accent from the playing cover, as Hive does on the PC.
+        setAccentFromCover(true)
         _colors.value = load()
+        _name.value = YOUR_THEME
     }
+
+    companion object { const val YOUR_THEME = "Your Hive theme" }
 
     private fun load() = HiveColors.fromCss(css)
     private fun bundledCss() = runCatching { context.assets.open("default-theme.css").bufferedReader().readText() }.getOrDefault("")

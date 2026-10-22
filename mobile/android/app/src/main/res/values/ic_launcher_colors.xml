@@ -1,0 +1,5 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <!-- Dark grey, full-bleed, so the black hexagon shows and the launcher's mask shapes it (no white plate). -->
+    <color name="ic_launcher_background">#2B2B30</color>
+</resources>

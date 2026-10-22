@@ -4,6 +4,7 @@ import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.unit.dp
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertNull
+import org.junit.Assert.assertTrue
 import org.junit.Test
 
 class ThemeCssTest {
@@ -44,5 +45,15 @@ class ThemeCssTest {
     @Test fun ignoresWhatItCannotRead() {
         assertNull(ThemeCss.parseColor("color-mix(in srgb, var(--accent) 5%, black)"))
         assertEquals(HiveColors.Default.bg, HiveColors.fromCss(":root { --bg: nonsense; }").bg)
+    }
+
+    /** A theme whose text is nearly its background colour is made readable; one that's fine is left as is. */
+    @Test fun themeTextIsKeptReadable() {
+        val faint = HiveColors.fromCss(":root { --bg: #f2f2f2; --text: #e6e6e6; --text-dim: #f0f0f0; --accent: #fafafa; }")
+        assertTrue(HiveColors.contrast(faint.text, faint.bg) >= 4.5f)
+        assertTrue(HiveColors.contrast(faint.textDim, faint.bg) >= 3f)
+        assertTrue(HiveColors.contrast(faint.accent, faint.bg) >= 3f)
+        val good = HiveColors.fromCss(":root { --bg: #0a0a0d; --text: #ece9f2; }")
+        assertEquals(androidx.compose.ui.graphics.Color(0xFFECE9F2), good.text)
     }
 }

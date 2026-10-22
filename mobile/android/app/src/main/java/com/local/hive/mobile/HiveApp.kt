@@ -43,15 +43,64 @@ import kotlinx.coroutines.withContext
 import java.util.concurrent.TimeUnit
 
 /** Owns the app-wide pieces: library database, Hive Link sync, playback and theme. */
-class HiveApp : Application() {
+class HiveApp : Application(), coil3.SingletonImageLoader.Factory {
+    /** Coil, with album art read at full quality (see [com.local.hive.mobile.data.AlbumArtFetcher]). */
+    override fun newImageLoader(context: coil3.PlatformContext): coil3.ImageLoader = coil3.ImageLoader.Builder(context)
+        .components { add(com.local.hive.mobile.data.AlbumArtFetcher.Factory(this@HiveApp)) }
+        // Room for many full-size covers, so ones already seen come back sharp instead of reloading.
+        .memoryCache { coil3.memory.MemoryCache.Builder().maxSizePercent(context, 0.35).build() }
+        .build()
+
     val scope = CoroutineScope(SupervisorJob() + Dispatchers.Default)
     val database by lazy { LibraryDatabase.open(this) }
+    val appleMusic by lazy { com.local.hive.mobile.stream.AppleMusic() }
+    val spotify by lazy { com.local.hive.mobile.stream.Spotify() }
+    val youTubeMusic by lazy { com.local.hive.mobile.stream.YouTubeMusic(this) }
+    val downloader by lazy { com.local.hive.mobile.stream.Downloader(this, youTubeMusic) }
+    val likedAlbums by lazy { com.local.hive.mobile.data.LikedAlbums(this, database.dao()) }
+    val spotifyAccount by lazy { com.local.hive.mobile.stream.SpotifyAccount(this) }
+    val lyrics by lazy { com.local.hive.mobile.stream.LyricsProvider(this) }
+    val equaliser by lazy { com.local.hive.mobile.playback.EqualiserStore(this) }
+    val radio by lazy { com.local.hive.mobile.stream.RadioDirectory() }
+    val radioStore by lazy { com.local.hive.mobile.stream.RadioStore(this) }
+    val podcasts by lazy { com.local.hive.mobile.stream.PodcastDirectory() }
+    val podcastStore by lazy { com.local.hive.mobile.stream.PodcastStore(this) }
+    val scrobbler by lazy { com.local.hive.mobile.stream.Scrobbler(this) }
+    val artistImages by lazy { com.local.hive.mobile.stream.ArtistImages(this) }
     val linkStore by lazy { LinkStore(this) }
-    val sync by lazy { SyncEngine(database.dao(), linkStore, HiveLinkClient(), scope) }
-    val player by lazy { PlayerConnection(this, scope) }
+    val sync by lazy { SyncEngine(database.dao(), linkStore, HiveLinkClient(), scope, afterSync = { if (linkStore.songSync) com.local.hive.mobile.link.SongSync.schedule(this) }, onThemes = { themes.setPcThemes(it) }) }
+    val songSync by lazy { com.local.hive.mobile.link.SongSync(this, database.dao(), linkStore, HiveLinkClient(), sync) }
+    private val playerConnection = lazy { PlayerConnection(this, scope) }
+    val player by playerConnection
+    /** A sleep timer is set to stop at the end of this song (no crossfade into the next). */
+    val stopsAtSongEnd: Boolean get() = playerConnection.isInitialized() && player.sleep.value?.endOfSong == true
+    val pcLibrary by lazy { com.local.hive.mobile.link.PcLibrary(this, HiveLinkClient(), linkStore, sync) }
     val themes by lazy { ThemeStore(this) }
-    val playRecorder = PlayRecorder { trackId, listenedMs ->
-        scope.launch { database.dao().insertPlay(Play(trackId = trackId, playedAt = System.currentTimeMillis(), listenedMs = listenedMs)) }
+    val playRecorder = object : PlayRecorder {
+        override fun record(trackId: Long, listenedMs: Long) {
+            scope.launch { database.dao().insertPlay(Play(trackId = trackId, playedAt = System.currentTimeMillis(), listenedMs = listenedMs)) }
+        }
+        override fun recordPc(pcId: String, listenedMs: Long) {
+            scope.launch { database.dao().insertPlay(Play(trackId = 0, playedAt = System.currentTimeMillis(), listenedMs = listenedMs, pcId = pcId)) }
+        }
+        override fun history(item: androidx.media3.common.MediaItem) {
+            // Android Auto lists songs as "<list>|<id>".
+            val key = item.mediaId.substringAfterLast('|')
+            // Radio and podcast episodes aren't songs.
+            if (key.isBlank() || key.startsWith("radio:") || key.startsWith("pod:")) return
+            scope.launch {
+                val dao = database.dao()
+                if (key.toLongOrNull() == null) {
+                    val m = item.mediaMetadata
+                    dao.insertStreamTrackIfAbsent(com.local.hive.mobile.data.StreamTrack(
+                        key = key, source = key.substringBefore(':'), title = m.title?.toString().orEmpty(), artist = m.artist?.toString().orEmpty(),
+                        album = m.albumTitle?.toString().orEmpty(), durationMs = m.durationMs ?: 0, artworkUrl = m.artworkUri?.toString().orEmpty(),
+                        previewUrl = item.requestMetadata.extras?.getString(com.local.hive.mobile.playback.EXTRA_PREVIEW).orEmpty(), url = "",
+                    ))
+                }
+                dao.upsertHistory(com.local.hive.mobile.data.HistoryEntry(key, System.currentTimeMillis()))
+            }
+        }
     }
 
     private val scanMutex = Mutex()
@@ -76,11 +125,12 @@ class HiveApp : Application() {
             },
         )
         requestRescan(delayMs = 0)
+        likedAlbums.start(scope)
         // Live Hive Link updates while Hive is on screen; the periodic worker
         // covers the rest of the time.
         ProcessLifecycleOwner.get().lifecycle.addObserver(object : DefaultLifecycleObserver {
             override fun onStart(owner: LifecycleOwner) {
-                scope.launch { sync.syncNow() }
+                scope.launch { sync.syncNow(); sync.autoConnect() }
                 sync.startLive()
             }
             override fun onStop(owner: LifecycleOwner) = sync.stopLive()
@@ -120,18 +170,29 @@ class HiveApp : Application() {
     /** Re-reads MediaStore, then re-matches against Hive so new files sync too. */
     suspend fun rescanLibrary() {
         if (!canReadMusic) { Log.i(TAG, "Library scan skipped: no permission to read music"); return }
+        var changed = 0
         scanMutex.withLock {
             _scanning.value = true
             try {
                 val started = System.currentTimeMillis()
-                val tracks = withContext(Dispatchers.IO) { LibraryScanner(contentResolver).scan() }
-                database.dao().replaceLibrary(tracks)
-                Log.i(TAG, "Library scan: ${tracks.size} tracks in ${System.currentTimeMillis() - started} ms")
+                // The music volume can be away for a moment (while the phone starts,
+                // during an update, a remount): keep the library as it is and look again.
+                val tracks = try {
+                    withContext(Dispatchers.IO) { LibraryScanner(contentResolver).scan() }
+                } catch (e: kotlinx.coroutines.CancellationException) { throw e } catch (e: Exception) {
+                    Log.w(TAG, "Library scan failed, trying again soon: ${e.message}")
+                    scope.launch { delay(30_000); requestRescan(delayMs = 0) }
+                    return
+                }
+                changed = database.dao().replaceLibrary(tracks)
+                Log.i(TAG, "Library scan: ${tracks.size} tracks, $changed changed, in ${System.currentTimeMillis() - started} ms")
             } finally {
                 _scanning.value = false
             }
         }
-        sync.rematch()
+        // Re-matching downloads Hive's whole library and matches every song, so
+        // it only runs when the phone's library actually changed (or never has).
+        if (changed > 0 || !linkStore.fullSyncDone) sync.rematch()
     }
 }
 

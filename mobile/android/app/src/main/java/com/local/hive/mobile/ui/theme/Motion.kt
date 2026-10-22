@@ -26,6 +26,10 @@ object Motion {
 
     const val OPEN_MS = 450
     const val CLOSE_MS = 400
+    /** Going back: quicker than opening, so it never feels like waiting. */
+    const val BACK_MS = 280
+    /** Starts fast and settles softly (Material's emphasised decelerate). */
+    val Back = CubicBezierEasing(0.05f, 0.7f, 0.1f, 1f)
     const val UNDER_FADE_MS = 150
     const val PLAYER_IN_MS = 400
     const val PLAYER_OUT_MS = 250
@@ -46,6 +50,7 @@ object Motion {
 
     fun <T> open() = tween<T>(OPEN_MS, easing = Open)
     fun <T> close() = tween<T>(CLOSE_MS, easing = Close)
+    fun <T> back() = tween<T>(BACK_MS, easing = Back)
     fun <T> underFade() = tween<T>(UNDER_FADE_MS, easing = LinearEasing)
     fun <T> swap() = tween<T>(SWAP_MS, easing = SineInOut33)
     fun <T> move(ms: Int = 350) = tween<T>(ms, easing = SineInOut80)

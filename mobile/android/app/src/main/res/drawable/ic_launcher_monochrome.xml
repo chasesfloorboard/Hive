@@ -1,0 +1,13 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!-- Hive's minimal mark (resources/hive-minimal-black.png on the PC): the
+     hexagon around the H of two half-hexagons, at the image's own scale
+     around the centre. Round-joined strokes soften the corners as the mark's
+     are. One colour, as themed and status-bar icons need: the hexagon with the H cut out of it. -->
+<vector xmlns:android="http://schemas.android.com/apk/res/android"
+    android:width="108dp" android:height="108dp"
+    android:viewportWidth="108" android:viewportHeight="108">
+    <group android:translateX="54" android:translateY="54" android:scaleX="0.048" android:scaleY="0.048">
+        <path android:pathData="M0,-640 L554.3,-320 L554.3,320 L0,640 L-554.3,320 L-554.3,-320 Z M-170,-420 L-170,-98 L0,-190 L170,-98 L170,-420 L449,-259 L449,259 L170,420 L170,98 L0,190 L-170,98 L-170,420 L-449,259 L-449,-259 Z" android:fillColor="#FF000000" android:fillType="evenOdd" />
+        <path android:pathData="M0,-640 L554.3,-320 L554.3,320 L0,640 L-554.3,320 L-554.3,-320 Z" android:strokeColor="#FF000000" android:strokeWidth="70" android:strokeLineJoin="round" />
+    </group>
+</vector>

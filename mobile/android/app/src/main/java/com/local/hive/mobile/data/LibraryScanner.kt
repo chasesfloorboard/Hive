@@ -28,6 +28,7 @@ class LibraryScanner(private val resolver: ContentResolver) {
             }
         }.toTypedArray()
 
+        var scanned = false
         val out = ArrayList<Track>()
         resolver.query(
             MediaStore.Audio.Media.EXTERNAL_CONTENT_URI,
@@ -36,6 +37,7 @@ class LibraryScanner(private val resolver: ContentResolver) {
             null,
             null,
         )?.use { c ->
+            scanned = true
             fun idx(name: String) = c.getColumnIndex(name)
             val iId = idx(MediaStore.Audio.Media._ID)
             val iTitle = idx(MediaStore.Audio.Media.TITLE)
@@ -80,7 +82,45 @@ class LibraryScanner(private val resolver: ContentResolver) {
                 )
             }
         }
-        return out
+        // No answer at all is "MediaStore can't be asked right now", never "no music":
+        // returning nothing would empty the library.
+        if (!scanned) throw java.io.IOException("MediaStore didn't answer")
+        return AlbumMerge.apply(withWavTags(out.map(::repaired)))
+    }
+
+    /** Tags saved as UTF-8 but read as Latin-1 ("Shouldnâ€™t") read as written. */
+    private fun repaired(t: Track): Track {
+        val title = TextRepair.mojibake(t.title); val artist = TextRepair.mojibake(t.artist)
+        val album = TextRepair.mojibake(t.album); val albumArtist = TextRepair.mojibake(t.albumArtist)
+        return if (title == t.title && artist == t.artist && album == t.album && albumArtist == t.albumArtist) t
+        else t.copy(title = title, artist = artist, album = album, albumArtist = albumArtist)
+    }
+
+    /**
+     * WAV songs as their tags say. Android reads no tags from WAV files: it
+     * shows them by file name, with no artist, filed under one "album" named
+     * after their folder. Each tagged album gets its own id (minus its first
+     * song's id), so it lists and shows its cover on its own.
+     */
+    private fun withWavTags(tracks: List<Track>): List<Track> {
+        val tagged = tracks.map { t ->
+            if (!t.fileName.endsWith(".wav", ignoreCase = true) || t.artist.isNotBlank()) return@map t
+            val info = runCatching { resolver.openInputStream(t.uri)?.use(WavTags::read) }.getOrNull() ?: return@map t
+            t.copy(
+                title = info.title.ifBlank { t.title }, artist = info.artist, album = info.album.ifBlank { t.album }, albumArtist = info.albumArtist,
+                year = info.year.takeIf { it > 0 } ?: t.year, genre = info.genre.ifBlank { t.genre },
+                trackNumber = info.track.takeIf { it > 0 } ?: t.trackNumber, discNumber = info.disc.takeIf { it > 0 } ?: t.discNumber,
+            ).let { if (info.album.isNotBlank()) it.copy(albumId = WAV_ALBUM) else it }
+        }
+        val ids = tagged.filter { it.albumId == WAV_ALBUM }
+            .groupBy { it.album.lowercase() to it.displayAlbumArtist.lowercase() }
+            .flatMap { (_, songs) -> val id = -songs.minOf { it.id }; songs.map { it.id to id } }.toMap()
+        return tagged.map { t -> ids[t.id]?.let { t.copy(albumId = it) } ?: t }
+    }
+
+    private companion object {
+        /** Placeholder while WAV albums are being given their ids. */
+        const val WAV_ALBUM = Long.MIN_VALUE
     }
 
     private fun cleanUnknown(value: String) = if (value == "<unknown>") "" else value

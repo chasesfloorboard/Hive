@@ -1,0 +1,6 @@
+{
+  "format": "hive-theme",
+  "version": 1,
+  "name": "Light",
+  "css": ":root {\n  --bg: #f7f8fa;\n  --panel: rgba(255,255,255,.94);\n  --panel-strong: rgba(255,255,255,.985);\n  --border: rgba(24,30,40,.16);\n  --text: #171b22;\n  --text-dim: #3f4651;\n  --text-dimmer: #5f6875;\n  --accent: #5366d8;\n  --accent-soft: rgba(83,102,216,.24);\n  --accent-glow: rgba(83,102,216,.12);\n  --ambient-a: rgba(83,102,216,.035);\n  --ambient-b: rgba(110,120,150,.025);\n  --radius: 12px;\n  --blur: 18px;\n}\n"
+}

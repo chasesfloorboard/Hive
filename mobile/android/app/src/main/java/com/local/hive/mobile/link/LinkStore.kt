@@ -32,7 +32,7 @@ class LinkStore(context: Context) {
         set(value) = prefs.edit {
             if (value == null) {
                 remove("token"); remove("serverId"); remove("name"); remove("port"); remove("deviceId"); remove("hosts")
-                remove("lastSeq"); remove("lastSyncAt"); remove("fullSyncDone")
+                remove("lastSeq"); remove("lastSyncAt"); remove("fullSyncDone"); remove("lastPcPlayAt"); remove("songSync")
             } else {
                 putString("token", value.token)
                 putString("serverId", value.serverId)
@@ -52,10 +52,43 @@ class LinkStore(context: Context) {
         get() = prefs.getBoolean("fullSyncDone", false)
         set(value) = prefs.edit { putBoolean("fullSyncDone", value) }
 
+    /** The time of the newest Hive (PC) play brought to this phone. */
+    var lastPcPlayAt: Long
+        get() = prefs.getLong("lastPcPlayAt", 0)
+        set(value) = prefs.edit { putLong("lastPcPlayAt", value) }
+
     /** Highest PC change sequence applied here. */
     var lastSeq: Long
         get() = prefs.getLong("lastSeq", 0)
         set(value) = prefs.edit { putLong("lastSeq", value) }
+
+    /**
+     * Song sync is on: songs on one side only are copied to the other on
+     * Wi-Fi. Off until the user has seen the first plan and started it.
+     */
+    var songSync: Boolean
+        get() = prefs.getBoolean("songSync", false)
+        set(value) = prefs.edit { putBoolean("songSync", value) }
+
+    /** Songs deleted on one side that the user chose to leave as they are: not asked about again. */
+    var leftDeleted: Set<String>
+        get() = prefs.getStringSet("leftDeleted", emptySet()).orEmpty()
+        set(value) = prefs.edit { putStringSet("leftDeleted", value) }
+
+    /** Deleted songs already announced in a notification, so each is announced once. */
+    var announcedDeleted: Set<String>
+        get() = prefs.getStringSet("announcedDeleted", emptySet()).orEmpty()
+        set(value) = prefs.edit { putStringSet("announcedDeleted", value) }
+
+    /** Plays of phone-only songs that older versions dropped have been queued again (once). */
+    var droppedPlaysRequeued: Boolean
+        get() = prefs.getBoolean("droppedPlaysRequeued", false)
+        set(value) = prefs.edit { putBoolean("droppedPlaysRequeued", value) }
+
+    /** Hive opening on the same Wi-Fi as the PC finds it and connects (asking the PC once to allow this phone). */
+    var autoConnect: Boolean
+        get() = prefs.getBoolean("autoConnect", true)
+        set(value) = prefs.edit { putBoolean("autoConnect", value) }
 
     var lastSyncAt: Long
         get() = prefs.getLong("lastSyncAt", 0)
