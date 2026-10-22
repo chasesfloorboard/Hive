@@ -563,6 +563,21 @@ test('a song Hive already has is not saved again, even under another format', as
   assert.deepEqual(ctx.added, []);
 });
 
+test('a phone keeping songs one to one sends another version Hive already has a copy of', async t => {
+  const ctx = songSetup();
+  t.after(() => ctx.link.stop());
+  await waitListening(ctx.port);
+  const token = await pair(ctx);
+  // Hive has "Black" once (a1), paired with another file on the phone: have=1 means this is one more.
+  const res = await putSong(ctx.port, token, { title: 'Black', artist: 'Pearl Jam', album: 'Live', duration: 340000, ext: 'mp3', have: 1 }, Buffer.from('live version'));
+  assert.equal(res.body.status, 'saved');
+  // Sent again (a retry) once Hive holds two copies: it is already there.
+  ctx.tracks.push({ id: 'b9', path: path.join(ctx.music, 'Pearl Jam', 'Live', 'Black.mp3'), title: 'Black', artist: 'Pearl Jam', album: 'Live', duration: '340.0' });
+  assert.equal((await putSong(ctx.port, token, { title: 'Black', artist: 'Pearl Jam', album: 'Live', duration: 340000, ext: 'mp3', have: 1 }, Buffer.from('live version'))).body.status, 'exists');
+  // Without have, any copy of the song means Hive has it (older phones).
+  assert.equal((await putSong(ctx.port, token, { title: 'Black', artist: 'Pearl Jam', duration: 340000, ext: 'mp3' }, Buffer.from('x'))).body.status, 'exists');
+});
+
 test('songs are refused when receiving is off, or when they are not audio', async t => {
   const ctx = songSetup();
   t.after(() => ctx.link.stop());

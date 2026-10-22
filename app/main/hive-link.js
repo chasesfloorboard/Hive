@@ -685,7 +685,12 @@ function createHiveLink({ dataDir, getTracks, setLove, onPaired, streamSong = nu
     };
     if (!meta.title) return refuse(400, 'The song needs a title.');
     const tracks = (await getTracks()).filter(t => t?.path && !/^[a-z]+:/i.test(String(t.path)));
-    const existing = createIndex(tracks.map(t => ({ key: trackIdFor(t), title: text(t.title), artist: text(t.artist), albumArtist: text(t.albumArtist), durationMs: Math.round(num(t.duration) * 1000) }))).match(meta);
+    const index = createIndex(tracks.map(t => ({ key: trackIdFor(t), title: text(t.title), artist: text(t.artist), albumArtist: text(t.albumArtist), durationMs: Math.round(num(t.duration) * 1000) })));
+    // A phone keeping its songs one to one with Hive says how many copies of this
+    // song Hive already holds for its other files ("have"): one more is a new
+    // version to keep. Without it, any copy of the song means Hive has it.
+    const have = params.has('have') ? num(params.get('have')) : null;
+    const existing = have === null ? index.match(meta) : (index.matches(meta).length > have ? index.match(meta) : null);
     if (existing) { req.resume(); return send(res, 200, { status: 'exists', id: existing.key }); }
     let target;
     try { target = await songTarget(meta); } catch (err) { return refuse(507, err?.message || String(err)); }

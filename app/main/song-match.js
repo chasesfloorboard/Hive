@@ -40,7 +40,9 @@ function durationOk(a, b) {
 
 /**
  * An index over candidates ({ key, title, artist, albumArtist, durationMs });
- * match() returns the candidate that is the same song, or null.
+ * match() returns the candidate that is the same song, or null; matches()
+ * every candidate that is, closest in length first (a song kept in several
+ * versions or copies).
  */
 function createIndex(candidates) {
   const byTitle = new Map();
@@ -49,7 +51,20 @@ function createIndex(candidates) {
     if (!byTitle.has(t)) byTitle.set(t, []);
     byTitle.get(t).push({ candidate: c, artists: new Set([...artistParts(c.artist), ...artistParts(c.albumArtist)]) });
   }
+  function matches({ title, artist, albumArtist, durationMs }) {
+    const entries = byTitle.get(normalize(title)) || [];
+    const mine = [...artistParts(artist), ...artistParts(albumArtist)];
+    const d = Number(durationMs) || 0;
+    return entries.filter(({ artists }) => {
+      const theirs = [...artists];
+      return !mine.length || !theirs.length || mine.some(m => artists.has(m)) ||
+        mine.some(m => theirs.some(t => m.includes(t) || t.includes(m)));
+    }).map(e => e.candidate)
+      .filter(c => durationOk(Number(c.durationMs) || 0, d))
+      .sort((a, b) => Math.abs((Number(a.durationMs) || 0) - d) - Math.abs((Number(b.durationMs) || 0) - d));
+  }
   return {
+    matches,
     match({ title, artist, albumArtist, durationMs }) {
       const entries = byTitle.get(normalize(title)) || [];
       if (!entries.length) return null;
