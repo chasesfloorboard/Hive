@@ -67,6 +67,9 @@ object SongPlanner {
     fun keyOf(title: String, artist: String, albumArtist: String): String =
         TrackMatcher.normalize(title) + "|" + TrackMatcher.artistParts(albumArtist.ifBlank { artist }).sorted().joinToString(",")
 
+    /** How far apart two readings of one file's length can be (decoders differ by a few frames). */
+    private const val EXACT_COPY_MS = 2_000L
+
     /** One version of a song: its key and length in whole seconds. */
     fun versionKey(title: String, artist: String, albumArtist: String, durationMs: Long): String =
         keyOf(title, artist, albumArtist) + "|" + (durationMs + 500) / 1000
@@ -98,6 +101,18 @@ object SongPlanner {
         val pairedPhone = HashSet<Long>()
         val pairedPc = HashSet<String>()
         val onBoth = HashSet<String>()
+        // First, exact copies: a file and its copy are the same size to the byte (and length), whatever
+        // either side reads from their tags. Android reads some tags differently from Hive (old ID3v1,
+        // damaged ID3v2: a title cut to 30 letters, no artist), so tags alone can miss a copy.
+        val pcBySize = pc.filter { it.size > 0 }.groupBy { it.size }
+        for (t in phone.sortedBy { it.id }) {
+            if (t.sizeBytes <= 0) continue
+            val twin = pcBySize[t.sizeBytes].orEmpty()
+                .filter { it.id !in pairedPc && (it.duration <= 0 || t.durationMs <= 0 || kotlin.math.abs(it.duration - t.durationMs) <= EXACT_COPY_MS) }
+                .minByOrNull { if (TrackMatcher.normalize(it.title) == TrackMatcher.normalize(t.title)) 0 else 1 } ?: continue
+            pairedPhone += t.id; pairedPc += twin.id
+            onBoth += phoneKeys.getValue(t); onBoth += pcKeys.getValue(twin)
+        }
         for ((t, pcId, _) in candidates) {
             if (t.id in pairedPhone || pcId in pairedPc) continue
             pairedPhone += t.id; pairedPc += pcId
@@ -168,6 +183,9 @@ class SongSync(
         val announced = store.announcedDeleted
         val fresh = (found.fromPc + found.fromPhone).filter { it.key !in announced }
         if (fresh.isEmpty()) return
+        // Many "deletions" at once look like a library that couldn't be read, not a person deleting
+        // songs: they're listed in Settings, never announced.
+        if (fresh.size > MAX_ANNOUNCED_DELETIONS) return
         store.announcedDeleted = announced + fresh.map { it.key }
         announce(found)
     }
@@ -342,6 +360,7 @@ class SongSync(
         private const val WORK = "hive-song-sync"
         private const val DELETIONS_CHANNEL = "hive-song-deletions"
         private const val DELETIONS_NOTIFICATION_ID = 4712
+        private const val MAX_ANNOUNCED_DELETIONS = 40
 
         /** Runs song sync in the background on Wi-Fi (or any unmetered network). */
         fun schedule(context: Context) {

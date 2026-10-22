@@ -63,6 +63,17 @@ class SongPlannerTest {
         assertEquals(1, back.pcCopies[back.toPc.single().id])
     }
 
+    @Test fun anExactCopyPairsWhateverItsTagsSay() {
+        // Android read this copy's damaged tags as the file name with no artist; Hive reads the real ones.
+        // Same size to the byte and same length: it's the same file, so nothing is copied either way.
+        val phoneCopy = phone(1, "Big Data _ The Internet Ain't Safe", "", 514_328).copy(sizeBytes = 21_308_366)
+        val pcFile = pc("x", "Big Data / The Internet Ain't", "JPEGMAFIA x Freaky", 514_273).copy(size = 21_308_366)
+        val plan = SongPlanner.plan(phone = listOf(phoneCopy), pc = listOf(pcFile), ledger = emptySet())
+        assertTrue(plan.toPhone.isEmpty())
+        assertTrue(plan.toPc.isEmpty())
+        assertEquals(2, plan.onBoth.size)
+    }
+
     @Test fun eachCopyOfASongHasItsOwnLedgerEntry() {
         // Both versions synced once; then the phone deletes one of them: only that one stays deleted.
         val first = SongPlanner.plan(
