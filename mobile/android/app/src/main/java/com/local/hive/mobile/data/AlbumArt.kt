@@ -37,6 +37,9 @@ import java.net.URLEncoder
  */
 class AlbumArtFetcher(private val context: Context, private val albumId: Long, private val options: Options) : Fetcher {
     override suspend fun fetch(): FetchResult? = withContext(Dispatchers.IO) {
+        // An album Hive filed itself (WAV songs, which Android doesn't read tags from): its id is
+        // minus its first song's, and the cover is read from that song's own tags.
+        if (albumId < 0) return@withContext ownAlbum(-albumId)
         // List rows and other thumbnails: Android's own ~512 px album thumbnail is
         // plenty, and costs no song lookup or picture extraction per cache miss.
         if (isThumbnail()) fallback()?.let { return@withContext it }
@@ -52,6 +55,15 @@ class AlbumArtFetcher(private val context: Context, private val albumId: Long, p
         if (side >= SMALL) return@withContext result(embedded!!)
         upgraded(song)?.let { return@withContext result(it) }
         embedded?.let { result(it) } ?: fallback()
+    }
+
+    private fun ownAlbum(songId: Long): FetchResult? {
+        val kept = File(File(context.cacheDir, "embedded-art").apply { mkdirs() }, "$albumId.img")
+        if (kept.length() > 0) return result(kept.readBytes())
+        val uri = ContentUris.withAppendedId(MediaStore.Audio.Media.EXTERNAL_CONTENT_URI, songId)
+        val picture = runCatching { context.contentResolver.openInputStream(uri)?.use { EmbeddedPictures.read(it) } }.getOrNull()?.firstOrNull() ?: return null
+        runCatching { kept.writeBytes(picture) }
+        return result(picture)
     }
 
     private fun isThumbnail(): Boolean {
@@ -116,6 +128,7 @@ class AlbumArtFetcher(private val context: Context, private val albumId: Long, p
     class Factory(private val context: Context) : Fetcher.Factory<coil3.Uri> {
         override fun create(data: coil3.Uri, options: Options, imageLoader: ImageLoader): Fetcher? {
             if (data.scheme != "content" || data.authority != "media") return null
+            // Hive's own album ids (for WAV songs) are negative.
             val id = data.path?.removePrefix("/external/audio/albumart/")?.takeIf { it != data.path }?.toLongOrNull() ?: return null
             return AlbumArtFetcher(context, id, options)
         }

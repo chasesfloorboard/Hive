@@ -12,8 +12,8 @@ import java.security.MessageDigest
 
 /**
  * Every picture embedded in a song, as Hive on the PC reads them for its
- * cover carousel: MP3 (ID3v2.2–2.4 APIC/PIC), FLAC (PICTURE blocks) and M4A
- * (each `covr` image). Android's own reader gives only the first. Pictures
+ * cover carousel: MP3 and WAV (ID3v2.2–2.4 APIC/PIC), FLAC (PICTURE blocks)
+ * and M4A (each `covr` image). Android's own reader gives only the first. Pictures
  * are kept per song in the cache, distinct by content, in file order.
  */
 object EmbeddedPictures {
@@ -74,6 +74,8 @@ object EmbeddedPictures {
             String(head, Charsets.ISO_8859_1) == "fLaC" -> flac(DataInputStream(stream))
             // MP4: the tags (moov) may sit after the audio, so the whole file is read.
             isMp4(stream) -> mp4(stream.readBytes())
+            // WAV: the ID3 tag sits in its own chunk, usually after the audio.
+            String(head, Charsets.ISO_8859_1) == "RIFF" -> WavTags.chunks(DataInputStream(stream), setOf("id3 "))?.get("id3 ")?.let { id3(DataInputStream(it.inputStream())) }.orEmpty()
             else -> emptyList()
         }
     }
@@ -87,7 +89,11 @@ object EmbeddedPictures {
 
     // ---- ID3v2 ----
 
-    fun id3(input: DataInputStream): List<ByteArray> {
+    fun id3(input: DataInputStream): List<ByteArray> =
+        id3Frames(input).mapNotNull { (id, body) -> if (id == "APIC" || id == "PIC") picture(body, 0, body.size, id == "PIC") else null }
+
+    /** An ID3v2 tag's frames, as (id, body), in order. */
+    fun id3Frames(input: DataInputStream): List<Pair<String, ByteArray>> {
         val header = ByteArray(10).also { input.readFully(it) }
         val version = header[3].toInt()
         val flags = header[5].toInt()
@@ -97,7 +103,7 @@ object EmbeddedPictures {
         var pos = 0
         // An extended header (v2.3/2.4) is skipped.
         if (flags and 0x40 != 0 && version >= 3 && tag.size >= 4) pos += if (version == 4) syncsafe(tag, 0) else int(tag, 0) + 4
-        val out = mutableListOf<ByteArray>()
+        val out = mutableListOf<Pair<String, ByteArray>>()
         val idLen = if (version == 2) 3 else 4
         val headLen = if (version == 2) 6 else 10
         while (pos + headLen <= tag.size) {
@@ -110,7 +116,7 @@ object EmbeddedPictures {
             }
             val body = pos + headLen
             if (size <= 0 || body + size > tag.size) break
-            if (id == "APIC" || id == "PIC") picture(tag, body, size, version == 2)?.let(out::add)
+            out += id to tag.copyOfRange(body, body + size)
             pos = body + size
         }
         return out
