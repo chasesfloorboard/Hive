@@ -3015,7 +3015,19 @@ async function deleteTracksFromDisk(filePaths = []) {
       await shell.trashItem(p);
       deleted.push(p);
     } catch (err) {
-      errors.push({ path: p, error: err?.message || String(err) });
+      // Some drives have no Trash ("Trashing on system internal mounts is not supported"):
+      // the file goes to Hive's own Deleted songs folder instead, just as recoverable.
+      try {
+        const dir = path.join(USER_DATA(), 'Deleted songs');
+        await fsp.mkdir(dir, { recursive: true });
+        const ext = path.extname(p);
+        let target = path.join(dir, path.basename(p));
+        for (let n = 2; fs.existsSync(target); n += 1) target = path.join(dir, `${path.basename(p, ext)} (${n})${ext}`);
+        try { await fsp.rename(p, target); } catch { await fsp.copyFile(p, target); await fsp.unlink(p); }
+        deleted.push(p);
+      } catch (moveErr) {
+        errors.push({ path: p, error: `${err?.message || String(err)}; ${moveErr?.message || String(moveErr)}` });
+      }
     }
   }
   return { ok: errors.length === 0, deleted, errors };
@@ -8044,7 +8056,19 @@ function startHiveLink() {
     // YouTube Music download (first music folder, <Artist>/<Album>/), and the
     // library watcher's own path to pick it up.
     songTarget: hiveLinkSongTarget,
-    deleteSongs: paths => deleteTracksFromDisk(paths),
+    // Every deletion a phone asks for is announced on the PC too, with what went where.
+    deleteSongs: async (paths, deviceName) => {
+      const result = await deleteTracksFromDisk(paths);
+      const n = result.deleted.length;
+      if (n) {
+        try {
+          const { Notification } = require('electron');
+          const names = result.deleted.slice(0, 5).map(p => path.basename(p, path.extname(p))).join(', ') + (n > 5 ? ` and ${n - 5} more` : '');
+          new Notification({ title: `${n} song${n === 1 ? '' : 's'} moved to the Trash`, body: `${deviceName || 'Your phone'} deleted ${n === 1 ? 'it' : 'them'} and asked Hive to delete ${n === 1 ? 'it' : 'them'} here too: ${names}. Restore from the Trash (or Hive's Deleted songs folder) to undo.` }).show();
+        } catch {}
+      }
+      return result;
+    },
     onSongAdded: songPath => notifyLibraryFilesystemChange('hive-link-song', songPath),
     // Remote control from the phone (off until allowed in Settings): Hive's own
     // MPRIS command channel, and the state the player reports to it.

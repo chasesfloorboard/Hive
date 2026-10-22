@@ -666,7 +666,7 @@ function createHiveLink({ dataDir, getTracks, setLove, onPaired, streamSong = nu
         const body = await readJson(req);
         const wanted = new Set((Array.isArray(body?.ids) ? body.ids : []).slice(0, 2000).map(String));
         const tracks = (await getTracks()).filter(t => t?.path && !/^[a-z]+:/i.test(String(t.path)) && wanted.has(trackIdFor(t)));
-        const result = await deleteSongs(tracks.map(t => path.resolve(String(t.path))));
+        const result = await deleteSongs(tracks.map(t => path.resolve(String(t.path))), device.name);
         const gone = new Set((result?.deleted || []).map(p => path.resolve(p)));
         log('Hive Link: phone deleted songs', device.name, gone.size);
         return send(res, 200, { deleted: tracks.filter(t => gone.has(path.resolve(String(t.path)))).map(trackIdFor), failed: (result?.errors || []).length });
