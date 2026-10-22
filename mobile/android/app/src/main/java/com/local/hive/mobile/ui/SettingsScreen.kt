@@ -128,7 +128,7 @@ fun SettingsScreen(vm: MainViewModel, bottomPadding: Dp, onOpenEqualiser: () -> 
                 }
             }
             item {
-                Section("Appearance", "Hive's themes, or your own .hive-theme. While a song plays, the accent and backdrop follow its cover.") { ThemeRows(vm) }
+                Section("Appearance", "Hive's themes, or your own .hive-theme. The backdrop follows the playing cover; the accent is the theme's own, or the cover's (Accent).") { ThemeRows(vm) }
             }
             item {
                 val context = androidx.compose.ui.platform.LocalContext.current
@@ -356,6 +356,10 @@ private fun ThemeRows(vm: MainViewModel) {
     }
     androidx.compose.foundation.lazy.LazyRow(contentPadding = PaddingValues(horizontal = 16.dp, vertical = 6.dp), horizontalArrangement = Arrangement.spacedBy(10.dp)) {
         items(packs) { pack -> ThemeSwatch(pack, pack.name == current) { vm.applyTheme(pack) } }
+    }
+    val fromCover by vm.themes.accentFromCover.collectAsStateWithLifecycle()
+    SettingRow("Accent", if (fromCover) "Taken from the playing song's cover." else "The theme's own colour.") {
+        HiveToggle(listOf("Theme", "Cover"), if (fromCover) 1 else 0, { i -> vm.themes.setAccentFromCover(i == 1) })
     }
     SettingRow("Import a theme", "A .hive-theme from Hive on your PC, or a CSS file of Hive's variables.") {
         SmallButton("Import") { importer.launch(arrayOf("*/*")) }

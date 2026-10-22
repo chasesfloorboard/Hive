@@ -1,6 +1,7 @@
 package com.local.hive.mobile.ui.theme
 
 import android.content.Context
+import androidx.compose.ui.graphics.luminance
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.darkColorScheme
 import androidx.compose.runtime.Composable
@@ -62,7 +63,7 @@ data class HiveColors(
             val vars = ThemeCss.rootVariables(css)
             fun c(name: String, fallback: Color) = vars[name]?.let { ThemeCss.parseColor(it, vars) } ?: fallback
             fun d(name: String, fallback: Dp) = vars[name]?.let { ThemeCss.parsePx(it) }?.dp ?: fallback
-            return HiveColors(
+            return readable(HiveColors(
                 bg = c("bg", base.bg),
                 panel = c("panel", base.panel),
                 panelStrong = c("panel-strong", base.panelStrong),
@@ -77,7 +78,39 @@ data class HiveColors(
                 ambientB = c("ambient-b", base.ambientB),
                 radius = d("radius", base.radius),
                 blur = d("blur", base.blur),
-            )
+            ))
+        }
+
+        /**
+         * A theme's text made readable on its own background: text at least
+         * 4.5:1 (WCAG body text), dim text 3:1, dimmest 2:1, the accent 3:1 (it's
+         * used for text and icons too). Colours that already pass are left alone;
+         * the others move toward white on dark themes or black on light ones,
+         * just far enough. (MusicBee skins especially set text near their background.)
+         */
+        fun readable(t: HiveColors): HiveColors = t.copy(
+            text = contrasted(t.text, t.bg, 4.5f),
+            textDim = contrasted(t.textDim, t.bg, 3f),
+            textDimmer = contrasted(t.textDimmer, t.bg, 2f),
+            accent = contrasted(t.accent, t.bg, 3f),
+        )
+
+        fun contrast(a: Color, b: Color): Float {
+            val la = a.luminance(); val lb = b.luminance()
+            return (maxOf(la, lb) + 0.05f) / (minOf(la, lb) + 0.05f)
+        }
+
+        fun contrasted(fg: Color, bg: Color, min: Float): Color {
+            val solid = fg.copy(alpha = 1f)
+            if (contrast(solid, bg) >= min) return fg
+            val toward = if (bg.luminance() > 0.4f) Color.Black else Color.White
+            var step = 0.05f
+            while (step <= 1f) {
+                val c = androidx.compose.ui.graphics.lerp(solid, toward, step)
+                if (contrast(c, bg) >= min) return c.copy(alpha = fg.alpha.coerceAtLeast(0.9f))
+                step += 0.05f
+            }
+            return toward
         }
     }
 
@@ -210,14 +243,23 @@ class ThemeStore(private val context: Context) {
         _packs.value = packsFrom(themes)
     }
 
+    /** The accent: the theme's own, or (true) taken from the playing song's cover. */
+    private val _accentFromCover = MutableStateFlow(prefs.getBoolean("accentFromCover", prefs.getString("name", null) == null))
+    val accentFromCover: StateFlow<Boolean> = _accentFromCover.asStateFlow()
+    fun setAccentFromCover(on: Boolean) { prefs.edit { putBoolean("accentFromCover", on) }; _accentFromCover.value = on }
+
     fun apply(css: String, name: String = "Custom") {
         prefs.edit { putString("css", css); putString("name", name) }
+        // Choosing a theme shows its own accent; the cover can take over again in Appearance.
+        setAccentFromCover(false)
         _colors.value = HiveColors.fromCss(css)
         _name.value = name
     }
 
     fun reset() {
         prefs.edit { remove("css"); remove("name") }
+        // Your Hive theme takes its accent from the playing cover, as Hive does on the PC.
+        setAccentFromCover(true)
         _colors.value = load()
         _name.value = YOUR_THEME
     }

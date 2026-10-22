@@ -685,3 +685,30 @@ fun <T> rememberComputed(initial: T, vararg keys: Any?, compute: () -> T): andro
     androidx.compose.runtime.produceState(initial, *keys) {
         value = kotlinx.coroutines.withContext(kotlinx.coroutines.Dispatchers.Default) { compute() }
     }
+
+/**
+ * Hive's mark as the app icon draws it (a hexagon with the H cut from it),
+ * in the theme's colours: the hexagon in the accent, the H readable on it.
+ */
+@Composable
+fun HiveMark(modifier: Modifier = Modifier) {
+    val c = Hive.colors
+    val hex = c.accent
+    val letter = readableOn(c.accent)
+    androidx.compose.foundation.Canvas(modifier) {
+        // The icon's paths are drawn about the origin in a ±700 box.
+        val k = size.minDimension / 1400f
+        fun path(vararg points: Float) = androidx.compose.ui.graphics.Path().apply {
+            moveTo(size.width / 2 + points[0] * k, size.height / 2 + points[1] * k)
+            var i = 2
+            while (i < points.size) { lineTo(size.width / 2 + points[i] * k, size.height / 2 + points[i + 1] * k); i += 2 }
+            close()
+        }
+        val hexagon = path(0f, -640f, 554.3f, -320f, 554.3f, 320f, 0f, 640f, -554.3f, 320f, -554.3f, -320f)
+        drawPath(hexagon, hex)
+        drawPath(hexagon, hex, style = androidx.compose.ui.graphics.drawscope.Stroke(70f * k, join = androidx.compose.ui.graphics.StrokeJoin.Round))
+        val h = path(-170f, -420f, -170f, -98f, 0f, -190f, 170f, -98f, 170f, -420f, 449f, -259f, 449f, 259f, 170f, 420f, 170f, 98f, 0f, 190f, -170f, 98f, -170f, 420f, -449f, 259f, -449f, -259f)
+        drawPath(h, letter)
+        drawPath(h, letter, style = androidx.compose.ui.graphics.drawscope.Stroke(40f * k, join = androidx.compose.ui.graphics.StrokeJoin.Round))
+    }
+}

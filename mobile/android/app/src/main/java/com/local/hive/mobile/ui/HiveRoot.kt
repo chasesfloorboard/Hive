@@ -109,7 +109,8 @@ fun HiveRoot(vm: MainViewModel, openPlayerInitially: Boolean) = HiveThemed(vm) {
 fun HiveThemed(vm: MainViewModel, content: @Composable () -> Unit) {
     val theme by vm.colors.collectAsStateWithLifecycle()
     val aura by vm.aura.collectAsStateWithLifecycle()
-    val accent by animateColorAsState(accentFor(aura, theme.accent), tween(900), label = "accent")
+    val fromCover by vm.themes.accentFromCover.collectAsStateWithLifecycle()
+    val accent by animateColorAsState(if (fromCover) accentFor(aura, theme.accent) else theme.accent, tween(900), label = "accent")
     val colors = theme.withAccent(accent)
     val scheme = darkColorScheme(
         primary = colors.accent, background = colors.bg, onBackground = colors.text,

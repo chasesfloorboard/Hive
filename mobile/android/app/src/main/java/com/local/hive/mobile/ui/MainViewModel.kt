@@ -497,6 +497,7 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
     fun applyThemeCss(css: String) = app.themes.apply(css)
     fun resetTheme() = app.themes.reset()
     val themeName = app.themes.name
+    val themes get() = app.themes
     val themePacks get() = app.themes.packs
     fun applyTheme(p: com.local.hive.mobile.ui.theme.ThemePack) = if (p.name == com.local.hive.mobile.ui.theme.ThemeStore.YOUR_THEME) app.themes.reset() else app.themes.apply(p.css, p.name)
 

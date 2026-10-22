@@ -186,7 +186,8 @@ fun mix(a: Color, b: Color, amount: Float): Color = lerp(b, a, amount)
 
 /** The active Hive colours with the accent (and its soft/glow companions) taken from the cover. */
 fun HiveColors.withAccent(accent: Color): HiveColors = copy(
-    accent = accent,
+    // A cover's colour is kept readable on the theme's background, like the theme's own accent.
+    accent = HiveColors.contrasted(accent, bg, 3f),
     accentSoft = accent.copy(alpha = 0.38f),
     accentGlow = accent.copy(alpha = 0.28f),
 )

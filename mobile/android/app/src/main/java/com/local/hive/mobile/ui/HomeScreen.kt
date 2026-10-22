@@ -181,7 +181,8 @@ private fun HomeBar(vm: MainViewModel, nav: HomeNavigation, onCreatePlaylist: ()
     val link by vm.link.collectAsStateWithLifecycle()
     var menu by remember { mutableStateOf(false) }
     Row(Modifier.fillMaxWidth().height(60.dp).padding(start = 20.dp, end = 6.dp), verticalAlignment = Alignment.CenterVertically) {
-        Image(painterResource(R.drawable.hive_logo), null, Modifier.size(28.dp).shadow(8.dp, HiveShape.thumb, ambientColor = c.accentGlow, spotColor = c.accentGlow))
+        // Hive's mark in the theme's accent, glowing with it.
+        HiveMark(Modifier.size(30.dp).shadow(10.dp, androidx.compose.foundation.shape.CircleShape, ambientColor = c.accentGlow, spotColor = c.accentGlow))
         Spacer(Modifier.width(10.dp))
         Text("Hive", style = HiveText.viewTitle, color = c.text, modifier = Modifier.weight(1f))
         BarIcon(Icons.Rounded.Add, "Create playlist", onCreatePlaylist)
