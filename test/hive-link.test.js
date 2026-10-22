@@ -15,7 +15,8 @@ const zlib = require('node:zlib');
 
 const { createHiveLink, trackIdFor } = require('../app/main/hive-link');
 
-let nextPort = 48100 + Math.floor(Math.random() * 500) * 2;
+// A wide random range: test files run in parallel, and two picking the same port fails one of them.
+let nextPort = 20000 + Math.floor(Math.random() * 15000) * 2;
 
 function setup({ acceptPhoneChanges = true, streamSong = null, coversDir = null, remote = null, getPlaylists = null, getPlays = null, spotifySearch = null, songTarget = null, onSongAdded = undefined, acceptPhonePlays = false, getWrap = null, getWrapYears = null, getThemes = null, onPairRequest = null, deleteSongs = null } = {}) {
   const dataDir = fs.mkdtempSync(path.join(os.tmpdir(), 'hive-link-'));
