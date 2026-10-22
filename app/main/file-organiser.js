@@ -35,7 +35,7 @@ const FIELDS = {
 
 const DEFAULT_TEMPLATE = '<Album Artist>\\<Album>\\<Track#> - <Title>';
 
-// Characters that are invalid on Windows/exFAT (the music drive is exFAT) plus
+// Characters that are invalid on Windows/exFAT (external music drives often are) plus
 // control characters. Trailing dots/spaces are also invalid there.
 function safeSegment(text, fallback = 'Unknown') {
   let s = String(text ?? '').replace(/[<>:"|?*\u0000-\u001f]/g, '').replace(/[\\/]/g, '-').replace(/\s+/g, ' ').trim();
