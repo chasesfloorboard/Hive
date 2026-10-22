@@ -21,7 +21,7 @@ class SongPlannerTest {
         assertEquals(listOf("b"), plan.toPhone.map { it.id })
         assertEquals(listOf(2L), plan.toPc.map { it.id })
         assertEquals(8_000_000, plan.bytesToPhone)
-        assertTrue("songs on both sides go in the ledger", SongPlanner.phoneKey(phone(1, "Black", "Pearl Jam")) in plan.onBoth)
+        assertTrue("songs on both sides go in the ledger", plan.phoneKeys.getValue(1L) in plan.onBoth && plan.pcKeys.getValue("a") in plan.onBoth)
     }
 
     @Test fun aSongDeletedOnOneSideIsNotCopiedBack() {
@@ -41,15 +41,39 @@ class SongPlannerTest {
         assertTrue(plan.toPc.isEmpty())
     }
 
-    @Test fun duplicatesOnThePcDontLookMissingFromThePhone() {
-        // The PC has the song twice (mp3 and flac); the phone's one copy matches
-        // one of them, and the other must not be downloaded as a second copy.
+    @Test fun theSidesAreKeptOneToOneFileForFile() {
+        // The PC keeps a song twice (album and soundtrack versions, 11 s apart); the phone
+        // has one. The phone's file pairs with the closer one; the other is copied over.
         val plan = SongPlanner.plan(
-            phone = listOf(phone(1, "Huge", "Boris", 201_000)),
-            pc = listOf(pc("mp3", "Huge", "Boris", 201_000), pc("flac", "Huge", "Boris", 201_500)),
+            phone = listOf(phone(1, "Low Rider", "WAR", 190_900)),
+            pc = listOf(pc("album", "Low Rider", "WAR", 190_900), pc("skate", "Low Rider", "WAR", 179_800)),
             ledger = emptySet(),
         )
-        assertTrue(plan.toPhone.isEmpty())
+        assertEquals(listOf("skate"), plan.toPhone.map { it.id })
+        // Two identical copies on the phone and one on the PC: one goes to the PC, saying Hive already holds one.
+        val back = SongPlanner.plan(
+            phone = listOf(phone(1, "Huge", "Boris", 201_000), phone(2, "Huge", "Boris", 201_000)),
+            pc = listOf(pc("mp3", "Huge", "Boris", 201_000)),
+            ledger = emptySet(),
+        )
+        assertEquals(1, back.toPc.size)
+        assertEquals(1, back.pcCopies[back.toPc.single().id])
+    }
+
+    @Test fun eachCopyOfASongHasItsOwnLedgerEntry() {
+        // Both versions synced once; then the phone deletes one of them: only that one stays deleted.
+        val first = SongPlanner.plan(
+            phone = listOf(phone(1, "Low Rider", "WAR", 190_900), phone(2, "Low Rider", "WAR", 179_800)),
+            pc = listOf(pc("album", "Low Rider", "WAR", 190_900), pc("skate", "Low Rider", "WAR", 179_800)),
+            ledger = emptySet(),
+        )
+        assertEquals(4, first.onBoth.size)
+        val plan = SongPlanner.plan(
+            phone = listOf(phone(1, "Low Rider", "WAR", 190_900)),
+            pc = listOf(pc("album", "Low Rider", "WAR", 190_900), pc("skate", "Low Rider", "WAR", 179_800), pc("new", "Low Rider", "WAR", 300_000)),
+            ledger = first.onBoth,
+        )
+        assertEquals("the deleted version isn't copied back, a new one is", listOf("new"), plan.toPhone.map { it.id })
     }
 
     @Test fun keysIgnoreFormattingButNotTheSong() {

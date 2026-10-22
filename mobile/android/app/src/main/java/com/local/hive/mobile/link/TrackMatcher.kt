@@ -64,6 +64,16 @@ object TrackMatcher {
                 .minByOrNull { abs(it.durationMs - durationMs) }
         }
 
+        /** Every candidate that is this song, closest in length first (a song kept in several versions or copies). */
+        fun matches(title: String, artist: String, albumArtist: String, durationMs: Long): List<Candidate> {
+            val mine = artistParts(artist) + artistParts(albumArtist)
+            return byTitle[normalize(title)].orEmpty().filter { e ->
+                val theirs = e.artists
+                mine.isEmpty() || theirs.isEmpty() || mine.any { it in theirs } ||
+                    mine.any { m -> theirs.any { t -> m.contains(t) || t.contains(m) } }
+            }.map { it.candidate }.filter { durationOk(it.durationMs, durationMs) }.sortedBy { abs(it.durationMs - durationMs) }
+        }
+
         private fun durationOk(pc: Long, phone: Long) =
             pc <= 0 || phone <= 0 || abs(pc - phone) <= DURATION_TOLERANCE_MS
     }

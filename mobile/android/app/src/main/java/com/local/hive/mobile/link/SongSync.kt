@@ -37,6 +37,11 @@ data class SongPlan(
     val toPc: List<Track>,
     /** Ledger keys of songs on both sides right now. */
     val onBoth: Set<String>,
+    /** Each PC song's ledger key, and each phone song's. */
+    val pcKeys: Map<String, String> = emptyMap(),
+    val phoneKeys: Map<Long, String> = emptyMap(),
+    /** For each phone song to send: how many copies of it Hive holds for the phone's other files. */
+    val pcCopies: Map<Long, Int> = emptyMap(),
 ) {
     val bytesToPhone: Long get() = toPhone.sumOf { it.size }
     val bytesToPc: Long get() = toPc.sumOf { it.sizeBytes }
@@ -45,40 +50,63 @@ data class SongPlan(
 /**
  * Song sync's decisions, kept free of Android so they can be tested.
  *
- * A song on one side only is copied to the other, unless the ledger says it
- * has been on both before: then it was deleted on the side that lacks it, and
- * stays deleted. Matching is [TrackMatcher]'s (tags, not files: the phone keeps
- * m4a where Hive keeps mp3), and runs both ways so a song isn't copied just
- * because the one-way match picked a different duplicate.
+ * The phone and the PC are kept one to one, file for file: each phone file is
+ * paired with at most one PC file that is the same song ([TrackMatcher]: tags,
+ * not files, as the phone keeps m4a where Hive keeps mp3), closest in length
+ * first. Every file left without a partner is copied to the other side, so a
+ * single and its album version, a remaster, or a song kept twice, are kept
+ * twice on both. A file that has been on both before (the ledger) was deleted
+ * on the side that lacks it, and stays deleted.
  */
 object SongPlanner {
-    /** Ledger key for a song as one side tags it; "p:" phone side, "c:" PC side. */
+    /** A song as one side tags it, without its length (see [versionKey] for ledger keys). */
     fun keyOf(title: String, artist: String, albumArtist: String): String =
         TrackMatcher.normalize(title) + "|" + TrackMatcher.artistParts(albumArtist.ifBlank { artist }).sorted().joinToString(",")
 
-    fun phoneKey(t: Track) = "p:" + keyOf(t.title, t.artist, t.albumArtist)
-    fun pcKey(t: PcTrack) = "c:" + keyOf(t.title, t.artist, t.albumArtist)
+    /** One version of a song: its key and length in whole seconds. */
+    fun versionKey(title: String, artist: String, albumArtist: String, durationMs: Long): String =
+        keyOf(title, artist, albumArtist) + "|" + (durationMs + 500) / 1000
 
     fun plan(phone: List<Track>, pc: List<PcTrack>, ledger: Set<String>): SongPlan {
+        // Ledger keys per file; files that are the same version get #2, #3... in a fixed order.
+        fun <T> numbered(items: List<T>, prefix: String, id: (T) -> Comparable<*>, key: (T) -> String): Map<T, String> {
+            val count = HashMap<String, Int>()
+            return items.sortedWith(compareBy { id(it) }).associateWith { t ->
+                val k = prefix + key(t)
+                val n = count.merge(k, 1, Int::plus)!!
+                if (n == 1) k else "$k#$n"
+            }
+        }
+        val phoneKeys = numbered(phone, "p:", { it.id }) { versionKey(it.title, it.artist, it.albumArtist, it.durationMs) }
+        val pcKeys = numbered(pc, "c:", { it.id }) { versionKey(it.title, it.artist, it.albumArtist, it.duration) }
+
+        // Pairs, closest in length first, each file used once.
         val pcIndex = TrackMatcher.Index(pc.map { TrackMatcher.Candidate(it.id, it.title, it.artist, it.albumArtist, it.duration) })
         val pcById = pc.associateBy { it.id }
-        val onBoth = HashSet<String>()
-        val matchedPc = HashSet<String>()
-        val toPc = ArrayList<Track>()
+        val candidates = ArrayList<Triple<Track, String, Long>>()
+        val copiesOf = HashMap<Long, List<String>>()
         for (t in phone) {
-            val m = pcIndex.match(t.title, t.artist, t.albumArtist, t.durationMs)
-            if (m != null) {
-                matchedPc += m.key
-                onBoth += phoneKey(t)
-                pcById[m.key]?.let { onBoth += pcKey(it) }
-            } else if (phoneKey(t) !in ledger && t.sizeBytes > 0) toPc += t
+            val found = pcIndex.matches(t.title, t.artist, t.albumArtist, t.durationMs)
+            copiesOf[t.id] = found.map { it.key }
+            found.forEach { c -> candidates += Triple(t, c.key, kotlin.math.abs(c.durationMs - t.durationMs)) }
         }
-        val phoneIndex = TrackMatcher.Index(phone.map { TrackMatcher.Candidate(it.id.toString(), it.title, it.artist, it.albumArtist, it.durationMs) })
-        val toPhone = pc.filter { p ->
-            p.id !in matchedPc && pcKey(p) !in ledger &&
-                (phoneIndex.match(p.title, p.artist, p.albumArtist, p.duration) == null).also { missing -> if (!missing) onBoth += pcKey(p) }
+        candidates.sortWith(compareBy({ it.third }, { it.first.id }, { it.second }))
+        val pairedPhone = HashSet<Long>()
+        val pairedPc = HashSet<String>()
+        val onBoth = HashSet<String>()
+        for ((t, pcId, _) in candidates) {
+            if (t.id in pairedPhone || pcId in pairedPc) continue
+            pairedPhone += t.id; pairedPc += pcId
+            onBoth += phoneKeys.getValue(t)
+            pcById[pcId]?.let { onBoth += pcKeys.getValue(it) }
         }
-        return SongPlan(toPhone, toPc, onBoth)
+        val toPc = phone.filter { it.id !in pairedPhone && phoneKeys.getValue(it) !in ledger && it.sizeBytes > 0 }
+        val toPhone = pc.filter { it.id !in pairedPc && pcKeys.getValue(it) !in ledger }
+        return SongPlan(
+            toPhone, toPc, onBoth,
+            pcKeys = pcKeys.mapKeys { it.key.id }, phoneKeys = phoneKeys.mapKeys { it.key.id },
+            pcCopies = toPc.associate { it.id to copiesOf[it.id].orEmpty().size },
+        )
     }
 }
 
@@ -145,10 +173,10 @@ class SongSync(
             var budget = free - 2L * 1024 * 1024 * 1024
             for (song in plan.toPhone) {
                 if (song.size > budget) { _state.update { it.copy(message = "This phone is nearly full, so some songs from the PC weren't copied.") }; break }
-                step("${song.title} — ${song.artist}", onProgress) { download(conn, song) }
+                step("${song.title} — ${song.artist}", onProgress) { download(conn, song, plan) }
                 budget -= song.size
             }
-            for (track in uploads) step("${track.title} — ${track.artist}", onProgress) { upload(conn, track) }
+            for (track in uploads) step("${track.title} — ${track.artist}", onProgress) { upload(conn, track, plan) }
             // Songs Hive just took are new there: matching again (once Hive has
             // scanned them) lets plays waiting on them count in Hive's Wrap.
             if (uploads.isNotEmpty()) sync.matchAgainNextSync()
@@ -174,7 +202,7 @@ class SongSync(
         _state.update { it.copy(done = it.done + 1) }
     }
 
-    private suspend fun download(conn: HiveLinkClient.Connection, song: PcTrack) {
+    private suspend fun download(conn: HiveLinkClient.Connection, song: PcTrack, plan: SongPlan) {
         val resolver = context.contentResolver
         val clean = { v: String, fallback: String -> v.replace(Regex("""[\\/:*?"<>|\x00-\x1f]+"""), "_").trim().trimStart('.').take(120).ifBlank { fallback } }
         val ext = song.file.substringAfterLast('.', "mp3").lowercase()
@@ -195,13 +223,14 @@ class SongSync(
             resolver.delete(uri, null, null)
             throw e
         }
-        // The new file carries the PC's tags, so the phone's key for it is the same.
-        val now = System.currentTimeMillis()
-        dao.addSyncedSongs(listOf(SyncedSong(SongPlanner.pcKey(song), now), SyncedSong("p:" + SongPlanner.keyOf(song.title, song.artist, song.albumArtist), now)))
+        // The PC's file is on both now; the phone's copy is entered when the next plan pairs it.
+        plan.pcKeys[song.id]?.let { dao.addSyncedSongs(listOf(SyncedSong(it, System.currentTimeMillis()))) }
     }
 
-    private suspend fun upload(conn: HiveLinkClient.Connection, track: Track) {
+    private suspend fun upload(conn: HiveLinkClient.Connection, track: Track, plan: SongPlan) {
         val meta = buildMap {
+            // How many copies of this song Hive holds for the phone's other files: one more is a version Hive keeps.
+            put("have", (plan.pcCopies[track.id] ?: 0).toString())
             put("title", track.title); put("artist", track.artist); put("albumArtist", track.albumArtist); put("album", track.album)
             put("duration", track.durationMs.toString())
             if (track.trackNumber > 0) put("track", track.trackNumber.toString())
@@ -213,8 +242,7 @@ class SongSync(
             context.contentResolver.openInputStream(track.uri) ?: throw IOException("Couldn't read ${track.fileName}.")
         }
         if (result.status == "saved" || result.status == "exists") {
-            val now = System.currentTimeMillis()
-            dao.addSyncedSongs(listOf(SyncedSong(SongPlanner.phoneKey(track), now), SyncedSong("c:" + SongPlanner.keyOf(track.title, track.artist, track.albumArtist), now)))
+            plan.phoneKeys[track.id]?.let { dao.addSyncedSongs(listOf(SyncedSong(it, System.currentTimeMillis()))) }
         }
     }
 
