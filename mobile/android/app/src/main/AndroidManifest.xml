@@ -93,6 +93,13 @@
             android:foregroundServiceType="dataSync"
             tools:node="merge" />
 
+        <!-- Album covers for Android Auto, read by the car through per-cover grants. -->
+        <provider
+            android:name=".playback.CoverProvider"
+            android:authorities="${applicationId}.covers"
+            android:exported="false"
+            android:grantUriPermissions="true" />
+
         <service
             android:name=".playback.PlaybackService"
             android:exported="true"

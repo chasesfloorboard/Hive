@@ -221,7 +221,7 @@ class PlaybackService : MediaLibraryService() {
             Intent(this, MainActivity::class.java).putExtra(MainActivity.EXTRA_OPEN_PLAYER, true),
             PendingIntent.FLAG_IMMUTABLE or PendingIntent.FLAG_UPDATE_CURRENT,
         )
-        libraryBrowser = LibraryBrowser(app.database.dao())
+        libraryBrowser = LibraryBrowser(this, app.database.dao())
         fun <T> future(block: suspend () -> T): ListenableFuture<T> = SettableFuture.create<T>().also { f ->
             scope.launch { runCatching { withContext(Dispatchers.IO) { block() } }.fold({ f.set(it) }, { f.setException(it) }) }
         }
@@ -231,18 +231,35 @@ class PlaybackService : MediaLibraryService() {
             override fun seekToNextMediaItem() { if (!crossfader.skip()) super.seekToNextMediaItem() }
         }
         session = MediaLibrarySession.Builder(this, sessionPlayer, object : MediaLibrarySession.Callback {
+            // Every controller (the car, the lock screen, Bluetooth) may use Hive's heart, shuffle and repeat buttons.
+            override fun onConnect(session: MediaSession, controller: MediaSession.ControllerInfo): MediaSession.ConnectionResult =
+                MediaSession.ConnectionResult.AcceptedResultBuilder(session)
+                    .setAvailableSessionCommands(MediaSession.ConnectionResult.DEFAULT_SESSION_AND_LIBRARY_COMMANDS.buildUpon().add(CMD_LOVE).add(CMD_SHUFFLE).add(CMD_REPEAT).build())
+                    .build()
+
+            override fun onCustomCommand(session: MediaSession, controller: MediaSession.ControllerInfo, customCommand: androidx.media3.session.SessionCommand, args: android.os.Bundle): ListenableFuture<androidx.media3.session.SessionResult> {
+                when (customCommand.customAction) {
+                    CMD_LOVE.customAction -> player.currentMediaItem?.mediaId?.substringAfterLast('|')?.toLongOrNull()?.let { id -> scope.launch { app.sync.setLoved(listOf(id), id !in lovedIds.value) } }
+                    CMD_SHUFFLE.customAction -> player.shuffleModeEnabled = !player.shuffleModeEnabled
+                    CMD_REPEAT.customAction -> player.repeatMode = when (player.repeatMode) { Player.REPEAT_MODE_OFF -> Player.REPEAT_MODE_ALL; Player.REPEAT_MODE_ALL -> Player.REPEAT_MODE_ONE; else -> Player.REPEAT_MODE_OFF }
+                }
+                return com.google.common.util.concurrent.Futures.immediateFuture(androidx.media3.session.SessionResult(androidx.media3.session.SessionResult.RESULT_SUCCESS))
+            }
+
             // Bluetooth play or the system's media controls after a reboot resume the saved queue.
             override fun onPlaybackResumption(mediaSession: MediaSession, controller: MediaSession.ControllerInfo): ListenableFuture<MediaItemsWithStartPosition> =
                 future { memory.restore()?.let { MediaItemsWithStartPosition(it.items, it.index, it.positionMs) } ?: throw UnsupportedOperationException("Nothing to resume") }
 
             // Android Auto and other browsers: Hive's library as a tree.
             override fun onGetLibraryRoot(session: MediaLibrarySession, browser: MediaSession.ControllerInfo, params: LibraryParams?): ListenableFuture<LibraryResult<MediaItem>> =
-                com.google.common.util.concurrent.Futures.immediateFuture(LibraryResult.ofItem(this@PlaybackService.libraryBrowser.root(), params))
+                // The car lays folders out as grids of covers and songs as lists unless a folder says otherwise.
+                com.google.common.util.concurrent.Futures.immediateFuture(LibraryResult.ofItem(this@PlaybackService.libraryBrowser.root(), LibraryParams.Builder().setExtras(this@PlaybackService.libraryBrowser.rootExtras()).build()))
 
             override fun onGetChildren(session: MediaLibrarySession, browser: MediaSession.ControllerInfo, parentId: String, page: Int, pageSize: Int, params: LibraryParams?): ListenableFuture<LibraryResult<com.google.common.collect.ImmutableList<MediaItem>>> =
                 future {
-                    val all = this@PlaybackService.libraryBrowser.children(parentId)
-                    LibraryResult.ofItemList(all.drop(page * pageSize).take(pageSize), params)
+                    val shown = this@PlaybackService.libraryBrowser.children(parentId).drop(page * pageSize).take(pageSize)
+                    CoverProvider.grant(this@PlaybackService, browser.packageName, shown)
+                    LibraryResult.ofItemList(shown, params)
                 }
 
             override fun onGetItem(session: MediaLibrarySession, browser: MediaSession.ControllerInfo, mediaId: String): ListenableFuture<LibraryResult<MediaItem>> =
@@ -261,7 +278,11 @@ class PlaybackService : MediaLibraryService() {
             }
 
             override fun onGetSearchResult(session: MediaLibrarySession, browser: MediaSession.ControllerInfo, query: String, page: Int, pageSize: Int, params: LibraryParams?): ListenableFuture<LibraryResult<com.google.common.collect.ImmutableList<MediaItem>>> =
-                future { LibraryResult.ofItemList((lastSearch.ifEmpty { this@PlaybackService.libraryBrowser.search(query) }).drop(page * pageSize).take(pageSize), params) }
+                future {
+                    val shown = (lastSearch.ifEmpty { this@PlaybackService.libraryBrowser.search(query) }).drop(page * pageSize).take(pageSize)
+                    CoverProvider.grant(this@PlaybackService, browser.packageName, shown)
+                    LibraryResult.ofItemList(shown, params)
+                }
 
             // A song picked in a browser plays its list from there; items from Hive itself pass straight through.
             override fun onAddMediaItems(mediaSession: MediaSession, controller: MediaSession.ControllerInfo, mediaItems: MutableList<MediaItem>): ListenableFuture<MutableList<MediaItem>> =
@@ -277,11 +298,48 @@ class PlaybackService : MediaLibraryService() {
         }).setSessionActivity(open)
             .setBitmapLoader(androidx.media3.session.CacheBitmapLoader(CoverBitmapLoader(this, scope)))
             .build()
+        // The buttons follow the song, its heart, shuffle and repeat.
+        scope.launch { app.database.dao().loveStates().collect { list -> lovedIds.value = list.filter { it.loved }.mapTo(HashSet()) { it.trackId }; refreshButtons(player) } }
+        player.addListener(object : Player.Listener {
+            override fun onEvents(player: Player, events: Player.Events) {
+                if (events.containsAny(Player.EVENT_MEDIA_ITEM_TRANSITION, Player.EVENT_SHUFFLE_MODE_ENABLED_CHANGED, Player.EVENT_REPEAT_MODE_CHANGED)) refreshButtons(player)
+            }
+        })
+        refreshButtons(player)
     }
 
     override fun onGetSession(controllerInfo: MediaSession.ControllerInfo): MediaLibrarySession? = session
 
+    private companion object {
+        val CMD_LOVE = androidx.media3.session.SessionCommand("hive.love", android.os.Bundle.EMPTY)
+        val CMD_SHUFFLE = androidx.media3.session.SessionCommand("hive.shuffle", android.os.Bundle.EMPTY)
+        val CMD_REPEAT = androidx.media3.session.SessionCommand("hive.repeat", android.os.Bundle.EMPTY)
+    }
+
     private lateinit var libraryBrowser: LibraryBrowser
+    private val lovedIds = MutableStateFlow<Set<Long>>(emptySet())
+
+    /**
+     * The heart, shuffle and repeat buttons beside the transport controls in
+     * the car, on the system lock screen and in the notification's overflow,
+     * showing the current state.
+     */
+    private fun refreshButtons(player: Player) {
+        val session = session ?: return
+        val id = player.currentMediaItem?.mediaId?.substringAfterLast('|')?.toLongOrNull()
+        fun button(icon: Int, name: String, command: androidx.media3.session.SessionCommand) =
+            androidx.media3.session.CommandButton.Builder(icon).setDisplayName(name).setSessionCommand(command).setSlots(androidx.media3.session.CommandButton.SLOT_OVERFLOW).build()
+        val buttons = listOfNotNull(
+            id?.let { if (it in lovedIds.value) button(androidx.media3.session.CommandButton.ICON_HEART_FILLED, "Remove from Favorites", CMD_LOVE) else button(androidx.media3.session.CommandButton.ICON_HEART_UNFILLED, "Add to Favorites", CMD_LOVE) },
+            if (player.shuffleModeEnabled) button(androidx.media3.session.CommandButton.ICON_SHUFFLE_ON, "Shuffle on", CMD_SHUFFLE) else button(androidx.media3.session.CommandButton.ICON_SHUFFLE_OFF, "Shuffle off", CMD_SHUFFLE),
+            when (player.repeatMode) {
+                Player.REPEAT_MODE_ONE -> button(androidx.media3.session.CommandButton.ICON_REPEAT_ONE, "Repeat one", CMD_REPEAT)
+                Player.REPEAT_MODE_ALL -> button(androidx.media3.session.CommandButton.ICON_REPEAT_ALL, "Repeat all", CMD_REPEAT)
+                else -> button(androidx.media3.session.CommandButton.ICON_REPEAT_OFF, "Repeat off", CMD_REPEAT)
+            },
+        )
+        session.setMediaButtonPreferences(buttons)
+    }
     private lateinit var crossfader: Crossfader
     private var lastSearch: List<MediaItem> = emptyList()
 
