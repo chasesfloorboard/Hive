@@ -610,6 +610,9 @@ test('a phone keeping songs one to one sends another version Hive already has a 
   // Sent again (a retry) once Hive holds two copies: it is already there.
   ctx.tracks.push({ id: 'b9', path: path.join(ctx.music, 'Pearl Jam', 'Live', 'Black.mp3'), title: 'Black', artist: 'Pearl Jam', album: 'Live', duration: '340.0' });
   assert.equal((await putSong(ctx.port, token, { title: 'Black', artist: 'Pearl Jam', album: 'Live', duration: 340000, ext: 'mp3', have: 1 }, Buffer.from('live version'))).body.status, 'exists');
+  // An exact copy of a library file (same size, same length) is that file, whatever its tags say.
+  ctx.tracks.push({ id: 'c7', path: '/music/x.mp3', title: 'Real Title', artist: 'Real Artist', duration: '120.0', fileSize: 12 });
+  assert.equal((await putSong(ctx.port, token, { title: 'x', artist: '', duration: 120400, ext: 'mp3', have: 0 }, Buffer.from('twelve bytes'))).body.status, 'exists');
   // Without have, any copy of the song means Hive has it (older phones).
   assert.equal((await putSong(ctx.port, token, { title: 'Black', artist: 'Pearl Jam', duration: 340000, ext: 'mp3' }, Buffer.from('x'))).body.status, 'exists');
 });

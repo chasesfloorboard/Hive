@@ -728,7 +728,9 @@ function createHiveLink({ dataDir, getTracks, setLove, onPaired, streamSong = nu
     // song Hive already holds for its other files ("have"): one more is a new
     // version to keep. Without it, any copy of the song means Hive has it.
     const have = params.has('have') ? num(params.get('have')) : null;
-    const existing = have === null ? index.match(meta) : (index.matches(meta).length > have ? index.match(meta) : null);
+    // An exact copy of a file Hive has (same size to the byte, same length) is that file, whatever its tags say.
+    const twin = tracks.find(t => num(t.fileSize) === size && Math.abs(Math.round(num(t.duration) * 1000) - meta.durationMs) <= 2000);
+    const existing = twin ? { key: trackIdFor(twin) } : have === null ? index.match(meta) : (index.matches(meta).length > have ? index.match(meta) : null);
     if (existing) { req.resume(); return send(res, 200, { status: 'exists', id: existing.key }); }
     let target;
     try { target = await songTarget(meta); } catch (err) { return refuse(507, err?.message || String(err)); }
