@@ -145,6 +145,26 @@ class PlayerConnection(private val context: Context, private val scope: Coroutin
     fun skipToQueueIndex(index: Int) = withController { it.seekTo(index, 0L) }
     fun removeFromQueue(index: Int) = withController { it.removeMediaItem(index) }
     fun moveInQueue(from: Int, to: Int) = withController { it.moveMediaItem(from, to) }
+
+    /** Takes several songs out of the queue; the playing one stays. */
+    fun removeFromQueue(indices: Collection<Int>) = withController { c ->
+        indices.filter { it != c.currentMediaItemIndex && it in 0 until c.mediaItemCount }.sortedDescending().forEach { c.removeMediaItem(it) }
+    }
+
+    /** Moves several songs to play right after the current one, keeping their order. */
+    fun playNextFromQueue(indices: Collection<Int>) = withController { c ->
+        val current = c.currentMediaItemIndex
+        val picked = indices.filter { it != current && it in 0 until c.mediaItemCount }.sorted()
+        // The queue as the moves leave it, to find each song's place as the earlier moves shift it.
+        val model = (0 until c.mediaItemCount).toMutableList()
+        picked.forEachIndexed { n, original ->
+            val from = model.indexOf(original)
+            model.removeAt(from)
+            val to = model.indexOf(current) + 1 + n
+            model.add(to, original)
+            c.moveMediaItem(from, to)
+        }
+    }
     fun setSleepTimer(minutes: Int) {
         cancelSleepTimer()
         val endsAt = System.currentTimeMillis() + minutes * 60_000L

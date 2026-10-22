@@ -14,6 +14,8 @@ import androidx.compose.foundation.background
 import androidx.compose.foundation.border
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.gestures.awaitEachGesture
+import androidx.compose.foundation.gestures.scrollBy
+import androidx.compose.foundation.combinedClickable
 import androidx.compose.foundation.gestures.awaitFirstDown
 import androidx.compose.foundation.gestures.detectHorizontalDragGestures
 import androidx.compose.foundation.gestures.detectTapGestures
@@ -716,38 +718,118 @@ private fun QueueList(vm: MainViewModel, modifier: Modifier) {
     var dragOffset by remember { mutableFloatStateOf(0f) }
     val rowPx = with(LocalDensity.current) { QueueRow.toPx() }
     val listState = rememberLazyListState()
-    LaunchedEffect(now.queueIndex, tracks.size) { if (now.queueIndex in tracks.indices) listState.scrollToItem((now.queueIndex - 2).coerceAtLeast(0)) }
+    // The playing song is brought into view when the song changes, not when the queue is edited:
+    // taking a song out leaves the list where it was.
+    LaunchedEffect(now.mediaId) { if (now.queueIndex in tracks.indices) listState.scrollToItem((now.queueIndex - 2).coerceAtLeast(0)) }
 
-    Box(modifier) {
-            LazyColumn(state = listState, contentPadding = PaddingValues(bottom = 20.dp)) {
+    // Picking songs: hold one, then drag over the others (the list scrolls near its edges); taps add or remove.
+    var picked by remember { mutableStateOf<Set<String>>(emptySet()) }
+    var anchor by remember { mutableStateOf<String?>(null) }
+    var pickedBefore by remember { mutableStateOf<Set<String>>(emptySet()) }
+    // Songs that left the queue leave the selection too.
+    LaunchedEffect(keys) { picked = picked.filterTo(HashSet()) { it in keys } }
+    val picking = picked.isNotEmpty()
+    androidx.activity.compose.BackHandler(enabled = picking) { picked = emptySet() }
+    val haptics = androidx.compose.ui.platform.LocalHapticFeedback.current
+    fun indicesOf(set: Set<String>) = set.mapNotNull { k -> keys.indexOf(k).takeIf { it >= 0 } }
+    fun dragTo(k: String) {
+        val from = order.indexOf(anchor ?: return)
+        val to = order.indexOf(k)
+        if (from < 0 || to < 0) return
+        picked = pickedBefore + order.subList(minOf(from, to), maxOf(from, to) + 1)
+    }
+    val scope = rememberCoroutineScope()
+    val edge = with(LocalDensity.current) { 64.dp.toPx() }
+    fun keyAt(y: Float): String? {
+        val info = listState.layoutInfo
+        val at = y + info.viewportStartOffset
+        return info.visibleItemsInfo.firstOrNull { at >= it.offset && at < it.offset + it.size }?.key as? String
+    }
+
+    Column(modifier) {
+        androidx.compose.animation.AnimatedVisibility(picking, enter = androidx.compose.animation.expandVertically() + androidx.compose.animation.fadeIn(), exit = androidx.compose.animation.shrinkVertically() + androidx.compose.animation.fadeOut()) {
+            val n = picked.size
+            Row(Modifier.fillMaxWidth().padding(horizontal = 12.dp, vertical = 4.dp).clip(HiveShape.pill).background(c.accentSoft.copy(alpha = 0.35f)).padding(start = 14.dp), verticalAlignment = Alignment.CenterVertically) {
+                Text(if (n == 1) "1 song picked" else "$n songs picked", style = HiveText.rowStrong, color = c.text, modifier = Modifier.weight(1f))
+                Text("Play next", style = HiveText.rowStrong, color = c.accent, modifier = Modifier.clip(HiveShape.pill).clickable { vm.player.playNextFromQueue(indicesOf(picked)); picked = emptySet() }.padding(horizontal = 10.dp, vertical = 10.dp))
+                Text("Remove", style = HiveText.rowStrong, color = Color(0xFFFF8A8A), modifier = Modifier.clip(HiveShape.pill).clickable { vm.player.removeFromQueue(indicesOf(picked)); picked = emptySet() }.padding(horizontal = 10.dp, vertical = 10.dp))
+                Box(Modifier.size(40.dp).clip(CircleShape).clickable { picked = emptySet() }, contentAlignment = Alignment.Center) {
+                    Icon(Icons.Rounded.Close, "Stop picking", tint = c.textDim, modifier = Modifier.size(18.dp))
+                }
+            }
+        }
+        LazyColumn(
+            state = listState, contentPadding = PaddingValues(bottom = 20.dp),
+            modifier = Modifier.weight(1f).pointerInput(Unit) {
+                awaitEachGesture {
+                    awaitFirstDown(requireUnconsumed = false, pass = androidx.compose.ui.input.pointer.PointerEventPass.Initial)
+                    var speed = 0f
+                    var finger = 0f
+                    var scroller: kotlinx.coroutines.Job? = null
+                    try {
+                        while (true) {
+                            val change = awaitPointerEvent(androidx.compose.ui.input.pointer.PointerEventPass.Initial).changes.firstOrNull() ?: break
+                            if (!change.pressed) break
+                            if (anchor == null) continue
+                            // Picking, not scrolling: the list doesn't get this drag.
+                            change.consume()
+                            finger = change.position.y
+                            keyAt(finger)?.let(::dragTo)
+                            speed = when {
+                                finger < edge -> -(edge - finger) / edge * 24f
+                                finger > size.height - edge -> (finger - (size.height - edge)) / edge * 24f
+                                else -> 0f
+                            }
+                            if (speed != 0f && scroller?.isActive != true) scroller = scope.launch {
+                                while (speed != 0f) { listState.scrollBy(speed); keyAt(finger)?.let(::dragTo); androidx.compose.runtime.withFrameNanos { } }
+                            }
+                        }
+                    } finally { speed = 0f; scroller?.cancel(); anchor = null }
+                }
+            },
+        ) {
                 itemsIndexed(order, key = { _, k -> k }) { _, k ->
                     val i = keys.indexOf(k)
                     val t = tracks[i]
                     val playing = i == now.queueIndex
                     val past = i < now.queueIndex
                     val lifted = dragKey == k
+                    val isPicked = k in picked
                     Row(
                         Modifier.then(if (lifted) Modifier.zIndex(1f).graphicsLayer { translationY = dragOffset; scaleX = 1.02f; scaleY = 1.02f } else Modifier.animateItem())
                             .fillMaxWidth().padding(horizontal = 8.dp).height(QueueRow)
                             .then(if (lifted) Modifier.shadow(16.dp, HiveShape.row, ambientColor = c.accentGlow) else Modifier)
                             .clip(HiveShape.row)
-                            .background(when { lifted -> c.control; playing -> c.accentSoft.copy(alpha = 0.3f); else -> Color.Transparent })
-                            .clickable { vm.player.skipToQueueIndex(i) }.alpha(if (past && !lifted) 0.5f else 1f).padding(start = 8.dp),
+                            .background(when { lifted -> c.control; isPicked -> c.accentSoft.copy(alpha = 0.45f); playing -> c.accentSoft.copy(alpha = 0.3f); else -> Color.Transparent })
+                            .combinedClickable(
+                                onClick = { if (picking) picked = if (isPicked) picked - k else picked + k else vm.player.skipToQueueIndex(i) },
+                                onLongClick = {
+                                    haptics.performHapticFeedback(androidx.compose.ui.hapticfeedback.HapticFeedbackType.LongPress)
+                                    pickedBefore = picked; anchor = k; picked = picked + k
+                                },
+                            )
+                            .alpha(if (past && !lifted && !isPicked) 0.5f else 1f).padding(start = 8.dp),
                         verticalAlignment = Alignment.CenterVertically,
                     ) {
                         Box(Modifier.size(6.dp).clip(CircleShape).background(if (playing) c.accent else Color.Transparent))
                         Spacer(Modifier.width(8.dp))
-                        Artwork(t.artworkUri, Modifier.size(40.dp).then(if (playing) Modifier.border(1.dp, c.accentSoft, HiveShape.thumb) else Modifier))
+                        Box(contentAlignment = Alignment.Center) {
+                            Artwork(t.artworkUri, Modifier.size(40.dp).then(if (playing) Modifier.border(1.dp, c.accentSoft, HiveShape.thumb) else Modifier))
+                            if (isPicked) Box(Modifier.size(40.dp).clip(HiveShape.thumb).background(c.accent.copy(alpha = 0.85f)), contentAlignment = Alignment.Center) {
+                                Icon(Icons.Rounded.Check, "Picked", tint = readableOn(c.accent), modifier = Modifier.size(20.dp))
+                            }
+                        }
                         Column(Modifier.weight(1f).padding(horizontal = 12.dp), verticalArrangement = Arrangement.spacedBy(1.dp)) {
                             Text(t.title, style = HiveText.row, color = c.text, maxLines = 1, overflow = TextOverflow.Ellipsis)
                             Text(t.artist, style = HiveText.rowSub, color = c.textDim, maxLines = 1, overflow = TextOverflow.Ellipsis)
                         }
                         Text(formatDuration(t.durationMs), style = HiveText.numbers, color = c.textDimmer)
-                        if (!playing) Box(Modifier.size(40.dp).clip(CircleShape).clickable { vm.player.removeFromQueue(i) }, contentAlignment = Alignment.Center) {
+                        // While picking, the row's own remove and drag handle step aside.
+                        if (!playing && !picking) Box(Modifier.size(40.dp).clip(CircleShape).clickable { vm.player.removeFromQueue(i) }, contentAlignment = Alignment.Center) {
                             Icon(Icons.Rounded.Close, "Remove from queue", tint = c.textDimmer, modifier = Modifier.size(17.dp))
                         } else Spacer(Modifier.width(40.dp))
                         // Drag the handle to move the song; neighbours make room as it passes half a row.
-                        Box(
+                        if (picking) Spacer(Modifier.size(44.dp)) else Box(
                             Modifier.size(44.dp).pointerInput(k) {
                                 detectDragGestures(
                                     onDragStart = { dragKey = k; dragFrom = order.indexOf(k); dragOffset = 0f },
@@ -773,7 +855,7 @@ private fun QueueList(vm: MainViewModel, modifier: Modifier) {
                         ) { Icon(Icons.Rounded.DragHandle, "Drag to reorder", tint = if (lifted) c.accent else c.textDimmer, modifier = Modifier.size(20.dp)) }
                     }
                 }
-            }
+        }
     }
 }
 

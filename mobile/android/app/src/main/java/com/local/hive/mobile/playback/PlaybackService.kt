@@ -114,6 +114,8 @@ class PlaybackService : MediaLibraryService() {
                 .setAudioAttributes(musicAttributes, /* handleAudioFocus = */ false)
                 .build()
         }, stopsAtSongEnd = { app.stopsAtSongEnd })
+        // The queue's name in the car's and other controllers' queue view.
+        player.playlistMetadata = androidx.media3.common.MediaMetadata.Builder().setTitle("Up next").build()
         player.addListener(PlayCounter(app.playRecorder, app.scrobbler, scope, player))
         // With music playing, Hive's lock-screen player is opened as the screen goes off, so it's there when it comes on.
         screenOff = object : android.content.BroadcastReceiver() {
