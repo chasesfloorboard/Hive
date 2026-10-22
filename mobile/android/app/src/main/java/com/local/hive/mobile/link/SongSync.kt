@@ -205,8 +205,11 @@ class SongSync(
     private suspend fun download(conn: HiveLinkClient.Connection, song: PcTrack, plan: SongPlan) {
         val resolver = context.contentResolver
         val clean = { v: String, fallback: String -> v.replace(Regex("""[\\/:*?"<>|\x00-\x1f]+"""), "_").trim().trimStart('.').take(120).ifBlank { fallback } }
-        val ext = song.file.substringAfterLast('.', "mp3").lowercase()
-        val name = clean(song.file, "${clean(song.title, "Untitled")}.$ext")
+        val fileExt = song.file.substringAfterLast('.', "mp3").lowercase()
+        // A music video kept in Hive's library (.mp4) goes into the phone's music as audio (.m4a):
+        // Android files only audio there, and the player plays its sound.
+        val ext = if (MimeTypeMap.getSingleton().getMimeTypeFromExtension(fileExt)?.startsWith("audio/") == false) "m4a" else fileExt
+        val name = clean(song.file.substringBeforeLast('.') + ".$ext", "${clean(song.title, "Untitled")}.$ext")
         val folder = "Music/Hive/${clean(song.albumArtist.ifBlank { song.artist }, "Unknown Artist")}/${clean(song.album, "Unknown Album")}"
         val values = ContentValues().apply {
             put(MediaStore.Audio.Media.DISPLAY_NAME, name)
