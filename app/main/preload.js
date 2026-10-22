@@ -7,6 +7,7 @@ contextBridge.exposeInMainWorld('beehive', {
   hiveLinkPair: () => ipcRenderer.invoke('hiveLink:pair'),
   hiveLinkDevices: () => ipcRenderer.invoke('hiveLink:devices'),
   hiveLinkUnpair: (deviceId) => ipcRenderer.invoke('hiveLink:unpair', deviceId),
+  hiveLinkTrust: (deviceId, on) => ipcRenderer.invoke('hiveLink:trust', deviceId, on),
   hiveLinkRemoteControl: (on) => ipcRenderer.invoke('hiveLink:remoteControl', on),
   hiveLinkReceiveSongs: (on) => ipcRenderer.invoke('hiveLink:receiveSongs', on),
   hiveLinkInbox: () => ipcRenderer.invoke('hiveLink:inbox'),

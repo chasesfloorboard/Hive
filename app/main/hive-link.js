@@ -118,7 +118,9 @@ function createHiveLink({ dataDir, getTracks, setLove, onPaired, streamSong = nu
       const raw = JSON.parse(fs.readFileSync(statePath, 'utf8'));
       return {
         serverId: raw.serverId || crypto.randomUUID(),
-        devices: Array.isArray(raw.devices) ? raw.devices : [],
+        // A phone that has been syncing (seen well after it paired) has synced with this Hive
+        // before: its changes are trusted from now on (see trusted()).
+        devices: (Array.isArray(raw.devices) ? raw.devices : []).map(d => d.trusted === undefined && num(d.lastSeen) - num(d.pairedAt) > 60_000 ? { ...d, trusted: true } : d),
         seq: num(raw.seq),
         events: Array.isArray(raw.events) ? raw.events : [],
         lastChangeAt: raw.lastChangeAt && typeof raw.lastChangeAt === 'object' ? raw.lastChangeAt : {},
@@ -257,6 +259,15 @@ function createHiveLink({ dataDir, getTracks, setLove, onPaired, streamSong = nu
     return device || null;
   }
 
+  /** Whether a phone's changes apply by themselves (trusted) or wait in the inbox. */
+  function setTrusted(deviceId, on) {
+    const device = state.devices.find(d => d.id === deviceId);
+    if (!device) return false;
+    device.trusted = !!on;
+    saveNow();
+    return true;
+  }
+
   function unpair(deviceId) {
     const before = state.devices.length;
     state.devices = state.devices.filter(d => d.id !== deviceId);
@@ -306,8 +317,17 @@ function createHiveLink({ dataDir, getTracks, setLove, onPaired, streamSong = nu
     return { reset: false, seq: state.seq, changes: state.events.filter(e => e.seq > since).map(publicEvent) };
   }
 
+  // A phone whose changes were accepted here before (applied from the inbox, or one
+  // that has been syncing all along) has its changes applied at once; a new phone's
+  // wait in the inbox for the first time.
+  function trusted(device) {
+    if (acceptPhoneChanges) return true;
+    const id = typeof device === 'string' ? device : device?.id;
+    return !!state.devices.find(d => d.id === id)?.trusted;
+  }
+
   async function applyLoveChanges(device, changes) {
-    if (!acceptPhoneChanges) {
+    if (!trusted(device)) {
       // Kept for the user to confirm in Hive; the newest change per song wins.
       // The phone keeps resending a change until it's settled, so each answer
       // says where it stands: still waiting ("staged"), done ("unchanged",
@@ -452,6 +472,9 @@ function createHiveLink({ dataDir, getTracks, setLove, onPaired, streamSong = nu
   // Applies what the user chose: Love through the heart button's own path,
   // plays into Hive's listening history. What isn't chosen stays.
   async function applyInbox({ loves = true, plays = true } = {}) {
+    // Applying a phone's changes trusts it: next time they apply by themselves.
+    const from = new Set([...(loves ? Object.values(state.inbox.loves).map(l => l.deviceId) : []), ...(plays ? state.inbox.plays.map(p => p.deviceId) : [])]);
+    for (const d of state.devices) if (from.has(d.id)) d.trusted = true;
     const tracks = await getTracks();
     const byId = new Map(tracks.map(t => [trackIdFor(t), t]));
     let lovesApplied = 0, playsApplied = 0;
@@ -864,6 +887,10 @@ function createHiveLink({ dataDir, getTracks, setLove, onPaired, streamSong = nu
   }
 
   function start() {
+    // Changes a trusted phone left waiting (from before it was trusted) go in now.
+    if (Object.values(state.inbox.loves).some(l => trusted(l.deviceId)) || state.inbox.plays.some(p => trusted(p.deviceId))) {
+      setTimeout(() => applyInbox().catch(err => log('Hive Link inbox apply failed', err?.message || String(err))), 2000);
+    }
     if (server) return;
     server = http.createServer((req, res) => {
       handle(req, res).catch(err => {
@@ -893,6 +920,7 @@ function createHiveLink({ dataDir, getTracks, setLove, onPaired, streamSong = nu
     stop,
     startPairing,
     answerPairRequest,
+    setTrusted,
     setRemoteControl,
     remoteControl: () => !!state.remoteControl,
     setReceiveSongs,

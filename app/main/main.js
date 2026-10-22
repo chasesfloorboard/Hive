@@ -8130,6 +8130,7 @@ ipcMain.handle('hiveLink:receiveSongs', async (_evt, on) => {
   if (typeof on === 'boolean') hiveLink?.setReceiveSongs(on);
   return !!hiveLink?.receiveSongs();
 });
+ipcMain.handle('hiveLink:trust', async (_evt, deviceId, on) => !!hiveLink?.setTrusted(String(deviceId || ''), !!on));
 ipcMain.handle('hiveLink:unpair', async (_evt, deviceId) => !!hiveLink?.unpair(String(deviceId || '')));
 
 async function readFlacMusicBeeLove(filePath) {

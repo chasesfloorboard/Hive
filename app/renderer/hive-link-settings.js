@@ -27,10 +27,19 @@
       label.textContent = device.name || 'Phone';
       const hint = document.createElement('span');
       hint.className = 'settings-hint';
-      hint.textContent = `Paired ${new Date(device.pairedAt).toLocaleDateString()} · last seen ${new Date(device.lastSeen).toLocaleString()}`;
+      // A phone that has synced here before is trusted: its Favorites apply by themselves.
+      hint.textContent = `Paired ${new Date(device.pairedAt).toLocaleDateString()} · last seen ${new Date(device.lastSeen).toLocaleString()} · ${device.trusted ? 'its changes apply automatically' : 'its changes wait for you to apply them'}`;
       text.append(label, hint);
       const control = document.createElement('span');
       control.className = 'settings-row-control';
+      if (api.hiveLinkTrust) {
+        const trust = document.createElement('button');
+        trust.className = 'sidebar-add';
+        trust.type = 'button';
+        trust.textContent = device.trusted ? 'Ask first' : 'Apply automatically';
+        trust.addEventListener('click', async () => { await api.hiveLinkTrust(device.id, !device.trusted); renderDevices(); });
+        control.append(trust);
+      }
       const unpair = document.createElement('button');
       unpair.className = 'sidebar-add';
       unpair.type = 'button';

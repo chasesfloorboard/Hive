@@ -105,6 +105,25 @@ async function waitListening(port) {
   throw new Error('server did not start');
 }
 
+test('a phone whose changes were accepted once is trusted: its next changes apply at once', async t => {
+  const ctx = setup({ acceptPhoneChanges: false });
+  t.after(() => ctx.link.stop());
+  await waitListening(ctx.port);
+  const token = await pair(ctx);
+  const love = (id, loved, at) => request(ctx.port, 'POST', '/api/love', { token, body: { changes: [{ clientChangeId: at, id, loved, at }] } });
+  // New phone: its change waits in the inbox.
+  assert.equal((await love('a1', true, Date.now())).body.results[0].status, 'staged');
+  assert.equal(ctx.setLoveCalls.length, 0);
+  await ctx.link.applyInbox();
+  assert.equal(ctx.setLoveCalls.length, 1);
+  assert.equal(ctx.link.devices()[0].trusted, true);
+  // Trusted now: the next change is applied straight away, no inbox.
+  const next = await love('b2', false, Date.now() + 1000);
+  assert.notEqual(next.body.results[0].status, 'staged');
+  assert.equal(ctx.setLoveCalls.length, 2);
+  assert.equal(ctx.link.inboxSummary().loves, 0);
+});
+
 test('a phone can ask to connect without a code; only the PC allowing it pairs it', async t => {
   let answer;
   const asked = [];
@@ -493,11 +512,7 @@ test('a resent staged Love reports staged, then unchanged once applied, or stale
   const token = await pair(ctx);
   const send = async (id, loved, at) => (await request(ctx.port, 'POST', '/api/love', { token, body: { changes: [{ clientChangeId: 7, id, loved, at }] } })).body.results[0];
 
-  assert.equal((await send('a1', true, 1000)).status, 'staged');
-  assert.equal((await send('a1', true, 1000)).status, 'staged', 'still waiting in the inbox');
-  await ctx.link.applyInbox({});
-  assert.deepEqual(await send('a1', true, 1000), { clientChangeId: 7, id: 'a1', status: 'unchanged', loved: true });
-
+  // Discarding first: the phone isn't trusted until a change of its is applied.
   assert.equal((await send('b2', false, 2000)).status, 'staged');
   ctx.link.discardInbox({});
   const overruled = await send('b2', false, 2000);
@@ -505,6 +520,12 @@ test('a resent staged Love reports staged, then unchanged once applied, or stale
   assert.equal(overruled.loved, true, "the phone takes Hive's state back");
   assert.equal(ctx.tracks[1].loved, true);
   assert.equal((await send('b2', false, 3000)).status, 'staged', 'a newer phone change is a new request');
+  ctx.link.discardInbox({});
+
+  assert.equal((await send('a1', true, 4000)).status, 'staged');
+  assert.equal((await send('a1', true, 4000)).status, 'staged', 'still waiting in the inbox');
+  await ctx.link.applyInbox({});
+  assert.deepEqual(await send('a1', true, 4000), { clientChangeId: 7, id: 'a1', status: 'unchanged', loved: true });
 });
 
 // ---- song sync: files from the phone ----
