@@ -314,6 +314,10 @@ interface LibraryDao {
     @Query("DELETE FROM synced_songs")
     suspend fun clearSyncedSongs()
 
+    /** Forgets that these songs were on both sides, so song sync copies them again. */
+    @Query("DELETE FROM synced_songs WHERE `key` IN (:keys)")
+    suspend fun forgetSyncedSongs(keys: List<String>)
+
     // ---- love ----
 
     @Query("SELECT * FROM love")

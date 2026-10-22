@@ -114,6 +114,8 @@ import java.util.concurrent.TimeUnit
 @Serializable private data class RemoteCommand(val command: String, val positionMs: Long? = null, val volume: Double? = null)
 @Serializable private data class PairRequest(val code: String, val deviceName: String)
 @Serializable private data class ConnectRequest(val deviceName: String)
+@Serializable private data class DeleteSongs(val ids: List<String>)
+@Serializable private data class DeletedSongs(val deleted: List<String> = emptyList(), val failed: Int = 0)
 @Serializable data class ConnectTicket(val requestId: String, val secret: String)
 @Serializable data class ConnectAnswer(val status: String = "", val token: String = "", val deviceId: String = "", val serverId: String = "", val name: String = "", val seq: Long = 0, val error: String? = null)
 /** A theme from Hive's themes folder (stock, MusicBee skins, saved). */
@@ -288,6 +290,12 @@ class HiveLinkClient(private val http: OkHttpClient = defaultHttp()) {
      * Sends a song file to Hive ([size] bytes from [open]), with its tags so
      * Hive can file it and check it doesn't already have it.
      */
+    /** Songs deleted on the phone that the user chose to delete on the PC too: to the Trash there. Returns the ids deleted. */
+    suspend fun deleteSongs(conn: Connection, ids: List<String>): List<String> = withContext(Dispatchers.IO) {
+        val body = json.encodeToString(DeleteSongs.serializer(), DeleteSongs(ids)).toRequestBody(jsonType)
+        http.newCall(authed(conn, "/api/songs/delete").post(body).build()).execute().use { json.decodeFromString(DeletedSongs.serializer(), read(it)).deleted }
+    }
+
     suspend fun uploadSong(conn: Connection, meta: Map<String, String>, ext: String, size: Long, open: () -> java.io.InputStream): SongUpload = withContext(Dispatchers.IO) {
         val query = (meta + ("ext" to ext)).entries.joinToString("&") { (k, v) -> "$k=" + java.net.URLEncoder.encode(v, "UTF-8") }
         val body = object : okhttp3.RequestBody() {

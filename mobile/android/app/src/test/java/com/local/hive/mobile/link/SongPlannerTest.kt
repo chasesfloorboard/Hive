@@ -39,6 +39,9 @@ class SongPlannerTest {
         )
         assertTrue(plan.toPhone.isEmpty())
         assertTrue(plan.toPc.isEmpty())
+        // Each is reported for the user to decide: delete on the other side too, copy back, or leave.
+        assertEquals(listOf(1L), plan.goneFromPc.map { it.id })
+        assertEquals(listOf("y"), plan.goneFromPhone.map { it.id })
     }
 
     @Test fun theSidesAreKeptOneToOneFileForFile() {

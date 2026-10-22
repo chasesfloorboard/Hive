@@ -339,6 +339,8 @@ private fun HiveContent(vm: MainViewModel, openPlayerInitially: Boolean) {
             )
         }
         infoTarget?.let { t -> TrackInfoSheet(vm, t, onDismiss = { infoTarget = null }) { playerOpen = false; nav.navigate("album/${it.albumId}") } }
+        val showDeletions by vm.openDeletions.collectAsStateWithLifecycle()
+        if (showDeletions) DeletionsSheet(vm, onDismiss = { vm.openDeletions.value = false }, onToast = { toast = it })
         autoDj?.let { r -> AutoDjSheet(vm, r, onDismiss = { autoDj = null }, onToast = { toast = it }) { id -> nav.navigate("userplaylist/$id") } }
         addTarget?.let { tracks -> AddToPlaylistSheet(vm, tracks, onDismiss = { addTarget = null }) { name -> toast = "Added to $name" } }
         BackHandler(enabled = selection.active) { selection.clear() }

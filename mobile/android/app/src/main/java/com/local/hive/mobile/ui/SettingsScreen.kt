@@ -243,6 +243,12 @@ private fun SongSyncRows(vm: MainViewModel) {
         SettingRow("Song sync", status) { SmallButton("Turn off") { vm.setSongSync(false) } }
     }
     s.message?.let { Text(it, style = HiveText.small, color = Color(0xFFFF8A8A), modifier = Modifier.padding(horizontal = 18.dp, vertical = 4.dp)) }
+    // Songs deleted on one side since they were on both: the user decides what happens on the other.
+    val gone by vm.deletions.collectAsStateWithLifecycle()
+    if (gone.count > 0) SettingRow("Deleted songs", listOfNotNull(
+        gone.fromPc.size.takeIf { it > 0 }?.let { "${songs(it)} deleted on your PC" },
+        gone.fromPhone.size.takeIf { it > 0 }?.let { "${songs(it)} deleted on this phone" },
+    ).joinToString(" · ")) { SmallButton("Review", primary = true) { vm.openDeletions.value = true } }
 }
 
 /** "Connect automatically": Hive opening on the PC's Wi-Fi finds it and connects; the PC allows this phone once. */

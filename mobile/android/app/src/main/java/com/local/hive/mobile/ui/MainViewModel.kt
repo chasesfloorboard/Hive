@@ -478,6 +478,11 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
     // ---- song sync ----
 
     val songSync = app.songSync.state
+    /** Songs deleted on one side, waiting for the user's decision (see [DeletionsSheet]). */
+    val deletions = app.songSync.deletions
+    val songSyncOps get() = app.songSync
+    /** Set when the deleted-songs notification is tapped. */
+    val openDeletions = MutableStateFlow(false)
     private val _songSyncOn = MutableStateFlow(app.linkStore.songSync)
     val songSyncOn: StateFlow<Boolean> = _songSyncOn.asStateFlow()
     fun checkSongs() = viewModelScope.launch { app.songSync.check() }

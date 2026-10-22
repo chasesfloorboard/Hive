@@ -70,6 +70,16 @@ class LinkStore(context: Context) {
         get() = prefs.getBoolean("songSync", false)
         set(value) = prefs.edit { putBoolean("songSync", value) }
 
+    /** Songs deleted on one side that the user chose to leave as they are: not asked about again. */
+    var leftDeleted: Set<String>
+        get() = prefs.getStringSet("leftDeleted", emptySet()).orEmpty()
+        set(value) = prefs.edit { putStringSet("leftDeleted", value) }
+
+    /** Deleted songs already announced in a notification, so each is announced once. */
+    var announcedDeleted: Set<String>
+        get() = prefs.getStringSet("announcedDeleted", emptySet()).orEmpty()
+        set(value) = prefs.edit { putStringSet("announcedDeleted", value) }
+
     /** Plays of phone-only songs that older versions dropped have been queued again (once). */
     var droppedPlaysRequeued: Boolean
         get() = prefs.getBoolean("droppedPlaysRequeued", false)

@@ -42,6 +42,10 @@ data class SongPlan(
     val phoneKeys: Map<Long, String> = emptyMap(),
     /** For each phone song to send: how many copies of it Hive holds for the phone's other files. */
     val pcCopies: Map<Long, Int> = emptyMap(),
+    /** Songs on both sides before that are gone from one now: still on this phone, deleted on the PC... */
+    val goneFromPc: List<Track> = emptyList(),
+    /** ...and still on the PC, deleted on this phone. */
+    val goneFromPhone: List<PcTrack> = emptyList(),
 ) {
     val bytesToPhone: Long get() = toPhone.sumOf { it.size }
     val bytesToPc: Long get() = toPc.sumOf { it.sizeBytes }
@@ -100,12 +104,14 @@ object SongPlanner {
             onBoth += phoneKeys.getValue(t)
             pcById[pcId]?.let { onBoth += pcKeys.getValue(it) }
         }
-        val toPc = phone.filter { it.id !in pairedPhone && phoneKeys.getValue(it) !in ledger && it.sizeBytes > 0 }
-        val toPhone = pc.filter { it.id !in pairedPc && pcKeys.getValue(it) !in ledger }
+        val (wasOnBothPhone, toPc) = phone.filter { it.id !in pairedPhone && it.sizeBytes > 0 }.partition { phoneKeys.getValue(it) in ledger }
+        val (wasOnBothPc, toPhone) = pc.filter { it.id !in pairedPc }.partition { pcKeys.getValue(it) in ledger }
         return SongPlan(
             toPhone, toPc, onBoth,
             pcKeys = pcKeys.mapKeys { it.key.id }, phoneKeys = phoneKeys.mapKeys { it.key.id },
             pcCopies = toPc.associate { it.id to copiesOf[it.id].orEmpty().size },
+            // Unpaired now, but on both before: its partner was deleted. The user decides (see SongSync.deletions).
+            goneFromPc = wasOnBothPhone, goneFromPhone = wasOnBothPc,
         )
     }
 }
@@ -121,6 +127,14 @@ data class SongSyncState(
     val failed: Int = 0,
     val message: String? = null,
 )
+
+/** A song deleted on one side since it was on both: [phone] is the copy left on this phone, or [pc] the one left on the PC. */
+data class GoneSong(val key: String, val title: String, val artist: String, val album: String, val phone: Track? = null, val pc: PcTrack? = null)
+
+/** Deleted songs waiting for the user: delete them on the other side too, copy them back, or leave them. */
+data class Deletions(val fromPc: List<GoneSong> = emptyList(), val fromPhone: List<GoneSong> = emptyList()) {
+    val count get() = fromPc.size + fromPhone.size
+}
 
 data class PlanSummary(val toPhone: Int, val bytesToPhone: Long, val toPc: Int, val bytesToPc: Long, val pcTakesSongs: Boolean)
 
@@ -140,6 +154,80 @@ class SongSync(
     private val mutex = Mutex()
     private val _state = MutableStateFlow(SongSyncState())
     val state: StateFlow<SongSyncState> = _state.asStateFlow()
+    private val _deletions = MutableStateFlow(Deletions())
+    val deletions: StateFlow<Deletions> = _deletions.asStateFlow()
+
+    /** Takes the plan's deleted songs, minus those the user left as they are, and announces new ones once. */
+    private fun noteDeletions(plan: SongPlan) {
+        val left = store.leftDeleted
+        val found = Deletions(
+            fromPc = plan.goneFromPc.mapNotNull { t -> plan.phoneKeys[t.id]?.takeIf { it !in left }?.let { GoneSong(it, t.title, t.artist, t.album, phone = t) } },
+            fromPhone = plan.goneFromPhone.mapNotNull { t -> plan.pcKeys[t.id]?.takeIf { it !in left }?.let { GoneSong(it, t.title, t.artist, t.album, pc = t) } },
+        )
+        _deletions.value = found
+        val announced = store.announcedDeleted
+        val fresh = (found.fromPc + found.fromPhone).filter { it.key !in announced }
+        if (fresh.isEmpty()) return
+        store.announcedDeleted = announced + fresh.map { it.key }
+        announce(found)
+    }
+
+    private fun announce(d: Deletions) {
+        val nm = context.getSystemService(NotificationManager::class.java)
+        if (nm.getNotificationChannel(DELETIONS_CHANNEL) == null) {
+            nm.createNotificationChannel(NotificationChannel(DELETIONS_CHANNEL, "Deleted songs", NotificationManager.IMPORTANCE_DEFAULT).apply {
+                description = "Songs deleted on this phone or on your PC, asking whether to delete them on the other side too"
+            })
+        }
+        val open = android.app.PendingIntent.getActivity(
+            context, 2,
+            android.content.Intent(context, com.local.hive.mobile.MainActivity::class.java).putExtra(com.local.hive.mobile.MainActivity.EXTRA_OPEN_DELETIONS, true)
+                .addFlags(android.content.Intent.FLAG_ACTIVITY_SINGLE_TOP),
+            android.app.PendingIntent.FLAG_IMMUTABLE or android.app.PendingIntent.FLAG_UPDATE_CURRENT,
+        )
+        fun songs(n: Int) = if (n == 1) "1 song" else "$n songs"
+        val text = listOfNotNull(
+            d.fromPc.size.takeIf { it > 0 }?.let { "${songs(it)} deleted on your PC" },
+            d.fromPhone.size.takeIf { it > 0 }?.let { "${songs(it)} deleted on this phone" },
+        ).joinToString(" · ")
+        val notification = NotificationCompat.Builder(context, DELETIONS_CHANNEL)
+            .setSmallIcon(com.local.hive.mobile.R.drawable.ic_stat_hive)
+            .setContentTitle("Delete them on the other side too?")
+            .setContentText(text)
+            .setContentIntent(open)
+            .setAutoCancel(true)
+            .build()
+        runCatching { nm.notify(DELETIONS_NOTIFICATION_ID, notification) }
+    }
+
+    /** Copy these back to the side they were deleted on, so both sides match again. */
+    suspend fun copyBack(songs: List<GoneSong>) {
+        dao.forgetSyncedSongs(songs.map { it.key })
+        drop(songs)
+        if (store.songSync) schedule(context)
+    }
+
+    /** Leave these as they are (on one side only), and don't ask about them again. */
+    fun leave(songs: List<GoneSong>) {
+        store.leftDeleted = store.leftDeleted + songs.map { it.key }
+        drop(songs)
+    }
+
+    /** Sends these (deleted on this phone) to the Trash on the PC. Returns how many went. */
+    suspend fun deleteOnPc(songs: List<GoneSong>): Int {
+        val conn = sync.pcConnection() ?: throw IOException("Can't reach Hive on the PC. Is it open?")
+        val deleted = client.deleteSongs(conn, songs.mapNotNull { it.pc?.id }).toSet()
+        drop(songs.filter { it.pc?.id in deleted })
+        return deleted.size
+    }
+
+    /** These were deleted from this phone (after Android asked the user). */
+    fun deletedOnPhone(songs: List<GoneSong>) = drop(songs)
+
+    private fun drop(songs: List<GoneSong>) {
+        val keys = songs.map { it.key }.toSet()
+        _deletions.value = Deletions(_deletions.value.fromPc.filter { it.key !in keys }, _deletions.value.fromPhone.filter { it.key !in keys })
+    }
 
     /** Works out what would be copied, without copying anything. */
     suspend fun check(): SongPlan? = mutex.withLock {
@@ -155,6 +243,7 @@ class SongSync(
         val plan = SongPlanner.plan(dao.allTracks(), client.library(conn).tracks, dao.syncedSongKeys().toHashSet())
         val now = System.currentTimeMillis()
         dao.addSyncedSongs(plan.onBoth.map { SyncedSong(it, now) })
+        noteDeletions(plan)
         _state.update { it.copy(plan = PlanSummary(plan.toPhone.size, plan.bytesToPhone, plan.toPc.size, plan.bytesToPc, info.songs.receive)) }
         return plan to conn
     }
@@ -251,6 +340,8 @@ class SongSync(
 
     companion object {
         private const val WORK = "hive-song-sync"
+        private const val DELETIONS_CHANNEL = "hive-song-deletions"
+        private const val DELETIONS_NOTIFICATION_ID = 4712
 
         /** Runs song sync in the background on Wi-Fi (or any unmetered network). */
         fun schedule(context: Context) {

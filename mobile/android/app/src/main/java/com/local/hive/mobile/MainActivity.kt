@@ -34,6 +34,7 @@ class MainActivity : ComponentActivity() {
         )
         (application as HiveApp).player.connect()
         val openPlayer = intent?.getBooleanExtra(EXTRA_OPEN_PLAYER, false) == true
+        if (intent?.getBooleanExtra(EXTRA_OPEN_DELETIONS, false) == true) vm.openDeletions.value = true
         setContent { HiveRoot(vm, openPlayer) }
 
         val wanted = buildList {
@@ -48,6 +49,7 @@ class MainActivity : ComponentActivity() {
     override fun onNewIntent(intent: Intent) {
         super.onNewIntent(intent)
         setIntent(intent)
+        if (intent.getBooleanExtra(EXTRA_OPEN_DELETIONS, false)) vm.openDeletions.value = true
         handleSpotifyReturn(intent)
     }
 
@@ -61,5 +63,7 @@ class MainActivity : ComponentActivity() {
 
     companion object {
         const val EXTRA_OPEN_PLAYER = "open_player"
+        /** Opens the deleted-songs choice (from its notification). */
+        const val EXTRA_OPEN_DELETIONS = "open_deletions"
     }
 }
