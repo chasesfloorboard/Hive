@@ -35,6 +35,9 @@
 //                                  have (song sync): saved into the library
 //                                  as <Artist>/<Album>/, unless Hive already
 //                                  has the same song or receiving is off
+//   POST /api/songs/delete         songs the user deleted on the phone and chose
+//                                  to delete here too (trusted phones only):
+//                                  to the Trash, recoverable
 //
 // Love itself stays where Hive keeps it: in the music files. Phone changes
 // go through the same setLove path as the heart button, so the embedded tag,
@@ -102,7 +105,7 @@ function lanAddresses() {
   return out;
 }
 
-function createHiveLink({ dataDir, getTracks, setLove, onPaired, streamSong = null, coversDir = null, remote = null, getPlaylists = null, getPlays = null, recordPlays = null, spotifySearch = null, songTarget = null, onSongAdded = () => {}, acceptPhonePlays = false, getWrap = null, getWrapYears = null, getThemes = null, onPairRequest = null, onInbox = () => {}, log = () => {}, port = DEFAULT_PORT, discoveryPort = DISCOVERY_PORT, acceptPhoneChanges = false }) {
+function createHiveLink({ dataDir, getTracks, setLove, onPaired, streamSong = null, coversDir = null, remote = null, getPlaylists = null, getPlays = null, recordPlays = null, spotifySearch = null, songTarget = null, onSongAdded = () => {}, acceptPhonePlays = false, getWrap = null, getWrapYears = null, getThemes = null, onPairRequest = null, deleteSongs = null, onInbox = () => {}, log = () => {}, port = DEFAULT_PORT, discoveryPort = DISCOVERY_PORT, acceptPhoneChanges = false }) {
   const statePath = path.join(dataDir, 'hive-link.json');
   let state = loadState();
   let server = null;
@@ -656,6 +659,18 @@ function createHiveLink({ dataDir, getTracks, setLove, onPaired, streamSong = nu
         return openEvents(req, res, device);
       case 'PUT /api/songs':
         return receiveSong(req, res, url.searchParams, device);
+      case 'POST /api/songs/delete': {
+        // Only a phone already trusted here may delete, and only songs of the library, by id.
+        if (!deleteSongs) return send(res, 404, { error: "This Hive doesn't delete songs for the phone." });
+        if (!trusted(device)) return send(res, 403, { error: 'Apply this phone\'s changes in Hive once (Settings › Connections) before it can delete songs there.' });
+        const body = await readJson(req);
+        const wanted = new Set((Array.isArray(body?.ids) ? body.ids : []).slice(0, 2000).map(String));
+        const tracks = (await getTracks()).filter(t => t?.path && !/^[a-z]+:/i.test(String(t.path)) && wanted.has(trackIdFor(t)));
+        const result = await deleteSongs(tracks.map(t => path.resolve(String(t.path))));
+        const gone = new Set((result?.deleted || []).map(p => path.resolve(p)));
+        log('Hive Link: phone deleted songs', device.name, gone.size);
+        return send(res, 200, { deleted: tracks.filter(t => gone.has(path.resolve(String(t.path)))).map(trackIdFor), failed: (result?.errors || []).length });
+      }
       case 'POST /api/unpair':
         unpair(device.id);
         return send(res, 200, { ok: true });

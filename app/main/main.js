@@ -2975,7 +2975,10 @@ ipcMain.handle('file:showInBrowser', async (_evt, filePath) => {
   }
 });
 
-ipcMain.handle('tracks:deleteFromDisk', async (_evt, filePaths = []) => {
+ipcMain.handle('tracks:deleteFromDisk', async (_evt, filePaths = []) => deleteTracksFromDisk(filePaths));
+// Library songs to the Trash (only files inside a library folder): the Delete
+// from disk action, and songs a trusted phone deleted and asked Hive to delete too.
+async function deleteTracksFromDisk(filePaths = []) {
   const requested = [...new Set((Array.isArray(filePaths) ? filePaths : [])
     .filter(Boolean).map(p => path.resolve(String(p))))];
   if (!requested.length) return { ok: false, deleted: [], errors: [] };
@@ -3016,7 +3019,7 @@ ipcMain.handle('tracks:deleteFromDisk', async (_evt, filePaths = []) => {
     }
   }
   return { ok: errors.length === 0, deleted, errors };
-});
+}
 
 async function reconcileCachedLovedWithDatabase(cached) {
   if (!cached || !Array.isArray(cached.tracks) || !cached.tracks.length) return cached;
@@ -8041,6 +8044,7 @@ function startHiveLink() {
     // YouTube Music download (first music folder, <Artist>/<Album>/), and the
     // library watcher's own path to pick it up.
     songTarget: hiveLinkSongTarget,
+    deleteSongs: paths => deleteTracksFromDisk(paths),
     onSongAdded: songPath => notifyLibraryFilesystemChange('hive-link-song', songPath),
     // Remote control from the phone (off until allowed in Settings): Hive's own
     // MPRIS command channel, and the state the player reports to it.

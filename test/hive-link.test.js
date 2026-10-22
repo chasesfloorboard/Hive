@@ -17,7 +17,7 @@ const { createHiveLink, trackIdFor } = require('../app/main/hive-link');
 
 let nextPort = 48100 + Math.floor(Math.random() * 500) * 2;
 
-function setup({ acceptPhoneChanges = true, streamSong = null, coversDir = null, remote = null, getPlaylists = null, getPlays = null, spotifySearch = null, songTarget = null, onSongAdded = undefined, acceptPhonePlays = false, getWrap = null, getWrapYears = null, getThemes = null, onPairRequest = null } = {}) {
+function setup({ acceptPhoneChanges = true, streamSong = null, coversDir = null, remote = null, getPlaylists = null, getPlays = null, spotifySearch = null, songTarget = null, onSongAdded = undefined, acceptPhonePlays = false, getWrap = null, getWrapYears = null, getThemes = null, onPairRequest = null, deleteSongs = null } = {}) {
   const dataDir = fs.mkdtempSync(path.join(os.tmpdir(), 'hive-link-'));
   const tracks = [
     { id: 'a1', path: '/music/Pearl Jam - Black.mp3', title: 'Black', artist: 'Pearl Jam', album: 'Ten', duration: '343.2', loved: false },
@@ -39,6 +39,7 @@ function setup({ acceptPhoneChanges = true, streamSong = null, coversDir = null,
     getPlays,
     getThemes,
     onPairRequest,
+    deleteSongs,
     spotifySearch,
     songTarget,
     onSongAdded,
@@ -104,6 +105,20 @@ async function waitListening(port) {
   }
   throw new Error('server did not start');
 }
+
+test('only a trusted phone may ask Hive to send songs it deleted to the Trash', async t => {
+  // A stand-in for the Trash: it only records the paths it was given.
+  const asked = [];
+  const ctx = setup({ acceptPhoneChanges: false, deleteSongs: async paths => { asked.push(...paths); return { deleted: paths, errors: [] }; } });
+  t.after(() => ctx.link.stop());
+  await waitListening(ctx.port);
+  const token = await pair(ctx);
+  assert.equal((await request(ctx.port, 'POST', '/api/songs/delete', { token, body: { ids: ['a1'] } })).status, 403);
+  ctx.link.setTrusted(ctx.link.devices()[0].id, true);
+  const res = await request(ctx.port, 'POST', '/api/songs/delete', { token, body: { ids: ['a1', 'not-a-song'] } });
+  assert.deepEqual(res.body, { deleted: ['a1'], failed: 0 });
+  assert.deepEqual(asked, [path.resolve('/music/Pearl Jam - Black.mp3')]);
+});
 
 test('a phone whose changes were accepted once is trusted: its next changes apply at once', async t => {
   const ctx = setup({ acceptPhoneChanges: false });
