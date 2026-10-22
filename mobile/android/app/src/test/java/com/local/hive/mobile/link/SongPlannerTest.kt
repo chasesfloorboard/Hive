@@ -74,6 +74,14 @@ class SongPlannerTest {
         assertEquals(2, plan.onBoth.size)
     }
 
+    @Test fun theSameFileNameAndLengthPairWhenTagsAndSizeDiffer() {
+        // Retagged on the PC since it was copied (so the size differs), and its tags read badly on the phone.
+        val phoneCopy = phone(1, "Big Data _ The Internet Ain't Safe", "", 514_328).copy(fileName = "Big Data _ The Internet Ain't Safe.mp3", sizeBytes = 21_300_000)
+        val pcFile = pc("x", "Big Data / The Internet Ain't", "JPEGMAFIA x Freaky", 514_273).copy(file = "Big Data _ The Internet Ain't Safe.mp3", size = 21_308_366)
+        val plan = SongPlanner.plan(phone = listOf(phoneCopy), pc = listOf(pcFile), ledger = emptySet())
+        assertTrue(plan.toPhone.isEmpty() && plan.toPc.isEmpty())
+    }
+
     @Test fun eachCopyOfASongHasItsOwnLedgerEntry() {
         // Both versions synced once; then the phone deletes one of them: only that one stays deleted.
         val first = SongPlanner.plan(

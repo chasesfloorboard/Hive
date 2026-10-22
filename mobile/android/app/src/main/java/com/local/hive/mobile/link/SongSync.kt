@@ -113,6 +113,16 @@ object SongPlanner {
             pairedPhone += t.id; pairedPc += twin.id
             onBoth += phoneKeys.getValue(t); onBoth += pcKeys.getValue(twin)
         }
+        // Then the same file name and length: the phone's library was copied from the PC, so a song
+        // whose tags one side reads badly, or that was retagged on one side since, still has its name.
+        val pcByName = pc.filter { it.id !in pairedPc && it.file.isNotBlank() }.groupBy { it.file.lowercase() }
+        for (t in phone.sortedBy { it.id }) {
+            if (t.id in pairedPhone || t.fileName.isBlank()) continue
+            val twin = pcByName[t.fileName.lowercase()].orEmpty()
+                .firstOrNull { it.id !in pairedPc && it.duration > 0 && t.durationMs > 0 && kotlin.math.abs(it.duration - t.durationMs) <= EXACT_COPY_MS } ?: continue
+            pairedPhone += t.id; pairedPc += twin.id
+            onBoth += phoneKeys.getValue(t); onBoth += pcKeys.getValue(twin)
+        }
         for ((t, pcId, _) in candidates) {
             if (t.id in pairedPhone || pcId in pairedPc) continue
             pairedPhone += t.id; pairedPc += pcId
