@@ -19,9 +19,8 @@ object Motion {
     val SineInOut60 = CubicBezierEasing(0.33f, 0f, 0.4f, 1f)
     /** sine in-out 33: symmetric fades and swaps. */
     val SineInOut33 = CubicBezierEasing(0.33f, 0f, 0.67f, 1f)
-    /** sine in-out 80 and 90: One UI's general movement. */
+    /** sine in-out 80: One UI's general movement. */
     val SineInOut80 = CubicBezierEasing(0.33f, 0f, 0.2f, 1f)
-    val SineInOut90 = CubicBezierEasing(0.33f, 0f, 0.1f, 1f)
     val SineOut90 = CubicBezierEasing(0.17f, 0.17f, 0.1f, 1f)
 
     const val OPEN_MS = 450
@@ -31,10 +30,7 @@ object Motion {
     /** Starts fast and settles softly (Material's emphasised decelerate). */
     val Back = CubicBezierEasing(0.05f, 0.7f, 0.1f, 1f)
     const val UNDER_FADE_MS = 150
-    const val PLAYER_IN_MS = 400
-    const val PLAYER_OUT_MS = 250
     const val SWAP_MS = 250
-    const val MENU_MS = 350
 
     /**
      * How long the player takes to settle after a drag, as Samsung Music's

@@ -1,6 +1,0 @@
-{
-  "format": "hive-theme",
-  "version": 1,
-  "name": "Forest",
-  "css": ":root {\n  --bg: #08100d;\n  --panel: rgba(14,25,21,.75);\n  --panel-strong: rgba(10,20,16,.9);\n  --border: rgba(190,230,210,.09);\n  --text: #e8f0eb;\n  --text-dim: #9dafaa;\n  --text-dimmer: #657a71;\n  --accent: #79b79a;\n  --accent-soft: rgba(121,183,154,.34);\n  --accent-glow: rgba(121,183,154,.21);\n  --ambient-a: rgba(45,130,90,.17);\n  --ambient-b: rgba(25,75,58,.14);\n  --radius: 15px;\n  --blur: 26px;\n}\n"
-}

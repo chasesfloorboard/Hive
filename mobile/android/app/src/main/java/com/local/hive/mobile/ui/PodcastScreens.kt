@@ -1,6 +1,7 @@
 package com.local.hive.mobile.ui
 
 import android.text.format.DateUtils
+import androidx.compose.material.icons.automirrored.rounded.QueueMusic
 import androidx.compose.animation.core.animateFloatAsState
 import androidx.compose.animation.core.tween
 import androidx.compose.foundation.background
@@ -10,14 +11,12 @@ import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.PaddingValues
 import androidx.compose.foundation.layout.Row
-import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.statusBarsPadding
-import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.itemsIndexed
 import androidx.compose.foundation.lazy.rememberLazyListState
@@ -26,7 +25,6 @@ import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.rounded.CheckCircle
 import androidx.compose.material.icons.rounded.MoreHoriz
 import androidx.compose.material.icons.rounded.Podcasts
-import androidx.compose.material3.CircularProgressIndicator
 import androidx.compose.material3.Icon
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
@@ -53,7 +51,6 @@ import com.local.hive.mobile.ui.theme.Hive
 import com.local.hive.mobile.ui.theme.HiveGlassLayers
 import com.local.hive.mobile.ui.theme.HiveShape
 import com.local.hive.mobile.ui.theme.HiveText
-import com.local.hive.mobile.ui.theme.hiveGlass
 import java.text.SimpleDateFormat
 import java.util.Locale
 
@@ -87,7 +84,7 @@ fun PodcastsScreen(vm: MainViewModel, bottomPadding: Dp, onBack: () -> Unit, onO
                 else item { PodcastGrid(subs, onOpen) }
             } else when {
                 error != null -> item { Text(error.orEmpty(), style = HiveText.body, color = c.textDim, textAlign = TextAlign.Center, modifier = Modifier.fillMaxWidth().padding(28.dp)) }
-                results == null -> item { Box(Modifier.fillMaxWidth().padding(28.dp), contentAlignment = Alignment.Center) { CircularProgressIndicator(Modifier.size(20.dp), strokeWidth = 2.dp, color = c.accent) } }
+                results == null -> item { Busy("Searching podcasts…") }
                 results!!.isEmpty() -> item { EmptyState("No shows found", "Try another name, or paste the show's feed URL.") }
                 else -> { item { YearHeading("Shows") }; item { PodcastGrid(results!!, onOpen) } }
             }
@@ -97,12 +94,9 @@ fun PodcastsScreen(vm: MainViewModel, bottomPadding: Dp, onBack: () -> Unit, onO
 
 @Composable
 private fun PodcastGrid(shows: List<Podcast>, onOpen: (String) -> Unit) {
-    Column(Modifier.padding(horizontal = 16.dp), verticalArrangement = Arrangement.spacedBy(18.dp)) {
+    Column {
         shows.chunked(2).forEach { row ->
-            Row(horizontalArrangement = Arrangement.spacedBy(14.dp)) {
-                row.forEach { p -> StreamCard(p.image, p.title, p.author, Modifier.weight(1f)) { onOpen(p.feedUrl) } }
-                if (row.size == 1) Spacer(Modifier.weight(1f))
-            }
+            CoverRow(row) { p, m -> CoverCard(p.image.ifBlank { null }, p.title, p.author, m, androidx.compose.material.icons.Icons.AutoMirrored.Rounded.QueueMusic) { onOpen(p.feedUrl) } }
         }
     }
 }
@@ -121,6 +115,7 @@ fun PodcastShowScreen(vm: MainViewModel, feedUrl: String, bottomPadding: Dp, onB
     LaunchedEffect(feedUrl, attempt) { error = null; runCatching { vm.podcasts.feed(feedUrl) }.onSuccess { feed = it }.onFailure { error = it.message ?: "Couldn't open this podcast." } }
     val list = rememberLazyListState()
     val titleAlpha by animateFloatAsState(if (list.firstVisibleItemIndex > 0) 1f else 0f, tween(180), label = "title")
+    val veil by list.pageVeil()
     val f = feed
     val following = subs.any { it.feedUrl == feedUrl }
 
@@ -134,7 +129,7 @@ fun PodcastShowScreen(vm: MainViewModel, feedUrl: String, bottomPadding: Dp, onB
                         HivePill("Try again", active = false) { attempt++ }
                     }
                 }
-                f == null -> item { Box(Modifier.fillMaxWidth().statusBarsPadding().padding(top = 120.dp), contentAlignment = Alignment.Center) { CircularProgressIndicator(Modifier.size(22.dp), strokeWidth = 2.dp, color = c.accent) } }
+                f == null -> item { Box(Modifier.statusBarsPadding().padding(top = 80.dp)) { Busy("Loading the show…") } }
                 else -> {
                     item {
                         Column(Modifier.fillMaxWidth().statusBarsPadding().padding(top = 64.dp, start = 24.dp, end = 24.dp, bottom = 14.dp), horizontalAlignment = Alignment.CenterHorizontally) {
@@ -158,7 +153,7 @@ fun PodcastShowScreen(vm: MainViewModel, feedUrl: String, bottomPadding: Dp, onB
                 }
             }
         }
-    }, overlay = { PageBar(f?.podcast?.title.orEmpty(), titleAlpha, onBack) })
+    }, overlay = { PageBar(f?.podcast?.title.orEmpty(), titleAlpha, onBack, veil) })
 }
 
 private val rssDate = listOf("EEE, dd MMM yyyy HH:mm:ss Z", "EEE, dd MMM yyyy HH:mm:ss zzz", "EEE, d MMM yyyy HH:mm:ss Z")

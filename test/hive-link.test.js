@@ -18,7 +18,7 @@ const { createHiveLink, trackIdFor } = require('../app/main/hive-link');
 // A wide random range: test files run in parallel, and two picking the same port fails one of them.
 let nextPort = 20000 + Math.floor(Math.random() * 15000) * 2;
 
-function setup({ acceptPhoneChanges = true, streamSong = null, coversDir = null, remote = null, getPlaylists = null, getPlays = null, spotifySearch = null, songTarget = null, onSongAdded = undefined, acceptPhonePlays = false, getWrap = null, getWrapYears = null, getThemes = null, onPairRequest = null, deleteSongs = null } = {}) {
+function setup({ acceptPhoneChanges = true, streamSong = null, coversDir = null, remote = null, getPlaylists = null, getPlays = null, spotifySearch = null, songTarget = null, onSongAdded = undefined, acceptPhonePlays = false, getWrap = null, getWrapYears = null, getThemes = null, getCurrentTheme = null, onPairRequest = null, deleteSongs = null, editSongs = null, getStreamLoves = null, applyStreamLoves = null } = {}) {
   const dataDir = fs.mkdtempSync(path.join(os.tmpdir(), 'hive-link-'));
   const tracks = [
     { id: 'a1', path: '/music/Pearl Jam - Black.mp3', title: 'Black', artist: 'Pearl Jam', album: 'Ten', duration: '343.2', loved: false },
@@ -39,8 +39,12 @@ function setup({ acceptPhoneChanges = true, streamSong = null, coversDir = null,
     getPlaylists,
     getPlays,
     getThemes,
+    getCurrentTheme,
     onPairRequest,
     deleteSongs,
+    editSongs,
+    getStreamLoves,
+    applyStreamLoves,
     spotifySearch,
     songTarget,
     onSongAdded,
@@ -112,13 +116,32 @@ test('only a trusted phone may ask Hive to send songs it deleted to the Trash', 
   const asked = [];
   const ctx = setup({ acceptPhoneChanges: false, deleteSongs: async paths => { asked.push(...paths); return { deleted: paths, errors: [] }; } });
   t.after(() => ctx.link.stop());
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'hive-link-del-'));
+  t.after(() => fs.rmSync(dir, { recursive: true, force: true }));
+  const file = (name, daysOld) => {
+    const p = path.join(dir, name); fs.writeFileSync(p, 'same bytes');
+    const when = new Date(Date.now() - daysOld * 86400000); fs.utimesSync(p, when, when); return p;
+  };
+  const song = { title: "We're Here", artist: 'Meat Puppets', album: 'Meat Puppets II', duration: '210', fileSize: 10 };
+  ctx.tracks.push(
+    { ...song, id: 'orig', path: file("We're Here.mp3", 400) },
+    { ...song, id: 'dup', path: file("06 - We're Here.mp3", 1) },
+    { id: 'only', path: file('Huge.mp3', 30), title: 'Huge', artist: 'Boris', duration: '201', fileSize: 99 },
+    { id: 'mod', path: file('Elden Ring - Nurse Harrow voice.wav', 5), title: 'voice_017', artist: '', duration: '4', fileSize: 7 },
+  );
   await waitListening(ctx.port);
   const token = await pair(ctx);
-  assert.equal((await request(ctx.port, 'POST', '/api/songs/delete', { token, body: { ids: ['a1'] } })).status, 403);
+  assert.equal((await request(ctx.port, 'POST', '/api/songs/delete', { token, body: { ids: ['dup'] } })).status, 403);
   ctx.link.setTrusted(ctx.link.devices()[0].id, true);
-  const res = await request(ctx.port, 'POST', '/api/songs/delete', { token, body: { ids: ['a1', 'not-a-song'] } });
-  assert.deepEqual(res.body, { deleted: ['a1'], failed: 0 });
-  assert.deepEqual(asked, [path.resolve('/music/Pearl Jam - Black.mp3')]);
+  // The extra copy and the mod file go; the only copy of a song, and an original whose
+  // newer copy would be left, stay, whatever the phone asks.
+  const res = await request(ctx.port, 'POST', '/api/songs/delete', { token, body: { ids: ['dup', 'mod', 'only', 'not-a-song'] } });
+  assert.deepEqual(res.body, { deleted: ['dup', 'mod'], failed: 0, kept: ['only'] });
+  assert.deepEqual(asked.map(p => path.basename(p)), ["06 - We're Here.mp3", 'Elden Ring - Nurse Harrow voice.wav']);
+  asked.length = 0;
+  const orig = await request(ctx.port, 'POST', '/api/songs/delete', { token, body: { ids: ['orig'] } });
+  assert.deepEqual(orig.body, { deleted: [], failed: 0, kept: ['orig'] });
+  assert.deepEqual(asked, []);
 });
 
 test('a phone whose changes were accepted once is trusted: its next changes apply at once', async t => {
@@ -177,12 +200,13 @@ test('a refused request pairs nothing', async t => {
   assert.equal(ctx.link.devices().length, 0);
 });
 
-test('Hive shares its themes with a paired phone', async t => {
-  const ctx = setup({ getThemes: async () => [{ name: 'Nordic', css: ':root{--accent:#485d5f}', stock: false }] });
+test('Hive shares its themes, and the one it shows now, with a paired phone', async t => {
+  const ctx = setup({ getThemes: async () => [{ name: 'Nordic', css: ':root{--accent:#485d5f}', stock: false }], getCurrentTheme: async () => ({ name: 'Sky Blue', css: ':root{--bg:#91c7e0}' }) });
   t.after(() => ctx.link.stop());
   const token = await pair(ctx);
   const res = await request(ctx.port, 'GET', '/api/themes', { token });
   assert.deepEqual(res.body.themes.map(t => t.name), ['Nordic']);
+  assert.deepEqual(res.body.current, { name: 'Sky Blue', css: ':root{--bg:#91c7e0}' });
   assert.equal((await request(ctx.port, 'GET', '/api/info', { token })).body.themes, true);
 });
 
@@ -559,12 +583,14 @@ function putSong(port, token, query, data, { length = data.length } = {}) {
   });
 }
 
-function songSetup() {
+function songSetup({ deleteSongs = null, acceptPhoneChanges = true } = {}) {
   const music = fs.mkdtempSync(path.join(os.tmpdir(), 'hive-link-music-'));
   const added = [];
   const ctx = setup({
     songTarget: async meta => path.join(music, meta.artist || 'Unknown Artist', meta.album || 'Unknown Album', `${meta.title}.${meta.ext}`),
-    onSongAdded: async p => { added.push(p); }
+    onSongAdded: async p => { added.push(p); },
+    deleteSongs,
+    acceptPhoneChanges
   });
   return { ...ctx, music, added };
 }
@@ -703,4 +729,128 @@ test("the phone gets Hive's own Wrap, with covers it can fetch and no recent-pla
   assert.equal(got.topTrack.cover, 'a'.repeat(40) + '.jpg');
   assert.equal(got.topArtists[0].cover, 'b'.repeat(40) + '.png');
   assert.equal(got.topAlbums[0].cover, 'https://example.com/ten.jpg');
+});
+
+test('streamed-song likes: same key as the PC, newest change wins, unlikes kept', () => {
+  const { streamLoveKey, mergeStreamLoves, isLoved } = require('../app/main/stream-loves');
+  assert.equal(streamLoveKey({ artist: 'Peggy Gou', title: '(It Goes Like) Nanana (Edit)' }), 'peggygou|itgoeslikenananaedit');
+  assert.equal(streamLoveKey({ artist: 'Calvin Harris, Ellie Goulding', title: 'I Need Your Love (feat. Ellie Goulding)' }), 'calvinharris|ineedyourlove');
+  // Any script has a key (the phone's StreamLoves.key gives the same); other Latin letters drop out as they always did.
+  assert.equal(streamLoveKey({ artist: 'Кино', title: 'Группа крови' }), 'кино|группакрови');
+  assert.equal(streamLoveKey({ artist: 'Røyksopp', title: 'Eple' }), 'ryksopp|eple');
+  assert.equal(streamLoveKey({ artist: 'Beyoncé & Jay-Z', title: 'Déjà Vu' }), 'beyonce|dejavu');
+
+  const current = { 'peggygou|itgoeslikenananaedit': { at: 100, path: 'ytm:apple:1', title: '(It Goes Like) Nanana (Edit)', artist: 'Peggy Gou', appliedAt: 100 } };
+  assert.equal(isLoved(current['peggygou|itgoeslikenananaedit']), true, 'an entry from before loved existed counts as liked');
+  const { loves, changed } = mergeStreamLoves(current, [
+    { title: '(It Goes Like) Nanana (Edit)', artist: 'Peggy Gou', loved: false, at: 50 },
+    { title: 'Doom', artist: 'Gesaffelstein', loved: true, at: 200, path: 'ytm:spotify:x', duration: 210 },
+    { title: '', artist: 'Nobody', loved: true, at: 300 }
+  ]);
+  assert.deepEqual(changed, ['gesaffelstein|doom']);
+  assert.equal(loves['peggygou|itgoeslikenananaedit'].at, 100, 'an older phone change loses');
+  assert.deepEqual(loves['gesaffelstein|doom'], { loved: true, at: 200, path: 'ytm:spotify:x', title: 'Doom', artist: 'Gesaffelstein', duration: 210 });
+  const later = mergeStreamLoves(loves, [{ title: '(It Goes Like) Nanana (Edit)', artist: 'Peggy Gou', loved: false, at: 400 }]).loves;
+  assert.equal(later['peggygou|itgoeslikenananaedit'].loved, false);
+  assert.equal(later['peggygou|itgoeslikenananaedit'].path, 'ytm:apple:1', 'unliking keeps what the song is');
+  assert.equal(current['peggygou|itgoeslikenananaedit'].loved, undefined, 'the current map is left alone');
+});
+
+test('a phone reads and changes streamed-song likes; one whose changes wait in the inbox only reads', async t => {
+  const { mergeStreamLoves } = require('../app/main/stream-loves');
+  let stored;
+  const getStreamLoves = async () => stored;
+  const applyStreamLoves = async changes => (stored = mergeStreamLoves(stored, changes).loves);
+  for (const accept of [true, false]) {
+    stored = { 'peggygou|nanana': { at: 100, title: 'Nanana', artist: 'Peggy Gou', path: 'ytm:apple:1' } };
+    const ctx = setup({ acceptPhoneChanges: accept, getStreamLoves, applyStreamLoves });
+    t.after(() => ctx.link.stop());
+    await waitListening(ctx.port);
+    const token = await pair(ctx);
+    const got = await request(ctx.port, 'GET', '/api/streamloves', { token });
+    assert.equal(got.body.loves['peggygou|nanana'].path, 'ytm:apple:1');
+    const res = await request(ctx.port, 'POST', '/api/streamloves', { token, body: { changes: [{ title: 'Nanana', artist: 'Peggy Gou', loved: false, at: accept ? 500 : 900 }] } });
+    assert.equal(res.body.applied, accept);
+    assert.equal(stored['peggygou|nanana'].loved, accept ? false : undefined);
+    assert.equal((await request(ctx.port, 'GET', '/api/streamloves')).status, 401);
+  }
+});
+
+test('songs from phones go to the chosen folder inside the library, else the first music folder', () => {
+  const { phoneSongFolder, phoneSongFolderProblem } = require('../app/main/phone-song-folder');
+  const inside = (f, root) => f === root || f.startsWith(root + '/');
+  const folders = ['/music', '/mnt/sd/Music'];
+  const exists = f => f !== '/gone';
+  assert.equal(phoneSongFolder({ chosen: '/mnt/sd/Music/From phone', folders, exists, inside }), '/mnt/sd/Music/From phone');
+  assert.equal(phoneSongFolder({ chosen: '', folders, exists, inside }), '/music');
+  assert.equal(phoneSongFolder({ chosen: '/home/me/Downloads', folders, exists, inside }), '/music', 'outside the library: the first music folder');
+  assert.equal(phoneSongFolder({ chosen: '/gone', folders: ['/gone', '/music'], exists, inside }), '/music', 'a folder that disappeared is skipped');
+  assert.equal(phoneSongFolderProblem('/mnt/sd/Music/x', folders, inside), '');
+  assert.match(phoneSongFolderProblem('/tmp/x', folders, inside), /inside one of your music folders/);
+});
+
+test('a better copy from a trusted phone takes the old copy\'s place; the old one goes to the Trash', async t => {
+  // A stand-in for the Trash: it moves the file aside.
+  const trashed = [];
+  const ctx = songSetup({ acceptPhoneChanges: false, deleteSongs: async paths => { for (const p of paths) { trashed.push(p); fs.unlinkSync(p); } return { deleted: paths, errors: [] }; } });
+  t.after(() => ctx.link.stop());
+  const old = path.join(ctx.music, 'Calvin Harris', 'Motion', 'Summer.m4a');
+  fs.mkdirSync(path.dirname(old), { recursive: true });
+  fs.writeFileSync(old, 'youtube copy');
+  ctx.tracks.push({ id: 'yt', path: old, title: 'Summer', artist: 'Calvin Harris', album: 'Motion', duration: '222.6', fileSize: 12 });
+  await waitListening(ctx.port);
+  const token = await pair(ctx);
+  const song = { title: 'Summer', artist: 'Calvin Harris', album: 'Motion', duration: 222500, ext: 'm4a', replaces: 'yt' };
+  const flac = Buffer.from('soulseek copy, much better');
+
+  // Not until the phone is trusted, and never a different song.
+  assert.equal((await putSong(ctx.port, token, song, flac)).status, 403);
+  ctx.link.setTrusted(ctx.link.devices()[0].id, true);
+  assert.equal((await putSong(ctx.port, token, { ...song, title: 'Feel So Close' }, flac)).status, 409);
+  assert.deepEqual(trashed, []);
+
+  // Even though Hive "has" Summer, the new copy is saved under the old one's name and the old one goes.
+  const res = await putSong(ctx.port, token, song, flac);
+  assert.deepEqual([res.status, res.body.status], [200, 'replaced']);
+  assert.deepEqual(trashed, [old]);
+  assert.deepEqual(fs.readFileSync(old), flac);
+  assert.deepEqual(fs.readdirSync(path.dirname(old)), ['Summer.m4a']);
+
+  // The old copy already gone (a retry): Hive says so, and the phone stops asking.
+  assert.equal((await putSong(ctx.port, token, { ...song, replaces: 'gone' }, flac)).status, 404);
+});
+
+test('a trusted phone\'s tag and cover edits are written into Hive\'s files; nothing else is', async t => {
+  const calls = [];
+  const ctx = setup({ acceptPhoneChanges: false, editSongs: async (songs, cover) => { calls.push({ songs, cover: cover ? fs.readFileSync(cover) : null, coverPath: cover }); } });
+  t.after(() => ctx.link.stop());
+  await waitListening(ctx.port);
+  const token = await pair(ctx);
+  const edit = { edits: [{ id: 'a1', tags: { title: 'Black (Remastered)', year: '1991', path: '/etc/passwd' } }, { id: 'nope', tags: { title: 'x' } }] };
+  const jpeg = Buffer.concat([Buffer.from([0xff, 0xd8, 0xff]), Buffer.from('cover bytes')]);
+  const putCover = (ids, body) => new Promise((resolve, reject) => {
+    const req = http.request({ host: '127.0.0.1', port: ctx.port, method: 'PUT', path: `/api/songs/cover?ids=${ids}`, headers: { Authorization: `Bearer ${token}`, 'Content-Length': body.length } }, res => {
+      const chunks = []; res.on('data', c => chunks.push(c)); res.on('end', () => resolve({ status: res.statusCode, body: JSON.parse(Buffer.concat(chunks).toString() || '{}') }));
+    });
+    req.on('error', reject); req.end(body);
+  });
+
+  // Not until the phone is trusted.
+  assert.equal((await request(ctx.port, 'POST', '/api/songs/tags', { token, body: edit })).status, 403);
+  assert.equal((await putCover('a1', jpeg)).status, 403);
+  ctx.link.setTrusted(ctx.link.devices()[0].id, true);
+
+  // Only library songs, only the tag editor's fields.
+  const res = await request(ctx.port, 'POST', '/api/songs/tags', { token, body: edit });
+  assert.deepEqual([res.status, res.body.edited], [200, ['a1']]);
+  assert.deepEqual(calls[0].songs, [{ path: path.resolve('/music/Pearl Jam - Black.mp3'), tags: { title: 'Black (Remastered)', year: '1991' } }]);
+
+  // A cover: only a picture, written to the songs asked for, and its temp file goes afterwards.
+  assert.equal((await putCover('a1', Buffer.from('not a picture'))).status, 415);
+  const cover = await putCover('a1,b2', jpeg);
+  assert.deepEqual([cover.status, cover.body.edited], [200, ['a1', 'b2']]);
+  assert.deepEqual(calls[1].cover, jpeg);
+  assert.equal(calls[1].songs.length, 2);
+  await new Promise(r => setTimeout(r, 50));
+  assert.equal(fs.existsSync(calls[1].coverPath), false);
 });

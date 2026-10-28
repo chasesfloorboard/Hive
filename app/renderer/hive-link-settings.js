@@ -79,6 +79,21 @@
     api.hiveLinkReceiveSongs().then(on => { receiveSongs.checked = !!on; }).catch(() => {});
     receiveSongs.addEventListener('change', () => { api.hiveLinkReceiveSongs(receiveSongs.checked).catch(() => {}); });
   }
+  // Where songs from phones go: a folder inside the library (Reset: the first music folder).
+  const songFolder = document.getElementById('hive-link-song-folder');
+  const songFolderChoose = document.getElementById('hive-link-song-folder-choose');
+  const songFolderReset = document.getElementById('hive-link-song-folder-reset');
+  const showSongFolder = r => {
+    if (!r) return;
+    songFolder.textContent = r.error || (r.folder ? (r.chosen ? r.folder : `${r.folder} (your first music folder)`) : 'Add a music folder in Settings › Library first.');
+    songFolder.classList.toggle('settings-error', !!r.error);
+    songFolderReset.hidden = !r.chosen;
+  };
+  if (songFolder && api.hiveLinkSongFolder) {
+    api.hiveLinkSongFolder().then(showSongFolder).catch(() => {});
+    songFolderChoose?.addEventListener('click', () => api.hiveLinkSongFolder('choose').then(showSongFolder).catch(() => {}));
+    songFolderReset?.addEventListener('click', () => api.hiveLinkSongFolder('reset').then(showSongFolder).catch(() => {}));
+  }
   if (remote && api.hiveLinkRemoteControl) {
     api.hiveLinkRemoteControl().then(on => { remote.checked = !!on; }).catch(() => {});
     remote.addEventListener('change', () => { api.hiveLinkRemoteControl(remote.checked).catch(() => {}); });

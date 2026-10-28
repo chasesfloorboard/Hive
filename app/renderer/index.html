@@ -65,6 +65,7 @@
         <div class="search-box" title="Library search">
           <input id="search-input" type="text" placeholder="Search library…" />
           <button id="search-clear-btn" class="search-clear" type="button" title="Clear search" aria-label="Clear search">×</button>
+          <button id="search-online-btn" class="search-online" type="button" title="Search Apple Music and Spotify" aria-label="Search Apple Music and Spotify"><svg viewBox="0 0 24 24" aria-hidden="true"><circle cx="10" cy="10" r="7" fill="none" stroke="currentColor" stroke-width="1.9"/><path d="M15.2 15.2 21 21" stroke="currentColor" stroke-width="2.4" stroke-linecap="round"/><path transform="translate(4.5 4.9) scale(.46)" fill="currentColor" d="M12.152 6.896c-.948 0-2.415-1.078-3.96-1.04-2.04.027-3.91 1.183-4.961 3.014-2.117 3.675-.546 9.103 1.519 12.09 1.013 1.454 2.208 3.09 3.792 3.039 1.52-.065 2.09-.987 3.935-.987 1.831 0 2.35.987 3.96.948 1.637-.026 2.676-1.48 3.676-2.948 1.156-1.688 1.636-3.325 1.662-3.415-.039-.013-3.182-1.221-3.22-4.857-.026-3.04 2.48-4.494 2.597-4.559-1.429-2.09-3.623-2.324-4.39-2.376-2-.156-3.675 1.09-4.61 1.09zM15.53 3.83c.843-1.012 1.4-2.427 1.245-3.83-1.207.052-2.662.805-3.532 1.818-.78.896-1.454 2.338-1.273 3.714 1.338.104 2.715-.688 3.559-1.701"/></svg></button>
         </div>
       </div>
       </div>
@@ -509,6 +510,10 @@
               <span class="settings-row-text"><span class="settings-row-label">Base theme</span><span id="builtin-theme-description" class="settings-hint theme-description"></span></span>
               <span class="theme-select-group"><button type="button" id="theme-shuffle-btn" class="theme-shuffle-btn" title="Random theme" aria-label="Random theme"></button><select id="builtin-theme-select" class="settings-select" aria-label="Theme"></select></span>
             </label>
+            <label class="settings-row">
+              <span class="settings-row-text"><span class="settings-row-label">Show legacy themes</span><span class="settings-hint">Adds the older themes to the list: the imported MusicBee skins and Hive's early dark ones.</span></span>
+              <span class="settings-row-control"><input type="checkbox" id="theme-show-legacy"></span>
+            </label>
             <div class="settings-row colour-editor-row">
               <span class="settings-row-text"><span class="settings-row-label">Customise colours</span><span class="settings-hint">Changes preview live. Save keeps them as your own theme.</span></span>
               <span class="settings-row-control colour-editor">
@@ -642,9 +647,39 @@
               <input type="checkbox" id="hive-link-remote" />
             </label>
             <label class="settings-row">
-              <span class="settings-row-text"><span class="settings-row-label">Take songs from paired phones</span><span class="settings-hint">Song sync: a song you add on the phone that Hive doesn't have is copied into your first music folder as Artist/Album. Songs Hive already has are never copied twice, and nothing is ever deleted.</span></span>
+              <span class="settings-row-text"><span class="settings-row-label">Take songs from paired phones</span><span class="settings-hint">Song sync: a song you add on the phone that Hive doesn't have is copied into the folder below as Artist/Album. Songs Hive already has are never copied twice, and nothing is ever deleted.</span></span>
               <input type="checkbox" id="hive-link-receive-songs" checked />
             </label>
+            <div class="settings-row">
+              <span class="settings-row-text"><span class="settings-row-label">Put songs from phones in</span><span class="settings-hint" id="hive-link-song-folder">Your first music folder</span></span>
+              <span style="display:flex;gap:6px;flex-shrink:0">
+                <button id="hive-link-song-folder-choose" class="sidebar-add" type="button">Change…</button>
+                <button id="hive-link-song-folder-reset" class="sidebar-add" type="button" hidden>Reset</button>
+              </span>
+            </div>
+          </section>
+
+          <section class="settings-section" id="soulseek-section">
+            <header class="settings-section-head"><h4 class="settings-section-title">Soulseek downloads</h4><p class="settings-section-desc">Download on an Apple Music or Spotify album or song fetches the real files from Soulseek into the folder above, as Hive on your phone does. Hive only downloads: it shares none of your files and turns down every upload request.</p></header>
+            <div class="settings-field-grid">
+              <label class="settings-field">Username<input id="soulseek-username" type="text" autocomplete="off" spellcheck="false" /></label>
+              <label class="settings-field">Password<input id="soulseek-password" type="password" autocomplete="off" /></label>
+            </div>
+            <label class="settings-row">
+              <span class="settings-row-text"><span class="settings-row-label">Prefer</span><span class="settings-hint">Hive picks the folder with every song first, then this format.</span></span>
+              <select id="soulseek-quality" class="settings-select">
+                <option value="lossless">FLAC (lossless)</option>
+                <option value="mp3">MP3 320</option>
+              </select>
+            </label>
+            <div class="settings-row">
+              <span class="settings-row-text"><span class="settings-row-label">Account</span><span id="soulseek-status" class="settings-hint" aria-live="polite">Not signed in. Use the account you made in Seeker or Nicotine+; Soulseek signs it out wherever else it's in use while Hive downloads.</span></span>
+              <span class="settings-row-control" style="display:flex;gap:6px">
+                <button id="soulseek-save" class="sidebar-add" type="button">Sign in</button>
+                <button id="soulseek-sign-out" class="sidebar-add" type="button" hidden>Sign out</button>
+                <button id="soulseek-downloads-open" class="sidebar-add" type="button">Downloads</button>
+              </span>
+            </div>
           </section>
 
           <section class="settings-section">
@@ -1278,5 +1313,6 @@
   <script src="drag-out.js"></script>
   <script src="renderer.js"></script>
   <script src="hive-link-settings.js"></script>
+  <script src="soulseek-downloads.js"></script>
 </body>
 </html>

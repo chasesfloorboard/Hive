@@ -26,13 +26,17 @@ class PcLibrary(context: Context, private val client: HiveLinkClient, private va
     val playlists: StateFlow<List<PcPlaylist>> = _playlists.asStateFlow()
     private val _tracks = MutableStateFlow<List<PcTrack>>(emptyList())
     val tracks: StateFlow<List<PcTrack>> = _tracks.asStateFlow()
+    private val _lovedIds = MutableStateFlow<Set<String>>(emptySet())
+    /** Ids of the songs loved in Hive, for the heart on a PC song played on the phone. */
+    val lovedIds: StateFlow<Set<String>> = _lovedIds.asStateFlow()
+    private fun setTracks(tracks: List<PcTrack>) { _tracks.value = tracks; _lovedIds.value = tracks.filter { it.loved }.mapTo(HashSet()) { it.id } }
     private var loaded = false
 
     /** The kept copy, read once. */
     suspend fun load() = withContext(Dispatchers.IO) {
         if (loaded) return@withContext
         loaded = true
-        if (file.exists()) runCatching { _tracks.value = json.decodeFromString(LibraryResponse.serializer(), file.readText()).tracks }
+        if (file.exists()) runCatching { setTracks(json.decodeFromString(LibraryResponse.serializer(), file.readText()).tracks) }
         if (playlistsFile.exists()) runCatching { _playlists.value = json.decodeFromString(PlaylistsResponse.serializer(), playlistsFile.readText()).playlists }
     }
 
@@ -47,7 +51,7 @@ class PcLibrary(context: Context, private val client: HiveLinkClient, private va
         val fresh = client.libraryIfChanged(conn, prefs.getString("etag", null).takeIf { file.exists() }) ?: return@withContext true
         file.writeText(json.encodeToString(LibraryResponse.serializer(), fresh.second))
         prefs.edit().putString("etag", fresh.first).apply()
-        _tracks.value = fresh.second.tracks
+        setTracks(fresh.second.tracks)
         true
     }
 

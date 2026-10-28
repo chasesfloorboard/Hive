@@ -42,14 +42,17 @@ class AlbumArtFetcher(private val context: Context, private val albumId: Long, p
         if (albumId < 0) return@withContext ownAlbum(-albumId)
         // List rows and other thumbnails: Android's own ~512 px album thumbnail is
         // plenty, and costs no song lookup or picture extraction per cache miss.
-        if (isThumbnail()) fallback()?.let { return@withContext it }
         // The extracted picture is kept, so each album's song file is read once.
         val kept = File(File(context.cacheDir, "embedded-art").apply { mkdirs() }, "$albumId.img")
+        // A cover just changed in Hive: Android's thumbnail is the old one for a while, so rows use Hive's copy.
+        if (isThumbnail() && kept.length() > 0 && System.currentTimeMillis() - kept.lastModified() < 10 * 60_000L) return@withContext result(kept.readBytes())
+        if (isThumbnail()) fallback()?.let { return@withContext it }
         if (kept.length() > 0) return@withContext result(kept.readBytes())
         val song = firstSong() ?: return@withContext fallback()
+        // Android's reader gives up on some covers (a 14 MB picture): Hive reads the song's pictures itself then.
         val embedded = runCatching {
             MediaMetadataRetriever().use { r -> r.setDataSource(context, song.uri); r.embeddedPicture }
-        }.getOrNull()
+        }.getOrNull()?.let(::fitted) ?: ownPicture(song.uri)
         if (embedded != null && longestSide(embedded) >= SMALL) runCatching { kept.writeBytes(embedded) }
         val side = embedded?.let { longestSide(it) } ?: 0
         if (side >= SMALL) return@withContext result(embedded!!)
@@ -61,10 +64,14 @@ class AlbumArtFetcher(private val context: Context, private val albumId: Long, p
         val kept = File(File(context.cacheDir, "embedded-art").apply { mkdirs() }, "$albumId.img")
         if (kept.length() > 0) return result(kept.readBytes())
         val uri = ContentUris.withAppendedId(MediaStore.Audio.Media.EXTERNAL_CONTENT_URI, songId)
-        val picture = runCatching { context.contentResolver.openInputStream(uri)?.use { EmbeddedPictures.read(it) } }.getOrNull()?.firstOrNull() ?: return null
+        val picture = ownPicture(uri) ?: return null
         runCatching { kept.writeBytes(picture) }
         return result(picture)
     }
+
+    /** The first of a song's own pictures that can be shown, read by Hive rather than Android. */
+    private fun ownPicture(uri: android.net.Uri): ByteArray? =
+        runCatching { context.contentResolver.openInputStream(uri)?.use { EmbeddedPictures.read(it) } }.getOrNull().orEmpty().firstNotNullOfOrNull(::fitted)
 
     private fun isThumbnail(): Boolean {
         fun px(d: coil3.size.Dimension) = (d as? coil3.size.Dimension.Pixels)?.px ?: Int.MAX_VALUE
@@ -141,6 +148,25 @@ class AlbumArtFetcher(private val context: Context, private val albumId: Long, p
         private const val THUMBNAIL_PX = 256
         private val http by lazy { AppleMusic.defaultHttp() }
         private val lookups = Semaphore(2)
+
+        /** Covers past this size (longest side) are shrunk to it before they're kept and shown. */
+        private const val LARGEST = 1600
+
+        /**
+         * A picture at a size worth keeping: as it is up to [LARGEST] px, shrunk past it (a poster-sized
+         * cover would otherwise cost tens of megabytes to show), or null when it isn't a picture.
+         */
+        internal fun fitted(bytes: ByteArray): ByteArray? {
+            val side = longestSide(bytes)
+            if (side <= 0) return null
+            if (side <= LARGEST) return bytes
+            var sample = 1
+            while (side / (sample * 2) >= LARGEST) sample *= 2
+            val decoded = BitmapFactory.decodeByteArray(bytes, 0, bytes.size, BitmapFactory.Options().apply { inSampleSize = sample }) ?: return null
+            val scale = LARGEST.toFloat() / maxOf(decoded.width, decoded.height)
+            val sized = if (scale < 1f) android.graphics.Bitmap.createScaledBitmap(decoded, (decoded.width * scale).toInt().coerceAtLeast(1), (decoded.height * scale).toInt().coerceAtLeast(1), true) else decoded
+            return java.io.ByteArrayOutputStream().use { out -> sized.compress(android.graphics.Bitmap.CompressFormat.JPEG, 92, out); out.toByteArray() }
+        }
 
         private fun longestSide(bytes: ByteArray): Int {
             val o = BitmapFactory.Options().apply { inJustDecodeBounds = true }

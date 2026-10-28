@@ -4,10 +4,14 @@ import androidx.compose.animation.animateColorAsState
 import androidx.compose.animation.core.animateFloatAsState
 import androidx.compose.animation.core.tween
 import androidx.compose.foundation.background
+import androidx.compose.foundation.layout.Arrangement
+import androidx.compose.foundation.layout.heightIn
+import kotlinx.coroutines.launch
+import androidx.compose.material.icons.rounded.Edit
+import androidx.compose.runtime.mutableIntStateOf
 import androidx.compose.ui.input.pointer.pointerInput
 import androidx.compose.foundation.gestures.detectTapGestures
 import androidx.compose.foundation.clickable
-import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.PaddingValues
@@ -68,6 +72,7 @@ fun LyricsScreen(vm: MainViewModel, onClose: () -> Unit) {
     val c = Hive.colors
     val now by vm.nowPlaying.collectAsStateWithLifecycle()
     val aura by vm.aura.collectAsStateWithLifecycle()
+    var refresh by remember { mutableIntStateOf(0) }
 
     HiveGlassLayers(Modifier.fillMaxSize(), content = {
         HiveAmbient(aura?.primary?.copy(alpha = 0.75f) ?: c.ambientA, aura?.secondary?.copy(alpha = 0.6f) ?: c.ambientB, Modifier.fillMaxSize().background(c.bg), intensity = 1.3f)
@@ -79,12 +84,18 @@ fun LyricsScreen(vm: MainViewModel, onClose: () -> Unit) {
                     Text(now.title, style = HiveText.rowStrong, color = c.text, maxLines = 1, overflow = TextOverflow.Ellipsis)
                     Text(now.artist, style = HiveText.small, color = c.textDim, maxLines = 1, overflow = TextOverflow.Ellipsis)
                 }
+                // Fix or type the words: kept for the song and written into its file.
+                var editing by remember { mutableStateOf(false) }
+                Box(Modifier.padding(end = 8.dp).size(42.dp).hiveGlass(CircleShape).clickable { editing = true }, contentAlignment = Alignment.Center) {
+                    Icon(Icons.Rounded.Edit, "Edit lyrics", tint = c.text, modifier = Modifier.size(20.dp))
+                }
+                if (editing) LyricsEditor(vm, now, onDismiss = { editing = false }) { refresh++ }
                 AccentPlayButton(now.isPlaying, { vm.player.togglePlay() }, size = 42.dp)
                 Box(Modifier.padding(start = 8.dp).size(42.dp).hiveGlass(CircleShape).clickable(onClick = onClose), contentAlignment = Alignment.Center) {
                     Icon(Icons.Rounded.KeyboardArrowDown, "Close lyrics", tint = c.text, modifier = Modifier.size(24.dp))
                 }
             }
-            LyricsBody(vm, Modifier.weight(1f).fillMaxWidth(), onLine = { vm.player.seekTo(it) })
+            LyricsBody(vm, Modifier.weight(1f).fillMaxWidth(), onLine = { vm.player.seekTo(it) }, refresh = refresh)
         }
     })
 }
@@ -97,13 +108,13 @@ fun LyricsScreen(vm: MainViewModel, onClose: () -> Unit) {
  * panel the size of a cover rather than a whole page.
  */
 @Composable
-fun LyricsBody(vm: MainViewModel, modifier: Modifier, onLine: (Long) -> Unit = {}, onTap: (() -> Unit)? = null, compact: Boolean = false) {
+fun LyricsBody(vm: MainViewModel, modifier: Modifier, onLine: (Long) -> Unit = {}, onTap: (() -> Unit)? = null, compact: Boolean = false, refresh: Int = 0) {
     val c = Hive.colors
     val now by vm.nowPlaying.collectAsStateWithLifecycle()
     var lyrics by remember { mutableStateOf<Lyrics?>(null) }
     var loading by remember { mutableStateOf(true) }
-    LaunchedEffect(now.mediaId, now.title) {
-        loading = true
+    LaunchedEffect(now.mediaId, now.title, refresh) {
+        loading = refresh == 0
         lyrics = runCatching { vm.lyrics(now) }.getOrNull()
         loading = false
     }
@@ -166,4 +177,41 @@ private fun LyricLineRow(text: String, current: Boolean, past: Boolean, compact:
         modifier = Modifier.fillMaxWidth().then(if (onClick != null) Modifier.clickable(onClick = onClick) else Modifier).padding(horizontal = side, vertical = if (compact) 7.dp else 9.dp)
             .graphicsLayer { scaleX = scale; scaleY = scale; transformOrigin = androidx.compose.ui.graphics.TransformOrigin(0f, 0.5f) },
     )
+}
+
+/**
+ * The playing song's lyrics as text to fix or type. Lines stamped [mm:ss.xx]
+ * stay synced. Saved for the song, and into the file when it's on the phone
+ * (and so to Hive on the PC).
+ */
+@Composable
+private fun LyricsEditor(vm: MainViewModel, now: com.local.hive.mobile.playback.NowPlaying, onDismiss: () -> Unit, onSaved: () -> Unit) {
+    val c = Hive.colors
+    val toast = LocalToast.current
+    val write = rememberWriteAccess(toast)
+    var text by remember { mutableStateOf<String?>(null) }
+    val scope = androidx.compose.runtime.rememberCoroutineScope()
+    LaunchedEffect(now.mediaId) { text = runCatching { vm.lyrics(now)?.text }.getOrNull().orEmpty() }
+    HiveDialog(onDismiss, wide = true) {
+        Text("Edit lyrics", style = HiveText.year, color = c.text)
+        Text("Lines starting with a time like [01:23.45] light up with the song.", style = HiveText.small, color = c.textDim)
+        val t = text
+        if (t == null) Busy("Reading the lyrics…") else androidx.compose.foundation.text.BasicTextField(
+            t, { text = it }, textStyle = HiveText.body.copy(color = c.text), cursorBrush = androidx.compose.ui.graphics.SolidColor(c.accent),
+            modifier = Modifier.fillMaxWidth().heightIn(min = 220.dp, max = 420.dp).clip(RoundedCornerShape(12.dp)).background(c.bg.copy(alpha = 0.35f)).padding(12.dp),
+        )
+        Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(10.dp, Alignment.End)) {
+            HiveButton("Cancel") { onDismiss() }
+            HiveButton("Save", primary = true, enabled = t != null) {
+                val words = text.orEmpty()
+                scope.launch {
+                    val track = now.trackId?.let { vm.track(it) }
+                    vm.saveOwnLyrics(now.artist, now.title, words)
+                    onSaved(); onDismiss()
+                    if (track == null || !com.local.hive.mobile.data.TagWriter.canWrite(track)) { toast("Lyrics saved"); return@launch }
+                    write(listOf(track)) { allowed -> vm.saveEdits(allowed.associateWith { com.local.hive.mobile.data.TagEdit(lyrics = words) }) { toast(if (it.startsWith("Saved")) "Lyrics saved" else it) } }
+                }
+            }
+        }
+    }
 }

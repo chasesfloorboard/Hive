@@ -1,7 +1,6 @@
 package com.local.hive.mobile.ui
 
 import androidx.compose.foundation.background
-import androidx.compose.foundation.border
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Column
@@ -22,15 +21,12 @@ import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
-import androidx.compose.ui.draw.shadow
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
-import androidx.compose.ui.window.Dialog
 import com.local.hive.mobile.data.Track
 import com.local.hive.mobile.ui.theme.Hive
 import com.local.hive.mobile.ui.theme.HiveShape
 import com.local.hive.mobile.ui.theme.HiveText
-import com.local.hive.mobile.ui.theme.hiveGlassBorder
 
 /** What the user held for Auto DJ: a name for it, and its songs (looked up when asked). */
 class AutoDjRequest(val label: String, val seeds: suspend () -> List<Track>)
@@ -54,12 +50,7 @@ fun AutoDjSheet(vm: MainViewModel, request: AutoDjRequest, onDismiss: () -> Unit
     var queue by remember { mutableStateOf<List<Track>?>(null) }
     var round by remember { mutableIntStateOf(0) }
     LaunchedEffect(round) { queue = null; queue = vm.autoDj(request.seeds()) }
-    Dialog(onDismissRequest = onDismiss) {
-        Column(
-            Modifier.fillMaxWidth().shadow(30.dp, HiveShape.panel, ambientColor = c.accentGlow).clip(HiveShape.panel).background(c.control)
-                .border(1.dp, hiveGlassBorder(), HiveShape.panel).padding(20.dp),
-            verticalArrangement = Arrangement.spacedBy(12.dp),
-        ) {
+    HiveDialog(onDismiss) {
             Text("Auto DJ", style = HiveText.small, color = c.accent)
             Text(request.label, style = HiveText.year, color = c.text, maxLines = 2, overflow = TextOverflow.Ellipsis)
             val q = queue
@@ -90,6 +81,5 @@ fun AutoDjSheet(vm: MainViewModel, request: AutoDjRequest, onDismiss: () -> Unit
                     modifier = Modifier.clip(HiveShape.pill).background(if (!q.isNullOrEmpty()) c.accent else c.accent.copy(alpha = 0.4f))
                         .clickable(enabled = !q.isNullOrEmpty()) { vm.play(q.orEmpty()); onDismiss() }.padding(horizontal = 18.dp, vertical = 10.dp))
             }
-        }
     }
 }

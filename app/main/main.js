@@ -1668,6 +1668,8 @@ updateChecker.onStatus(status => {
 app.on('before-quit', () => { stopSpotifyBridge(); });
 app.whenReady().then(() => {
   try { startHiveLink(); } catch (err) { scanLog('Hive Link failed to start', { error: err?.message || String(err) }); }
+  // A Soulseek download running when Hive closed carries on.
+  try { if (fs.existsSync(path.join(USER_DATA(), 'soulseek-downloads.json'))) soulseekQueue().resume(); } catch {}
 });
 app.on('before-quit', () => { try { hiveLink?.stop(); } catch {} });
 
@@ -1974,6 +1976,42 @@ ipcMain.handle('hivebee:saveSettings', async (_evt, patch = {}) => withJsonFileL
   config.hivebee = next;
   await writeJsonSafe(CONFIG_PATH(), config);
   return next;
+}));
+
+// Likes for streamed songs (prefs.streamLoves; see stream-loves.js). The
+// renderer and the phone (through Hive Link) both change them here, one song
+// at a time under the config lock, so neither overwrites the other's.
+async function updateStreamLoves(mutate) {
+  let changed = false;
+  const loves = await withJsonFileLock(CONFIG_PATH(), async () => {
+    const config = await readJsonSafe(CONFIG_PATH(), { folders: [] });
+    const hivebee = config.hivebee && typeof config.hivebee === 'object' ? config.hivebee : {};
+    const prefs = hivebee.prefs && typeof hivebee.prefs === 'object' ? hivebee.prefs : {};
+    const current = prefs.streamLoves && typeof prefs.streamLoves === 'object' && !Array.isArray(prefs.streamLoves) ? prefs.streamLoves : {};
+    const next = mutate({ ...current });
+    if (!next) return current;
+    changed = true;
+    config.hivebee = { ...hivebee, prefs: { ...prefs, streamLoves: next } };
+    await writeJsonSafe(CONFIG_PATH(), config);
+    return next;
+  });
+  if (!changed) return loves;
+  try { if (mainWindow && !mainWindow.isDestroyed()) mainWindow.webContents.send('hivebee:streamLoves', loves); } catch {}
+  try { hiveLink?.notifyStreamLoves?.(); } catch {}
+  return loves;
+}
+async function readStreamLoves() {
+  const prefs = (await readJsonSafe(CONFIG_PATH(), { folders: [] }))?.hivebee?.prefs;
+  const loves = prefs?.streamLoves;
+  return loves && typeof loves === 'object' && !Array.isArray(loves) ? loves : {};
+}
+// { key: entry fields to merge, or null to forget the song }.
+ipcMain.handle('hivebee:patchStreamLoves', async (_evt, patch = {}) => updateStreamLoves(loves => {
+  for (const [key, value] of Object.entries(patch && typeof patch === 'object' ? patch : {})) {
+    if (value === null) delete loves[key];
+    else if (value && typeof value === 'object') loves[key] = { ...(loves[key] || {}), ...value };
+  }
+  return loves;
 }));
 
 // Hive 2.0 artist info (MusicBee's artist panel): a short Wikipedia summary,
@@ -7368,27 +7406,9 @@ function spotifyCommand(command) {
   // the command simply remains queued until the client reconnects.
   return true;
 }
-function launchSpotifyOrLogin() {
-  // Spotify is an external provider, but on Linux its desktop client can raise
-  // a real Wayland/XWayland window as soon as playback is requested.  When
-  // Xvfb is available, launch the entire Spotify client on an isolated display
-  // instead of trying to fight the window manager with wmctrl/xdotool.
-  const helper = path.join(HIVE_PROJECT_ROOT, 'scripts', 'spotify-background.sh');
-  try {
-    if (!fs.existsSync(helper)) throw new Error(`Missing Spotify background helper: ${helper}`);
-    const child = require('child_process').spawn(helper, [], {
-      detached: true,
-      stdio: 'ignore',
-      env: { ...process.env, HIVE_SPOTIFY_BACKGROUND: '1', HIVE_PARENT_PID: String(process.pid) }
-    });
-    child.unref();
-    startupDebug('SPOTIFY BACKGROUND LAUNCH', { helper });
-    return true;
-  } catch (err) {
-    startupDebug('SPOTIFY BACKGROUND LAUNCH FAILED', { helper, message: err?.message || String(err) });
-    return false;
-  }
-}
+// Hive never starts the Spotify app: Spotify songs stream from YouTube Music,
+// and a hidden Spotify left running leaked gigabytes of shared memory.
+function launchSpotifyOrLogin() { return false; }
 
 ipcMain.handle('spotify:status', async () => ({
   connected: !!spotifyBridgeState.connected && (Date.now() - Number(spotifyBridgeState.updatedAt || 0) < 5000),
@@ -7715,7 +7735,13 @@ function findSpotifyTrackList(value) {
 }
 
 const spotifyOembedArtCache = new Map();
-ipcMain.handle('playlists:importSpotify', async (_evt, input) => importSpotifyPlaylistFrom(input));
+ipcMain.handle('playlists:importSpotify', async (_evt, input, options) => {
+  if (!options?.browse) return importSpotifyPlaylistFrom(input);
+  // Browsing opens a playlist from Spotify's public page at once; only a private
+  // playlist (no public page) waits on the signed-in Spotify app.
+  try { return await importSpotifyPlaylistFrom(input, { useBridge: false }); }
+  catch { return importSpotifyPlaylistFrom(input); }
+});
 
 // A Spotify playlist's songs: from the signed-in Spotify app when its bridge
 // is running (private playlists, the whole list), else Spotify's public page.
@@ -7811,18 +7837,15 @@ async function importSpotifyPlaylistFrom(input, { useBridge = true } = {}) {
   return { id, kind, name, sourceUrl: `https://open.spotify.com/${kind}/${id}`, cover, artworkUrl:cover, tracks, likelyTruncated: rows.length >= 100, source: 'spotify' };
 }
 
-// Search Spotify through the signed-in Spotify app (Hive's add-on), starting
-// the app in the background when it isn't running. Without it, nothing:
-// Spotify has no search for visitors who aren't signed in.
+// Search Spotify through a signed-in Spotify app the user has open (Hive's
+// add-on). Hive never starts the app for this.
 ipcMain.handle('spotify:search', async (_evt, query) => searchSpotifyThroughApp(query));
 async function searchSpotifyThroughApp(query) {
   if (SPOTIFY_DEVELOPMENT_PAUSED) return { connected: false };
   const q = String(query || '').trim();
   if (!q) return { connected: true, data: { tracks: [], albums: [], artists: [], playlists: [] } };
-  if (Date.now() - spotifyBridgeLastPollAt > 3000) {
-    try { await launchSpotifyOrLogin(); } catch {}
-    for (let i = 0; i < 40 && Date.now() - spotifyBridgeLastPollAt > 3000; i++) await new Promise(r => setTimeout(r, 500));
-  }
+  // Only a Spotify app the user opened themselves can search; Hive doesn't start one.
+  if (Date.now() - spotifyBridgeLastPollAt > 3000) return { connected: false };
   return askSpotifyBridge({ type: 'search', query: q }, 20000);
 }
 
@@ -8030,7 +8053,12 @@ let hiveLink = null;
 
 async function hiveLinkSongTarget(meta = {}) {
   const config = await readJsonSafe(CONFIG_PATH(), { folders: [] });
-  const folder = (Array.isArray(config.folders) ? config.folders : []).map(resolveConfiguredFolder).find(f => f && fs.existsSync(f));
+  const folder = require('./phone-song-folder').phoneSongFolder({
+    chosen: String(config.hiveLinkSongFolder || ''),
+    folders: (Array.isArray(config.folders) ? config.folders : []).map(resolveConfiguredFolder),
+    exists: f => fs.existsSync(f),
+    inside: isPathInsideFolder,
+  });
   if (!folder) throw new Error('Add a music folder in Hive (Settings → Library) first.');
   const clean = (v, fallback) => organiserSafeName(v, fallback);
   const artist = clean(meta.albumArtist || String(meta.artist || '').split(/,|&| feat\.? /i)[0], 'Unknown Artist');
@@ -8062,6 +8090,11 @@ function startHiveLink() {
     // library watcher's own path to pick it up.
     songTarget: hiveLinkSongTarget,
     // Every deletion a phone asks for is announced on the PC too, with what went where.
+    getStreamLoves: readStreamLoves,
+    applyStreamLoves: async (changes) => updateStreamLoves(loves => {
+      const merged = require('./stream-loves').mergeStreamLoves(loves, changes);
+      return merged.changed.length ? merged.loves : null;
+    }),
     deleteSongs: async (paths, deviceName) => {
       const result = await deleteTracksFromDisk(paths);
       const n = result.deleted.length;
@@ -8075,6 +8108,16 @@ function startHiveLink() {
       return result;
     },
     onSongAdded: songPath => notifyLibraryFilesystemChange('hive-link-song', songPath),
+    // Tags and covers edited on the phone go through the tag editor's own save
+    // queue, so the files, the library and the open window all update as after
+    // a Save in Hive. The queue is awaited so a cover's temp file outlives it.
+    editSongs: (songs, coverPath) => new Promise(resolve => {
+      const sender = mainWindow && !mainWindow.isDestroyed() ? mainWindow.webContents : null;
+      const jobs = songs.map(s => coverPath
+        ? { kind: 'artwork:add', operation: 'artwork', path: s.path, imagePath: coverPath, pictureType: 'Cover (Front)' }
+        : { kind: 'metadata', operation: 'metadata', path: s.path, tags: s.tags, artwork: null });
+      enqueueMetadataSave(sender ? { sender } : null, jobs).then(resolve, resolve);
+    }),
     // Remote control from the phone (off until allowed in Settings): Hive's own
     // MPRIS command channel, and the state the player reports to it.
     remote: {
@@ -8097,6 +8140,13 @@ function startHiveLink() {
     getWrapYears: () => yearlyWrapYears(),
     // Every theme in Hive's themes folder (stock, MusicBee skins, saved ones) for the phone's Appearance.
     getThemes: async () => (await listThemes()).themes.map(t => ({ name: t.name, css: t.css, stock: t.stock })),
+    // The theme Hive shows now (its applied theme file), for the phone's "Your Hive theme".
+    getCurrentTheme: async () => {
+      const css = await fsp.readFile(CUSTOM_CSS_PATH(), 'utf8').catch(() => '');
+      if (!css.trim()) return null;
+      const match = (await listThemes()).themes.find(t => t.css === css);
+      return { name: match?.name || 'Your Hive theme', css, stock: !!match?.stock };
+    },
     // A phone on the network asking to connect without a code: the person at the PC decides.
     onPairRequest: async ({ name }) => {
       if (!mainWindow || mainWindow.isDestroyed()) return false;
@@ -8109,8 +8159,7 @@ function startHiveLink() {
       try { mainWindow.flashFrame(false); } catch {}
       return response === 0;
     },
-    // Hive Mobile searches Spotify through this PC's Spotify app when the phone isn't signed in itself.
-    spotifySearch: q => searchSpotifyThroughApp(q),
+
     onInbox: summary => { try { mainWindow?.webContents?.send('hiveLink:inbox', summary); } catch {} },
     coversDir: COVERS_DIR(),
     // Apple Music and Spotify songs Hive Mobile lacks play from YouTube Music
@@ -8163,6 +8212,117 @@ ipcMain.handle('hiveLink:receiveSongs', async (_evt, on) => {
   if (typeof on === 'boolean') hiveLink?.setReceiveSongs(on);
   return !!hiveLink?.receiveSongs();
 });
+// Where songs from phones go (Settings › Connections): a folder inside the library, or the first music folder.
+ipcMain.handle('hiveLink:songFolder', async (_evt, action) => {
+  const { phoneSongFolder, phoneSongFolderProblem } = require('./phone-song-folder');
+  const read = async () => {
+    const config = await readJsonSafe(CONFIG_PATH(), { folders: [] });
+    const folders = (Array.isArray(config.folders) ? config.folders : []).map(resolveConfiguredFolder);
+    const folder = phoneSongFolder({ chosen: String(config.hiveLinkSongFolder || ''), folders, exists: f => fs.existsSync(f), inside: isPathInsideFolder });
+    return { config, folders, folder, chosen: folder && folder === config.hiveLinkSongFolder };
+  };
+  let error = '';
+  if (action === 'choose' || action === 'reset') {
+    const { folders, folder } = await read();
+    let next = '';
+    if (action === 'choose') {
+      const res = await dialog.showOpenDialog(mainWindow, { title: 'Put songs from your phone in', defaultPath: folder || folders[0], properties: ['openDirectory', 'createDirectory'] });
+      if (res.canceled || !res.filePaths?.[0]) return { folder, chosen: false, error: '' };
+      next = res.filePaths[0];
+      error = phoneSongFolderProblem(next, folders, isPathInsideFolder);
+    }
+    if (!error) await withJsonFileLock(CONFIG_PATH(), async () => {
+      const config = await readJsonSafe(CONFIG_PATH(), { folders: [] });
+      if (next) config.hiveLinkSongFolder = next; else delete config.hiveLinkSongFolder;
+      await writeJsonSafe(CONFIG_PATH(), config);
+    });
+  }
+  const { folder, chosen } = await read();
+  return { folder, chosen, error };
+});
+// ---- Soulseek downloads ------------------------------------------------------
+// Albums and songs from Apple Music/Spotify pages fetched as real files, as on
+// Hive Mobile (app/main/soulseek.js). The account stays on this PC, in
+// soulseek.json (the password encrypted when the desktop keyring allows);
+// Hive shares nothing and declines every upload request.
+const SOULSEEK_PATH = () => path.join(USER_DATA(), 'soulseek.json');
+async function soulseekSettings() {
+  const raw = await readJsonSafe(SOULSEEK_PATH(), {});
+  let password = '';
+  try {
+    const { safeStorage } = require('electron');
+    password = raw.passwordEncrypted ? safeStorage.decryptString(Buffer.from(raw.passwordEncrypted, 'base64')) : String(raw.password || '');
+  } catch {}
+  return { username: String(raw.username || ''), password, quality: raw.quality === 'mp3' ? 'mp3' : 'lossless' };
+}
+async function saveSoulseekSettings({ username, password, quality }) {
+  const now = await soulseekSettings();
+  const next = { username: username === undefined ? now.username : String(username).trim(), quality: quality || now.quality };
+  const pass = password === undefined ? now.password : String(password);
+  const { safeStorage } = require('electron');
+  if (pass && safeStorage.isEncryptionAvailable() && safeStorage.getSelectedStorageBackend?.() !== 'basic_text') next.passwordEncrypted = safeStorage.encryptString(pass).toString('base64');
+  else if (pass) next.password = pass;
+  await fsp.writeFile(SOULSEEK_PATH(), JSON.stringify(next), { mode: 0o600 });
+}
+// Downloads go where songs from the phone go (Settings › Connections), so both copies stay alike.
+async function librarySongFolder() {
+  const config = await readJsonSafe(CONFIG_PATH(), { folders: [] });
+  const folder = require('./phone-song-folder').phoneSongFolder({
+    chosen: String(config.hiveLinkSongFolder || ''),
+    folders: (Array.isArray(config.folders) ? config.folders : []).map(resolveConfiguredFolder),
+    exists: f => fs.existsSync(f),
+    inside: isPathInsideFolder,
+  });
+  if (!folder) throw new Error('Add a music folder in Hive (Settings › Library) first.');
+  return folder;
+}
+let soulseekDownloads = null;
+function soulseekQueue() {
+  if (soulseekDownloads) return soulseekDownloads;
+  const { SoulseekClient } = require('./soulseek');
+  const logFile = path.join(USER_DATA(), 'soulseek-log.txt');
+  const log = line => { try { fs.appendFileSync(logFile, `${new Date().toISOString()} ${line}\n`); } catch {} };
+  soulseekDownloads = require('./soulseek-downloads').createSoulseekDownloads({
+    dataDir: USER_DATA(),
+    settings: soulseekSettings,
+    musicFolder: librarySongFolder,
+    createClient: opts => new SoulseekClient(opts),
+    log,
+    onChange: jobs => { try { if (mainWindow && !mainWindow.isDestroyed()) mainWindow.webContents.send('soulseek:jobs', jobs); } catch {} },
+    // The window adds the songs to the library, points playlists at them and carries likes over.
+    onSongs: async (songs) => { try { if (mainWindow && !mainWindow.isDestroyed()) mainWindow.webContents.send('soulseek:songs', songs); } catch {} },
+  });
+  return soulseekDownloads;
+}
+ipcMain.handle('soulseek:settings', async (_evt, change) => {
+  if (change && typeof change === 'object') await saveSoulseekSettings(change);
+  const s = await soulseekSettings();
+  return { username: s.username, signedIn: !!(s.username && s.password), quality: s.quality };
+});
+// Signing in tries the account first and keeps it only when Soulseek takes it. While a download
+// runs, a second sign-in would knock it off Soulseek, so the account is only saved then.
+ipcMain.handle('soulseek:signIn', async (_evt, { username, password } = {}) => {
+  const user = String(username || '').trim();
+  const now = await soulseekSettings();
+  const pass = password ? String(password) : (user === now.username ? now.password : '');
+  if (!user || !pass) throw new Error('Enter your Soulseek username and password.');
+  if (!soulseekDownloads?.busy()) {
+    const client = new (require('./soulseek').SoulseekClient)({ username: user, password: pass });
+    try { await client.login(); } finally { client.close(); }
+  }
+  await saveSoulseekSettings({ username: user, password: pass });
+  const s = await soulseekSettings();
+  return { username: s.username, signedIn: true, quality: s.quality };
+});
+ipcMain.handle('soulseek:signOut', async () => {
+  const s = await soulseekSettings();
+  await fsp.writeFile(SOULSEEK_PATH(), JSON.stringify({ quality: s.quality }), { mode: 0o600 });
+  return { username: '', signedIn: false, quality: s.quality };
+});
+ipcMain.handle('soulseek:download', async (_evt, request) => soulseekQueue().add(request || {}));
+ipcMain.handle('soulseek:jobs', async () => soulseekQueue().list());
+ipcMain.handle('soulseek:cancel', async (_evt, id) => soulseekQueue().cancel(String(id || '')));
+ipcMain.handle('soulseek:clearFinished', async () => soulseekQueue().clearFinished());
 ipcMain.handle('hiveLink:trust', async (_evt, deviceId, on) => !!hiveLink?.setTrusted(String(deviceId || ''), !!on));
 ipcMain.handle('hiveLink:unpair', async (_evt, deviceId) => !!hiveLink?.unpair(String(deviceId || '')));
 

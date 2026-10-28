@@ -34,11 +34,13 @@ test('Spotify background helper allocates a fresh X display without relying on s
   assert.match(text, /rm -f .*DISPLAY_FILE/);
 });
 
-test('Hive launches Spotify only through the isolated helper', () => {
-  assert.match(main, /spotify-background\.sh/);
-  assert.doesNotMatch(main, /spawn\(command, \['auto'\]/);
-  assert.match(renderer, /spotifyLaunch\?\./);
-  assert.match(fs.readFileSync(helper, 'utf8'), /isolated display/);
+test('Hive never starts the Spotify app: Spotify songs stream from YouTube Music', () => {
+  // A hidden Spotify Hive started for a search was left running and leaked
+  // gigabytes of shared memory (Discord and browsers then failed to start).
+  assert.match(main, /function launchSpotifyOrLogin\(\) \{ return false; \}/);
+  assert.doesNotMatch(renderer, /spotifyLaunch\?\./);
+  assert.match(renderer, /function spotifyPlaysViaYoutube\(\) \{ return youtubeMusicReady === true; \}/);
+  assert.doesNotMatch(renderer, /Through the Spotify app/);
 });
 
 test('Installer provisions the Xvfb system dependency', () => {

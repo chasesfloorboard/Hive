@@ -53,6 +53,9 @@ import java.util.concurrent.TimeUnit
 @Serializable data class LoveRequest(val changes: List<LoveChange>)
 @Serializable data class LoveResult(val clientChangeId: Long? = null, val id: String? = null, val status: String, val loved: Boolean? = null, val at: Long? = null, val error: String? = null)
 @Serializable data class LoveResponse(val seq: Long, val results: List<LoveResult>)
+@Serializable private data class StreamLovesRequest(val changes: List<StreamLoveChange>)
+/** Hive's streamed-song likes; [applied] false when this phone's changes wait for the user on the PC. */
+@Serializable data class StreamLovesResponse(val loves: Map<String, StreamLove> = emptyMap(), val applied: Boolean = true)
 @Serializable data class HiveAddress(val name: String = "", val address: String, val tailscale: Boolean = false)
 @Serializable data class StreamCaps(val track: Boolean = false, val song: Boolean = false)
 /** Phone changes waiting in Hive on the PC for the user to apply. */
@@ -115,12 +118,15 @@ import java.util.concurrent.TimeUnit
 @Serializable private data class PairRequest(val code: String, val deviceName: String)
 @Serializable private data class ConnectRequest(val deviceName: String)
 @Serializable private data class DeleteSongs(val ids: List<String>)
+@Serializable data class SongTagEdit(val id: String, val tags: Map<String, String>)
+@Serializable private data class SongTagEdits(val edits: List<SongTagEdit>)
+@Serializable private data class EditedSongs(val edited: List<String> = emptyList())
 @Serializable private data class DeletedSongs(val deleted: List<String> = emptyList(), val failed: Int = 0)
 @Serializable data class ConnectTicket(val requestId: String, val secret: String)
 @Serializable data class ConnectAnswer(val status: String = "", val token: String = "", val deviceId: String = "", val serverId: String = "", val name: String = "", val seq: Long = 0, val error: String? = null)
 /** A theme from Hive's themes folder (stock, MusicBee skins, saved). */
 @Serializable data class PcTheme(val name: String, val css: String, val stock: Boolean = false)
-@Serializable private data class ThemesResponse(val themes: List<PcTheme> = emptyList())
+@Serializable data class ThemesResponse(val themes: List<PcTheme> = emptyList(), val current: PcTheme? = null)
 @Serializable private data class DiscoveryReply(val hivelink: Int, val serverId: String, val name: String, val port: Int)
 
 class HiveLinkException(message: String, val status: Int = 0) : IOException(message)
@@ -209,7 +215,8 @@ class HiveLinkClient(private val http: OkHttpClient = defaultHttp()) {
         }
     }
 
-    suspend fun themes(conn: Connection): List<PcTheme> = get(conn, "/api/themes", ThemesResponse.serializer()).themes
+    /** Hive's themes, and the one it shows now. */
+    suspend fun themes(conn: Connection): ThemesResponse = get(conn, "/api/themes", ThemesResponse.serializer())
 
     suspend fun info(conn: Connection): InfoResponse = get(conn, "/api/info", InfoResponse.serializer())
 
@@ -233,6 +240,13 @@ class HiveLinkClient(private val http: OkHttpClient = defaultHttp()) {
         http.newCall(authed(conn, "/api/love").post(body).build()).execute().use {
             json.decodeFromString(LoveResponse.serializer(), read(it))
         }
+    }
+
+    /** Hive's streamed-song likes, after sending this phone's [changes] (fetched only when there are none). */
+    suspend fun streamLoves(conn: Connection, changes: List<StreamLoveChange>): StreamLovesResponse = withContext(Dispatchers.IO) {
+        val request = if (changes.isEmpty()) authed(conn, "/api/streamloves")
+            else authed(conn, "/api/streamloves").post(json.encodeToString(StreamLovesRequest.serializer(), StreamLovesRequest(changes)).toRequestBody(jsonType))
+        http.newCall(request.build()).execute().use { json.decodeFromString(StreamLovesResponse.serializer(), read(it)) }
     }
 
     suspend fun sendPlays(conn: Connection, plays: List<PlayOut>): PlaysStaged = withContext(Dispatchers.IO) {
@@ -296,6 +310,20 @@ class HiveLinkClient(private val http: OkHttpClient = defaultHttp()) {
         http.newCall(authed(conn, "/api/songs/delete").post(body).build()).execute().use { json.decodeFromString(DeletedSongs.serializer(), read(it)).deleted }
     }
 
+    /** Tags edited on the phone, written into Hive's own files (trusted phones only). Returns the ids edited. */
+    suspend fun editTags(conn: Connection, edits: List<SongTagEdit>): List<String> = withContext(Dispatchers.IO) {
+        val body = json.encodeToString(SongTagEdits.serializer(), SongTagEdits(edits)).toRequestBody(jsonType)
+        http.newCall(authed(conn, "/api/songs/tags").post(body).build()).execute().use { json.decodeFromString(EditedSongs.serializer(), read(it)).edited }
+    }
+
+    /** A cover chosen on the phone, written as the front cover of those songs in Hive (trusted phones only). */
+    suspend fun sendCover(conn: Connection, ids: List<String>, image: ByteArray): List<String> = withContext(Dispatchers.IO) {
+        val query = java.net.URLEncoder.encode(ids.joinToString(","), "UTF-8")
+        transferHttp.newCall(authed(conn, "/api/songs/cover?ids=$query").put(image.toRequestBody("application/octet-stream".toMediaType())).build()).execute().use {
+            json.decodeFromString(EditedSongs.serializer(), read(it)).edited
+        }
+    }
+
     suspend fun uploadSong(conn: Connection, meta: Map<String, String>, ext: String, size: Long, open: () -> java.io.InputStream): SongUpload = withContext(Dispatchers.IO) {
         val query = (meta + ("ext" to ext)).entries.joinToString("&") { (k, v) -> "$k=" + java.net.URLEncoder.encode(v, "UTF-8") }
         val body = object : okhttp3.RequestBody() {
@@ -316,13 +344,14 @@ class HiveLinkClient(private val http: OkHttpClient = defaultHttp()) {
     }
 
     /** Live Love changes from the PC. Completes when the stream drops. */
-    fun events(conn: Connection): Flow<LoveEvent> = callbackFlow {
+    fun events(conn: Connection, onStreamLoves: () -> Unit = {}): Flow<LoveEvent> = callbackFlow {
         val streamHttp = http.newBuilder().readTimeout(0, TimeUnit.MILLISECONDS).build()
         val source = EventSources.createFactory(streamHttp).newEventSource(
             authed(conn, "/api/events").build(),
             object : EventSourceListener() {
                 override fun onEvent(eventSource: EventSource, id: String?, type: String?, data: String) {
                     if (type == "love") runCatching { trySend(json.decodeFromString(LoveEvent.serializer(), data)) }
+                    if (type == "streamloves") onStreamLoves()
                 }
                 override fun onClosed(eventSource: EventSource) { close() }
                 override fun onFailure(eventSource: EventSource, t: Throwable?, response: Response?) {

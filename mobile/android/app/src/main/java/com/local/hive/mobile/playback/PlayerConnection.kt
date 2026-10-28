@@ -52,6 +52,9 @@ data class NowPlaying(
     val station: String = "",
     val speed: Float = 1f,
     val queueIndex: Int = -1,
+    /** The covers of the songs a skip either way plays next (shuffle and repeat included), to load ahead. */
+    val nextArtworkUri: String? = null,
+    val previousArtworkUri: String? = null,
 )
 
 /** Pause at [endsAt] (fading out over the last seconds), or when the current song ends. */
@@ -120,13 +123,28 @@ class PlayerConnection(private val context: Context, private val scope: Coroutin
     fun addToQueue(tracks: List<Track>) = addToQueueMedia(tracks.map { it.toMediaItem() })
 
     /** Plays library songs and streamed songs alike. */
-    fun playMedia(items: List<MediaItem>, startIndex: Int = 0, shuffle: Boolean = false, startPositionMs: Long = 0) = withController { c ->
-        if (items.isEmpty()) return@withController
-        c.shuffleModeEnabled = shuffle
-        c.setMediaItems(items, if (shuffle) items.indices.random() else startIndex.coerceIn(items.indices), startPositionMs)
-        c.prepare()
-        c.play()
+    fun playMedia(items: List<MediaItem>, startIndex: Int = 0, shuffle: Boolean = false, startPositionMs: Long = 0) {
+        if (items.isEmpty()) return
+        // Taps on Shuffle while one is starting are the same shuffle; once it plays, the next tap reshuffles.
+        if (shuffle) {
+            if (System.currentTimeMillis() - shuffleStartedAt < SHUFFLE_SETTLE_MS) return
+            shuffleStartedAt = System.currentTimeMillis()
+        }
+        withController { c ->
+            // A shuffle starts on a song on the phone when it can, which plays at once;
+            // a streamed song would wait on YouTube first.
+            val start = if (shuffle) items.indices.filter { items[it].isOnPhone() }.ifEmpty { items.indices.toList() }.random() else startIndex.coerceIn(items.indices)
+            if (shuffle) shuffleStart = items[start].mediaId
+            c.shuffleModeEnabled = shuffle
+            c.setMediaItems(items, start, startPositionMs)
+            c.prepare()
+            c.play()
+        }
     }
+
+    /** When a shuffle was last asked for, and the song it starts on; cleared once that plays (see [publish]). */
+    private var shuffleStartedAt = 0L
+    private var shuffleStart: String? = null
 
     fun playNextMedia(items: List<MediaItem>) = withController { c ->
         if (c.mediaItemCount == 0) { playMedia(items); return@withController }
@@ -143,12 +161,46 @@ class PlayerConnection(private val context: Context, private val scope: Coroutin
     fun previous() = withController { it.seekToPrevious() }
     fun seekTo(positionMs: Long) = withController { it.seekTo(positionMs) }
     fun skipToQueueIndex(index: Int) = withController { it.seekTo(index, 0L) }
-    fun removeFromQueue(index: Int) = withController { it.removeMediaItem(index) }
+    fun removeFromQueue(index: Int) = withController { c ->
+        if (index !in 0 until c.mediaItemCount) return@withController
+        keepForUndo(listOf(index to c.getMediaItemAt(index)))
+        c.removeMediaItem(index)
+    }
     fun moveInQueue(from: Int, to: Int) = withController { it.moveMediaItem(from, to) }
 
     /** Takes several songs out of the queue; the playing one stays. */
     fun removeFromQueue(indices: Collection<Int>) = withController { c ->
-        indices.filter { it != c.currentMediaItemIndex && it in 0 until c.mediaItemCount }.sortedDescending().forEach { c.removeMediaItem(it) }
+        val gone = indices.filter { it != c.currentMediaItemIndex && it in 0 until c.mediaItemCount }.sorted().map { it to c.getMediaItemAt(it) }
+        keepForUndo(gone)
+        gone.asReversed().forEach { c.removeMediaItem(it.first) }
+    }
+
+    /**
+     * Reopens the playing song's file at the same moment, after Hive rewrote its
+     * tags: a fresh copy of it takes its place in the queue.
+     */
+    fun reloadCurrent() = withController { c ->
+        val i = c.currentMediaItemIndex
+        if (i !in 0 until c.mediaItemCount) return@withController
+        val item = c.getMediaItemAt(i)
+        val position = c.currentPosition
+        c.addMediaItem(i + 1, item)
+        c.seekTo(i + 1, position)
+        c.removeMediaItem(i)
+    }
+
+    // The songs last taken out of the queue, at their places, so Undo can put them back.
+    private var removed: List<Pair<Int, MediaItem>> = emptyList()
+    private val _undoable = MutableStateFlow(0)
+    /** How many songs Undo would put back in the queue (0: nothing to undo). */
+    val undoable: StateFlow<Int> = _undoable.asStateFlow()
+    private fun keepForUndo(gone: List<Pair<Int, MediaItem>>) { removed = gone; _undoable.value = gone.size }
+    fun forgetUndo() { removed = emptyList(); _undoable.value = 0 }
+
+    /** Puts the songs last removed back where they were; what plays carries on. */
+    fun undoRemove() = withController { c ->
+        removed.forEach { (i, item) -> c.addMediaItem(i.coerceAtMost(c.mediaItemCount), item) }
+        forgetUndo()
     }
 
     /** Moves several songs to play right after the current one, keeping their order. */
@@ -207,6 +259,8 @@ class PlayerConnection(private val context: Context, private val scope: Coroutin
         val stationName = meta?.station?.toString().orEmpty()
         val icy = if (radio) c.mediaMetadata.title?.toString()?.trim()?.takeIf { it.isNotBlank() } else null
         val (liveArtist, liveTitle) = icy?.let { t -> t.indexOf(" - ").takeIf { it > 0 }?.let { t.substring(0, it).trim() to t.substring(it + 3).trim() } ?: ("" to t) } ?: ("" to "")
+        // The shuffle asked for is under way: the next tap on Shuffle is a new one.
+        if (shuffleStart != null && ((c.isPlaying && item?.mediaId == shuffleStart) || c.playerError != null)) { shuffleStartedAt = 0L; shuffleStart = null }
         if (queueStale) { queue = (0 until c.mediaItemCount).map { c.getMediaItemAt(it).toQueueItem() }; queueStale = false }
         _position.value = c.currentPosition.coerceAtLeast(0)
         _state.value = NowPlaying(
@@ -226,9 +280,17 @@ class PlayerConnection(private val context: Context, private val scope: Coroutin
             repeatMode = c.repeatMode,
             queue = queue,
             queueIndex = c.currentMediaItemIndex,
+            nextArtworkUri = c.nextMediaItemIndex.takeIf { it >= 0 }?.let { c.getMediaItemAt(it).mediaMetadata.artworkUri?.toString() },
+            previousArtworkUri = c.previousMediaItemIndex.takeIf { it >= 0 }?.let { c.getMediaItemAt(it).mediaMetadata.artworkUri?.toString() },
         )
     }
 }
+
+/** A song file on the phone, which starts without waiting on the network. */
+private fun MediaItem.isOnPhone() = localConfiguration?.uri?.scheme.let { it == "content" || it == "file" }
+
+/** How long taps on Shuffle count as the shuffle already starting, if it hasn't started playing sooner. */
+private const val SHUFFLE_SETTLE_MS = 8_000L
 
 private fun MediaItem.toQueueItem() = QueueItem(
     mediaId = mediaId,

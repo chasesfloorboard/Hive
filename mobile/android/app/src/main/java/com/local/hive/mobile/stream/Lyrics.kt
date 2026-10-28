@@ -45,10 +45,22 @@ fun parseLrc(text: String): List<LyricLine> = text.lineSequence().flatMap { line
  */
 class LyricsProvider(context: Context, private val http: OkHttpClient = AppleMusic.defaultHttp()) {
     private val cacheDir = File(context.cacheDir, "lyrics").apply { mkdirs() }
+    /** Lyrics typed or fixed on the phone: they come before any found online. */
+    private val ownDir = File(context.filesDir, "lyrics-own").apply { mkdirs() }
+
+    /** Keeps the user's own lyrics for a song (blank removes them); LRC stamps make them synced. */
+    suspend fun saveOwn(artist: String, title: String, text: String) = withContext(Dispatchers.IO) {
+        val file = File(ownDir, hash("$artist\u0000$title") + ".json")
+        File(cacheDir, hash("$artist\u0000$title") + ".json").delete()
+        if (text.isBlank()) { file.delete(); return@withContext }
+        val synced = parseLrc(text).isNotEmpty()
+        file.writeText(json.encodeToString(Lyrics.serializer(), Lyrics(text.trim(), synced, "you")))
+    }
     private val json = Json { ignoreUnknownKeys = true }
 
     suspend fun find(artist: String, title: String, album: String, durationMs: Long): Lyrics? = withContext(Dispatchers.IO) {
         if (artist.isBlank() || title.isBlank()) return@withContext null
+        File(ownDir, hash("$artist\u0000$title") + ".json").takeIf { it.exists() }?.let { own -> runCatching { json.decodeFromString<Lyrics>(own.readText()) }.getOrNull()?.let { return@withContext it } }
         val file = File(cacheDir, hash("$artist\u0000$title") + ".json")
         if (file.exists()) runCatching { json.decodeFromString<Lyrics>(file.readText()) }.getOrNull()?.let { return@withContext it }
         val exact = lrclib(artist, title, album, durationMs) ?: searchTitle(title).takeIf { it != title }?.let { lrclib(artist, it, album, durationMs) }

@@ -38,6 +38,15 @@ class WavTagsTest {
         assertEquals("Song", got.title); assertEquals("Artist", got.artist)
     }
 
+    @Test fun anMp3sEmojiTitleIsReadAsWritten() {
+        val mp3 = id3("TIT2" to "🔥", "TPE1" to "JPEGMAFIA", "TALB" to "LP!") + ByteArray(5000)
+        val info = WavTags.readId3(mp3.inputStream())!!
+        assertEquals("🔥", info.title); assertEquals("JPEGMAFIA", info.artist)
+        assertNull(WavTags.readId3(ByteArray(40).inputStream()))
+    }
+
+    @Test fun anEmojiInUtf16IsReadAsWritten() = assertEquals("💯", WavTags.id3Text(byteArrayOf(1) + "💯".toByteArray(Charsets.UTF_16)))
+
     @Test fun notAWav() = assertNull(WavTags.read(ByteArray(40).inputStream()))
 
     @Test fun picturesInAWavAreFound() {

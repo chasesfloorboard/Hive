@@ -5,7 +5,6 @@ const path = require('path');
 const root = path.resolve(__dirname, '..');
 const css = fs.readFileSync(path.join(root, 'app/renderer/styles.css'), 'utf8');
 const renderer = fs.readFileSync(path.join(root, 'app/renderer/renderer.js'), 'utf8');
-const build = fs.readFileSync(path.join(root, 'BUILD'), 'utf8').trim();
 
 test('Build 247 keeps the search in the themed navigation row flow', () => {
   const rule = css.match(/html\.theme-window-bar-enabled \.topbar-right\s*\{([^}]*)\}/);

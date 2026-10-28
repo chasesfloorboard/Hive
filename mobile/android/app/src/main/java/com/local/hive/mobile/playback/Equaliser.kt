@@ -121,39 +121,6 @@ data class EqState(
             return total
         }
 
-        /** MusicBee .sde text, so presets move between Hive on the PC, MusicBee and the phone. */
-        fun parseSde(text: String, name: String): EqPreset? {
-            val values = text.lineSequence().mapNotNull { Regex("""^\s*([A-Za-z]+\d*)\s*=\s*(.*?)\s*$""").find(it) }
-                .associate { it.groupValues[1].lowercase() to it.groupValues[2] }
-            if (values.isEmpty()) return null
-            fun num(k: String) = values[k]?.replace(',', '.')?.toFloatOrNull() ?: 0f
-            fun avg(l: String, r: String) = if (values[r] == null) num(l) else (num(l) + num(r)) / 2
-            val count = if ((values["bands"]?.toIntOrNull() ?: 10) == 15) 15 else 10
-            val raw = (1..count).map { avg("left$it", "right$it").coerceIn(MIN_DB, MAX_DB) }
-            // A 15-band preset is folded onto the 10 bands by log-frequency interpolation.
-            val gains = if (count == 10) raw else resample15(raw)
-            return EqPreset(name, avg("leftpreamp", "rightpreamp").coerceIn(MIN_DB, MAX_DB), gains)
-        }
-
-        fun serializeSde(p: EqPreset): String = buildString {
-            fun fmt(v: Float) = "%.1f".format(java.util.Locale.ROOT, v)
-            append("[Equalizer]\r\nLeftPreamp=${fmt(p.preamp)}\r\nRightPreamp=${fmt(p.preamp)}\r\n")
-            p.gains.forEachIndexed { i, g -> append("Left${i + 1}=${fmt(g)}\r\nRight${i + 1}=${fmt(g)}\r\n") }
-            append("Bands=10\r\n")
-        }
-
-        private val FREQ15 = floatArrayOf(31.25f, 49.2f, 77.5f, 122f, 192.3f, 302.9f, 477f, 751.3f, 1183.3f, 1863.7f, 2935.3f, 4623.1f, 7281.4f, 11468.3f, 18062.5f)
-        private fun resample15(g: List<Float>): List<Float> {
-            val from = FREQ15.map { kotlin.math.ln(it) }
-            return FREQUENCIES.map { f ->
-                val x = kotlin.math.ln(f)
-                when {
-                    x <= from.first() -> g.first()
-                    x >= from.last() -> g.last()
-                    else -> { val i = from.indexOfLast { it <= x }; val t = (x - from[i]) / (from[i + 1] - from[i]); g[i] + t * (g[i + 1] - g[i]) }
-                }
-            }
-        }
     }
 }
 

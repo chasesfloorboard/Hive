@@ -6,8 +6,6 @@ import android.content.ContentValues
 import android.content.Context
 import android.content.pm.ServiceInfo
 import android.os.Build
-import android.os.Environment
-import android.os.StatFs
 import android.provider.MediaStore
 import android.webkit.MimeTypeMap
 import androidx.core.app.NotificationCompat
@@ -19,6 +17,7 @@ import androidx.work.NetworkType
 import androidx.work.OneTimeWorkRequestBuilder
 import androidx.work.WorkManager
 import androidx.work.WorkerParameters
+import com.local.hive.mobile.data.MusicHome
 import com.local.hive.mobile.data.LibraryDao
 import com.local.hive.mobile.data.SyncedSong
 import com.local.hive.mobile.data.Track
@@ -46,6 +45,8 @@ data class SongPlan(
     val goneFromPc: List<Track> = emptyList(),
     /** ...and still on the PC, deleted on this phone. */
     val goneFromPhone: List<PcTrack> = emptyList(),
+    /** Ledger keys of the gone songs whose copy may be deleted too without losing music (see [SongPlanner.plan]). */
+    val deletable: Set<String> = emptySet(),
 ) {
     val bytesToPhone: Long get() = toPhone.sumOf { it.size }
     val bytesToPc: Long get() = toPc.sumOf { it.sizeBytes }
@@ -73,6 +74,19 @@ object SongPlanner {
     /** One version of a song: its key and length in whole seconds. */
     fun versionKey(title: String, artist: String, albumArtist: String, durationMs: Long): String =
         keyOf(title, artist, albumArtist) + "|" + (durationMs + 500) / 1000
+
+    /** Game mod audio (Elden Ring, the Nurse Harrow mod) that landed among the music: not music. */
+    private val NOT_MUSIC = Regex("elden\\s*ring|nurse\\s*harrow", RegexOption.IGNORE_CASE)
+    fun isNotMusic(vararg fields: String): Boolean = fields.any { NOT_MUSIC.containsMatchIn(it) }
+
+    /** Two files of one side that are the same song: an exact copy, or the same title and artist and length. */
+    private fun sameSong(sizeA: Long, sizeB: Long, a: Triple<String, String, Long>, b: Triple<String, String, Long>): Boolean {
+        if (kotlin.math.abs(a.third - b.third) > EXACT_COPY_MS) return false
+        if (sizeA > 0 && sizeA == sizeB) return true
+        val title = TrackMatcher.normalize(a.first)
+        return title.isNotEmpty() && title == TrackMatcher.normalize(b.first) &&
+            TrackMatcher.artistParts(a.second).any { it in TrackMatcher.artistParts(b.second) }
+    }
 
     fun plan(phone: List<Track>, pc: List<PcTrack>, ledger: Set<String>): SongPlan {
         // Ledger keys per file; files that are the same version get #2, #3... in a fixed order.
@@ -131,12 +145,25 @@ object SongPlanner {
         }
         val (wasOnBothPhone, toPc) = phone.filter { it.id !in pairedPhone && it.sizeBytes > 0 }.partition { phoneKeys.getValue(it) in ledger }
         val (wasOnBothPc, toPhone) = pc.filter { it.id !in pairedPc }.partition { pcKeys.getValue(it) in ledger }
+        // A gone song's other copy may only be deleted when no music is lost: it's a mod file, or
+        // the same side keeps another copy of the song. The only copy of a song is never offered.
+        fun Track.song() = Triple(title, albumArtist.ifBlank { artist }, durationMs)
+        fun PcTrack.song() = Triple(title, albumArtist.ifBlank { artist }, duration)
+        val deletable = HashSet<String>()
+        for (t in wasOnBothPhone) {
+            if (isNotMusic(t.title, t.artist, t.album, t.folder, t.fileName) ||
+                phone.any { it.id != t.id && sameSong(t.sizeBytes, it.sizeBytes, t.song(), it.song()) }) deletable += phoneKeys.getValue(t)
+        }
+        for (t in wasOnBothPc) {
+            if (isNotMusic(t.title, t.artist, t.album, t.file) ||
+                pc.any { it.id != t.id && sameSong(t.size, it.size, t.song(), it.song()) }) deletable += pcKeys.getValue(t)
+        }
         return SongPlan(
             toPhone, toPc, onBoth,
             pcKeys = pcKeys.mapKeys { it.key.id }, phoneKeys = phoneKeys.mapKeys { it.key.id },
             pcCopies = toPc.associate { it.id to copiesOf[it.id].orEmpty().size },
             // Unpaired now, but on both before: its partner was deleted. The user decides (see SongSync.deletions).
-            goneFromPc = wasOnBothPhone, goneFromPhone = wasOnBothPc,
+            goneFromPc = wasOnBothPhone, goneFromPhone = wasOnBothPc, deletable = deletable,
         )
     }
 }
@@ -154,7 +181,7 @@ data class SongSyncState(
 )
 
 /** A song deleted on one side since it was on both: [phone] is the copy left on this phone, or [pc] the one left on the PC. */
-data class GoneSong(val key: String, val title: String, val artist: String, val album: String, val phone: Track? = null, val pc: PcTrack? = null)
+data class GoneSong(val key: String, val title: String, val artist: String, val album: String, val phone: Track? = null, val pc: PcTrack? = null, val canDelete: Boolean = false)
 
 /** Deleted songs waiting for the user: delete them on the other side too, copy them back, or leave them. */
 data class Deletions(val fromPc: List<GoneSong> = emptyList(), val fromPhone: List<GoneSong> = emptyList()) {
@@ -165,7 +192,7 @@ data class PlanSummary(val toPhone: Int, val bytesToPhone: Long, val toPc: Int, 
 
 /**
  * Copies songs between this phone and Hive on the PC (see [SongPlanner]).
- * PC songs are saved through MediaStore under Music/Hive/<Artist>/<Album>/;
+ * PC songs are saved through MediaStore into the phone's music folder (MusicHome), as <Artist>/<Album>/;
  * phone songs go to Hive's PUT /api/songs, which files them in the library
  * and refuses ones it already has.
  */
@@ -182,14 +209,20 @@ class SongSync(
     private val _deletions = MutableStateFlow(Deletions())
     val deletions: StateFlow<Deletions> = _deletions.asStateFlow()
 
-    /** Takes the plan's deleted songs, minus those the user left as they are, and announces new ones once. */
+    /**
+     * Takes the plan's deleted songs, minus those the user left as they are, and announces new ones once.
+     * Only songs whose copy can go without losing music are asked about: a song whose copy is the
+     * only one on its side is kept and never brought up, as a missed pairing looks just like a deletion.
+     */
     private fun noteDeletions(plan: SongPlan) {
         val left = store.leftDeleted
+        val keep = { key: String -> key !in left && key in plan.deletable }
         val found = Deletions(
-            fromPc = plan.goneFromPc.mapNotNull { t -> plan.phoneKeys[t.id]?.takeIf { it !in left }?.let { GoneSong(it, t.title, t.artist, t.album, phone = t) } },
-            fromPhone = plan.goneFromPhone.mapNotNull { t -> plan.pcKeys[t.id]?.takeIf { it !in left }?.let { GoneSong(it, t.title, t.artist, t.album, pc = t) } },
+            fromPc = plan.goneFromPc.mapNotNull { t -> plan.phoneKeys[t.id]?.takeIf(keep)?.let { GoneSong(it, t.title, t.artist, t.album, phone = t, canDelete = true) } },
+            fromPhone = plan.goneFromPhone.mapNotNull { t -> plan.pcKeys[t.id]?.takeIf(keep)?.let { GoneSong(it, t.title, t.artist, t.album, pc = t, canDelete = true) } },
         )
         _deletions.value = found
+        if (found.count == 0) runCatching { context.getSystemService(NotificationManager::class.java).cancel(DELETIONS_NOTIFICATION_ID) }
         val announced = store.announcedDeleted
         val fresh = (found.fromPc + found.fromPhone).filter { it.key !in announced }
         if (fresh.isEmpty()) return
@@ -260,7 +293,7 @@ class SongSync(
     /** Sends these (deleted on this phone) to the Trash on the PC. Returns how many went. */
     suspend fun deleteOnPc(songs: List<GoneSong>): Int {
         val conn = sync.pcConnection() ?: throw IOException("Can't reach Hive on the PC. Is it open?")
-        val deleted = client.deleteSongs(conn, songs.mapNotNull { it.pc?.id }).toSet()
+        val deleted = client.deleteSongs(conn, songs.filter { it.canDelete }.mapNotNull { it.pc?.id }).toSet()
         val gone = songs.filter { it.pc?.id in deleted }
         drop(gone)
         announceDeleted(gone, "on your PC (in its Trash)")
@@ -299,13 +332,15 @@ class SongSync(
         if (!store.songSync) return true
         _state.update { it.copy(running = true, done = 0, total = 0, failed = 0, current = "", message = null) }
         try {
+            sendReplacements()
             val (plan, conn) = planNow()
             val pcTakesSongs = _state.value.plan?.pcTakesSongs == true
             val uploads = if (pcTakesSongs) plan.toPc else emptyList()
             _state.update { it.copy(total = plan.toPhone.size + uploads.size) }
-            val free = StatFs(Environment.getExternalStorageDirectory().path).availableBytes
+            val free = MusicHome.freeBytes(context, (MusicHome.find(context) ?: MusicHome.Place(MediaStore.VOLUME_EXTERNAL_PRIMARY, "Hive")).volume)
             // Leave room for the phone itself; downloads stop well before the disk is full.
-            var budget = free - 2L * 1024 * 1024 * 1024
+            // Free space that can't be read (an SD card on Android 10) isn't a full phone.
+            var budget = if (free == null) Long.MAX_VALUE else free - 2L * 1024 * 1024 * 1024
             for (song in plan.toPhone) {
                 if (song.size > budget) { _state.update { it.copy(message = "This phone is nearly full, so some songs from the PC weren't copied.") }; break }
                 step("${song.title} — ${song.artist}", onProgress) { download(conn, song, plan) }
@@ -327,6 +362,44 @@ class SongSync(
         }
     }
 
+    /**
+     * Songs a Soulseek download replaced on this phone (a YouTube download): the new copy goes to
+     * the PC in place of the PC's old one, which goes to the PC's Trash. Plain sync can't do it:
+     * the two copies look like one song, so the new one isn't sent, and the PC keeps its only copy.
+     */
+    private suspend fun sendReplacements() {
+        val replaced = store.replacedSongs
+        if (replaced.isEmpty()) return
+        val conn = sync.pcConnection() ?: return
+        val pc = client.library(conn).tracks
+        val phone = dao.allTracks()
+        val left = HashSet<String>()
+        val gone = ArrayList<PcTrack>()
+        for (key in replaced) {
+            val olds = pc.filter { SongPlanner.versionKey(it.title, it.artist, it.albumArtist, it.duration) == key }
+            // Gone from the PC already, or the new copy is gone from the phone too: nothing to send.
+            val name = key.substringBeforeLast('|')
+            val seconds = key.substringAfterLast('|').toLongOrNull() ?: 0
+            val better = phone.filter { it.sizeBytes > 0 && SongPlanner.keyOf(it.title, it.artist, it.albumArtist) == name }
+                .minByOrNull { kotlin.math.abs(it.durationMs / 1000 - seconds) } ?: continue
+            for (old in olds) {
+                _state.update { it.copy(current = "${better.title} — ${better.artist}") }
+                val status = runCatching {
+                    client.uploadSong(conn, songMeta(better) + ("replaces" to old.id), better.fileName.substringAfterLast('.', "").lowercase(), better.sizeBytes) {
+                        context.contentResolver.openInputStream(better.uri) ?: throw IOException("Couldn't read ${better.fileName}.")
+                    }.status
+                }.onFailure { android.util.Log.w("HiveSongSync", "Replacing ${old.title} on the PC: ${it.message}") }.getOrNull()
+                // An older Hive on the PC answers "exists": it doesn't replace songs yet, so try again later.
+                if (status == "replaced") gone += old else left += key
+            }
+        }
+        store.replacedSongs = left
+        // The new copies are new songs there: matching again (once Hive has scanned them) moves the
+        // Love the phone gave them across to the PC.
+        if (gone.isNotEmpty()) sync.matchAgainNextSync()
+        if (gone.isNotEmpty()) announceDeleted(gone.map { GoneSong("", it.title, it.artist, it.album, pc = it) }, "on your PC (in its Trash), replaced by a better copy")
+    }
+
     private suspend fun step(label: String, onProgress: suspend (SongSyncState) -> Unit, work: suspend () -> Unit) {
         _state.update { it.copy(current = label) }
         onProgress(_state.value)
@@ -345,14 +418,16 @@ class SongSync(
         // Android files only audio there, and the player plays its sound.
         val ext = if (MimeTypeMap.getSingleton().getMimeTypeFromExtension(fileExt)?.startsWith("audio/") == false) "m4a" else fileExt
         val name = clean(song.file.substringBeforeLast('.') + ".$ext", "${clean(song.title, "Untitled")}.$ext")
-        val folder = "Music/Hive/${clean(song.albumArtist.ifBlank { song.artist }, "Unknown Artist")}/${clean(song.album, "Unknown Album")}"
+        // Into the phone's own music folder (MusicHome: the SD card's library folder, say), as the PC files the phone's.
+        val home = MusicHome.find(context) ?: MusicHome.Place(MediaStore.VOLUME_EXTERNAL_PRIMARY, "Hive")
+        val folder = "${home.base}/${clean(song.albumArtist.ifBlank { song.artist }, "Unknown Artist")}/${clean(song.album, "Unknown Album")}"
         val values = ContentValues().apply {
             put(MediaStore.Audio.Media.DISPLAY_NAME, name)
             put(MediaStore.Audio.Media.MIME_TYPE, MimeTypeMap.getSingleton().getMimeTypeFromExtension(ext) ?: "audio/mpeg")
             put(MediaStore.Audio.Media.RELATIVE_PATH, folder)
             put(MediaStore.Audio.Media.IS_PENDING, 1)
         }
-        val uri = resolver.insert(MediaStore.Audio.Media.getContentUri(MediaStore.VOLUME_EXTERNAL_PRIMARY), values)
+        val uri = resolver.insert(MediaStore.Audio.Media.getContentUri(home.volume), values)
             ?: throw IOException("Android wouldn't make room for the song.")
         try {
             resolver.openOutputStream(uri)?.use { client.downloadTrack(conn, song.id, it) } ?: throw IOException("Couldn't write the song.")
@@ -366,15 +441,8 @@ class SongSync(
     }
 
     private suspend fun upload(conn: HiveLinkClient.Connection, track: Track, plan: SongPlan) {
-        val meta = buildMap {
-            // How many copies of this song Hive holds for the phone's other files: one more is a version Hive keeps.
-            put("have", (plan.pcCopies[track.id] ?: 0).toString())
-            put("title", track.title); put("artist", track.artist); put("albumArtist", track.albumArtist); put("album", track.album)
-            put("duration", track.durationMs.toString())
-            if (track.trackNumber > 0) put("track", track.trackNumber.toString())
-            if (track.discNumber > 0) put("disc", track.discNumber.toString())
-            if (track.year > 0) put("year", track.year.toString())
-        }
+        // How many copies of this song Hive holds for the phone's other files: one more is a version Hive keeps.
+        val meta = songMeta(track) + ("have" to (plan.pcCopies[track.id] ?: 0).toString())
         val ext = track.fileName.substringAfterLast('.', "").lowercase()
         val result = client.uploadSong(conn, meta, ext, track.sizeBytes) {
             context.contentResolver.openInputStream(track.uri) ?: throw IOException("Couldn't read ${track.fileName}.")
@@ -384,6 +452,15 @@ class SongSync(
         }
     }
 
+    /** What Hive on the PC files a song from the phone by. */
+    private fun songMeta(track: Track): Map<String, String> = buildMap {
+        put("title", track.title); put("artist", track.artist); put("albumArtist", track.albumArtist); put("album", track.album)
+        put("duration", track.durationMs.toString())
+        if (track.trackNumber > 0) put("track", track.trackNumber.toString())
+        if (track.discNumber > 0) put("disc", track.discNumber.toString())
+        if (track.year > 0) put("year", track.year.toString())
+    }
+
     companion object {
         private const val WORK = "hive-song-sync"
         private const val DELETIONS_CHANNEL = "hive-song-deletions"
@@ -391,10 +468,16 @@ class SongSync(
         private const val UNUSUAL_DELETIONS = 40
         private const val DELETED_NOTIFICATION_ID = 4713
 
-        /** Runs song sync in the background on Wi-Fi (or any unmetered network). */
-        fun schedule(context: Context) {
-            WorkManager.getInstance(context).enqueueUniqueWork(
-                WORK, ExistingWorkPolicy.KEEP,
+        /**
+         * Runs song sync in the background on Wi-Fi (or any unmetered network). [now]: Hive was
+         * just reached, or new songs are waiting, so a sync held back after an earlier failure
+         * starts over at once (one that's running is left to finish).
+         */
+        fun schedule(context: Context, now: Boolean = false) {
+            val wm = WorkManager.getInstance(context)
+            val running = runCatching { wm.getWorkInfosForUniqueWork(WORK).get().any { it.state == androidx.work.WorkInfo.State.RUNNING } }.getOrDefault(true)
+            wm.enqueueUniqueWork(
+                WORK, if (now && !running) ExistingWorkPolicy.REPLACE else ExistingWorkPolicy.KEEP,
                 OneTimeWorkRequestBuilder<SongSyncWorker>()
                     .setConstraints(Constraints.Builder().setRequiredNetworkType(NetworkType.UNMETERED).build())
                     .build(),

@@ -78,6 +78,20 @@ class PlaybackService : MediaLibraryService() {
     private var screenOff: android.content.BroadcastReceiver? = null
     private val replayGainTags = MutableStateFlow<Map<String, String>>(emptyMap())
     private val queueTick = MutableStateFlow(0)
+    /** When music last played or stopped playing; paused this long ago or less, the lock player still shows. */
+    private var lastPlayingAt = 0L
+    /** Set as a controller replaces the queue, so the new queue's shuffle starts from its first song. */
+    private var newQueue = false
+
+    private fun shuffleFromCurrent(player: ExoPlayer) {
+        val count = player.mediaItemCount
+        if (count < 2) return
+        val current = player.currentMediaItemIndex
+        val order = intArrayOf(current) + (0 until count).filter { it != current }.shuffled().toIntArray()
+        player.setShuffleOrder(androidx.media3.exoplayer.source.ShuffleOrder.DefaultShuffleOrder(order, System.nanoTime()))
+    }
+    private fun wantsLockPlayer(player: Player) =
+        player.mediaItemCount > 0 && (player.isPlaying || System.currentTimeMillis() - lastPlayingAt < LOCK_PLAYER_AFTER_PAUSE_MS)
 
     override fun onCreate() {
         super.onCreate()
@@ -101,8 +115,12 @@ class PlaybackService : MediaLibraryService() {
                 DefaultAudioSink.Builder(context).setAudioProcessors(arrayOf<AudioProcessor>(processor)).build()
         }
         val musicAttributes = AudioAttributes.Builder().setUsage(C.USAGE_MEDIA).setContentType(C.AUDIO_CONTENT_TYPE_MUSIC).build()
+        // Plays once a second is buffered (not ExoPlayer's 2.5): streamed songs start sooner, files are instant anyway.
+        fun quickStart() = androidx.media3.exoplayer.DefaultLoadControl.Builder()
+            .setBufferDurationsMs(15_000, 50_000, 1_000, 2_000).build()
         val player = ExoPlayer.Builder(this, renderers(equaliser))
             .setMediaSourceFactory(DefaultMediaSourceFactory(dataSources))
+            .setLoadControl(quickStart())
             .setAudioAttributes(musicAttributes, /* handleAudioFocus = */ true)
             .setHandleAudioBecomingNoisy(true)
             .setWakeMode(C.WAKE_MODE_LOCAL)
@@ -111,17 +129,54 @@ class PlaybackService : MediaLibraryService() {
         crossfader = Crossfader(scope, player, equaliser, app.equaliser.state, newCompanion = { processor ->
             ExoPlayer.Builder(this, renderers(processor))
                 .setMediaSourceFactory(DefaultMediaSourceFactory(dataSources))
+                .setLoadControl(quickStart())
                 .setAudioAttributes(musicAttributes, /* handleAudioFocus = */ false)
                 .build()
         }, stopsAtSongEnd = { app.stopsAtSongEnd })
         // The queue's name in the car's and other controllers' queue view.
         player.playlistMetadata = androidx.media3.common.MediaMetadata.Builder().setTitle("Up next").build()
         player.addListener(PlayCounter(app.playRecorder, app.scrobbler, scope, player))
-        // With music playing, Hive's lock-screen player is opened as the screen goes off, so it's there when it comes on.
+        // A shuffle starts from the song playing and plays every other song once after it. ExoPlayer's
+        // own order put the starting song anywhere, so the songs ahead of it in the order never played.
+        player.addListener(object : Player.Listener {
+            override fun onShuffleModeEnabledChanged(enabled: Boolean) { if (enabled) shuffleFromCurrent(player) }
+            override fun onTimelineChanged(timeline: androidx.media3.common.Timeline, reason: Int) {
+                if (reason == Player.TIMELINE_CHANGE_REASON_PLAYLIST_CHANGED && newQueue) { newQueue = false; if (player.shuffleModeEnabled) shuffleFromCurrent(player) }
+            }
+        })
+        // The next two streamed songs are found on YouTube Music while this one plays, so they start at once.
+        player.addListener(object : Player.Listener {
+            override fun onEvents(player: Player, events: Player.Events) {
+                if (!events.containsAny(Player.EVENT_MEDIA_ITEM_TRANSITION, Player.EVENT_TIMELINE_CHANGED, Player.EVENT_SHUFFLE_MODE_ENABLED_CHANGED)) return
+                // What actually plays next, shuffle and repeat included.
+                val tl = player.currentTimeline
+                val next = if (tl.isEmpty) emptyList() else generateSequence(player.currentMediaItemIndex) { i ->
+                    tl.getNextWindowIndex(i, player.repeatMode.takeIf { it != androidx.media3.common.Player.REPEAT_MODE_ONE } ?: androidx.media3.common.Player.REPEAT_MODE_OFF, player.shuffleModeEnabled).takeIf { it != androidx.media3.common.C.INDEX_UNSET }
+                }.drop(1).take(2).filter { it != player.currentMediaItemIndex }.toList()
+                    .mapNotNull { player.getMediaItemAt(it).localConfiguration?.uri }
+                    .mapNotNull { com.local.hive.mobile.stream.YouTubeMusic.wantedFrom(it) }
+                if (next.isNotEmpty()) scope.launch(Dispatchers.IO) { next.forEach { song -> runCatching { app.youTubeMusic.resolve(song) } } }
+            }
+        })
+        // Hive's lock-screen player covers the lock screen whenever Hive is in use: opened as the
+        // screen goes off (so it's there when it comes on), again as it comes on locked (in case
+        // something closed it), and when music starts on a locked phone (from the car, or the
+        // phone's own lock-screen controls). Paused, it stays for a while, as Samsung Music's does.
         screenOff = object : android.content.BroadcastReceiver() {
-            override fun onReceive(context: Context, intent: Intent) { if (player.isPlaying) com.local.hive.mobile.LockPlayerActivity.showIfWanted(this@PlaybackService) }
+            override fun onReceive(context: Context, intent: Intent) {
+                val locked = (getSystemService(KEYGUARD_SERVICE) as android.app.KeyguardManager).isKeyguardLocked
+                if (intent.action == Intent.ACTION_SCREEN_ON && !locked) return
+                if (wantsLockPlayer(player)) com.local.hive.mobile.LockPlayerActivity.showIfWanted(this@PlaybackService)
+            }
         }
-        androidx.core.content.ContextCompat.registerReceiver(this, screenOff, android.content.IntentFilter(Intent.ACTION_SCREEN_OFF), androidx.core.content.ContextCompat.RECEIVER_NOT_EXPORTED)
+        androidx.core.content.ContextCompat.registerReceiver(this, screenOff, android.content.IntentFilter(Intent.ACTION_SCREEN_OFF).apply { addAction(Intent.ACTION_SCREEN_ON) }, androidx.core.content.ContextCompat.RECEIVER_NOT_EXPORTED)
+        player.addListener(object : Player.Listener {
+            override fun onIsPlayingChanged(isPlaying: Boolean) {
+                lastPlayingAt = System.currentTimeMillis()
+                val locked = (getSystemService(KEYGUARD_SERVICE) as android.app.KeyguardManager).isKeyguardLocked
+                if (isPlaying && locked) com.local.hive.mobile.LockPlayerActivity.showIfWanted(this@PlaybackService)
+            }
+        })
         // Listens that couldn't be sent last time go now.
         scope.launch(Dispatchers.IO) { app.scrobbler.scrobble(null) }
         memory = PlaybackMemory(
@@ -236,12 +291,19 @@ class PlaybackService : MediaLibraryService() {
             // Every controller (the car, the lock screen, Bluetooth) may use Hive's heart, shuffle and repeat buttons.
             override fun onConnect(session: MediaSession, controller: MediaSession.ControllerInfo): MediaSession.ConnectionResult =
                 MediaSession.ConnectionResult.AcceptedResultBuilder(session)
+                    .also {
+                        CarLog.note(this@PlaybackService, controller.packageName, "connect (controller version ${controller.controllerVersion}, trusted ${controller.isTrusted})")
+                        CarLog.car(this@PlaybackService, controller.packageName, connected = true)
+                    }
                     .setAvailableSessionCommands(MediaSession.ConnectionResult.DEFAULT_SESSION_AND_LIBRARY_COMMANDS.buildUpon().add(CMD_LOVE).add(CMD_SHUFFLE).add(CMD_REPEAT).build())
                     .build()
 
+            override fun onDisconnected(session: MediaSession, controller: MediaSession.ControllerInfo) =
+                CarLog.car(this@PlaybackService, controller.packageName, connected = false)
+
             override fun onCustomCommand(session: MediaSession, controller: MediaSession.ControllerInfo, customCommand: androidx.media3.session.SessionCommand, args: android.os.Bundle): ListenableFuture<androidx.media3.session.SessionResult> {
                 when (customCommand.customAction) {
-                    CMD_LOVE.customAction -> player.currentMediaItem?.mediaId?.substringAfterLast('|')?.toLongOrNull()?.let { id -> scope.launch { app.sync.setLoved(listOf(id), id !in lovedIds.value) } }
+                    CMD_LOVE.customAction -> toggleLove(player)
                     CMD_SHUFFLE.customAction -> player.shuffleModeEnabled = !player.shuffleModeEnabled
                     CMD_REPEAT.customAction -> player.repeatMode = when (player.repeatMode) { Player.REPEAT_MODE_OFF -> Player.REPEAT_MODE_ALL; Player.REPEAT_MODE_ALL -> Player.REPEAT_MODE_ONE; else -> Player.REPEAT_MODE_OFF }
                 }
@@ -250,16 +312,22 @@ class PlaybackService : MediaLibraryService() {
 
             // Bluetooth play or the system's media controls after a reboot resume the saved queue.
             override fun onPlaybackResumption(mediaSession: MediaSession, controller: MediaSession.ControllerInfo): ListenableFuture<MediaItemsWithStartPosition> =
-                future { memory.restore()?.let { MediaItemsWithStartPosition(it.items, it.index, it.positionMs) } ?: throw UnsupportedOperationException("Nothing to resume") }
+                future {
+                    CarLog.note(this@PlaybackService, controller.packageName, "resume playback")
+                    memory.restore()?.let { MediaItemsWithStartPosition(it.items, it.index, it.positionMs) } ?: throw UnsupportedOperationException("Nothing to resume") }
 
             // Android Auto and other browsers: Hive's library as a tree.
-            override fun onGetLibraryRoot(session: MediaLibrarySession, browser: MediaSession.ControllerInfo, params: LibraryParams?): ListenableFuture<LibraryResult<MediaItem>> =
+            override fun onGetLibraryRoot(session: MediaLibrarySession, browser: MediaSession.ControllerInfo, params: LibraryParams?): ListenableFuture<LibraryResult<MediaItem>> {
+                CarLog.note(this@PlaybackService, browser.packageName, "library root (recent ${params?.isRecent}, offline ${params?.isOffline})")
                 // The car lays folders out as grids of covers and songs as lists unless a folder says otherwise.
-                com.google.common.util.concurrent.Futures.immediateFuture(LibraryResult.ofItem(this@PlaybackService.libraryBrowser.root(), LibraryParams.Builder().setExtras(this@PlaybackService.libraryBrowser.rootExtras()).build()))
+                return com.google.common.util.concurrent.Futures.immediateFuture(LibraryResult.ofItem(this@PlaybackService.libraryBrowser.root(), LibraryParams.Builder().setExtras(this@PlaybackService.libraryBrowser.rootExtras()).build()))
+            }
 
             override fun onGetChildren(session: MediaLibrarySession, browser: MediaSession.ControllerInfo, parentId: String, page: Int, pageSize: Int, params: LibraryParams?): ListenableFuture<LibraryResult<com.google.common.collect.ImmutableList<MediaItem>>> =
                 future {
-                    val shown = this@PlaybackService.libraryBrowser.children(parentId).drop(page * pageSize).take(pageSize)
+                    val shown = runCatching { this@PlaybackService.libraryBrowser.children(parentId).drop(page * pageSize).take(pageSize) }
+                        .onFailure { CarLog.note(this@PlaybackService, browser.packageName, "children of $parentId failed: $it") }.getOrThrow()
+                    CarLog.note(this@PlaybackService, browser.packageName, "children of $parentId page $page: ${shown.size}")
                     CoverProvider.grant(this@PlaybackService, browser.packageName, shown)
                     LibraryResult.ofItemList(shown, params)
                 }
@@ -291,17 +359,21 @@ class PlaybackService : MediaLibraryService() {
                 if (mediaItems.all { it.localConfiguration != null }) com.google.common.util.concurrent.Futures.immediateFuture(mediaItems)
                 else future { this@PlaybackService.libraryBrowser.resolve(mediaItems).first.toMutableList() }
 
-            override fun onSetMediaItems(mediaSession: MediaSession, controller: MediaSession.ControllerInfo, mediaItems: MutableList<MediaItem>, startIndex: Int, startPositionMs: Long): ListenableFuture<MediaItemsWithStartPosition> =
-                if (mediaItems.all { it.localConfiguration != null }) com.google.common.util.concurrent.Futures.immediateFuture(MediaItemsWithStartPosition(mediaItems, startIndex, startPositionMs))
+            override fun onSetMediaItems(mediaSession: MediaSession, controller: MediaSession.ControllerInfo, mediaItems: MutableList<MediaItem>, startIndex: Int, startPositionMs: Long): ListenableFuture<MediaItemsWithStartPosition> {
+                newQueue = true
+                return if (mediaItems.all { it.localConfiguration != null }) com.google.common.util.concurrent.Futures.immediateFuture(MediaItemsWithStartPosition(mediaItems, startIndex, startPositionMs))
                 else future {
                     val (queue, start) = this@PlaybackService.libraryBrowser.resolve(mediaItems)
                     MediaItemsWithStartPosition(queue, if (mediaItems.size == 1) start else startIndex.coerceIn(0, (queue.size - 1).coerceAtLeast(0)), startPositionMs)
                 }
+            }
         }).setSessionActivity(open)
             .setBitmapLoader(androidx.media3.session.CacheBitmapLoader(CoverBitmapLoader(this, scope)))
             .build()
         // The buttons follow the song, its heart, shuffle and repeat.
         scope.launch { app.database.dao().loveStates().collect { list -> lovedIds.value = list.filter { it.loved }.mapTo(HashSet()) { it.trackId }; refreshButtons(player) } }
+        scope.launch { app.streamLoves.loves.collect { refreshButtons(player) } }
+        scope.launch { app.pcLibrary.lovedIds.collect { refreshButtons(player) } }
         player.addListener(object : Player.Listener {
             override fun onEvents(player: Player, events: Player.Events) {
                 if (events.containsAny(Player.EVENT_MEDIA_ITEM_TRANSITION, Player.EVENT_SHUFFLE_MODE_ENABLED_CHANGED, Player.EVENT_REPEAT_MODE_CHANGED)) refreshButtons(player)
@@ -310,10 +382,14 @@ class PlaybackService : MediaLibraryService() {
         refreshButtons(player)
     }
 
-    override fun onGetSession(controllerInfo: MediaSession.ControllerInfo): MediaLibrarySession? = session
+    override fun onGetSession(controllerInfo: MediaSession.ControllerInfo): MediaLibrarySession? {
+        CarLog.note(this, controllerInfo.packageName, "asks for the session (${if (session == null) "none yet" else "ready"})")
+        return session
+    }
 
     private companion object {
         val CMD_LOVE = androidx.media3.session.SessionCommand("hive.love", android.os.Bundle.EMPTY)
+        const val LOCK_PLAYER_AFTER_PAUSE_MS = 30 * 60_000L
         val CMD_SHUFFLE = androidx.media3.session.SessionCommand("hive.shuffle", android.os.Bundle.EMPTY)
         val CMD_REPEAT = androidx.media3.session.SessionCommand("hive.repeat", android.os.Bundle.EMPTY)
     }
@@ -326,13 +402,34 @@ class PlaybackService : MediaLibraryService() {
      * the car, on the system lock screen and in the notification's overflow,
      * showing the current state.
      */
+    private val hive get() = application as HiveApp
+
+    /** The current song's heart (see heartFor): null when it takes none. */
+    private fun heart(player: Player): Boolean? {
+        val item = player.currentMediaItem ?: return null
+        if (item.mediaId.startsWith(com.local.hive.mobile.link.PcLibrary.MEDIA_PREFIX)) scope.launch { hive.pcLibrary.load() }
+        return com.local.hive.mobile.link.heartFor(item.mediaId, item.mediaMetadata.title?.toString().orEmpty(), item.mediaMetadata.artist?.toString().orEmpty(),
+            lovedIds.value, hive.streamLoves.loves.value, hive.pcLibrary.lovedIds.value)
+    }
+
+    private fun toggleLove(player: Player) {
+        val item = player.currentMediaItem ?: return
+        val loved = heart(player) ?: return
+        val id = item.mediaId.substringAfterLast('|').toLongOrNull()
+        if (id != null) scope.launch { hive.sync.setLoved(listOf(id), !loved) }
+        else item.mediaMetadata.let { m ->
+            hive.sync.setStreamLoved(m.title?.toString().orEmpty(), m.artist?.toString().orEmpty(), m.albumTitle?.toString().orEmpty(),
+                player.duration.coerceAtLeast(0), m.artworkUri?.toString().orEmpty(), item.mediaId, !loved)
+        }
+    }
+
     private fun refreshButtons(player: Player) {
         val session = session ?: return
-        val id = player.currentMediaItem?.mediaId?.substringAfterLast('|')?.toLongOrNull()
+        val loved = heart(player)
         fun button(icon: Int, name: String, command: androidx.media3.session.SessionCommand) =
             androidx.media3.session.CommandButton.Builder(icon).setDisplayName(name).setSessionCommand(command).setSlots(androidx.media3.session.CommandButton.SLOT_OVERFLOW).build()
         val buttons = listOfNotNull(
-            id?.let { if (it in lovedIds.value) button(androidx.media3.session.CommandButton.ICON_HEART_FILLED, "Remove from Favorites", CMD_LOVE) else button(androidx.media3.session.CommandButton.ICON_HEART_UNFILLED, "Add to Favorites", CMD_LOVE) },
+            loved?.let { if (it) button(androidx.media3.session.CommandButton.ICON_HEART_FILLED, "Remove from Favorites", CMD_LOVE) else button(androidx.media3.session.CommandButton.ICON_HEART_UNFILLED, "Add to Favorites", CMD_LOVE) },
             if (player.shuffleModeEnabled) button(androidx.media3.session.CommandButton.ICON_SHUFFLE_ON, "Shuffle on", CMD_SHUFFLE) else button(androidx.media3.session.CommandButton.ICON_SHUFFLE_OFF, "Shuffle off", CMD_SHUFFLE),
             when (player.repeatMode) {
                 Player.REPEAT_MODE_ONE -> button(androidx.media3.session.CommandButton.ICON_REPEAT_ONE, "Repeat one", CMD_REPEAT)

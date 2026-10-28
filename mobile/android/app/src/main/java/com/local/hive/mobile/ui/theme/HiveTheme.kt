@@ -1,14 +1,13 @@
 package com.local.hive.mobile.ui.theme
 
+import kotlinx.coroutines.launch
 import android.content.Context
 import androidx.compose.ui.graphics.luminance
-import androidx.compose.material3.MaterialTheme
-import androidx.compose.material3.darkColorScheme
 import androidx.compose.runtime.Composable
-import androidx.compose.runtime.CompositionLocalProvider
 import androidx.compose.runtime.Immutable
 import androidx.compose.runtime.staticCompositionLocalOf
 import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.graphics.toArgb
 import androidx.compose.ui.unit.Dp
 import androidx.compose.ui.unit.dp
 import androidx.core.content.edit
@@ -118,6 +117,21 @@ data class HiveColors(
     val control: Color get() = mix(accent, mix(panelStrong.copy(alpha = 1f), bg, panelStrong.alpha), 0.05f)
 }
 
+/** A colour as hue (0-360), saturation and lightness (0-1), as [hsl] takes them. */
+fun toHsl(c: Color): Triple<Float, Float, Float> {
+    val max = maxOf(c.red, c.green, c.blue); val min = minOf(c.red, c.green, c.blue)
+    val l = (max + min) / 2f
+    if (max == min) return Triple(0f, 0f, l)
+    val d = max - min
+    val s = if (l > 0.5f) d / (2f - max - min) else d / (max + min)
+    val h = when (max) {
+        c.red -> ((c.green - c.blue) / d + if (c.green < c.blue) 6f else 0f)
+        c.green -> (c.blue - c.red) / d + 2f
+        else -> (c.red - c.green) / d + 4f
+    } * 60f
+    return Triple(h, s, l)
+}
+
 internal fun hsl(h: Float, s: Float, l: Float, a: Float): Color {
     val c = (1 - abs(2 * l - 1)) * s
     val hp = ((h % 360) + 360) % 360 / 60f
@@ -213,33 +227,57 @@ class ThemeStore(private val context: Context) {
     private val _name = MutableStateFlow(prefs.getString("name", null) ?: YOUR_THEME)
     val name: StateFlow<String> = _name.asStateFlow()
 
-    val css: String get() = prefs.getString("css", null) ?: bundledCss()
+    val css: String get() = prefs.getString("css", null) ?: yourHiveCss()
 
-    private val stockPacks: List<ThemePack> by lazy {
-        runCatching {
-            context.assets.list("themes").orEmpty().sorted().mapNotNull { f ->
-                ThemePack.parse(context.assets.open("themes/$f").bufferedReader().readText(), f.substringBefore('.'))
-            }
-        }.getOrDefault(emptyList())
-    }
+    /** The theme Hive on the PC shows (as last synced), else Hive's default. */
+    private fun yourHiveCss() = prefs.getString("pc.current", null) ?: bundledCss()
+
     private val pcFile = java.io.File(context.filesDir, "pc-themes.json")
     private val themeJson = kotlinx.serialization.json.Json { ignoreUnknownKeys = true }
     private fun loadPc(): List<com.local.hive.mobile.link.PcTheme> = runCatching {
         themeJson.decodeFromString(kotlinx.serialization.builtins.ListSerializer(com.local.hive.mobile.link.PcTheme.serializer()), pcFile.readText())
     }.getOrDefault(emptyList())
-    private fun packsFrom(pc: List<com.local.hive.mobile.link.PcTheme>): List<ThemePack> {
-        val fromPc = pc.filter { it.css.contains("--") }.map { ThemePack(it.name, it.css) }
-        val names = fromPc.map { it.name.lowercase() }.toSet()
-        return (listOf(ThemePack(YOUR_THEME, bundledCss())) + stockPacks.filter { it.name.lowercase() !in names } + fromPc)
-            .let { all -> all.take(1) + all.drop(1).sortedBy { it.name.lowercase() } }
+    /**
+     * The phone's own colourful set (see [ThemeMaker.SUITE]) rather than every
+     * theme in Hive's themes folder on the PC, most of which are the same near
+     * black with another accent. Your Hive theme leads; Custom closes the list.
+     */
+    @Suppress("UNUSED_PARAMETER")
+    private fun packsFrom(pc: List<com.local.hive.mobile.link.PcTheme>): List<ThemePack> =
+        listOf(ThemePack(YOUR_THEME, yourHiveCss())) + ThemeMaker.SUITE.map(ThemeMaker::pack) + customPack()
+
+    // ---- Custom: a background and an accent of the user's own (phone only) ----
+
+    private val _custom = MutableStateFlow(
+        Color(prefs.getInt("custom.bg", 0xFF2B2140.toInt())) to Color(prefs.getInt("custom.accent", 0xFFFFB347.toInt())),
+    )
+    /** The Custom theme's background and accent. */
+    val custom: StateFlow<Pair<Color, Color>> = _custom.asStateFlow()
+    private fun customPack() = ThemePack(CUSTOM, ThemeMaker.css(_custom.value.first, _custom.value.second))
+
+    /** Shows the Custom theme as last saved. */
+    fun applyCustom() = apply(customPack().css, CUSTOM)
+
+    /** Sets and shows the Custom theme. */
+    fun setCustom(bg: Color, accent: Color) {
+        prefs.edit { putInt("custom.bg", bg.toArgb()); putInt("custom.accent", accent.toArgb()) }
+        _custom.value = bg to accent
+        _packs.value = packsFrom(emptyList())
+        apply(customPack().css, CUSTOM)
     }
 
-    /** "Your Hive theme" (the one from Hive on the PC), then every theme in Hive's themes folder (MusicBee skins included) and Hive's stock themes. */
+    /** "Your Hive theme" (the one from Hive on the PC), the phone's theme set, then Custom. */
     private val _packs = MutableStateFlow(emptyList<ThemePack>())
     val packs: StateFlow<List<ThemePack>> get() { if (_packs.value.isEmpty()) _packs.value = packsFrom(loadPc()); return _packs.asStateFlow() }
 
-    fun setPcThemes(themes: List<com.local.hive.mobile.link.PcTheme>) {
+    fun setPcThemes(themes: List<com.local.hive.mobile.link.PcTheme>, current: com.local.hive.mobile.link.PcTheme? = null) {
         runCatching { pcFile.writeText(themeJson.encodeToString(kotlinx.serialization.builtins.ListSerializer(com.local.hive.mobile.link.PcTheme.serializer()), themes)) }
+        // Your Hive theme is the one Hive shows now; while it's the phone's theme, the phone follows a change.
+        val css = current?.css?.takeIf { it.contains("--") }
+        if (css != null && css != prefs.getString("pc.current", null)) {
+            prefs.edit { putString("pc.current", css) }
+            if (_name.value == YOUR_THEME) _colors.value = load()
+        }
         _packs.value = packsFrom(themes)
     }
 
@@ -249,22 +287,62 @@ class ThemeStore(private val context: Context) {
     fun setAccentFromCover(on: Boolean) { prefs.edit { putBoolean("accentFromCover", on) }; _accentFromCover.value = on }
 
     fun apply(css: String, name: String = "Custom") {
-        prefs.edit { putString("css", css); putString("name", name) }
+        show(css, name)
         // Choosing a theme shows its own accent; the cover can take over again in Appearance.
         setAccentFromCover(false)
-        _colors.value = HiveColors.fromCss(css)
-        _name.value = name
     }
 
     fun reset() {
-        prefs.edit { remove("css"); remove("name") }
+        show(null, YOUR_THEME)
         // Your Hive theme takes its accent from the playing cover, as Hive does on the PC.
         setAccentFromCover(true)
-        _colors.value = load()
-        _name.value = YOUR_THEME
     }
 
-    companion object { const val YOUR_THEME = "Your Hive theme" }
+    /** Shows a theme (null css: Your Hive theme) without touching the Accent choice. */
+    private fun show(css: String?, name: String) {
+        prefs.edit { if (css == null) { remove("css"); remove("name") } else { putString("css", css); putString("name", name) } }
+        _colors.value = load()
+        _name.value = name
+    }
+
+    // ---- Scheduled theme ----
+    private val _schedule = MutableStateFlow(ThemeSchedule(
+        enabled = prefs.getBoolean("sched.enabled", false),
+        dayStart = prefs.getString("sched.day", null) ?: ThemeSchedule().dayStart,
+        nightStart = prefs.getString("sched.night", null) ?: ThemeSchedule().nightStart,
+        dayTheme = prefs.getString("sched.dayTheme", null) ?: ThemeSchedule().dayTheme,
+        nightTheme = prefs.getString("sched.nightTheme", null) ?: ThemeSchedule().nightTheme,
+    ))
+    val schedule: StateFlow<ThemeSchedule> = _schedule.asStateFlow()
+
+    fun setSchedule(s: ThemeSchedule) {
+        prefs.edit {
+            putBoolean("sched.enabled", s.enabled); putString("sched.day", s.dayStart); putString("sched.night", s.nightStart)
+            putString("sched.dayTheme", s.dayTheme); putString("sched.nightTheme", s.nightTheme)
+            remove("sched.applied")
+        }
+        _schedule.value = s
+        checkSchedule()
+    }
+
+    /** Shows the scheduled theme once per switch (a theme picked by hand stays until the next switch). */
+    fun checkSchedule(now: java.time.LocalDateTime = java.time.LocalDateTime.now()) {
+        val s = _schedule.value
+        if (!s.enabled) return
+        val period = s.periodAt(now.toLocalTime())
+        val key = "$period@${s.lastSwitch(now)}"
+        if (prefs.getString("sched.applied", null) == key) return
+        val pack = s.themeFor(period, packs.value, _name.value) ?: return
+        if (pack.name == YOUR_THEME) show(null, YOUR_THEME) else show(pack.css, pack.name)
+        prefs.edit { putString("sched.applied", key) }
+    }
+
+    /** Checks the schedule every half minute while Hive runs. */
+    fun runSchedule(scope: kotlinx.coroutines.CoroutineScope) = scope.launch {
+        while (true) { runCatching { checkSchedule() }; kotlinx.coroutines.delay(30_000) }
+    }
+
+    companion object { const val YOUR_THEME = "Your Hive theme"; const val CUSTOM = "Custom" }
 
     private fun load() = HiveColors.fromCss(css)
     private fun bundledCss() = runCatching { context.assets.open("default-theme.css").bufferedReader().readText() }.getOrDefault("")
@@ -276,24 +354,3 @@ object Hive {
     val colors: HiveColors @Composable get() = LocalHiveColors.current
 }
 
-@Composable
-fun HiveTheme(colors: HiveColors, content: @Composable () -> Unit) {
-    val scheme = darkColorScheme(
-        primary = colors.accent,
-        onPrimary = colors.bg,
-        secondary = colors.accentSoft,
-        background = colors.bg,
-        onBackground = colors.text,
-        surface = colors.bg,
-        onSurface = colors.text,
-        surfaceVariant = colors.panelStrong,
-        onSurfaceVariant = colors.textDim,
-        surfaceContainer = colors.control,
-        surfaceContainerHigh = colors.control,
-        outline = colors.border,
-        outlineVariant = colors.border,
-    )
-    CompositionLocalProvider(LocalHiveColors provides colors) {
-        MaterialTheme(colorScheme = scheme, content = content)
-    }
-}

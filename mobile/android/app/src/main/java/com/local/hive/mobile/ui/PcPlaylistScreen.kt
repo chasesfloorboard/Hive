@@ -65,8 +65,10 @@ fun PcPlaylistScreen(vm: MainViewModel, id: String, bottomPadding: Dp, onBack: (
         }
     }
     var copying by remember { mutableStateOf(false) }
+    PickableList(tracks = rows.mapNotNull { it.first })
     val list = rememberLazyListState()
     val titleAlpha by animateFloatAsState(if (list.firstVisibleItemIndex > 0) 1f else 0f, tween(180), label = "title")
+    val veil by list.pageVeil()
     HiveGlassLayers(Modifier.fillMaxSize(), content = {
         AlbumBackdrop(null)
         LazyColumn(Modifier.fillMaxSize(), state = list, contentPadding = PaddingValues(bottom = bottomPadding + 16.dp)) {
@@ -92,11 +94,11 @@ fun PcPlaylistScreen(vm: MainViewModel, id: String, bottomPadding: Dp, onBack: (
                     PanelSlice {
                         val loved by vm.lovedIds.collectAsStateWithLifecycle()
                         if (local != null) TrackRow(local, local.id in loved, now.trackId == local.id, now.isPlaying, TrackActions({}, {}, {}, {}, {}), onClick = { vm.playPcPlaylist(p.songs, i) })
-                        else StreamRow(shown, now.mediaId == shown.key || now.mediaId == "pc:${shown.key.removePrefix("pc:")}", now.isPlaying, full = true, onClick = { vm.playPcPlaylist(p.songs, i) })
+                        else StreamRow(shown, now.mediaId == shown.key || now.mediaId == "pc:${shown.key.removePrefix("pc:")}", now.isPlaying, full = true, onClick = { vm.playPcPlaylist(p.songs, i) }, vm = vm)
                     }
                 }
                 item { PanelBottom() }
             }
         }
-    }, overlay = { PageBar(p?.name.orEmpty(), titleAlpha, onBack) })
+    }, overlay = { PageBar(p?.name.orEmpty(), titleAlpha, onBack, veil) })
 }

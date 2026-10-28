@@ -3,34 +3,25 @@ package com.local.hive.mobile.ui
 import com.local.hive.mobile.ui.theme.HiveIcons
 import androidx.compose.animation.core.animateFloatAsState
 import androidx.compose.animation.core.tween
-import androidx.compose.foundation.background
-import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.PaddingValues
 import androidx.compose.foundation.layout.Row
-import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
-import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.statusBarsPadding
-import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.items
 import androidx.compose.foundation.lazy.itemsIndexed
 import androidx.compose.foundation.lazy.rememberLazyListState
-import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.automirrored.rounded.PlaylistPlay
 import androidx.compose.material.icons.automirrored.rounded.QueueMusic
-import androidx.compose.material.icons.rounded.Computer
 import androidx.compose.material.icons.rounded.LibraryMusic
-import androidx.compose.material.icons.rounded.MoreHoriz
 import androidx.compose.material.icons.rounded.Shuffle
-import androidx.compose.material3.Icon
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.LaunchedEffect
@@ -42,8 +33,6 @@ import androidx.compose.runtime.saveable.rememberSaveable
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
-import androidx.compose.ui.draw.clip
-import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.Dp
@@ -54,7 +43,6 @@ import com.local.hive.mobile.ui.theme.Hive
 import com.local.hive.mobile.ui.theme.HiveGlassLayers
 import com.local.hive.mobile.ui.theme.HiveShape
 import com.local.hive.mobile.ui.theme.HiveText
-import com.local.hive.mobile.ui.theme.hiveGlass
 
 /** An album in Hive's PC library. */
 data class PcAlbum(val key: String, val name: String, val artist: String, val year: String, val tracks: List<PcTrack>)
@@ -85,9 +73,9 @@ fun PcLibraryScreen(vm: MainViewModel, bottomPadding: Dp, onBack: () -> Unit, on
     val albums by rememberComputed(emptyList(), tracks) { pcAlbums(tracks) }
     // Songs are put in order once, off the main thread; typing only filters.
     val songsByTitle by rememberComputed(emptyList(), tracks) { LibrarySort.sorted(tracks) { it.title } }
-    val q = query.trim()
-    val shownAlbums by remember(albums, q) { derivedStateOf { if (q.isEmpty()) albums else albums.filter { it.name.contains(q, true) || it.artist.contains(q, true) } } }
-    val shownSongs by remember(songsByTitle, q) { derivedStateOf { if (q.isEmpty()) songsByTitle else songsByTitle.filter { it.title.contains(q, true) || it.artist.contains(q, true) || it.album.contains(q, true) } } }
+    val q = remember(query) { LibrarySort.words(query) }
+    val shownAlbums by remember(albums, q) { derivedStateOf { if (q.isEmpty()) albums else albums.filter { LibrarySort.matches("${it.name} ${it.artist}", q) } } }
+    val shownSongs by remember(songsByTitle, q) { derivedStateOf { if (q.isEmpty()) songsByTitle else songsByTitle.filter { LibrarySort.matches("${it.title} ${it.artist} ${it.album}", q) } } }
 
     Column(Modifier.fillMaxSize()) {
         PageBar("", 0f, onBack)
@@ -111,10 +99,7 @@ fun PcLibraryScreen(vm: MainViewModel, bottomPadding: Dp, onBack: () -> Unit, on
                 item { HiveToggle(listOf("Albums", "Songs"), view, { view = it }, Modifier.padding(horizontal = 16.dp, vertical = 12.dp)) }
                 if (view == 0) {
                     items(shownAlbums.chunked(2), key = { row -> row.first().key }) { row ->
-                        Row(Modifier.padding(horizontal = 16.dp, vertical = 8.dp), horizontalArrangement = Arrangement.spacedBy(14.dp)) {
-                            row.forEach { a -> StreamCard(a.tracks.firstNotNullOfOrNull { vm.pcLibrary.coverUrl(it) }.orEmpty(), a.name, a.artist, Modifier.weight(1f)) { onOpenAlbum(a.key) } }
-                            if (row.size == 1) Spacer(Modifier.weight(1f))
-                        }
+                        CoverRow(row) { a, m -> CoverCard(a.tracks.firstNotNullOfOrNull { vm.pcLibrary.coverUrl(it) }, a.name, a.artist, m) { onOpenAlbum(a.key) } }
                     }
                 } else {
                     item {
@@ -139,6 +124,7 @@ fun PcAlbumScreen(vm: MainViewModel, key: String, bottomPadding: Dp, onBack: () 
     val album = remember(tracks, key) { pcAlbums(tracks).firstOrNull { it.key == key } }
     val list = rememberLazyListState()
     val titleAlpha by animateFloatAsState(if (list.firstVisibleItemIndex > 0) 1f else 0f, tween(180), label = "title")
+    val veil by list.pageVeil()
     HiveGlassLayers(Modifier.fillMaxSize(), content = {
         AlbumBackdrop(null)
         LazyColumn(Modifier.fillMaxSize(), state = list, contentPadding = PaddingValues(bottom = bottomPadding + 16.dp)) {
@@ -165,39 +151,15 @@ fun PcAlbumScreen(vm: MainViewModel, key: String, bottomPadding: Dp, onBack: () 
                 item { PanelBottom() }
             }
         }
-    }, overlay = { PageBar(album?.name.orEmpty(), titleAlpha, onBack) })
+    }, overlay = { PageBar(album?.name.orEmpty(), titleAlpha, onBack, veil) })
 }
 
 @Composable
-private fun PcTrackRow(vm: MainViewModel, t: PcTrack, playing: Boolean, isPlaying: Boolean, number: Int?, subtitle: String = listOf(t.artist, t.album).filter { it.isNotBlank() }.joinToString(" · "), onClick: () -> Unit) {
-    val c = Hive.colors
-    var menu by remember { mutableStateOf(false) }
-    Row(
-        Modifier.fillMaxWidth().padding(horizontal = 8.dp).height(if (number == null) 64.dp else 54.dp).clip(HiveShape.row)
-            .background(if (playing) c.accentSoft.copy(alpha = 0.22f) else Color.Transparent).clickable(onClick = onClick).padding(start = 10.dp),
-        verticalAlignment = Alignment.CenterVertically,
-    ) {
-        if (number == null) {
-            Box(Modifier.size(44.dp)) {
-                Artwork(vm.pcLibrary.coverUrl(t), Modifier.size(44.dp))
-                if (playing) Box(Modifier.size(44.dp).clip(HiveShape.thumb).background(Color.Black.copy(alpha = 0.45f)), contentAlignment = Alignment.Center) { NowPlayingBars(isPlaying, Color.White) }
-            }
-        } else Box(Modifier.width(28.dp)) {
-            if (playing) NowPlayingBars(isPlaying, c.accent) else Text("$number", style = HiveText.numbers, color = c.textDimmer)
-        }
-        Column(Modifier.weight(1f).padding(horizontal = 12.dp), verticalArrangement = Arrangement.spacedBy(2.dp)) {
-            Text(t.title.ifBlank { t.file }, style = HiveText.row, color = if (playing) c.accent else c.text, maxLines = 1, overflow = TextOverflow.Ellipsis)
-            if (subtitle.isNotBlank()) Text(subtitle, style = HiveText.rowSub, color = c.textDim, maxLines = 1, overflow = TextOverflow.Ellipsis)
-        }
-        if (t.duration > 0) Text(formatDuration(t.duration), style = HiveText.numbers, color = c.textDimmer)
-        Box {
-            Box(Modifier.size(width = 40.dp, height = 48.dp).clip(CircleShape).clickable { menu = true }, contentAlignment = Alignment.Center) {
-                Icon(Icons.Rounded.MoreHoriz, "More options", tint = c.textDim, modifier = Modifier.size(20.dp))
-            }
-            HiveMenu(menu, { menu = false }) {
-                HiveMenuItem("Play next", Icons.AutoMirrored.Rounded.PlaylistPlay) { menu = false; vm.playNextPc(listOf(t)) }
-                HiveMenuItem("Add to queue", Icons.AutoMirrored.Rounded.QueueMusic) { menu = false; vm.addToQueuePc(listOf(t)) }
-            }
+private fun PcTrackRow(vm: MainViewModel, t: PcTrack, playing: Boolean, isPlaying: Boolean, number: Int?, subtitle: String = listOf(t.artist, t.album).filter { it.isNotBlank() }.joinToString(" · "), onClick: () -> Unit) =
+    SongRow(vm.pcLibrary.coverUrl(t), t.title.ifBlank { t.file }, subtitle, playing, isPlaying, onClick, number = number,
+        trailing = if (number != null && t.duration > 0) formatDuration(t.duration) else null) { expanded, dismiss ->
+        HiveMenu(expanded, dismiss) {
+            HiveMenuItem("Play next", Icons.AutoMirrored.Rounded.PlaylistPlay) { dismiss(); vm.playNextPc(listOf(t)) }
+            HiveMenuItem("Add to queue", Icons.AutoMirrored.Rounded.QueueMusic) { dismiss(); vm.addToQueuePc(listOf(t)) }
         }
     }
-}

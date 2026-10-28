@@ -34,7 +34,10 @@ object ArtColors {
         synchronized(cache) { if (cache.containsKey(key)) return cache[key] }
         val colors = withContext(Dispatchers.IO) {
             val result = SingletonImageLoader.get(context).execute(
-                ImageRequest.Builder(context).data(artwork).size(Size(96, 96)).allowHardware(false).build(),
+                // Reads a sharp cover already in memory, but never puts this 96-pixel copy there in its
+                // place: the player would draw it stretched (blurry) until the full size decoded again.
+                ImageRequest.Builder(context).data(artwork).size(Size(96, 96)).allowHardware(false)
+                    .memoryCachePolicy(coil3.request.CachePolicy.READ_ONLY).build(),
             )
             val bitmap = (result.image as? BitmapImage)?.bitmap ?: return@withContext null
             val palette = Palette.from(bitmap).maximumColorCount(16).generate()

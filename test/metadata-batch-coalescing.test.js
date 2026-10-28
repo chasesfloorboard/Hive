@@ -20,7 +20,9 @@ test('auto-tag album maps and queues all safely matched tracks and one shared fr
   const block = source.slice(start, end);
   assert.match(block, /mapped\.length !== albumTracks\.length/);
   assert.match(block, /autoTagChangedFields\(m\.local, m\.remote, release\)/);
-  assert.match(block, /window\.beehive\.downloadSearchCover\(release\.artworkUrl\)/);
+  // The cover the user picked (iTunes/Apple or Cover Art Archive), else the release's own front.
+  assert.match(block, /modal\._autoTagCover \|\| release\.artworkUrl/);
+  assert.match(block, /window\.beehive\.downloadSearchCover\(coverChoice\)/);
   assert.match(block, /kind:'metadata'/);
   assert.match(block, /action:'write'/);
   assert.match(block, /pictureType:'Cover \(Front\)'/);

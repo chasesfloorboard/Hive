@@ -13,8 +13,8 @@ android {
         applicationId = "com.local.hive.mobile"
         minSdk = 29
         targetSdk = 36
-        versionCode = 3
-        versionName = "2.0.0"
+        versionCode = 44
+        versionName = "2.12.3"
         testInstrumentationRunner = "androidx.test.runner.AndroidJUnitRunner"
     }
 
@@ -52,6 +52,8 @@ dependencies {
     ksp(libs.room.compiler)
     implementation(libs.work.runtime)
     implementation(libs.okhttp)
+    // Writes tags and covers into the song files (the tag editor, Change cover, Auto-tag).
+    implementation(libs.jaudiotagger)
     implementation(libs.okhttp.sse)
     implementation(libs.coil.compose)
     // Covers from Apple Music and Spotify.

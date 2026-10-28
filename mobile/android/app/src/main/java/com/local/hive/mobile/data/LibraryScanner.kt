@@ -85,7 +85,7 @@ class LibraryScanner(private val resolver: ContentResolver) {
         // No answer at all is "MediaStore can't be asked right now", never "no music":
         // returning nothing would empty the library.
         if (!scanned) throw java.io.IOException("MediaStore didn't answer")
-        return AlbumMerge.apply(withWavTags(out.map(::repaired)))
+        return AlbumMerge.apply(withWavTags(out.map(::repaired).map(::withEmoji)))
     }
 
     /** Tags saved as UTF-8 but read as Latin-1 ("Shouldnâ€™t") read as written. */
@@ -97,9 +97,30 @@ class LibraryScanner(private val resolver: ContentResolver) {
     }
 
     /**
+     * MP3 tags with emoji (JPEGMAFIA's "🔥") as written: Android's media
+     * scanner turns each character beyond the basic set into question marks,
+     * and gives up on some such tags altogether (no artist, the file name as
+     * the title). Only those songs are read again, from their own tag.
+     */
+    private fun withEmoji(t: Track): Track {
+        if (!t.fileName.endsWith(".mp3", ignoreCase = true)) return t
+        val untagged = t.artist.isBlank()
+        if (!untagged && listOf(t.title, t.artist, t.album, t.albumArtist).none { BROKEN.containsMatchIn(it) }) return t
+        val info = runCatching { resolver.openInputStream(t.uri)?.use(WavTags::readId3) }.getOrNull() ?: return t
+        fun fixed(now: String, tagged: String) = if ((untagged || BROKEN.containsMatchIn(now)) && tagged.isNotBlank()) tagged else now
+        return t.copy(
+            title = fixed(t.title, info.title), artist = fixed(t.artist, info.artist), album = fixed(t.album, info.album), albumArtist = fixed(t.albumArtist, info.albumArtist),
+            year = t.year.takeIf { it > 0 } ?: info.year, genre = t.genre.ifBlank { info.genre },
+            trackNumber = t.trackNumber.takeIf { it > 0 } ?: info.track,
+        // Android filed an untagged song under its folder's "album": it gets an album of its own, as WAV songs do.
+        ).let { if (untagged && info.album.isNotBlank()) it.copy(albumId = WAV_ALBUM) else it }
+    }
+
+    /**
      * WAV songs as their tags say. Android reads no tags from WAV files: it
      * shows them by file name, with no artist, filed under one "album" named
-     * after their folder. Each tagged album gets its own id (minus its first
+     * after their folder. Each tagged album (and each album of MP3s only Hive
+     * could read the tags of) gets its own id (minus its first
      * song's id), so it lists and shows its cover on its own.
      */
     private fun withWavTags(tracks: List<Track>): List<Track> {
@@ -119,8 +140,10 @@ class LibraryScanner(private val resolver: ContentResolver) {
     }
 
     private companion object {
-        /** Placeholder while WAV albums are being given their ids. */
+        /** Placeholder while the albums Hive files itself (WAV songs, MP3s Android read no tags from) are given their ids. */
         const val WAV_ALBUM = Long.MIN_VALUE
+        /** What the media scanner leaves of an emoji. */
+        val BROKEN = Regex("\\?\\?|\uFFFD")
     }
 
     private fun cleanUnknown(value: String) = if (value == "<unknown>") "" else value

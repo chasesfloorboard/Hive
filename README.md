@@ -88,7 +88,7 @@ The installer sets up Hive's dependencies, Electron runtime, native GStreamer he
 
 Download `Hive-<version>-Win-x64.zip`, extract it, and run `Hive\Hive.exe`. Nothing else to install: the zip includes Hive's audio engine (GStreamer) and Python. Windows 10 or 11, 64-bit.
 
-On Windows, Hive plays the same formats as on Linux (MP3, FLAC, AAC/ALAC/M4A, Ogg Vorbis, Opus, WMA, WavPack, APE, WAV, AIFF and more). Linux-only features: bit-perfect output, output-device selection, syncing to a phone over MTP (USB file transfer) and the Spotify integration. Media keys, the tray icon and Hive Mobile (below) work on both.
+On Windows, Hive plays the same formats as on Linux (MP3, FLAC, AAC/ALAC/M4A, Ogg Vorbis, Opus, WMA, WavPack, APE, WAV, AIFF and more). Linux-only features: bit-perfect output, output-device selection, and syncing to a phone over MTP (USB file transfer). Spotify and Apple Music songs play in full from YouTube Music inside Hive; Hive never needs the Spotify app. Media keys, the tray icon and Hive Mobile (below) work on both.
 
 The build is not code-signed yet, so Windows SmartScreen may warn the first time: choose **More info → Run anyway**. Maintainers build the zip on Linux with `scripts/build-windows.sh`.
 
@@ -97,10 +97,11 @@ The build is not code-signed yet, so Windows SmartScreen may warn the first time
 Download `Hive-Mobile-<version>.apk` from the release and install it on an Android phone (Android 10 or newer; Android asks you to allow installing apps from your browser or file manager once). It plays the music on the phone and keeps it in step with Hive on your computer over your home Wi-Fi:
 
 - **Pairing:** in Hive Mobile, Settings › Hive on your PC. With **Connect automatically** on, the phone finds Hive on the same Wi-Fi and asks to connect; Hive on the computer asks you to **Allow** it once. Or pair with the code from Hive's Settings › Connections › Hive Mobile › Pair phone. Nothing connects without your approval on the computer.
-- **What syncs:** Favorites both ways, plays (they count in Yearly Wrap on both), ratings and playlists from the computer, Hive's themes, and, with **song sync** on, the songs themselves: each side gets the songs it lacks, file for file. Songs deleted on one side are never deleted on the other without asking you.
+- **What syncs:** Favorites both ways, plays (they count in Yearly Wrap on both), ratings and playlists from the computer, the theme Hive shows, tag and cover edits made on the phone, and, with **song sync** on, the songs themselves: each side gets the songs it lacks, file for file. Songs deleted on one side are never deleted on the other without asking you.
+- **On the phone alone:** edit tags, change covers and auto-tag albums, edit lyrics, smart playlists, a colourful theme set with a Custom theme of your own colours. It works with an empty library and no computer at all; pairing is optional.
 - Everything stays between your phone and your computer on your own network; nothing goes through a server.
 
-The APK is signed by the maintainer but not distributed through the Play Store.
+The APK is signed by the maintainer but not distributed through the Play Store. To build it yourself: `cd mobile/android && ./gradlew assembleRelease` (JDK 21 and the Android SDK), then install `app/build/outputs/apk/release/app-release.apk`.
 
 ### Portable mode
 

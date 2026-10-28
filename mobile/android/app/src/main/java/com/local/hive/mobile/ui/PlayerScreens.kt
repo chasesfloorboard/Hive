@@ -9,6 +9,7 @@ import androidx.compose.animation.core.Animatable
 import androidx.compose.animation.core.animateDpAsState
 import androidx.compose.animation.core.spring
 import androidx.compose.animation.core.tween
+import androidx.compose.foundation.basicMarquee
 import androidx.compose.foundation.Canvas
 import androidx.compose.foundation.background
 import androidx.compose.foundation.border
@@ -27,7 +28,6 @@ import androidx.compose.foundation.layout.PaddingValues
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.WindowInsets
-import androidx.compose.foundation.layout.aspectRatio
 import androidx.compose.foundation.layout.asPaddingValues
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
@@ -51,8 +51,6 @@ import androidx.compose.material.icons.rounded.Close
 import androidx.compose.material.icons.rounded.Favorite
 import androidx.compose.material.icons.rounded.FavoriteBorder
 import androidx.compose.material.icons.rounded.KeyboardArrowDown
-import androidx.compose.material.icons.rounded.KeyboardArrowUp
-import androidx.compose.material.icons.rounded.MoreHoriz
 import androidx.compose.material.icons.rounded.MoreVert
 import androidx.compose.material.icons.rounded.Share
 import androidx.compose.material.icons.rounded.Download
@@ -60,8 +58,6 @@ import androidx.compose.foundation.layout.fillMaxHeight
 import androidx.compose.material.icons.rounded.Repeat
 import androidx.compose.material.icons.rounded.RepeatOne
 import androidx.compose.material.icons.rounded.Shuffle
-import androidx.compose.material.icons.rounded.SkipNext
-import androidx.compose.material.icons.rounded.SkipPrevious
 import androidx.compose.material3.Icon
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
@@ -79,6 +75,7 @@ import androidx.compose.ui.composed
 import androidx.compose.ui.draw.alpha
 import androidx.compose.ui.draw.blur
 import androidx.compose.ui.draw.clip
+import androidx.compose.ui.draw.drawWithContent
 import androidx.compose.ui.draw.shadow
 import androidx.compose.ui.geometry.CornerRadius
 import androidx.compose.ui.geometry.Offset
@@ -102,6 +99,7 @@ import androidx.compose.ui.unit.IntOffset
 import androidx.compose.ui.unit.dp
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import androidx.media3.common.Player
+import com.local.hive.mobile.data.StreamTrack
 import com.local.hive.mobile.data.Track
 import com.local.hive.mobile.playback.NowPlaying
 import com.local.hive.mobile.ui.theme.Hive
@@ -110,7 +108,6 @@ import com.local.hive.mobile.ui.theme.HiveGlassLayers
 import com.local.hive.mobile.ui.theme.HiveShape
 import com.local.hive.mobile.ui.theme.HiveText
 import com.local.hive.mobile.ui.theme.Motion
-import com.local.hive.mobile.ui.theme.hiveGlass
 import androidx.compose.material.icons.rounded.Check
 import androidx.compose.material.icons.rounded.Speed
 import androidx.compose.material.icons.rounded.Radio
@@ -307,6 +304,14 @@ fun PlayerSheet(
         val miniArtSize = with(density) { MiniArt.toPx() }
         val from = Rect(Offset(margin + with(density) { 11.dp.toPx() }, miniTop + (miniH - miniArtSize) / 2), Size(miniArtSize, miniArtSize))
         val to = artTarget
+        // The covers a skip brings in, loaded ahead at this size: they slide in already there, not blank.
+        val context = androidx.compose.ui.platform.LocalContext.current
+        val coverPx = to?.width?.roundToInt()
+        LaunchedEffect(now.nextArtworkUri, now.previousArtworkUri, coverPx) {
+            if (coverPx == null || coverPx <= 0) return@LaunchedEffect
+            val loader = coil3.SingletonImageLoader.get(context)
+            listOfNotNull(now.nextArtworkUri, now.previousArtworkUri).forEach { loader.enqueue(coil3.request.ImageRequest.Builder(context).data(it).size(coverPx).build()) }
+        }
         if (to != null && p > 0f) {
             val eased = Motion.SineInOut80.transform(p)
             val r = androidx.compose.ui.geometry.lerp(from, to, eased)
@@ -487,20 +492,22 @@ private fun FullPlayerContent(
     onArtPlaced: (Rect) -> Unit,
 ) {
     val c = Hive.colors
-    val loved by vm.lovedIds.collectAsStateWithLifecycle()
     var current by remember { mutableStateOf<Track?>(null) }
     val upNext = now.queue.getOrNull(now.queueIndex + 1)
     var menu by remember { mutableStateOf(false) }
     var sleepMenu by remember { mutableStateOf(false) }
     var speedMenu by remember { mutableStateOf(false) }
+    var signIn by remember { mutableStateOf(false) }
     val sleep by vm.sleep.collectAsStateWithLifecycle()
     val context = androidx.compose.ui.platform.LocalContext.current
+    if (signIn) SoulseekSignInDialog(onDismiss = { signIn = false }, onSignedIn = { signIn = false; downloadStreams(context, listOf(nowStream(now)), onToast) })
     val scope = rememberCoroutineScope()
     val queueShown by androidx.compose.animation.core.animateFloatAsState(if (queueOpen) 1f else 0f, if (queueOpen) Motion.open() else Motion.close(), label = "queue")
     LaunchedEffect(now.trackId, now.queueIndex, now.queue.size) {
         current = now.trackId?.let { vm.tracksById(listOf(it)).firstOrNull() }
     }
-    val isLoved = now.trackId != null && now.trackId in loved
+    val nowLoved by vm.nowLoved.collectAsStateWithLifecycle()
+    val isLoved = nowLoved == true
 
     HiveGlassLayers(Modifier.fillMaxSize(), content = {
         HiveAmbient(aura?.primary?.copy(alpha = 0.7f) ?: c.ambientA, aura?.secondary?.copy(alpha = 0.6f) ?: c.ambientB, Modifier.fillMaxSize(), intensity = 1.25f)
@@ -534,10 +541,10 @@ private fun FullPlayerContent(
                             // A song from Apple Music or Spotify that isn't on the phone can be saved to it.
                             val streamed = now.trackId == null && (now.mediaId?.startsWith("am:") == true || now.mediaId?.startsWith("sp:") == true)
                             if (streamed) {
-                                val saving = now.mediaId in vm.downloading.collectAsStateWithLifecycle().value
-                                HiveMenuItem(if (saving) "Downloading…" else "Download", Icons.Rounded.Download) {
+                                // Downloaded with Soulseek, as the album pages' button does (YouTube Music only streams it).
+                                HiveMenuItem("Download", Icons.Rounded.Download) {
                                     menu = false
-                                    if (!saving) { onToast("Downloading “${now.title}”…"); vm.download(now, onToast) }
+                                    if (com.local.hive.mobile.soulseek.SoulseekSettings(context).configured) downloadStreams(context, listOf(nowStream(now)), onToast) else signIn = true
                                 }
                                 HiveMenuDivider()
                             }
@@ -578,8 +585,8 @@ private fun FullPlayerContent(
                             Text(now.title.ifBlank { "Nothing playing" }, style = HiveText.rowStrong.copy(fontWeight = androidx.compose.ui.text.font.FontWeight.SemiBold), color = c.text, maxLines = 1, overflow = TextOverflow.Ellipsis)
                             Text(now.artist, style = HiveText.rowSub, color = c.textDim, maxLines = 1, overflow = TextOverflow.Ellipsis)
                         }
-                        if (now.trackId != null) Box(Modifier.align(Alignment.TopEnd).padding(top = 10.dp, end = 12.dp).alpha(q)) {
-                            BarIcon(if (isLoved) Icons.Rounded.Favorite else Icons.Rounded.FavoriteBorder, if (isLoved) "Remove from Favorites" else "Add to Favorites", { now.trackId?.let { vm.toggleLoved(it) } }, tint = if (isLoved) c.accent else c.textDim)
+                        if (nowLoved != null) Box(Modifier.align(Alignment.TopEnd).padding(top = 10.dp, end = 12.dp).alpha(q)) {
+                            BarIcon(if (isLoved) Icons.Rounded.Favorite else Icons.Rounded.FavoriteBorder, if (isLoved) "Remove from Favorites" else "Add to Favorites", { vm.toggleNowLoved() }, tint = if (isLoved) c.accent else c.textDim)
                         }
                         QueueList(vm, Modifier.fillMaxSize().padding(top = small + 16.dp).graphicsLayer { alpha = q; translationY = (1f - q) * 48.dp.toPx() })
                     }
@@ -600,23 +607,27 @@ private fun FullPlayerContent(
                             label = "meta",
                         ) { (t, _) ->
                             Column(Modifier.fillMaxWidth(), horizontalAlignment = Alignment.CenterHorizontally, verticalArrangement = Arrangement.spacedBy(3.dp)) {
-                                Text(now.title.ifBlank { "Nothing playing" }, style = HiveText.npTitle, color = c.text, maxLines = 2, overflow = TextOverflow.Ellipsis, textAlign = androidx.compose.ui.text.style.TextAlign.Center)
+                                // One line, so a long title never pushes the cover; it scrolls to show the rest,
+                                // fading out at the edges rather than being cut off.
+                                Box(
+                                    Modifier.fillMaxWidth()
+                                        .graphicsLayer { compositingStrategy = androidx.compose.ui.graphics.CompositingStrategy.Offscreen }
+                                        .drawWithContent {
+                                            drawContent()
+                                            val fade = 18.dp.toPx() / size.width
+                                            drawRect(Brush.horizontalGradient(0f to Color.Transparent, fade to Color.Black, 1f - fade to Color.Black, 1f to Color.Transparent), blendMode = androidx.compose.ui.graphics.BlendMode.DstIn)
+                                        },
+                                    contentAlignment = Alignment.Center,
+                                ) {
+                                    Text(
+                                        now.title.ifBlank { "Nothing playing" }, style = HiveText.npTitle, color = c.text, maxLines = 1, textAlign = androidx.compose.ui.text.style.TextAlign.Center,
+                                        modifier = Modifier.basicMarquee(iterations = Int.MAX_VALUE, initialDelayMillis = 1_500, repeatDelayMillis = 2_000, velocity = 36.dp),
+                                    )
+                                }
                                 Text(now.artist, style = HiveText.rowStrong, color = c.text.copy(alpha = 0.86f), maxLines = 1, overflow = TextOverflow.Ellipsis, textAlign = androidx.compose.ui.text.style.TextAlign.Center, modifier = Modifier.clickable { t?.let(onOpenArtist) })
                             }
                         }
-                        Row(Modifier.fillMaxWidth().padding(top = 4.dp), horizontalArrangement = Arrangement.Center, verticalAlignment = Alignment.CenterVertically) {
-                            // Favoriting pops the heart; opening the player on a favorite doesn't.
-                            val heart = remember { Animatable(1f) }
-                            var lovedBefore by remember(now.trackId) { mutableStateOf(isLoved) }
-                            LaunchedEffect(isLoved, now.trackId) {
-                                if (isLoved && !lovedBefore) { heart.snapTo(0.6f); heart.animateTo(1f, spring(dampingRatio = 0.32f, stiffness = 650f)) }
-                                lovedBefore = isLoved
-                            }
-                            if (now.trackId != null) Box(Modifier.graphicsLayer { scaleX = heart.value; scaleY = heart.value }) {
-                                TransportButton(if (isLoved) Icons.Rounded.Favorite else Icons.Rounded.FavoriteBorder, if (isLoved) "Remove from Favorites" else "Add to Favorites", 26.dp, tint = if (isLoved) c.accent else c.text) { now.trackId?.let { vm.toggleLoved(it) } }
-                            }
-                            else Spacer(Modifier.size(56.dp))
-                        }
+                        NowHeart(vm, now.mediaId)
                     }
                 }
 
@@ -646,6 +657,30 @@ private fun FullPlayerContent(
             }
         }
     })
+}
+
+/**
+ * The heart under the song, centred, as on the player and Hive's lock screen
+ * alike: a library song's Love or a streamed song's like. Favoriting pops it;
+ * opening on a favorite doesn't. Radio and podcasts keep its space empty.
+ */
+@Composable
+internal fun NowHeart(vm: MainViewModel, mediaId: String?) {
+    val c = Hive.colors
+    val nowLoved by vm.nowLoved.collectAsStateWithLifecycle()
+    val isLoved = nowLoved == true
+    Row(Modifier.fillMaxWidth().padding(top = 4.dp), horizontalArrangement = Arrangement.Center, verticalAlignment = Alignment.CenterVertically) {
+        val heart = remember { Animatable(1f) }
+        var lovedBefore by remember(mediaId) { mutableStateOf(isLoved) }
+        LaunchedEffect(isLoved, mediaId) {
+            if (isLoved && !lovedBefore) { heart.snapTo(0.6f); heart.animateTo(1f, spring(dampingRatio = 0.32f, stiffness = 650f)) }
+            lovedBefore = isLoved
+        }
+        if (nowLoved != null) Box(Modifier.graphicsLayer { scaleX = heart.value; scaleY = heart.value }) {
+            TransportButton(if (isLoved) Icons.Rounded.Favorite else Icons.Rounded.FavoriteBorder, if (isLoved) "Remove from Favorites" else "Add to Favorites", 26.dp, tint = if (isLoved) c.accent else c.text) { vm.toggleNowLoved() }
+        }
+        else Spacer(Modifier.size(56.dp))
+    }
 }
 
 @Composable
@@ -702,7 +737,15 @@ internal fun SeekBar(now: NowPlaying, position: kotlinx.coroutines.flow.StateFlo
         }
         Row(Modifier.fillMaxWidth()) {
             Text(formatDuration((fraction * now.durationMs).toLong()), style = HiveText.numbers, color = c.textDim, modifier = Modifier.weight(1f))
-            Text(if (now.durationMs > 0) "-" + formatDuration(now.durationMs - (fraction * now.durationMs).toLong()) else "--:--", style = HiveText.numbers, color = c.textDim)
+            // The end time: tap to switch between the song's length and the time left; the choice is kept.
+            val context = androidx.compose.ui.platform.LocalContext.current
+            val prefs = remember { context.getSharedPreferences("ui", android.content.Context.MODE_PRIVATE) }
+            var showLeft by remember { mutableStateOf(prefs.getBoolean("player.timeLeft", true)) }
+            Text(
+                when { now.durationMs <= 0 -> "--:--"; showLeft -> "-" + formatDuration(now.durationMs - (fraction * now.durationMs).toLong()); else -> formatDuration(now.durationMs) },
+                style = HiveText.numbers, color = c.textDim,
+                modifier = Modifier.clip(HiveShape.pill).clickable { showLeft = !showLeft; prefs.edit().putBoolean("player.timeLeft", showLeft).apply() }.padding(horizontal = 6.dp, vertical = 4.dp),
+            )
         }
     }
 }
@@ -828,7 +871,7 @@ private fun QueueList(vm: MainViewModel, modifier: Modifier) {
                             Text(t.title, style = HiveText.row, color = c.text, maxLines = 1, overflow = TextOverflow.Ellipsis)
                             Text(t.artist, style = HiveText.rowSub, color = c.textDim, maxLines = 1, overflow = TextOverflow.Ellipsis)
                         }
-                        Text(formatDuration(t.durationMs), style = HiveText.numbers, color = c.textDimmer)
+                        if (t.durationMs > 0) Text(formatDuration(t.durationMs), style = HiveText.numbers, color = c.textDimmer)
                         // While picking, the row's own remove and drag handle step aside.
                         if (!playing && !picking) Box(Modifier.size(40.dp).clip(CircleShape).clickable { vm.player.removeFromQueue(i) }, contentAlignment = Alignment.Center) {
                             Icon(Icons.Rounded.Close, "Remove from queue", tint = c.textDimmer, modifier = Modifier.size(17.dp))
@@ -861,6 +904,17 @@ private fun QueueList(vm: MainViewModel, modifier: Modifier) {
                     }
                 }
         }
+        // Taking songs out can be undone for a few seconds, as in a desktop app's Ctrl+Z.
+        val undoable by vm.player.undoable.collectAsStateWithLifecycle()
+        LaunchedEffect(undoable) { if (undoable > 0) { kotlinx.coroutines.delay(6_000); vm.player.forgetUndo() } }
+        androidx.compose.animation.AnimatedVisibility(undoable > 0, enter = androidx.compose.animation.expandVertically() + androidx.compose.animation.fadeIn(), exit = androidx.compose.animation.shrinkVertically() + androidx.compose.animation.fadeOut()) {
+            var shown by remember { mutableIntStateOf(1) }
+            if (undoable > 0) shown = undoable
+            Row(Modifier.fillMaxWidth().padding(horizontal = 12.dp, vertical = 6.dp).clip(HiveShape.pill).background(c.accentSoft.copy(alpha = 0.35f)).padding(start = 14.dp), verticalAlignment = Alignment.CenterVertically) {
+                Text(if (shown == 1) "Removed 1 song" else "Removed $shown songs", style = HiveText.rowStrong, color = c.text, modifier = Modifier.weight(1f))
+                Text("Undo", style = HiveText.rowStrong, color = c.accent, modifier = Modifier.clip(HiveShape.pill).clickable { vm.player.undoRemove() }.padding(horizontal = 14.dp, vertical = 10.dp))
+            }
+        }
     }
 }
 
@@ -891,3 +945,8 @@ private fun LiveBar(now: NowPlaying) {
         Text(now.station, style = HiveText.small, color = c.textDim, maxLines = 1, overflow = TextOverflow.Ellipsis)
     }
 }
+
+/** The streamed song playing, as a streamed song (for downloading it). */
+private fun nowStream(now: com.local.hive.mobile.playback.NowPlaying) =
+    StreamTrack(now.mediaId.orEmpty(), if (now.mediaId?.startsWith("sp:") == true) "Spotify" else "Apple Music", now.title, now.artist, now.album, now.durationMs, now.artworkUri.orEmpty(), "", "")
+

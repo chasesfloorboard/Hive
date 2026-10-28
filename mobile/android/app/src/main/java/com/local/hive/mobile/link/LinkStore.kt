@@ -32,7 +32,7 @@ class LinkStore(context: Context) {
         set(value) = prefs.edit {
             if (value == null) {
                 remove("token"); remove("serverId"); remove("name"); remove("port"); remove("deviceId"); remove("hosts")
-                remove("lastSeq"); remove("lastSyncAt"); remove("fullSyncDone"); remove("lastPcPlayAt"); remove("songSync")
+                remove("lastSeq"); remove("lastSyncAt"); remove("fullSyncDone"); remove("lastFullSyncAt"); remove("lastPcPlayAt"); remove("songSync")
             } else {
                 putString("token", value.token)
                 putString("serverId", value.serverId)
@@ -51,6 +51,11 @@ class LinkStore(context: Context) {
     var fullSyncDone: Boolean
         get() = prefs.getBoolean("fullSyncDone", false)
         set(value) = prefs.edit { putBoolean("fullSyncDone", value) }
+
+    /** When every favorite was last compared with Hive's (see SyncEngine.fullSync). */
+    var lastFullSyncAt: Long
+        get() = prefs.getLong("lastFullSyncAt", 0)
+        set(value) = prefs.edit { putLong("lastFullSyncAt", value) }
 
     /** The time of the newest Hive (PC) play brought to this phone. */
     var lastPcPlayAt: Long
@@ -74,6 +79,14 @@ class LinkStore(context: Context) {
     var leftDeleted: Set<String>
         get() = prefs.getStringSet("leftDeleted", emptySet()).orEmpty()
         set(value) = prefs.edit { putStringSet("leftDeleted", value) }
+
+    /**
+     * Songs whose YouTube copy a Soulseek download replaced on this phone, as SongPlanner.versionKey:
+     * the same copy on the PC goes to its Trash too, without asking, before song sync pairs anything.
+     */
+    var replacedSongs: Set<String>
+        get() = prefs.getStringSet("replacedSongs", emptySet()).orEmpty()
+        set(value) = prefs.edit { putStringSet("replacedSongs", value) }
 
     /** Deleted songs already announced in a notification, so each is announced once. */
     var announcedDeleted: Set<String>

@@ -1,6 +1,0 @@
-{
-  "format": "hive-theme",
-  "version": 1,
-  "name": "Midnight",
-  "css": ":root {\n  --bg: #0d0911;\n  --panel: rgba(25,18,30,.76);\n  --panel-strong: rgba(20,14,25,.91);\n  --border: rgba(230,210,245,.10);\n  --text: #f0eaf4;\n  --text-dim: #afa2b8;\n  --text-dimmer: #776b80;\n  --accent: #a88bd0;\n  --accent-soft: rgba(168,139,208,.34);\n  --accent-glow: rgba(168,139,208,.22);\n  --ambient-a: rgba(120,65,155,.18);\n  --ambient-b: rgba(65,35,95,.14);\n  --radius: 16px;\n  --blur: 26px;\n}\n"
-}

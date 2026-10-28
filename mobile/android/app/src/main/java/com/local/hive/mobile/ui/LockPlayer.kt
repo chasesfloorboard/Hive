@@ -25,8 +25,6 @@ import androidx.compose.foundation.layout.statusBarsPadding
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.rounded.KeyboardArrowUp
 import androidx.compose.material.icons.rounded.MusicNote
-import androidx.compose.material.icons.rounded.SkipNext
-import androidx.compose.material.icons.rounded.SkipPrevious
 import androidx.compose.material3.Icon
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
@@ -100,19 +98,21 @@ fun LockPlayer(vm: MainViewModel, onUnlock: () -> Unit) {
             Text(clock.format(DateTimeFormatter.ofPattern(pattern)), style = HiveText.heroTitle.copy(fontSize = 76.sp, lineHeight = 80.sp, fontWeight = FontWeight.Light), color = c.text, modifier = Modifier.padding(top = 28.dp))
             Text(clock.format(DateTimeFormatter.ofPattern("EEEE, MMMM d")), style = HiveText.rowStrong, color = c.text.copy(alpha = 0.85f))
             Spacer(Modifier.weight(1f))
-            // The cover and the lyrics share one place; a tap on either shows the other.
-            Crossfade(showLyrics, label = "lockCoverLyrics", modifier = Modifier.fillMaxWidth(0.82f).aspectRatio(1f)) { lyrics ->
-                if (lyrics) {
-                    LyricsBody(vm, Modifier.fillMaxSize().clip(HiveShape.art).background(c.bg.copy(alpha = 0.35f)), onTap = { showLyrics = false }, compact = true)
-                } else Box(Modifier.fillMaxSize(), contentAlignment = Alignment.Center) {
+            // The cover and the lyrics share one place; a tap on either shows the other. The cover's
+            // shadow fades faster than the cover, so it never shows through the half-faded picture.
+            val coverShown by androidx.compose.animation.core.animateFloatAsState(if (showLyrics) 0f else 1f, label = "lockCover")
+            Box(Modifier.fillMaxWidth(0.82f).aspectRatio(1f), contentAlignment = Alignment.Center) {
+                if (coverShown < 1f) LyricsBody(vm, Modifier.fillMaxSize().graphicsLayer { alpha = 1f - coverShown }.clip(HiveShape.art).background(c.bg.copy(alpha = 0.35f)), onTap = { showLyrics = false }, compact = true)
+                if (coverShown > 0f) {
                     val frame = rotatingCover(now.artworkUri, now.trackId)
                     Artwork(
                         frame.current,
                         Modifier.fillMaxWidth(0.95f).aspectRatio(1f)
+                            .graphicsLayer { alpha = coverShown }
                             .songSwipe(swipe, scope, onNext = { vm.player.next() }, onPrevious = { vm.player.previous() })
                             .pointerInput(Unit) { detectTapGestures { showLyrics = true } }
                             .graphicsLayer { translationX = swipe.value; alpha = 1f - (abs(swipe.value) / size.width).coerceIn(0f, 0.9f) },
-                        HiveShape.art, Icons.Rounded.MusicNote, glow = aura?.primary ?: c.accentGlow, elevation = 34.dp,
+                        HiveShape.art, Icons.Rounded.MusicNote, glow = aura?.primary ?: c.accentGlow, elevation = 34.dp * (coverShown * coverShown * coverShown),
                         replacing = frame.previous,
                     )
                 }
@@ -123,6 +123,8 @@ fun LockPlayer(vm: MainViewModel, onUnlock: () -> Unit) {
                     Text(artist, style = HiveText.rowStrong, color = c.textDim, maxLines = 1, overflow = TextOverflow.Ellipsis, textAlign = TextAlign.Center, modifier = Modifier.padding(top = 4.dp))
                 }
             }
+            // The heart where the player has it: centred under the song.
+            NowHeart(vm, now.mediaId)
             SeekBar(now, vm.position, onSeek = { vm.player.seekTo(it) })
             Row(Modifier.fillMaxWidth().padding(horizontal = 18.dp).height(96.dp), horizontalArrangement = Arrangement.SpaceEvenly, verticalAlignment = Alignment.CenterVertically) {
                 // As in the player: shuffle and repeat mean nothing to a live station, but keep their places.

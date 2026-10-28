@@ -44,6 +44,7 @@ class MainActivity : ComponentActivity() {
         val missing = wanted.filter { ContextCompat.checkSelfPermission(this, it) != PackageManager.PERMISSION_GRANTED }
         if (missing.isNotEmpty()) permissions.launch(missing.toTypedArray())
         handleSpotifyReturn(intent)
+        if (savedInstanceState == null) handleVoice(intent)
     }
 
     override fun onNewIntent(intent: Intent) {
@@ -51,6 +52,21 @@ class MainActivity : ComponentActivity() {
         setIntent(intent)
         if (intent.getBooleanExtra(EXTRA_OPEN_DELETIONS, false)) vm.openDeletions.value = true
         handleSpotifyReturn(intent)
+        handleVoice(intent)
+    }
+
+    /** "Hey Google, play Outkast": the assistant opens Hive with the words; play what they name. */
+    private fun handleVoice(intent: Intent?) {
+        if (intent?.action != android.provider.MediaStore.INTENT_ACTION_MEDIA_PLAY_FROM_SEARCH) return
+        val app = application as HiveApp
+        val query = intent.getStringExtra(android.app.SearchManager.QUERY).orEmpty()
+        app.scope.launch {
+            val tracks = com.local.hive.mobile.playback.LibraryBrowser(app, app.database.dao()).voice(query, intent.extras)
+            kotlinx.coroutines.withContext(kotlinx.coroutines.Dispatchers.Main) {
+                if (tracks.isNotEmpty()) app.player.play(tracks)
+                else android.widget.Toast.makeText(app, "Nothing on this phone matches “$query”", android.widget.Toast.LENGTH_LONG).show()
+            }
+        }
     }
 
     private fun handleSpotifyReturn(intent: Intent?) {

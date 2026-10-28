@@ -18,11 +18,15 @@ import androidx.compose.foundation.layout.navigationBarsPadding
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.width
+import androidx.compose.foundation.horizontalScroll
 import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.foundation.verticalScroll
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.rounded.Album
+import androidx.compose.material.icons.rounded.Download
+import androidx.compose.material.icons.rounded.Edit
+import androidx.compose.material.icons.rounded.Image
 import androidx.compose.material.icons.rounded.LibraryMusic
 import androidx.compose.material.icons.rounded.Share
 import androidx.compose.material.icons.automirrored.rounded.StarHalf
@@ -35,6 +39,7 @@ import androidx.compose.material3.Text
 import androidx.compose.material3.rememberModalBottomSheetState
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.getValue
+import androidx.compose.runtime.setValue
 import androidx.compose.runtime.produceState
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
@@ -51,6 +56,7 @@ import com.local.hive.mobile.ui.theme.Hive
 import com.local.hive.mobile.ui.theme.HiveShape
 import com.local.hive.mobile.ui.theme.HiveText
 import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
 
 /** What the file itself says about its audio. */
@@ -93,7 +99,25 @@ fun TrackInfoSheet(vm: MainViewModel, track: Track, onDismiss: () -> Unit, onOpe
     ) {
         Column(Modifier.fillMaxWidth().verticalScroll(rememberScrollState()).navigationBarsPadding().padding(bottom = 12.dp)) {
             Row(Modifier.padding(horizontal = 20.dp, vertical = 6.dp), verticalAlignment = Alignment.CenterVertically) {
-                Artwork(track.artworkUri, Modifier.size(64.dp), HiveShape.art, Icons.Rounded.LibraryMusic)
+                // Hold the cover: save it to the phone at full size, or change it.
+                var coverMenu by androidx.compose.runtime.remember { androidx.compose.runtime.mutableStateOf(false) }
+                val editor = LocalEditor.current
+                val toast = LocalToast.current
+                val scope = androidx.compose.runtime.rememberCoroutineScope()
+                val haptics = androidx.compose.ui.platform.LocalHapticFeedback.current
+                Box {
+                    Artwork(track.artworkUri, Modifier.size(64.dp).pressable(onClick = {}, onLongClick = { haptics.performHapticFeedback(androidx.compose.ui.hapticfeedback.HapticFeedbackType.LongPress); coverMenu = true }), HiveShape.art, Icons.Rounded.LibraryMusic)
+                    HiveMenu(coverMenu, { coverMenu = false }) {
+                        HiveMenuItem("Save cover to phone", Icons.Rounded.Download) {
+                            coverMenu = false
+                            scope.launch {
+                                val bytes = vm.fullCover(track)
+                                if (bytes == null) toast("This song has no cover of its own") else vm.savePicture(bytes, "${track.displayAlbumArtist} - ${track.album.ifBlank { track.title }}", toast)
+                            }
+                        }
+                        HiveMenuItem("Change cover", Icons.Rounded.Image) { coverMenu = false; onDismiss(); editor.changeCover(listOf(track)) }
+                    }
+                }
                 Spacer(Modifier.width(14.dp))
                 Column(Modifier.weight(1f)) {
                     HiveLabel("Track info")
@@ -103,8 +127,10 @@ fun TrackInfoSheet(vm: MainViewModel, track: Track, onDismiss: () -> Unit, onOpe
             }
             val ratings by vm.ratings.collectAsStateWithLifecycle()
             Stars(ratings[track.id] ?: 0f, Modifier.padding(horizontal = 18.dp, vertical = 4.dp)) { vm.rate(track.id, it) }
-            Row(Modifier.padding(horizontal = 16.dp, vertical = 10.dp), horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+            Row(Modifier.horizontalScroll(rememberScrollState()).padding(horizontal = 16.dp, vertical = 10.dp), horizontalArrangement = Arrangement.spacedBy(8.dp)) {
                 InfoAction("Go to album", Icons.Rounded.Album) { onDismiss(); onOpenAlbum(track) }
+                val editor = LocalEditor.current
+                InfoAction("Edit tags", Icons.Rounded.Edit) { onDismiss(); editor.editTags(listOf(track)) }
                 InfoAction("Share", Icons.Rounded.Share) {
                     val send = Intent(Intent.ACTION_SEND).setType("audio/*").putExtra(Intent.EXTRA_STREAM, track.uri).addFlags(Intent.FLAG_GRANT_READ_URI_PERMISSION)
                     runCatching { context.startActivity(Intent.createChooser(send, track.title)) }

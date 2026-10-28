@@ -1,5 +1,6 @@
 package com.local.hive.mobile.ui
 
+import androidx.compose.foundation.layout.PaddingValues
 import android.provider.MediaStore
 import androidx.activity.compose.rememberLauncherForActivityResult
 import androidx.activity.result.IntentSenderRequest
@@ -32,25 +33,23 @@ import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
-import androidx.compose.ui.draw.shadow
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
-import androidx.compose.ui.window.Dialog
-import androidx.compose.ui.window.DialogProperties
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import com.local.hive.mobile.link.GoneSong
 import com.local.hive.mobile.ui.theme.Hive
 import com.local.hive.mobile.ui.theme.HiveShape
 import com.local.hive.mobile.ui.theme.HiveText
-import com.local.hive.mobile.ui.theme.hiveGlassBorder
 import kotlinx.coroutines.launch
 
 /**
  * Songs deleted on one side since song sync last saw them on both. For each
  * side, the picked songs can be deleted on the other side too (to the PC's
  * Trash; on this phone after Android asks), copied back so both sides match
- * again, or left as they are (not asked about again).
+ * again, or left as they are (not asked about again). Only extra copies and
+ * game mod files can be deleted: a song's only copy is music that would be
+ * gone from both sides, so it can only be copied back or left.
  */
 @Composable
 fun DeletionsSheet(vm: MainViewModel, onDismiss: () -> Unit, onToast: (String) -> Unit) {
@@ -71,12 +70,7 @@ fun DeletionsSheet(vm: MainViewModel, onDismiss: () -> Unit, onToast: (String) -
     val context = androidx.compose.ui.platform.LocalContext.current
     if (d.count == 0 && !busy) { onDismiss(); return }
 
-    Dialog(onDismissRequest = onDismiss, properties = DialogProperties(usePlatformDefaultWidth = false)) {
-        Column(
-            Modifier.padding(16.dp).fillMaxWidth().shadow(30.dp, HiveShape.panel, ambientColor = c.accentGlow).clip(HiveShape.panel).background(c.control)
-                .border(1.dp, hiveGlassBorder(), HiveShape.panel).padding(18.dp),
-            verticalArrangement = Arrangement.spacedBy(10.dp),
-        ) {
+    HiveDialog(onDismiss, padding = PaddingValues(18.dp), spacing = 10.dp, wide = true) {
             Text("Song sync", style = HiveText.small, color = c.accent)
             Text("Deleted songs", style = HiveText.year, color = c.text)
             LazyColumn(Modifier.heightIn(max = 480.dp), verticalArrangement = Arrangement.spacedBy(2.dp)) {
@@ -97,18 +91,20 @@ fun DeletionsSheet(vm: MainViewModel, onDismiss: () -> Unit, onToast: (String) -
                             Column(Modifier.weight(1f).padding(start = 12.dp)) {
                                 Text(s.title, style = HiveText.row, color = c.text, maxLines = 1, overflow = TextOverflow.Ellipsis)
                                 Text(listOf(s.artist, s.album).filter { it.isNotBlank() }.joinToString(" · "), style = HiveText.rowSub, color = c.textDim, maxLines = 1, overflow = TextOverflow.Ellipsis)
+                                if (!s.canDelete) Text("Its only copy: kept, never deleted", style = HiveText.small, color = c.accent, maxLines = 1)
                             }
                         }
                     }
                     item { actions(songs.filter { it.key !in unpicked }) }
                 }
                 section("Deleted on your PC", "Still on this phone.", d.fromPc) { picked ->
+                    val extra = picked.filter { it.canDelete }
                     Actions(
-                        picked,
-                        "Delete from this phone" to {
-                            val uris = picked.mapNotNull { it.phone?.uri }
+                        picked, extra.isNotEmpty(),
+                        "Delete extra copies from this phone" to {
+                            val uris = extra.mapNotNull { it.phone?.uri }
                             if (uris.isNotEmpty()) {
-                                deletingOnPhone = picked
+                                deletingOnPhone = extra
                                 phoneDelete.launch(IntentSenderRequest.Builder(MediaStore.createDeleteRequest(context.contentResolver, uris).intentSender).build())
                             }
                         },
@@ -118,8 +114,8 @@ fun DeletionsSheet(vm: MainViewModel, onDismiss: () -> Unit, onToast: (String) -
                 }
                 section("Deleted on this phone", "Still on your PC.", d.fromPhone) { picked ->
                     Actions(
-                        picked,
-                        "Delete on PC" to {
+                        picked, picked.any { it.canDelete },
+                        "Delete extra copies on PC" to {
                             busy = true
                             scope.launch {
                                 runCatching { vm.songSyncOps.deleteOnPc(picked) }
@@ -137,18 +133,17 @@ fun DeletionsSheet(vm: MainViewModel, onDismiss: () -> Unit, onToast: (String) -
                 "Decide later", style = HiveText.rowStrong, color = c.textDim,
                 modifier = Modifier.align(Alignment.End).clip(HiveShape.pill).clickable(onClick = onDismiss).padding(horizontal = 12.dp, vertical = 10.dp),
             )
-        }
     }
 }
 
 /** A section's buttons for its picked songs; the first (the delete) in red. */
 @OptIn(androidx.compose.foundation.layout.ExperimentalLayoutApi::class)
 @Composable
-private fun Actions(picked: List<GoneSong>, vararg actions: Pair<String, () -> Unit>) {
+private fun Actions(picked: List<GoneSong>, canDelete: Boolean, vararg actions: Pair<String, () -> Unit>) {
     val c = Hive.colors
     FlowRow(Modifier.fillMaxWidth().padding(top = 4.dp, bottom = 6.dp), horizontalArrangement = Arrangement.spacedBy(6.dp), verticalArrangement = Arrangement.spacedBy(6.dp)) {
         actions.forEachIndexed { i, (label, act) ->
-            val enabled = picked.isNotEmpty()
+            val enabled = picked.isNotEmpty() && (i != 0 || canDelete)
             Text(
                 label, style = HiveText.rowStrong,
                 color = when { !enabled -> c.textDimmer; i == 0 -> Color(0xFFFF8A8A); else -> c.text },

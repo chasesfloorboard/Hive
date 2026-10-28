@@ -52,6 +52,23 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
 
     val tracks = trackRows.map { list -> LibrarySort.sorted(list) { it.title } }.flowOn(Dispatchers.Default).state(emptyList())
     val favorites = dao.lovedTracks().state(emptyList())
+    /** When each favorite was favorited, for ordering Favorites with liked streamed songs among them. */
+    val favoritedAt: StateFlow<Map<Long, Long>> = dao.loveStates().map { l -> l.filter { it.loved }.associate { it.trackId to it.changedAt } }.state(emptyMap())
+    /**
+     * Liked Apple Music and Spotify songs (shared with Hive on the PC) that aren't favorite files on this phone,
+     * each with when it was liked: Favorites lists them with the rest, and they stream as any streamed song does.
+     */
+    val streamFavorites: StateFlow<List<Pair<StreamTrack, Long>>> = combine(app.streamLoves.loves, favorites) { likes, files ->
+        val have = files.mapTo(HashSet()) { com.local.hive.mobile.link.StreamLoves.key(it.artist, it.title) }
+        likes.filter { (k, e) -> e.loved && k !in have }.mapNotNull { (_, e) ->
+            val key = when {
+                e.path.startsWith("ytm:apple:") -> "am:" + e.path.removePrefix("ytm:apple:")
+                e.path.startsWith("ytm:spotify:") -> "sp:" + e.path.removePrefix("ytm:spotify:")
+                else -> return@mapNotNull null
+            }
+            StreamTrack(key, if (key.startsWith("am:")) "Apple Music" else "Spotify", e.title, e.artist, e.album, (e.duration * 1000).toLong(), e.artworkUrl, "", "") to e.at
+        }
+    }.state(emptyList())
     val lovedIds: StateFlow<Set<Long>> = dao.loveStates().map { list -> list.filter { it.loved }.mapTo(HashSet()) { it.trackId } }.state(emptySet())
     val favoriteAlbumKeys: StateFlow<Set<String>> = dao.favoriteAlbums().map { list -> list.mapTo(HashSet()) { it.key } }.state(emptySet())
     val albums: StateFlow<List<AlbumSummary>> = dao.albums().map { list -> LibrarySort.sorted(list) { it.album } }.flowOn(Dispatchers.Default).state(emptyList())
@@ -87,6 +104,21 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
         .mapLatest { uri -> ArtColors.extract(app, uri?.let(android.net.Uri::parse)) }
         .state(null)
 
+    init {
+        // The playing cover and those either side of it, decoded at the player's size before a
+        // skip, so the big cover is sharp at once instead of a stretched thumbnail first.
+        val loader = coil3.SingletonImageLoader.get(app)
+        val px = app.resources.displayMetrics.widthPixels.coerceIn(480, 1440)
+        viewModelScope.launch {
+            nowPlaying.map { s -> listOf(s.queueIndex, s.queueIndex + 1, s.queueIndex - 1).mapNotNull { i -> if (i == s.queueIndex) s.artworkUri else s.queue.getOrNull(i)?.artworkUri } }
+                .distinctUntilChanged()
+                .collect { uris -> uris.forEach { loader.enqueue(coil3.request.ImageRequest.Builder(app).data(it).size(px, px).build()) } }
+        }
+    }
+
+    /** Colours of a cover by its address (a streamed album's). */
+    suspend fun coverColors(url: String): AuraColors? = ArtColors.extract(app, android.net.Uri.parse(url))
+
     suspend fun albumColors(albumId: Long): AuraColors? =
         ArtColors.extract(app, android.net.Uri.parse("content://media/external/audio/albumart/$albumId"))
     val link = app.sync.status
@@ -98,15 +130,15 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
     fun artistTracks(artist: String) = dao.artistTracks(artist)
     fun genreTracks(genre: String) = dao.genreTracks(genre)
     fun folderTracks(folder: String) = dao.folderTracks(folder)
-    /** Songs whose title, artist or album holds [query], ignoring case and accents. */
+    /** Songs whose title, artist or album hold every word of [query], in any order, ignoring case, accents and punctuation. */
     suspend fun search(query: String): List<Track> {
-        val q = LibrarySort.fold(query.trim())
+        val q = LibrarySort.words(query)
         if (q.isEmpty()) return emptyList()
         return kotlinx.coroutines.withContext(kotlinx.coroutines.Dispatchers.Default) {
             val library = tracks.value
             val index = searchIndex?.takeIf { it.first === library }?.second
                 ?: library.map { LibrarySort.fold("${it.title}\u0000${it.artist}\u0000${it.album}") }.also { searchIndex = library to it }
-            library.indices.filter { q in index[it] }.take(300).map { library[it] }
+            library.indices.filter { LibrarySort.has(index[it], q) }.take(300).map { library[it] }
         }
     }
     private var searchIndex: Pair<List<Track>, List<String>>? = null
@@ -200,18 +232,6 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
     fun playlist(id: Long) = dao.playlist(id)
     fun playlistRows(id: Long) = dao.playlistRows(id)
 
-    val downloading = app.downloader.active
-
-    /** Saves the streamed song now playing to the phone; [onDone] hears how it went. */
-    fun download(now: com.local.hive.mobile.playback.NowPlaying, onDone: (String) -> Unit) {
-        val key = now.mediaId ?: return
-        val song = com.local.hive.mobile.stream.WantedSong(key, now.title, now.artist, now.album, now.durationMs)
-        viewModelScope.launch {
-            runCatching { app.downloader.save(song, now.artworkUri) }
-                .onSuccess { onDone("Saved “${now.title}” to Music/Hive") }
-                .onFailure { onDone(it.message ?: "Couldn't save “${now.title}”") }
-        }
-    }
 
     /** Spotify songs saved without a cover (playlist pages leave them out) get their album's cover, once. */
     fun fillSpotifyCovers(rows: List<com.local.hive.mobile.data.PlaylistRow>) = viewModelScope.launch {
@@ -270,11 +290,10 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
     val spotifyAccount get() = app.spotifyAccount
     val spotifyUser = app.spotifyAccount.user
 
-    /** Spotify search: with this phone's own sign-in, else through Hive on the PC and its Spotify app. */
+    /** Spotify search, with this phone's own sign-in (Hive on the PC no longer starts its Spotify app to search). */
     suspend fun searchSpotify(q: String): com.local.hive.mobile.stream.SpotifyAccount.Results {
         if (spotifyUser.value.signedIn) return app.spotifyAccount.search(q)
-        val conn = app.sync.pcConnection() ?: throw java.io.IOException("Searching Spotify needs Hive open on your PC (it searches with your Spotify app there), or a Spotify sign-in in Settings.")
-        return com.local.hive.mobile.link.HiveLinkClient().spotifySearch(conn, q)
+        throw java.io.IOException("Searching Spotify needs a Spotify sign-in (Settings › Spotify). Spotify links work without one, and Apple Music search finds the same songs.")
     }
     /** Hive on the PC, while reachable; with it, songs the phone lacks play in full. */
     val pcStreams = app.sync.streams
@@ -429,9 +448,172 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
     fun cancelSleepTimer() = app.player.cancelSleepTimer()
     fun toggleLoved(trackId: Long) = viewModelScope.launch { app.sync.setLoved(listOf(trackId), trackId !in lovedIds.value) }
 
+    /** Likes for streamed songs, by StreamLoves key. */
+    val streamLikes = app.streamLoves.loves
+
+    /**
+     * The heart for what's playing, the same on the player, the lock screen and
+     * the notification: a library song's Love, a streamed song's like (shared
+     * with Hive on the PC), or null for radio and podcasts.
+     */
+    val nowLoved: StateFlow<Boolean?> = combine(app.player.state, lovedIds, streamLikes, app.pcLibrary.lovedIds) { now, loved, likes, pc ->
+        if (now.mediaId?.startsWith(com.local.hive.mobile.link.PcLibrary.MEDIA_PREFIX) == true) viewModelScope.launch { app.pcLibrary.load() }
+        com.local.hive.mobile.link.heartFor(now.mediaId, now.title, now.artist, loved, likes, pc)
+    }.state(null)
+
+    /** Likes a streamed song (shared with Hive on the PC). */
+    fun likeStream(s: StreamTrack) = app.sync.setStreamLoved(s.title, s.artist, s.album, s.durationMs, s.artworkUrl, s.key, true)
+    fun setStreamLiked(s: StreamTrack, liked: Boolean) = app.sync.setStreamLoved(s.title, s.artist, s.album, s.durationMs, s.artworkUrl, s.key, liked)
+
+    fun toggleNowLoved() {
+        val now = player.state.value
+        val loved = nowLoved.value ?: return
+        val id = now.mediaId?.substringAfterLast('|')?.toLongOrNull()
+        if (id != null) toggleLoved(id)
+        else app.sync.setStreamLoved(now.title, now.artist, now.album, now.durationMs, now.artworkUri.orEmpty(), now.mediaId ?: return, !loved)
+    }
+
     // ---- library ----
 
     fun rescan() = app.requestRescan(delayMs = 0)
+
+    /** The whole library in numbers, for Settings › Library. */
+    data class LibraryInfo(val songs: Int, val albums: Int, val artists: Int, val lengthMs: Long, val bytes: Long, val formats: List<Pair<String, Int>>, val lossless: Int)
+    val libraryInfo: StateFlow<LibraryInfo?> = tracks.map { list ->
+        LibraryInfo(
+            songs = list.size, albums = list.distinctBy { it.albumId }.size, artists = list.mapTo(HashSet()) { it.displayAlbumArtist.lowercase() }.size,
+            lengthMs = list.sumOf { it.durationMs }, bytes = list.sumOf { it.sizeBytes },
+            formats = list.groupingBy { it.fileName.substringAfterLast('.', "?").uppercase() }.eachCount().entries.sortedByDescending { it.value }.map { it.key to it.value },
+            lossless = list.count { it.fileName.substringAfterLast('.', "").lowercase() in com.local.hive.mobile.data.SmartPlaylist.LOSSLESS },
+        )
+    }.flowOn(Dispatchers.Default).state(null)
+
+    // ---- editing tags and covers (the caller has Android's permission to change the files) ----
+
+    /**
+     * Writes each song's edit (and [cover], for all of them) into its file, then
+     * hands the same changes to Hive on the PC (see [com.local.hive.mobile.link.PcEdits]).
+     * Reports a line for the toast.
+     */
+    fun saveEdits(edits: Map<Track, com.local.hive.mobile.data.TagEdit>, cover: ByteArray? = null, onDone: (String) -> Unit) = viewModelScope.launch {
+        val wanted = edits.filter { !it.value.isEmpty || cover != null }
+        if (wanted.isEmpty()) { onDone("Nothing changed"); return@launch }
+        // The playing song is reloaded at its place once its file is rewritten.
+        val playing = nowPlaying.value.trackId
+        val saved = mutableListOf<Track>()
+        var problem: String? = null
+        for ((track, edit) in wanted) {
+            runCatching { com.local.hive.mobile.data.TagWriter.write(app, track, edit, cover) }
+                .onSuccess { saved += track }
+                .onFailure { problem = it.message ?: "A song couldn't be changed" }
+            edit.lyrics?.let { app.lyrics.saveOwn(track.artist, track.title, it) }
+        }
+        if (saved.any { it.id == playing }) app.player.reloadCurrent()
+        app.pcEdits.addTags(saved.associate { it.id to wanted.getValue(it) }.filterValues { !it.isEmpty })
+        if (cover != null) {
+            app.pcEdits.addCover(saved.map { it.id }, cover)
+            // The old cover is cached (Hive's own copy, Coil's, Android's thumbnails); the new one is
+            // read afresh now, and again once Android has re-read the files and remade its thumbnails.
+            val albums = saved.map { it.albumId }.distinct()
+            refreshCovers(albums, cover)
+            viewModelScope.launch { kotlinx.coroutines.delay(4_000); refreshCovers(albums, cover) }
+        }
+        app.requestRescan(delayMs = 500)
+        app.sync.matchAgainNextSync()
+        if (app.linkStore.pairing != null) viewModelScope.launch { kotlinx.coroutines.delay(3_000); app.sync.syncNow() }
+        onDone(when {
+            saved.isEmpty() -> problem ?: "Nothing was changed"
+            saved.size < wanted.size -> "Changed ${saved.size} of ${countOf(wanted.size, "song")}. $problem"
+            else -> "Saved " + if (saved.size == 1) "“${saved[0].title}”" else countOf(saved.size, "song")
+        })
+    }
+
+    /** Hive's kept copy of each album's cover becomes [cover] at once (Android's own readers lag behind the file). */
+    private fun refreshCovers(albumIds: List<Long>, cover: ByteArray) {
+        val dir = java.io.File(app.cacheDir, "embedded-art").apply { mkdirs() }
+        albumIds.forEach { runCatching { java.io.File(dir, "$it.img").writeBytes(cover) } }
+        // Only pictures in memory: the disk cache holds online covers, which didn't change.
+        coil3.SingletonImageLoader.get(app).memoryCache?.clear()
+        forgetShownCovers()
+    }
+
+    suspend fun track(id: Long) = dao.track(id)
+    suspend fun saveOwnLyrics(artist: String, title: String, text: String) = app.lyrics.saveOwn(artist, title, text)
+
+    /** A song's own cover at full size, for saving it to the phone. */
+    suspend fun fullCover(track: Track): ByteArray? = com.local.hive.mobile.data.TagWriter.cover(app, track)
+
+    /** Saves a picture into the phone's Pictures/Hive, where the gallery shows it. */
+    fun savePicture(bytes: ByteArray, name: String, onDone: (String) -> Unit) = viewModelScope.launch {
+        val ok = kotlinx.coroutines.withContext(Dispatchers.IO) {
+            runCatching {
+                val png = bytes.size > 3 && bytes[0] == 0x89.toByte() && bytes[1] == 0x50.toByte()
+                val values = android.content.ContentValues().apply {
+                    put(android.provider.MediaStore.Images.Media.DISPLAY_NAME, name.replace(Regex("""[\\/:*?"<>|]"""), "_").take(80) + if (png) ".png" else ".jpg")
+                    put(android.provider.MediaStore.Images.Media.MIME_TYPE, if (png) "image/png" else "image/jpeg")
+                    put(android.provider.MediaStore.Images.Media.RELATIVE_PATH, "Pictures/Hive")
+                }
+                val uri = app.contentResolver.insert(android.provider.MediaStore.Images.Media.EXTERNAL_CONTENT_URI, values)!!
+                app.contentResolver.openOutputStream(uri)!!.use { it.write(bytes) }
+            }.isSuccess
+        }
+        onDone(if (ok) "Cover saved to Pictures/Hive" else "Couldn't save the cover")
+    }
+
+    /** Downloads a picture (a cover found online). */
+    suspend fun download(url: String): ByteArray? = kotlinx.coroutines.withContext(Dispatchers.IO) {
+        runCatching { okhttp3.OkHttpClient().newCall(okhttp3.Request.Builder().url(url).build()).execute().use { if (it.isSuccessful) it.body.bytes() else null } }.getOrNull()
+    }
+
+    /** Albums on Apple Music matching [query], for a cover or Auto-tag. */
+    suspend fun findAlbums(query: String): List<com.local.hive.mobile.stream.AmCard> =
+        runCatching { app.appleMusic.search(query.trim()).albums }.getOrDefault(emptyList())
+
+    /** An Apple Music album's songs and details, for Auto-tag. */
+    suspend fun appleAlbum(url: String) = app.appleMusic.collection(url)
+
+    // ---- smart playlists ----
+
+    val smartPlaylists = app.smartPlaylists.list
+    fun saveSmartPlaylist(p: com.local.hive.mobile.data.SmartPlaylist) = app.smartPlaylists.save(p)
+    fun deleteSmartPlaylist(id: Long) = app.smartPlaylists.delete(id)
+
+    /** What a smart playlist holds now, kept up to date with the library, ratings, plays and Favorites. */
+    @OptIn(kotlinx.coroutines.ExperimentalCoroutinesApi::class)
+    fun smartTracks(id: Long): Flow<List<Track>> = combine(smartPlaylists, tracks, ratings, lovedIds) { list, library, stars, loved -> SmartInput(list.firstOrNull { it.id == id }, library, stars, loved) }
+        .mapLatest { input ->
+            val p = input.playlist ?: return@mapLatest emptyList()
+            val plays = dao.playCounts().associate { it.trackId to it.plays }
+            kotlinx.coroutines.withContext(Dispatchers.Default) { p.select(input.library, plays, input.ratings, input.loved) }
+        }
+    private data class SmartInput(val playlist: com.local.hive.mobile.data.SmartPlaylist?, val library: List<Track>, val ratings: Map<Long, Float>, val loved: Set<Long>)
+
+    // ---- playlist extras ----
+
+    /** A copy of a playlist, every slot in order, named "… copy". */
+    fun duplicatePlaylist(id: Long, onCreated: (Long) -> Unit) = viewModelScope.launch {
+        val p = dao.playlist(id).first() ?: return@launch
+        val rows = dao.playlistRows(id).first()
+        val now = System.currentTimeMillis()
+        val copy = dao.createImportedPlaylist(p.copy(id = 0, name = "${p.name} copy", createdAt = now, updatedAt = now), rows.map { it.entry }, emptyList())
+        onCreated(copy)
+    }
+
+    /** A photo from the phone as the playlist's picture (copied into Hive's files), or none. */
+    fun setPlaylistPhoto(id: Long, photo: android.net.Uri?) = viewModelScope.launch {
+        val dir = java.io.File(app.filesDir, "playlist-photos").apply { mkdirs() }
+        dir.listFiles { f -> f.name.startsWith("$id-") }?.forEach { it.delete() }
+        val url = photo?.let { uri ->
+            kotlinx.coroutines.withContext(Dispatchers.IO) {
+                runCatching {
+                    val f = java.io.File(dir, "$id-${System.currentTimeMillis()}.jpg")
+                    app.contentResolver.openInputStream(uri)!!.use { input -> f.outputStream().use { input.copyTo(it) } }
+                    android.net.Uri.fromFile(f).toString()
+                }.getOrNull()
+            }
+        }.orEmpty()
+        dao.setPlaylistImage(id, url, System.currentTimeMillis())
+    }
 
     // ---- Hive Link ----
 
@@ -494,8 +676,6 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
 
     // ---- theme ----
 
-    fun applyThemeCss(css: String) = app.themes.apply(css)
-    fun resetTheme() = app.themes.reset()
     val themeName = app.themes.name
     val themes get() = app.themes
     val themePacks get() = app.themes.packs

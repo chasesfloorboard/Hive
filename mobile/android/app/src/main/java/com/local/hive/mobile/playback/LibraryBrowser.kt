@@ -103,6 +103,10 @@ class LibraryBrowser(private val context: Context, private val dao: LibraryDao) 
 
     /** What a browser asked to play, as a queue and where to start. */
     suspend fun resolve(items: List<MediaItem>): Pair<List<MediaItem>, Int> {
+        // "Hey Google, play …": a search, not an item.
+        items.singleOrNull()?.requestMetadata?.searchQuery?.takeIf { items[0].mediaId.isEmpty() }?.let { query ->
+            return voice(query, items[0].requestMetadata.extras).map { it.toMediaItem() } to 0
+        }
         if (items.size == 1 && '|' in items[0].mediaId) {
             val (list, id) = items[0].mediaId.split('|', limit = 2)
             val tracks = songs(list)
@@ -113,6 +117,17 @@ class LibraryBrowser(private val context: Context, private val dao: LibraryDao) 
         val byId = if (ids.isEmpty()) emptyMap() else dao.tracks(ids).associateBy { it.id }
         return items.mapNotNull { item -> if (item.localConfiguration != null) item else item.mediaId.substringAfter('|').toLongOrNull()?.let { byId[it] }?.toMediaItem() } to 0
     }
+
+    /** What to play for a spoken request (see [VoiceSearch]); [extras] may name the artist, album, song or genre. */
+    suspend fun voice(query: String, extras: Bundle?): List<Track> = VoiceSearch.pick(
+        dao.allTracks(), query,
+        VoiceSearch.Hint(
+            artist = extras?.getString(android.provider.MediaStore.EXTRA_MEDIA_ARTIST).orEmpty(),
+            album = extras?.getString(android.provider.MediaStore.EXTRA_MEDIA_ALBUM).orEmpty(),
+            title = extras?.getString(android.provider.MediaStore.EXTRA_MEDIA_TITLE).orEmpty(),
+            genre = extras?.getString("android.intent.extra.genre").orEmpty(),
+        ),
+    )
 
     /** Songs matching a voice or typed search. */
     suspend fun search(query: String): List<MediaItem> = if (query.isBlank()) emptyList() else dao.search("%${query.trim()}%").take(50).map { song(SEARCH, it) }

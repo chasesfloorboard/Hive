@@ -38,14 +38,8 @@ test('Spotify mute is isolated to the provider bridge', () => {
 });
 
 
-test('Spotify background launcher resolves the portable Hive root', () => {
-  assert(!main.includes("path.join(APP_ROOT, 'scripts', 'spotify-background.sh')"));
-  assert(main.includes("path.join(HIVE_PROJECT_ROOT, 'scripts', 'spotify-background.sh')"));
-});
-
 test('Spotify startup does not confuse the Hive HTTP server with the provider', () => {
   assert.match(renderer, /let spotifyBridgeStartupPromise = null/);
   assert.match(renderer, /if \(spotifyBridgeStartupPromise\) return spotifyBridgeStartupPromise/);
-  assert.match(renderer, /const launched = await window\.beehive\.spotifyLaunch\?\./);
   assert.match(renderer, /status\?\.connected/);
 });

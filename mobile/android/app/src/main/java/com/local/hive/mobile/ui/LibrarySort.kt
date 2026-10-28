@@ -41,4 +41,18 @@ object LibrarySort {
     ).replace(marks, "")
 
     private val marks = Regex("\\p{M}+")
+    private val notWord = Regex("[^\\p{L}\\p{N}]+")
+
+    /**
+     * A search's words, folded as [fold] does and without punctuation: a song matches when each
+     * word is somewhere in its title, artist or album, in any order ("nanana edit" finds
+     * "(It Goes Like) Nanana (Edit)"). Empty: nothing typed.
+     */
+    fun words(query: String): List<String> = fold(query).split(notWord).filter { it.isNotEmpty() }
+
+    /** [text] (already folded) holds every one of [words]. */
+    fun has(text: String, words: List<String>) = words.all { it in text }
+
+    /** [text] (not folded yet) holds every one of [words]. */
+    fun matches(text: String, words: List<String>) = words.isEmpty() || has(fold(text), words)
 }

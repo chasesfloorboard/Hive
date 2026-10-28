@@ -137,6 +137,8 @@ data class PlaylistSummary(
     val trackCount: Int,
     /** The first song's album, for a cover when the playlist has no image. */
     val coverAlbumId: Long?,
+    /** Else the first streamed song's cover (a playlist of Apple Music or Spotify songs). */
+    val streamArt: String? = null,
 )
 
 /**
@@ -276,9 +278,6 @@ interface LibraryDao {
     @Upsert
     suspend fun upsertTracks(tracks: List<Track>)
 
-    @Query("DELETE FROM tracks WHERE id NOT IN (:keep)")
-    suspend fun deleteTracksNotIn(keep: List<Long>)
-
     @Query("DELETE FROM tracks")
     suspend fun deleteAllTracks()
 
@@ -343,9 +342,14 @@ interface LibraryDao {
 
     // ---- playlists ----
 
+    /** A new copy of a song takes the old one's slots in every playlist. */
+    @Query("UPDATE playlist_entries SET trackId = :to WHERE trackId = :from")
+    suspend fun moveTrackInPlaylists(from: Long, to: Long)
+
     @Query(
         "SELECT p.id, p.name, p.updatedAt, p.source, p.imageUrl, COUNT(CASE WHEN t.id IS NOT NULL OR e.streamKey != '' THEN 1 END) AS trackCount, " +
-            "(SELECT t2.albumId FROM playlist_entries e2 JOIN tracks t2 ON t2.id = e2.trackId WHERE e2.playlistId = p.id ORDER BY e2.position LIMIT 1) AS coverAlbumId " +
+            "(SELECT t2.albumId FROM playlist_entries e2 JOIN tracks t2 ON t2.id = e2.trackId WHERE e2.playlistId = p.id ORDER BY e2.position LIMIT 1) AS coverAlbumId, " +
+            "(SELECT s3.artworkUrl FROM playlist_entries e3 JOIN stream_tracks s3 ON s3.key = e3.streamKey WHERE e3.playlistId = p.id AND s3.artworkUrl != '' ORDER BY e3.position LIMIT 1) AS streamArt " +
             "FROM playlists p LEFT JOIN playlist_entries e ON e.playlistId = p.id LEFT JOIN tracks t ON t.id = e.trackId " +
             "GROUP BY p.id ORDER BY p.updatedAt DESC"
     )
@@ -376,6 +380,9 @@ interface LibraryDao {
 
     @Query("UPDATE playlists SET name = :name, updatedAt = :at WHERE id = :id")
     suspend fun renamePlaylist(id: Long, name: String, at: Long)
+
+    @Query("UPDATE playlists SET imageUrl = :url, updatedAt = :at WHERE id = :id")
+    suspend fun setPlaylistImage(id: Long, url: String, at: Long)
 
     @Query("UPDATE playlists SET updatedAt = :at WHERE id = :id")
     suspend fun touchPlaylist(id: Long, at: Long)

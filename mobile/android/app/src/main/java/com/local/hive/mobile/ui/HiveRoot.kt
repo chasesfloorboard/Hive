@@ -9,7 +9,6 @@ import com.local.hive.mobile.ui.theme.hiveGlassBorder
 import android.net.Uri
 import androidx.activity.compose.BackHandler
 import androidx.compose.animation.AnimatedVisibility
-import androidx.compose.animation.animateColorAsState
 import androidx.compose.animation.core.LinearEasing
 import androidx.compose.animation.core.tween
 import androidx.compose.animation.fadeIn
@@ -18,65 +17,27 @@ import androidx.compose.animation.slideInHorizontally
 import androidx.compose.animation.slideInVertically
 import androidx.compose.animation.slideOutHorizontally
 import androidx.compose.animation.slideOutVertically
-import androidx.compose.foundation.Image
 import androidx.compose.foundation.background
-import androidx.compose.foundation.clickable
-import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
-import androidx.compose.foundation.layout.Column
-import androidx.compose.foundation.layout.Row
-import androidx.compose.foundation.layout.Spacer
-import androidx.compose.foundation.layout.fillMaxHeight
 import androidx.compose.foundation.layout.fillMaxSize
-import androidx.compose.foundation.layout.fillMaxWidth
-import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.navigationBarsPadding
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.statusBarsPadding
 import androidx.compose.foundation.layout.width
-import androidx.compose.foundation.rememberScrollState
-import androidx.compose.foundation.verticalScroll
-import androidx.compose.material.icons.Icons
-import androidx.compose.material.icons.rounded.Explore
-import androidx.compose.material.icons.rounded.Computer
-import androidx.compose.material.icons.rounded.Devices
-import androidx.compose.material.icons.rounded.AutoAwesome
-import androidx.compose.material.icons.rounded.Radio
-import androidx.compose.material.icons.rounded.Podcasts
-import androidx.compose.material.icons.rounded.GraphicEq
-import androidx.compose.material.icons.rounded.Category
-import androidx.compose.material.icons.rounded.Favorite
-import androidx.compose.material.icons.rounded.Folder
-import androidx.compose.material.icons.rounded.History
-import androidx.compose.material.icons.rounded.LibraryMusic
-import androidx.compose.material.icons.rounded.NewReleases
-import androidx.compose.material.icons.rounded.Settings
-import androidx.compose.material.icons.rounded.TrendingUp
-import androidx.compose.material3.DrawerValue
-import androidx.compose.material3.Icon
 import androidx.compose.material3.MaterialTheme
-import androidx.compose.material3.ModalNavigationDrawer
 import androidx.compose.material3.Text
 import androidx.compose.material3.darkColorScheme
-import androidx.compose.material3.rememberDrawerState
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.CompositionLocalProvider
 import androidx.compose.ui.graphics.luminance
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
-import androidx.compose.runtime.rememberCoroutineScope
 import androidx.compose.runtime.saveable.rememberSaveable
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
-import androidx.compose.ui.draw.drawBehind
-import androidx.compose.ui.geometry.Size
-import androidx.compose.ui.graphics.Brush
-import androidx.compose.ui.graphics.Color
-import androidx.compose.ui.graphics.vector.ImageVector
-import androidx.compose.ui.res.painterResource
 import androidx.compose.ui.unit.dp
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import androidx.navigation.NavType
@@ -93,7 +54,6 @@ import com.local.hive.mobile.ui.theme.HiveShape
 import com.local.hive.mobile.ui.theme.HiveText
 import com.local.hive.mobile.ui.theme.LocalHiveColors
 import com.local.hive.mobile.ui.theme.Motion
-import com.local.hive.mobile.ui.theme.hiveGlass
 import com.local.hive.mobile.ui.theme.withAccent
 import kotlinx.coroutines.launch
 
@@ -110,7 +70,9 @@ fun HiveThemed(vm: MainViewModel, content: @Composable () -> Unit) {
     val theme by vm.colors.collectAsStateWithLifecycle()
     val aura by vm.aura.collectAsStateWithLifecycle()
     val fromCover by vm.themes.accentFromCover.collectAsStateWithLifecycle()
-    val accent by animateColorAsState(if (fromCover) accentFor(aura, theme.accent) else theme.accent, tween(900), label = "accent")
+    // In one step, not a fade: every screen reads the accent, so fading it redrew
+    // the whole app every frame for most of a second after each skip.
+    val accent = if (fromCover) accentFor(aura, theme.accent) else theme.accent
     val colors = theme.withAccent(accent)
     val scheme = darkColorScheme(
         primary = colors.accent, background = colors.bg, onBackground = colors.text,
@@ -169,7 +131,10 @@ private fun HiveContent(vm: MainViewModel, openPlayerInitially: Boolean) {
     var queueOpen by rememberSaveable { mutableStateOf(false) }
     var lyricsOpen by rememberSaveable { mutableStateOf(false) }
     val hasMedia = now.mediaId != null
-    val bottomPadding = if (hasMedia) 82.dp else 0.dp
+    val selection = remember { Selection() }
+    // Room at the foot of every list for the playbar, and while picking for the selection pill above it.
+    val playbarPadding = if (hasMedia) 82.dp else 0.dp
+    val bottomPadding = playbarPadding + if (selection.active) 64.dp else 0.dp
     val route by nav.currentBackStackEntryAsState()
 
     fun enc(s: String) = Uri.encode(s)
@@ -193,11 +158,13 @@ private fun HiveContent(vm: MainViewModel, openPlayerInitially: Boolean) {
         val request = android.provider.MediaStore.createDeleteRequest(context.contentResolver, tracks.map { it.uri })
         deleteLauncher.launch(androidx.activity.result.IntentSenderRequest.Builder(request.intentSender).build())
     }
-    val selection = remember { Selection() }
     // Picking ends when the page changes.
     LaunchedEffect(route?.id) { selection.clear() }
     var infoTarget by remember { mutableStateOf<Track?>(null) }
+    var editSheet by remember { mutableStateOf<EditSheet?>(null) }
+    val editor = remember { Editor(editTags = { editSheet = EditSheet.Tags(it) }, changeCover = { editSheet = EditSheet.Cover(it) }, autoTag = { editSheet = EditSheet.AutoTag(it) }) }
     var autoDj by remember { mutableStateOf<AutoDjRequest?>(null) }
+    var collection by remember { mutableStateOf<AutoDjRequest?>(null) }
     val actions = TrackActions(
         onPlayNext = { vm.playNext(listOf(it)) },
         onAddToQueue = { vm.addToQueue(listOf(it)) },
@@ -221,6 +188,7 @@ private fun HiveContent(vm: MainViewModel, openPlayerInitially: Boolean) {
         openSettings = { go("settings") },
         open = { go(it) },
         autoDj = { autoDj = it },
+        collection = { collection = it },
     )
 
     Box(Modifier.fillMaxSize()) {
@@ -229,7 +197,7 @@ private fun HiveContent(vm: MainViewModel, openPlayerInitially: Boolean) {
             HiveGlassLayers(
                 Modifier.fillMaxSize(),
                 content = {
-                    CompositionLocalProvider(LocalSelection provides selection) {
+                    CompositionLocalProvider(LocalSelection provides selection, LocalToast provides { toast = it }, LocalEditor provides editor) {
                     // No SharedTransitionLayout around the NavHost: it turns on lookahead for
                     // every page, so each list row was measured and placed twice per frame
                     // (a quarter of the UI thread while scrolling). Covers use the cover
@@ -243,16 +211,32 @@ private fun HiveContent(vm: MainViewModel, openPlayerInitially: Boolean) {
                         predictivePopEnterTransition = { followEnter }, predictivePopExitTransition = { followExit },
                     ) {
                         page("home") { HomeScreen(vm, homeNav, actions, bottomPadding) }
-                        page("search") { SearchScreen(vm, actions, bottomPadding, { nav.popBackStack() }, homeNav.openAlbum, homeNav.openArtist) }
+                        page("search") {
+                            SearchScreen(vm, actions, bottomPadding, { nav.popBackStack() }, homeNav.openAlbum, homeNav.openArtist) { url ->
+                                nav.navigate(if ("open.spotify.com" in url) "spotify/c?url=${enc(url)}" else appleRoute(url))
+                            }
+                        }
                         page("settings") { SettingsScreen(vm, bottomPadding, onOpenEqualiser = { nav.navigate("equaliser") }) { nav.popBackStack() } }
                         page("equaliser") { EqualiserScreen(vm, bottomPadding) { nav.popBackStack() } }
                         page(ALBUM, listOf(navArgument("id") { type = NavType.LongType })) { entry ->
                             val id = entry.arguments?.getLong("id") ?: 0L
                             val albums by vm.albums.collectAsStateWithLifecycle()
                             val album = albums.firstOrNull { it.albumId == id }
+                            val albumTracks = remember(id) { vm.albumTracks(id) }
+                            // Retagged (a new album name or album artist), the songs become another album
+                            // to Android: the page follows them there instead of showing an empty album.
+                            val shown by albumTracks.collectAsStateWithLifecycle(null)
+                            var lastIds by remember(id) { mutableStateOf<List<Long>>(emptyList()) }
+                            LaunchedEffect(shown) {
+                                val now = shown ?: return@LaunchedEffect
+                                if (now.isNotEmpty()) { lastIds = now.map { it.id }; return@LaunchedEffect }
+                                if (lastIds.isEmpty()) return@LaunchedEffect
+                                val moved = lastIds.firstNotNullOfOrNull { vm.track(it) }?.albumId
+                                if (moved != null && moved != id) nav.navigate("album/$moved") { popUpTo(ALBUM) { inclusive = true } } else nav.popBackStack()
+                            }
                             AlbumScreen(
                                 vm, id, album?.album?.ifBlank { "Unknown album" } ?: "", album?.artist.orEmpty(), album?.year ?: 0,
-                                vm.albumTracks(id), actions, bottomPadding, onBack = { nav.popBackStack() }, onOpenArtist = homeNav.openArtist,
+                                albumTracks, actions, bottomPadding, onBack = { nav.popBackStack() }, onOpenArtist = homeNav.openArtist,
                             )
                         }
                         page("artist/{name}") { entry ->
@@ -298,6 +282,9 @@ private fun HiveContent(vm: MainViewModel, openPlayerInitially: Boolean) {
                         page("userplaylist/{id}", listOf(navArgument("id") { type = NavType.LongType })) { entry ->
                             PlaylistScreen(vm, entry.arguments?.getLong("id") ?: 0L, actions, bottomPadding) { nav.popBackStack() }
                         }
+                        page("smart/{id}", listOf(navArgument("id") { type = NavType.LongType })) { entry ->
+                            SmartPlaylistScreen(vm, entry.arguments?.getLong("id") ?: 0L, actions, bottomPadding) { nav.popBackStack() }
+                        }
                         page("playlist/{kind}") { entry ->
                             val kind = runCatching { AutoPlaylist.valueOf(entry.arguments?.getString("kind").orEmpty()) }.getOrDefault(AutoPlaylist.Favorites)
                             if (kind == AutoPlaylist.RecentlyPlayed) { HistoryScreen(vm, actions, bottomPadding) { nav.popBackStack() }; return@page }
@@ -330,8 +317,9 @@ private fun HiveContent(vm: MainViewModel, openPlayerInitially: Boolean) {
                             onToast = { toast = it },
                         )
                     }
-                    SelectionBar(vm, selection, Modifier.align(Alignment.BottomCenter).navigationBarsPadding().padding(bottom = bottomPadding + 8.dp), onAddToPlaylist = { addTarget = it }, onDelete = { deleteRequest(it) }, onToast = { toast = it },
-                        onAutoDj = { tracks -> if (tracks.isNotEmpty()) autoDj = AutoDjRequest(autoDjLabel(tracks)) { tracks } })
+                    SelectAllButton(selection, Modifier.align(Alignment.TopStart).statusBarsPadding().padding(start = 10.dp, top = 6.dp))
+                    CompositionLocalProvider(LocalEditor provides editor) { SelectionBar(vm, selection, Modifier.align(Alignment.BottomEnd).navigationBarsPadding().padding(bottom = playbarPadding + 8.dp), onAddToPlaylist = { addTarget = it }, onDelete = { deleteRequest(it) }, onToast = { toast = it },
+                        onAutoDj = { tracks -> if (tracks.isNotEmpty()) autoDj = AutoDjRequest(autoDjLabel(tracks)) { tracks } }) }
                     HiveToast(toast, Modifier.align(Alignment.BottomCenter).navigationBarsPadding().padding(bottom = bottomPadding + 16.dp)) { toast = null }
                     AnimatedVisibility(lyricsOpen, enter = slideInVertically(Motion.open()) { it } + fadeIn(Motion.underFade()), exit = slideOutVertically(Motion.close()) { it } + fadeOut(Motion.close())) {
                         LyricsScreen(vm) { lyricsOpen = false }
@@ -339,9 +327,13 @@ private fun HiveContent(vm: MainViewModel, openPlayerInitially: Boolean) {
                 },
             )
         }
-        infoTarget?.let { t -> TrackInfoSheet(vm, t, onDismiss = { infoTarget = null }) { playerOpen = false; nav.navigate("album/${it.albumId}") } }
+        CompositionLocalProvider(LocalEditor provides editor, LocalToast provides { toast = it }) {
+            infoTarget?.let { t -> TrackInfoSheet(vm, t, onDismiss = { infoTarget = null }) { playerOpen = false; nav.navigate("album/${it.albumId}") } }
+        }
+        EditSheets(vm, editSheet, onDismiss = { editSheet = null }, onToast = { toast = it })
         val showDeletions by vm.openDeletions.collectAsStateWithLifecycle()
         if (showDeletions) DeletionsSheet(vm, onDismiss = { vm.openDeletions.value = false }, onToast = { toast = it })
+        collection?.let { r -> CollectionSheet(vm, r, onDismiss = { collection = null }, onToast = { toast = it }, onAddToPlaylist = { addTarget = it }, onAutoDj = { autoDj = it }) }
         autoDj?.let { r -> AutoDjSheet(vm, r, onDismiss = { autoDj = null }, onToast = { toast = it }) { id -> nav.navigate("userplaylist/$id") } }
         addTarget?.let { tracks -> AddToPlaylistSheet(vm, tracks, onDismiss = { addTarget = null }) { name -> toast = "Added to $name" } }
         BackHandler(enabled = selection.active) { selection.clear() }

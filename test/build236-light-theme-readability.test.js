@@ -146,7 +146,8 @@ test('the theme dropdown is sourced only from the themes folder, with no separat
   const start = renderer.indexOf('async function renderBuiltinThemes(){');
   const end = renderer.indexOf('\n  }', start);
   const block = renderer.slice(start, end);
-  assert.match(block, /select\.innerHTML=themeFolderThemes\.map\(t=>`<option value="folder:\$\{escapeHtml\(t\.file\)\}">\$\{escapeHtml\(t\.name\)\}<\/option>`\)\.join\(''\);/);
+  // Folder themes only, through the regular/legacy filter (see listedThemes).
+  assert.match(block, /select\.innerHTML=themeOptionsHtml\('folder:'\);/);
   assert.doesNotMatch(block, /Object\.entries\(BUILTIN_THEMES\)\.map/, 'BUILTIN_THEMES must not be rendered as a separate top-level option list');
   assert.doesNotMatch(renderer, /<optgroup label="Your themes">/);
   assert.doesNotMatch(renderer, /editableFolderThemes/, 'the old CSS-byte-comparison dedup is obsolete now that there is only one source of options');
@@ -179,4 +180,22 @@ test('the custom album back arrow is inverted to black in Light theme', () => {
   const html = fs.readFileSync(path.join(root, 'app/renderer/index.html'), 'utf8');
   assert.match(html, /artist-back-icon/);
   assert.match(css, /html\[data-hive-theme="light"\] \.artist-back-icon \{ filter: invert\(1\); \}/);
+});
+
+test('the theme lists show the regular set; legacy themes only with the switch, and the theme in use always', () => {
+  const start = renderer.indexOf('const REGULAR_THEME_FILES');
+  const end = renderer.indexOf('function themeOptionsHtml', start);
+  const code = renderer.slice(start, end);
+  let store = {};
+  const fn = new Function('localStorage', 'customCssRawSource', `let themeFolderThemes = arguments[2];\n${code}\nreturn { listedThemes, isLegacyTheme };`);
+  const themes = [
+    { file: 'light.hive-theme', stock: true }, { file: 'ember.hive-theme', stock: true }, { file: 'lemon.hive-theme', stock: true },
+    { file: 'musicbee-pop-pink.hive-theme' }, { file: 'musicbee-black-bean.hive-theme', css: 'in use' }, { file: 'musicbee-bistre.hive-theme' },
+    { file: 'my-colours.hive-theme' },
+  ];
+  const ls = { getItem: k => store[k] ?? null };
+  const t = fn(ls, 'in use', themes);
+  assert.deepEqual(t.listedThemes().map(x => x.file), ['light.hive-theme', 'lemon.hive-theme', 'musicbee-pop-pink.hive-theme', 'musicbee-black-bean.hive-theme', 'my-colours.hive-theme']);
+  store['beehive:legacy-themes'] = '1';
+  assert.equal(t.listedThemes().length, themes.length);
 });

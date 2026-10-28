@@ -13,6 +13,7 @@ import kotlinx.coroutines.delay
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
+import kotlinx.coroutines.flow.first
 import kotlinx.coroutines.flow.update
 import kotlinx.coroutines.isActive
 import kotlinx.coroutines.launch
@@ -54,9 +55,10 @@ class SyncEngine(
     /** After each successful sync: song sync piggybacks on it (see SongSync). */
     private val afterSync: () -> Unit = {},
     /** Hive's themes (MusicBee skins and all), fetched once per launch. */
-    private val onThemes: (List<PcTheme>) -> Unit = {},
+    private val onThemes: (ThemesResponse) -> Unit = {},
+    /** Likes for streamed songs, shared with Hive too. */
+    val streamLoves: StreamLoves? = null,
 ) {
-    private var themesFetched = false
     private val mutex = Mutex()
     private val _streams = MutableStateFlow<PcStreams?>(null)
     /** Set while Hive on the PC is reachable: how the phone can stream through it. */
@@ -165,12 +167,17 @@ class SyncEngine(
             try {
                 val conn = connection() ?: throw HiveLinkException("Can't reach ${store.pairing?.name ?: "Hive"}. Is it open on the PC?")
                 pushPending(conn)
-                if (!store.fullSyncDone) fullSync(conn) else pullChanges(conn)
+                // Changes come as Hive's change log, which keeps only the latest ones; a whole
+                // comparison every few hours catches anything the log missed (bulk Love, imports).
+                if (!store.fullSyncDone || System.currentTimeMillis() - store.lastFullSyncAt > FULL_SYNC_EVERY_MS) fullSync(conn) else pullChanges(conn)
+                syncStreamLoves(conn) // may love phone files, sent next
+                pushPending(conn)
                 syncPlays(conn)
                 store.lastSyncAt = System.currentTimeMillis()
                 _status.update { it.copy(error = null, lastSyncAt = store.lastSyncAt, host = conn.host) }
                 afterSync()
-                if (!themesFetched) runCatching { client.themes(conn) }.onSuccess { themesFetched = true; onThemes(it) }
+                // Each sync: the theme Hive shows may have changed since (Your Hive theme follows it).
+                runCatching { client.themes(conn) }.onSuccess { onThemes(it) }
             } catch (e: CancellationException) {
                 throw e
             } catch (e: HiveLinkException) {
@@ -184,6 +191,41 @@ class SyncEngine(
                 _status.update { it.copy(syncing = false, pendingChanges = (dao.pendingLove().size - stagedLove).coerceAtLeast(0)) }
             }
         }
+    }
+
+    /** A heart on a streamed song: kept here, then sent to Hive. */
+    fun setStreamLoved(title: String, artist: String, album: String, durationMs: Long, artworkUrl: String, mediaId: String, loved: Boolean) {
+        val likes = streamLoves ?: return
+        likes.set(title, artist, album, durationMs, artworkUrl, mediaId, loved)
+        if (store.pairing != null) scope.launch { syncNow() } else scope.launch { applyStreamLovesToFiles() }
+    }
+
+    /** Streamed-song likes both ways (newest wins), then onto this phone's own copies. Older Hives don't share them. */
+    private suspend fun syncStreamLoves(conn: HiveLinkClient.Connection) {
+        val likes = streamLoves ?: return
+        runCatchingNotCancelled { client.streamLoves(conn, likes.pendingChanges()) }.onSuccess { likes.mergeFromPc(it.loves) }
+        applyStreamLovesToFiles()
+    }
+
+    /**
+     * A liked streamed song this phone has (or later gets) as a file takes
+     * the like, once per change, so unliking the file afterwards sticks. The
+     * file's own Love then reaches the PC like any other.
+     */
+    private suspend fun applyStreamLovesToFiles() {
+        val waiting = streamLoves?.waitingForFiles()?.takeIf { it.isNotEmpty() } ?: return
+        val loved = dao.loveStates().first().associateBy { it.trackId }
+        val now = System.currentTimeMillis()
+        val changes = mutableListOf<LoveState>()
+        val done = mutableMapOf<String, Long>()
+        for (t in dao.allTracks()) {
+            val k = StreamLoves.key(t.artist, t.title)
+            val e = waiting[k] ?: continue
+            done[k] = e.at
+            if ((loved[t.id]?.loved == true) != e.loved) changes += LoveState(t.id, e.loved, now, pending = store.pairing != null)
+        }
+        if (changes.isNotEmpty()) dao.upsertLove(changes)
+        streamLoves?.markApplied(done)
     }
 
     /** Like runCatching, but lets cancellation through instead of reporting it as a failure. */
@@ -210,19 +252,33 @@ class SyncEngine(
         })
         val pcById = library.tracks.associateBy { it.id }
         val phone = dao.allTracks()
+        // As song sync pairs files: the same file to the byte (whatever either side reads from its
+        // tags), then the same file name and length, then the tags.
+        val bySize = library.tracks.filter { it.size > 0 }.groupBy { it.size }
+        val byName = library.tracks.filter { it.file.isNotBlank() }.groupBy { it.file.lowercase() }
+        fun close(a: Long, b: Long) = a <= 0 || b <= 0 || kotlin.math.abs(a - b) <= 2_000
         val matches = phone.mapNotNull { t ->
-            index.match(t.title, t.artist, t.albumArtist, t.durationMs)?.let { PcMatch(t.id, it.key) }
+            val pc = bySize[t.sizeBytes]?.firstOrNull { close(it.duration, t.durationMs) }
+                ?: byName[t.fileName.lowercase()]?.firstOrNull { it.duration > 0 && t.durationMs > 0 && close(it.duration, t.durationMs) }
+            (pc?.id ?: index.match(t.title, t.artist, t.albumArtist, t.durationMs)?.key)?.let { PcMatch(t.id, it) }
         }
         step("match ${phone.size} phone tracks -> ${matches.size}")
         dao.replaceMatches(matches)
         step("save matches")
 
+        // Favorites on either side become favorites on both: a song loved in Hive is loved here, and
+        // one loved here goes to Hive (where a newer un-love made there wins, answered "stale").
+        // Un-loving travels as a change, as it happens.
         val local = dao.allLove().associateBy { it.trackId }
         val adopt = matches.mapNotNull { m ->
             val pcLoved = pcById[m.pcId]?.loved ?: return@mapNotNull null
             val mine = local[m.trackId]
-            if (mine?.pending == true || mine?.loved == pcLoved) null
-            else LoveState(m.trackId, pcLoved, mine?.changedAt ?: 0, pending = false)
+            when {
+                mine?.pending == true -> null
+                pcLoved && mine?.loved != true -> LoveState(m.trackId, true, mine?.changedAt ?: 0, pending = false)
+                !pcLoved && mine?.loved == true -> mine.copy(pending = true)
+                else -> null
+            }
         }
         dao.upsertLove(adopt)
         // PC ratings come to the phone's copies; a rating made on the phone stays.
@@ -233,9 +289,10 @@ class SyncEngine(
             val current = mine[m.trackId]
             if (stars <= 0f || (current != null && (!current.fromPc || current.stars == stars))) null else Rating(m.trackId, stars, now, fromPc = true)
         })
-        step("adopt ${adopt.size} love states")
+        step("favorites: ${adopt.count { !it.pending }} loved from Hive, ${adopt.count { it.pending }} to send to Hive, ${matches.size} of ${phone.size} songs matched")
         store.lastSeq = library.seq
         store.fullSyncDone = true
+        store.lastFullSyncAt = System.currentTimeMillis()
         if (!store.droppedPlaysRequeued) {
             android.util.Log.i("HiveSync", "re-queued ${dao.unsendUnmatchedPlays()} plays of songs Hive didn't have")
             store.droppedPlaysRequeued = true
@@ -341,7 +398,7 @@ class SyncEngine(
                     val caps = runCatchingNotCancelled { client.info(conn).streams }.getOrNull()
                     _streams.value = PcStreams(conn.host, conn.port, conn.token, songs = caps?.song == true)
                     runCatching {
-                        client.events(conn).collect { event ->
+                        client.events(conn, onStreamLoves = { scope.launch { syncNow() } }).collect { event ->
                             backoff = 2_000L
                             mutex.withLock {
                                 applyRemote(listOf(event))
@@ -407,3 +464,6 @@ data class PcStreams(val host: String, val port: Int, val token: String, val son
 
     fun isFor(uri: android.net.Uri) = uri.scheme == "http" && uri.host == host && uri.port == port
 }
+
+/** How often the phone compares every favorite with Hive's, beyond the change log. */
+private const val FULL_SYNC_EVERY_MS = 3 * 60 * 60 * 1000L

@@ -275,10 +275,8 @@
           return true;
         }
       } catch {}
-      try {
-        const launched = await window.beehive.spotifyLaunch?.();
-        if (!launched) return false;
-      } catch { return false; }
+      // Hive doesn't start the Spotify app; only one already open connects.
+      return false;
       const deadline = Date.now() + 30000;
       while (Date.now() < deadline) {
         await new Promise(resolve => setTimeout(resolve, 350));
@@ -743,7 +741,7 @@
     'hotkeys': null,
     'playerbar.love': true, 'playerbar.shuffle': true, 'playerbar.repeat': true, 'playerbar.eq': true, 'playerbar.mini': true, 'playerbar.volume': true,
     'layout.swap': false, 'layout.playerTop': false, 'layout.lyricsSide': 'left', 'layout.density': 'comfortable', 'layout.rowArt': true, 'layout.zoom': 100,
-    'player.resumeMinutes': 0, 'theater.artistInfo': true, 'radio.stations': [], 'spotify.playVia': 'youtube', 'streamLoves': {}, 'playerbar.theater': true,
+    'player.resumeMinutes': 0, 'theater.artistInfo': true, 'radio.stations': [], 'streamLoves': {}, 'playerbar.theater': true,
     'player.fadePauseMs': 0, 'player.tempoPitch': false, 'player.tempo': 1, 'player.pitch': 0,
     'crossfade.ms': 0, 'crossfade.excludeAlbums': true, 'crossfade.onSkip': false,
     'convert.format': 'mp3', 'convert.quality': 'v0', 'convert.destination': '', 'convert.useTemplate': false, 'convert.embedArtwork': true,
@@ -938,6 +936,7 @@
     try {
       const saved = await window.beehive.getHiveBeeSettings?.();
       hivebeePrefs = saved?.prefs && typeof saved.prefs === 'object' ? saved.prefs : {};
+      applyStreamLovesToFiles();
       applyHiveBeeLayout();
       bindHiveBeePrefControls();
       hivebeeDsp = {
@@ -1841,6 +1840,9 @@
     }
     return tagged;
   }
+  function appleArtistCardHtml(a) {
+    return `<button type="button" class="apple-card apple-artist-card" data-apple-artist="${escapeHtml(a.url)}">${a.artwork ? `<img src="${escapeHtml(a.artwork)}" alt="" loading="lazy" style="border-radius:50%">` : '<span class="apple-card-blank" style="border-radius:50%"></span>'}<strong>${escapeHtml(a.name)}</strong><small>Artist</small></button>`;
+  }
   function appleCardHtml(c) {
     return `<button type="button" class="apple-card" data-apple-url="${escapeHtml(c.url)}">${c.artwork ? `<img src="${escapeHtml(c.artwork)}" alt="" loading="lazy">` : '<span class="apple-card-blank"></span>'}<strong>${escapeHtml(c.name)}</strong><small>${escapeHtml(c.curator || (c.kind === 'album' ? 'Album' : 'Playlist'))}</small></button>`;
   }
@@ -1852,8 +1854,8 @@
       appleMusicModal.className = 'streaming-page apple-page';
       appleMusicModal.setAttribute('aria-label', 'Apple Music');
       appleMusicModal.innerHTML = `<header class="streaming-page-head"><div><div class="streaming-kicker">BROWSE</div><h1>Apple Music</h1>
-          <p>Search Apple Music playlists and albums, or paste a music.apple.com link. Songs in your library play from your files; the rest stream from YouTube Music.</p></div></header>
-          <form class="radio-search streaming-search" id="apple-search-form"><span class="streaming-search-icon" aria-hidden="true">${theaterIcon('search')}</span><input type="search" class="streaming-search-input" id="apple-query" placeholder="Search playlists and albums, or paste a music.apple.com link" spellcheck="false" aria-label="Search Apple Music"><button type="submit" class="streaming-search-btn">Search</button></form>
+          <p>Search Apple Music for anything, or paste a music.apple.com link. Songs in your library play from your files; the rest stream from YouTube Music.</p></div></header>
+          <form class="radio-search streaming-search" id="apple-search-form"><span class="streaming-search-icon" aria-hidden="true">${theaterIcon('search')}</span><input type="search" class="streaming-search-input" id="apple-query" placeholder="Search artists, songs, albums and playlists, or paste a link" spellcheck="false" aria-label="Search Apple Music"><button type="submit" class="streaming-search-btn">Search</button></form>
           <div class="streaming-page-bar"><button type="button" class="sidebar-add hidden" id="apple-back">← Back</button><button type="button" class="sidebar-add hidden" id="apple-home">Browse</button><div class="organise-status" id="apple-status"></div></div>
           <div id="apple-view"></div>`;
       const m = appleMusicModal, view = m.querySelector('#apple-view'), status = m.querySelector('#apple-status'), back = m.querySelector('#apple-back');
@@ -1862,12 +1864,33 @@
       const showResults = async (term) => {
         status.textContent = 'Searching Apple Music…'; back.classList.add('hidden'); m.querySelector('#apple-home').classList.remove('hidden');
         try {
+          await youtubeMusicAvailable();
           const r = await window.beehive.searchAppleMusic(term);
-          lastResultsHtml = (r.playlists.length ? `<h4 class="radio-heading">Playlists</h4><div class="apple-grid">${r.playlists.map(appleCardHtml).join('')}</div>` : '')
-            + (r.albums.length ? `<h4 class="radio-heading">Albums</h4><div class="apple-grid">${r.albums.map(appleCardHtml).join('')}</div>` : '');
+          // Everything Apple Music finds, as music.apple.com lists it: artists, songs, albums, playlists.
+          (r.songs || []).forEach(at => browseSongs.set(at.appleId, at));
+          lastResultsHtml = (r.artists?.length ? `<h4 class="radio-heading">Artists</h4><div class="apple-shelf">${r.artists.slice(0, 12).map(appleArtistCardHtml).join('')}</div>` : '')
+            + (r.songs?.length ? `<h4 class="radio-heading">Songs</h4><div class="apple-tracks apple-song-shelf">${r.songs.slice(0, 10).map(songRowHtml).join('')}</div>` : '')
+            + (r.albums.length ? `<h4 class="radio-heading">Albums</h4><div class="apple-grid">${r.albums.map(appleCardHtml).join('')}</div>` : '')
+            + (r.playlists.length ? `<h4 class="radio-heading">Playlists</h4><div class="apple-grid">${r.playlists.map(appleCardHtml).join('')}</div>` : '');
           view.innerHTML = lastResultsHtml; status.textContent = lastResultsHtml ? '' : 'Nothing found.';
         } catch (err) { status.textContent = `Couldn't reach Apple Music (${cleanError(err)}).`; }
       };
+      // An artist: their picture and name, top songs, then albums, singles, playlists and similar artists.
+      const showArtist = async (url) => {
+        status.textContent = 'Loading…'; m.querySelector('#apple-home').classList.remove('hidden');
+        await youtubeMusicAvailable();
+        let a;
+        try { a = await window.beehive.getAppleMusicArtist(url); } catch (err) { status.textContent = cleanError(err); return; }
+        a.songs.forEach(at => browseSongs.set(at.appleId, at));
+        view.innerHTML = `<div class="apple-head">${a.artwork ? `<img src="${escapeHtml(a.artwork)}" alt="" style="border-radius:50%">` : ''}<div><div class="apple-kicker">ARTIST</div><h3>${escapeHtml(a.name)}</h3>
+            <div class="apple-actions"><button type="button" class="sidebar-add" id="apple-artist-play">Play top songs</button><a class="sidebar-add" href="${escapeHtml(a.url)}" target="_blank" rel="noopener">Open in Apple Music</a></div></div></div>
+          ${a.songs.length ? `<h4 class="radio-heading">Top songs</h4><div class="apple-tracks apple-song-shelf">${a.songs.slice(0, 10).map(songRowHtml).join('')}</div>` : ''}
+          ${a.shelves.map(sh => `<h4 class="radio-heading">${escapeHtml(sh.title)}</h4><div class="apple-shelf">${sh.items.map(sh.kind === 'artists' ? appleArtistCardHtml : appleCardHtml).join('')}</div>`).join('')}`;
+        current = null; artistSongs = a.songs;
+        status.textContent = ''; back.classList.toggle('hidden', !lastResultsHtml);
+        m.scrollIntoView({ block: 'start' });
+      };
+      let artistSongs = [];
       // Apple Music's Browse page: what the page shows before any search.
       let browseSongs = new Map();
       const songRowHtml = at => `<div class="apple-track" data-browse-song="${escapeHtml(at.appleId)}" data-apple-id="${escapeHtml(at.appleId)}"><img class="apple-track-art" src="${escapeHtml(at.artwork)}" alt="" loading="lazy"><div class="apple-track-text"><div>${escapeHtml(at.title)}</div><small>${escapeHtml([at.artist, at.album].filter(Boolean).join(' — '))}</small></div><span class="apple-track-time">${at.duration ? fmtTime(at.duration) : ''}</span><button type="button" class="icon-btn" data-browse-play="${escapeHtml(at.appleId)}" title="Play now">${theaterIcon('play')}</button><button type="button" class="icon-btn" data-browse-next="${escapeHtml(at.appleId)}" title="Play next">＋</button></div>`;
@@ -1913,6 +1936,8 @@
         }).catch(() => {});
         m.scrollIntoView({ block: 'start' });
       };
+      // The library search's online button hands its words here.
+      m.__search = (q) => { m.querySelector('#apple-query').value = q; if (/^https:\/\/(embed\.)?music\.apple\.com\//i.test(q)) showCollection(q); else showResults(q); };
       m.querySelector('#apple-search-form').addEventListener('submit', e => {
         e.preventDefault();
         const q = m.querySelector('#apple-query').value.trim(); if (!q) return;
@@ -1922,6 +1947,14 @@
       m.querySelector('#apple-home').addEventListener('click', () => { m.querySelector('#apple-query').value = ''; void showBrowse(); });
       void showBrowse();
       view.addEventListener('click', async e => {
+        const artistCard = e.target.closest('[data-apple-artist]');
+        if (artistCard) { void showArtist(artistCard.dataset.appleArtist); return; }
+        if (e.target.closest('#apple-artist-play')) {
+          const index = appleLibraryIndex();
+          const tracks = artistSongs.map(at => applyStreamLove(appleLocalMatch(index, at) || (youtubeMusicReady ? youtubeTrackFromApple(at) : (at.previewUrl ? applePreviewTrack(at, null) : youtubeTrackFromApple(at)))));
+          if (tracks.length) playQueue(tracks, 0, false);
+          return;
+        }
         const card = e.target.closest('[data-apple-url]');
         if (card) { showCollection(card.dataset.appleUrl); m.querySelector('#apple-home').classList.remove('hidden'); return; }
         const songBtn = e.target.closest('[data-browse-play], [data-browse-next]');
@@ -1945,10 +1978,10 @@
         }
         if (e.target.closest('#apple-play-all')) { const all = appleTracksForPlayback(current); if (all.length) playQueue(all, 0, false); return; }
         if (e.target.closest('#apple-download')) {
-          if (!youtubeMusicReady) { status.textContent = 'Downloading needs yt-dlp; use “Play full songs from YouTube Music” above to install it.'; return; }
-          const tracks = appleTracksForPlayback(current).map((t, i) => isYoutubeMusicTrack(t) ? { ...t, playlistFolder: current.name || 'Apple Music playlist', playlistPosition: i + 1 } : null).filter(Boolean);
+          if (!youtubeMusicReady && !soulseekReady()) { status.textContent = 'Sign in to Soulseek in Settings › Connections to download, or install yt-dlp with “Play full songs from YouTube Music” above.'; return; }
+          const tracks = appleTracksForPlayback(current).map((t, i) => (isYoutubeMusicTrack(t) || (soulseekReady() && /^applemusic:/.test(String(t.path || '')))) ? { ...t, playlistFolder: current.name || 'Apple Music playlist', playlistPosition: i + 1 } : null).filter(Boolean);
           if (!tracks.length) { status.textContent = 'Every song here is already in your library.'; return; }
-          status.textContent = `Downloading ${tracks.length} songs to Playlists/${current.name}…`;
+          status.textContent = soulseekReady() ? `Looking for ${tracks.length === 1 ? tracks[0].title : `${tracks.length} songs`} on Soulseek…` : `Downloading ${tracks.length} songs to Playlists/${current.name}…`;
           downloadStreamedTracks(tracks);
           return;
         }
@@ -1994,6 +2027,14 @@
     return appleMusicModal;
   }
   function openAppleMusicDialog() { return showSpecialNavigation('apple-music'); }
+  // Search online (the button in the library search box): the words go to Apple Music's
+  // search, whose albums open with Download and whose songs play like any other.
+  document.getElementById('search-online-btn')?.addEventListener('click', async () => {
+    const q = String(el.search?.value || '').trim();
+    await showSpecialNavigation('apple-music');
+    const page = appleMusicPageElement();
+    if (q) page.__search?.(q); else page.querySelector('#apple-query')?.focus();
+  });
   function markApplePagePlaying(t) {
     if (!appleMusicModal) return;
     const path = String(t?.path || '');
@@ -2016,82 +2057,158 @@
     document.body.classList.remove('sandbox-mode');
     const page = kind === 'apple-music' ? appleMusicPageElement() : spotifyPageElement();
     if (contentTools.firstElementChild !== page || contentTools.children.length !== 1) contentTools.replaceChildren(page);
-    if (kind === 'spotify') { renderSpotifyPagePlaylists(); void loadSpotifyLibrary(); }
+    if (kind === 'spotify') { if (spotifyShowBrowse) spotifyShowBrowse(); else { renderSpotifyPagePlaylists(); void loadSpotifyLibrary(); } }
     void youtubeMusicAvailable();
     syncSidebarSelectionForContext();
     updateActiveTabLabel();
     return true;
   }
 
-  // The Spotify page: paste a playlist link to import it, choose where its
-  // audio comes from, and see the playlists imported from Spotify.
+  // The Spotify page: browse your Spotify Home and playlists like the Apple
+  // Music page. Open a playlist to see its songs in-page, play them, or
+  // import it. Songs in your library play from your files; the rest stream
+  // from YouTube Music (or the Spotify app, per the preference below).
+  let spotifyShowBrowse = null;
   let spotifyPage = null;
   function spotifyPageElement() {
     if (spotifyPage) return spotifyPage;
     spotifyPage = document.createElement('section');
-    spotifyPage.className = 'streaming-page spotify-page';
+    spotifyPage.className = 'streaming-page spotify-page apple-page';
     spotifyPage.setAttribute('aria-label', 'Spotify');
-    spotifyPage.innerHTML = `<header class="streaming-page-head"><div><div class="streaming-kicker">IMPORT</div><h1>Spotify</h1>
-        <p>Paste a Spotify playlist link. Hive takes the songs and their tags; songs in your library play from your files, the rest stream from YouTube Music (or the Spotify app, if you choose it below).</p></div></header>
-      <form class="radio-search streaming-search" id="spotify-page-form"><span class="streaming-search-icon" aria-hidden="true">${theaterIcon('plus')}</span><input type="url" class="streaming-search-input" id="spotify-page-url" placeholder="Paste a Spotify playlist link — https://open.spotify.com/playlist/…" spellcheck="false" aria-label="Spotify playlist link"><button type="submit" class="streaming-search-btn">Import</button></form>
-      <div class="streaming-page-bar"><div class="organise-status" id="spotify-page-status"></div></div>
-      <label class="streaming-setting">Play Spotify songs through
-        <select class="settings-select" data-hivebee-pref="spotify.playVia"><option value="youtube">YouTube Music (in Hive)</option><option value="spotify">Spotify app</option></select></label>
+    spotifyPage.innerHTML = `<header class="streaming-page-head"><div><div class="streaming-kicker">BROWSE</div><h1>Spotify</h1>
+        <p>Spotify's playlists and charts, and search for anything. Songs in your library play from your files; the rest stream from YouTube Music.</p></div></header>
+      <form class="radio-search streaming-search" id="spotify-page-form"><span class="streaming-search-icon" aria-hidden="true">${theaterIcon('search')}</span><input type="search" class="streaming-search-input" id="spotify-page-url" placeholder="Paste a Spotify link, or search songs and albums" spellcheck="false" aria-label="Search Spotify"><button type="submit" class="streaming-search-btn">Search</button></form>
+      <div class="streaming-page-bar"><button type="button" class="sidebar-add hidden" id="spotify-back">← Back</button><button type="button" class="sidebar-add hidden" id="spotify-home-btn">Browse</button><div class="organise-status" id="spotify-page-status"></div></div>
+      <div id="spotify-view"></div>`;
+    const m = spotifyPage, view = m.querySelector('#spotify-view'), status = m.querySelector('#spotify-page-status'), back = m.querySelector('#spotify-back'), homeBtn = m.querySelector('#spotify-home-btn');
+    let current = null;
+    const cleanError = err => String(err?.message || err).replace(/^Error invoking remote method '[^']+': (Error: )?/, '');
+
+    // Browse view: Spotify Home shelves + your library + imported playlists.
+    // These reuse the existing render helpers, which target the IDs below.
+    // Spotify's own playlists and the Top 50 come first and need nothing
+    // signed in, as on Hive Mobile; the signed-in app's Home and library follow.
+    const browseHtml = `<div id="spotify-browse"></div>
       <div id="spotify-home"></div>
-      <h4 class="radio-heading">Your Spotify playlists</h4>
-      <div class="organise-status" id="spotify-library-status"></div>
-      <div class="apple-grid spotify-library-grid" id="spotify-library"></div>
       <h4 class="radio-heading">Imported from Spotify</h4>
       <div class="spotify-page-list" id="spotify-page-list"></div>`;
-    const form = spotifyPage.querySelector('#spotify-page-form');
-    form.addEventListener('submit', async e => {
-      e.preventDefault();
-      const input = spotifyPage.querySelector('#spotify-page-url').value.trim();
-      if (!input) return;
-      const status = spotifyPage.querySelector('#spotify-page-status');
-      status.textContent = 'Importing…';
-      const ok = await importSpotifyPlaylist(input);
-      status.textContent = ok ? '' : status.textContent === 'Importing…' ? '' : status.textContent;
-      if (ok) spotifyPage.querySelector('#spotify-page-url').value = '';
+    let browseSongs = [];
+    const browseRecord = (e, i) => ({
+      path: `spotify:track:${e.spotifyId || i}`, source: 'spotify',
+      spotifyUri: e.spotifyUri || (e.spotifyId ? `spotify:track:${e.spotifyId}` : ''), spotifyId: e.spotifyId || '',
+      title: e.title || 'Unknown title', artist: e.artist || 'Unknown artist', album: e.album || '',
+      albumArtist: e.albumArtist || e.artist || '', year: e.year || '', duration: spotifyDurationSeconds(e.duration),
+      cover: e.cover || e.artworkUrl || '', artworkUrl: normalizeSpotifyArtworkSource(e.artworkUrl || e.cover || ''), track: i + 1
+    });
+    function renderSpotifyBrowse(shelves) {
+      const host = m.querySelector('#spotify-browse'); if (!host || !Array.isArray(shelves)) return;
+      browseSongs = [];
+      host.innerHTML = shelves.map(sh => {
+        if (sh.kind === 'songs') {
+          const index = appleLibraryIndex();
+          browseSongs = sh.items.map(browseRecord);
+          // The same rows as the Apple Music page's new songs.
+          return `<h4 class="radio-heading">${escapeHtml(sh.title)}</h4><div class="apple-tracks apple-song-shelf">${browseSongs.slice(0, 10).map((st, i) =>
+            `<div class="apple-track">${/^https?:/i.test(st.artworkUrl) ? `<img class="apple-track-art" src="${escapeHtml(st.artworkUrl)}" alt="" loading="lazy">` : '<span class="apple-track-art"></span>'}<div class="apple-track-text"><div>${escapeHtml(st.title)}</div><small>${escapeHtml([st.artist, appleLocalMatch(index, st) ? 'In your library' : ''].filter(Boolean).join(' — '))}</small></div><span class="apple-track-time">${st.duration ? fmtTime(st.duration) : ''}</span><button type="button" class="icon-btn" data-spotify-browse-play="${i}" title="Play now">${theaterIcon('play')}</button><button type="button" class="icon-btn" data-spotify-browse-next="${i}" title="Play next">＋</button></div>`
+          ).join('')}</div>`;
+        }
+        return `<h4 class="radio-heading">${escapeHtml(sh.title)}</h4><div class="apple-shelf">${sh.items.map(it => `<button type="button" class="apple-card" data-spotify-open="${escapeHtml(it.url)}">${/^https:/.test(it.cover) ? `<img src="${escapeHtml(it.cover)}" alt="" loading="lazy">` : '<span class="apple-card-blank"></span>'}<strong>${escapeHtml(it.name)}</strong><small>${escapeHtml(it.subtitle || 'Playlist')}</small></button>`).join('')}</div>`;
+      }).join('');
+    }
+    async function loadSpotifyBrowse() {
+      // The last browse shows at once; a fresh one replaces it when it arrives.
+      const cached = hbPref('spotify.browseCache');
+      if (Array.isArray(cached) && cached.length) renderSpotifyBrowse(cached);
+      else { const host = m.querySelector('#spotify-browse'); if (host) host.innerHTML = '<div class="organise-status">Loading Spotify…</div>'; }
+      try {
+        const shelves = await window.beehive.getSpotifyBrowse?.();
+        if (Array.isArray(shelves) && shelves.length) { setHbPref('spotify.browseCache', shelves); if (!current) renderSpotifyBrowse(shelves); }
+        else if (!cached) { const host = m.querySelector('#spotify-browse'); if (host) host.innerHTML = '<div class="organise-status">Couldn\'t reach Spotify. Check the connection, then press Browse.</div>'; }
+      } catch {}
+    }
+    function showBrowse() {
+      current = null;
+      back.classList.add('hidden'); homeBtn.classList.add('hidden'); status.textContent = '';
+      view.innerHTML = browseHtml;
+      // Show the last-synced Home and playlists immediately, so the page is
+      // never blank waiting on the Spotify app; the live sync refreshes below.
+      if (!spotifyHomeCache) { const c = hbPref('spotify.homeCache'); if (Array.isArray(c) && c.length) spotifyHomeCache = c; }
+      if (!spotifyLibraryCache) { const c = hbPref('spotify.libraryCache'); if (Array.isArray(c) && c.length) spotifyLibraryCache = c; }
+      if (spotifyHomeCache) renderSpotifyHome(spotifyHomeCache);
+      renderSpotifyLibrary(spotifyLibraryCache);
       renderSpotifyPagePlaylists();
+      void loadSpotifyBrowse();
+      void loadSpotifyLibrary();
+    }
+    spotifyShowBrowse = showBrowse;
+
+    // Collection view: a Spotify playlist's songs, like the Apple Music page.
+    // Fetched read-only — nothing is saved to Hive until you press Import.
+    async function showCollection(url) {
+      homeBtn.classList.remove('hidden'); back.classList.add('hidden'); status.textContent = 'Loading…';
+      await youtubeMusicAvailable();
+      let data;
+      try { data = await window.beehive.importSpotifyPlaylist(url, { browse: true }); }
+      catch (err) { status.textContent = `${cleanError(err)} For private playlists, open the Spotify app (signed in, with Spicetify) and try again.`; return; }
+      const records = (data.tracks || []).map((e, i) => ({
+        path: `spotify:track:${e.spotifyId || i}`, source: 'spotify',
+        spotifyUri: e.spotifyUri || (e.spotifyId ? `spotify:track:${e.spotifyId}` : ''), spotifyId: e.spotifyId || '',
+        title: e.title || 'Unknown title', artist: e.artist || 'Unknown artist', album: e.album || '',
+        albumArtist: e.albumArtist || e.artist || '', year: e.year || '', duration: spotifyDurationSeconds(e.duration),
+        cover: e.cover || e.artworkUrl || '', artworkUrl: normalizeSpotifyArtworkSource(e.artworkUrl || e.cover || ''), track: i + 1
+      })).filter(t => t.spotifyUri);
+      current = { url, id: data.id, name: data.name || 'Spotify playlist', cover: normalizeSpotifyArtworkSource(data.cover || data.artworkUrl || records[0]?.artworkUrl || ''), records, likelyTruncated: !!data.likelyTruncated };
+      const index = appleLibraryIndex();
+      const rows = records.map((st, i) => {
+        const local = appleLocalMatch(index, st);
+        const badge = local ? '<span class="apple-badge apple-badge-local" title="Plays the full song from your library">In library</span>'
+          : youtubeMusicReady ? '<span class="apple-badge apple-badge-yt" title="Plays the full song from YouTube Music">YouTube Music</span>'
+          : '<span class="apple-badge">Spotify app</span>';
+        return `<div class="apple-track" data-i="${i}" data-spotify-id="${escapeHtml(st.spotifyId)}" data-local-path="${escapeHtml(local?.path || '')}"><span class="apple-track-n">${i + 1}</span>${/^https?:/i.test(st.artworkUrl) ? `<img class="apple-track-art" src="${escapeHtml(st.artworkUrl)}" alt="" loading="lazy">` : '<span class="apple-track-art"></span>'}<div class="apple-track-text"><div>${escapeHtml(st.title)}</div><small>${escapeHtml([st.artist, st.album].filter(Boolean).join(' — '))}</small></div>${badge}<span class="apple-track-time">${st.duration ? fmtTime(st.duration) : ''}</span><button type="button" class="icon-btn" data-spotify-play="${i}" title="Play">${theaterIcon('play')}</button></div>`;
+      }).join('');
+      const localCount = records.filter(st => appleLocalMatch(index, st)).length;
+      const imported = findImportedSpotifyPlaylist(url);
+      view.innerHTML = `<div class="apple-head">${/^https?:/i.test(current.cover) ? `<img src="${escapeHtml(current.cover)}" alt="">` : ''}<div><div class="apple-kicker">${data.kind === 'album' ? 'ALBUM' : 'PLAYLIST'}</div><h3>${escapeHtml(current.name)}</h3><div class="dim">${records.length} songs · ${localCount} in your library</div>
+          <div class="apple-actions"><button type="button" class="sidebar-add" id="spotify-play-all">Play</button><button type="button" class="sidebar-add" id="spotify-import">${imported ? 'Open in Hive' : 'Import as playlist'}</button><button type="button" class="sidebar-add icon-only-btn" id="spotify-download" title="Download playlist" aria-label="Download playlist">${theaterIcon('download')}</button><a class="sidebar-add" href="${escapeHtml(url)}" target="_blank" rel="noopener">Open in Spotify</a></div>
+          ${current.likelyTruncated ? '<p class="apple-desc">Spotify only shares 100 tracks publicly. Open the Spotify app (signed in) and import again for the whole playlist.</p>' : ''}</div></div>
+        <div class="apple-tracks">${rows || '<div class="radio-empty">This playlist has no playable songs.</div>'}</div>`;
+      status.textContent = '';
+      m.scrollIntoView({ block: 'start' });
+    }
+
+    // Build playback tracks from the open collection, honouring the
+    // "Play Spotify songs through" preference (library match > YouTube/Spotify).
+    const collectionPlayback = () => current ? current.records.map(st => applyStreamLove(youtubeTrackForSpotify(st))) : [];
+
+    // Paste a link → open it in the page (like Apple's box opening a pasted link).
+    m.querySelector('#spotify-page-form').addEventListener('submit', e => {
+      e.preventDefault();
+      const input = m.querySelector('#spotify-page-url').value.trim();
+      if (!input) return;
+      // A link opens; anything else is a search.
+      if (/^(https:\/\/open\.spotify\.com\/|spotify:)/i.test(input)) { m.querySelector('#spotify-page-url').value = ''; void showCollection(input); }
+      else void showSearch(input);
     });
-    spotifyPage.querySelector('#spotify-page-list').addEventListener('contextmenu', e => {
-      const row = e.target.closest('[data-pl-id]'); if (!row) return;
-      const pl = playlists.find(p => String(p.id) === row.dataset.plId); if (pl) showPlaylistContextMenu(e, pl);
-    });
-    spotifyPage.querySelector('#spotify-page-list').addEventListener('click', e => {
-      const row = e.target.closest('[data-pl-id]'); if (!row) return;
-      const pl = playlists.find(p => String(p.id) === row.dataset.plId); if (!pl) return;
-      if (e.target.closest('[data-sp="play"]')) void playPlaylist(pl);
-      else if (e.target.closest('[data-sp="download"]')) downloadPlaylist(pl);
-      else void openPlaylistFromSidebar(pl, sidebarNavIdForPlaylistId(pl.id));
-    });
-    // Your library, read from the Spotify app through Hive's bridge (the
-    // app is already signed in). Import adds a playlist to Hive; Download
-    // imports it and downloads its songs into Playlists/<name>.
-    const libraryHost = spotifyPage.querySelector('#spotify-library');
-    // A click on a playlist card itself (not one of its buttons) opens that
-    // playlist in Hive, importing it first if needed -- as Apple Music's cards
-    // do. Cards used to react only to their small buttons.
-    const openSpotifyCard = e => {
-      const card = e.target.closest('.spotify-library-card');
-      const action = card?.querySelector('[data-sl="open"], [data-sl="import"]');
-      if (action) void spotifyLibraryAction(action, { open: true });
-    };
-    spotifyPage.querySelector('#spotify-home').addEventListener('click', e => {
-      const open = e.target.closest('[data-sh-open]');
-      if (open) { window.open(open.dataset.shOpen, '_blank'); return; }
-      const btn = e.target.closest('[data-sl]');
-      if (btn) void spotifyLibraryAction(btn); else openSpotifyCard(e);
-    });
-    libraryHost.addEventListener('click', e => { const btn = e.target.closest('[data-sl]'); if (btn) void spotifyLibraryAction(btn); else openSpotifyCard(e); });
+
+    // Words (not a link) search Apple Music's catalogue: Spotify has no search
+    // without its app, and Hive doesn't start the app. The songs play the same way.
+    async function showSearch(q) {
+      document.querySelector('.sidebar-item[data-nav="apple-music"]')?.click();
+      setTimeout(() => { const box = document.querySelector('#apple-query'); if (box) { box.value = q; box.form?.requestSubmit(); } }, 400);
+    }
+    // Spotify's 300 px images as their 640 px versions.
+    const largerSpotifyCover = url => String(url || '').replace('ab67616d00001e02', 'ab67616d0000b273').replace('ab67616d00004851', 'ab67616d0000b273');
+    back.addEventListener('click', () => showBrowse());
+    homeBtn.addEventListener('click', () => showBrowse());
+
+    // Your library, read from the Spotify app through Hive's bridge (the app
+    // is already signed in). Connect/Log in wire the bridge; Import adds a
+    // playlist to Hive; Download imports it and fetches its songs.
     async function spotifyLibraryAction(btn, { open = false } = {}) {
       if (btn.dataset.sl === 'connect') { await connectSpotifyForLibrary(); return; }
       if (btn.dataset.sl === 'login') {
-        // The Spotify app signs in with its own window; once signed in, close
-        // it and press Connect (Hive then runs it in the background).
         try { await window.beehive.openSpotifyForLogin?.(); } catch {}
-        const st = spotifyPage.querySelector('#spotify-library-status');
+        const st = m.querySelector('#spotify-library-status');
         if (st) st.textContent = 'Sign in in the Spotify window, close it, then press Connect Spotify.';
         return;
       }
@@ -2103,7 +2220,59 @@
       if (btn.dataset.sl === 'download' && existing()) downloadPlaylist(existing());
       if (open && existing()) void openPlaylistFromSidebar(existing(), sidebarNavIdForPlaylistId(existing().id));
     }
+
+    // One delegated click handler for the whole swapping view.
+    view.addEventListener('click', e => {
+      const openExt = e.target.closest('[data-sh-open]');
+      if (openExt) { window.open(openExt.dataset.shOpen, '_blank'); return; }
+      const slBtn = e.target.closest('[data-sl]');
+      if (slBtn) { void spotifyLibraryAction(slBtn); return; }
+      const impRow = e.target.closest('#spotify-page-list [data-pl-id]');
+      if (impRow) {
+        const pl = playlists.find(p => String(p.id) === impRow.dataset.plId); if (!pl) return;
+        if (e.target.closest('[data-sp="play"]')) void playPlaylist(pl);
+        else if (e.target.closest('[data-sp="download"]')) downloadPlaylist(pl);
+        else void openPlaylistFromSidebar(pl, sidebarNavIdForPlaylistId(pl.id));
+        return;
+      }
+      if (e.target.closest('#spotify-play-all')) { const all = collectionPlayback(); if (all.length) playQueue(all, 0, false); return; }
+      if (e.target.closest('#spotify-import')) {
+        const url = current?.url; if (!url) return;
+        const existing = findImportedSpotifyPlaylist(url);
+        if (existing) { void openPlaylistFromSidebar(existing, sidebarNavIdForPlaylistId(existing.id)); return; }
+        void (async () => { const ok = await importSpotifyPlaylist(url); if (ok) { renderSpotifyPagePlaylists(); const b = view.querySelector('#spotify-import'); if (b) b.textContent = 'Open in Hive'; } })();
+        return;
+      }
+      if (e.target.closest('#spotify-download')) {
+        if (!current) return;
+        const tracks = current.records.map((st, i) => { const t = youtubeTrackForSpotifyAnyway(st); return isYoutubeMusicTrack(t) ? { ...t, playlistFolder: current.name || 'Spotify playlist', playlistPosition: i + 1 } : null; }).filter(Boolean);
+        if (!tracks.length) { status.textContent = 'Every song here is already in your library.'; return; }
+        status.textContent = soulseekReady() ? `Looking for ${tracks.length === 1 ? tracks[0].title : `${tracks.length} songs`} on Soulseek…` : `Downloading ${tracks.length} songs to Playlists/${current.name}…`;
+        downloadStreamedTracks(tracks);
+        return;
+      }
+      const browseBtn = e.target.closest('[data-spotify-browse-play], [data-spotify-browse-next]');
+      if (browseBtn) {
+        const st = browseSongs[Number(browseBtn.dataset.spotifyBrowsePlay ?? browseBtn.dataset.spotifyBrowseNext)];
+        if (!st) return;
+        const track = applyStreamLove(youtubeTrackForSpotify(st));
+        if (browseBtn.dataset.spotifyBrowsePlay !== undefined) playTracksNow([track]); else { addTracksToQueue([track], currentIndex + 1); showAppNotice(`“${st.title}” plays next.`); }
+        return;
+      }
+      const playBtn = e.target.closest('[data-spotify-play]');
+      if (playBtn && current) { const all = collectionPlayback(); const i = Number(playBtn.dataset.spotifyPlay); if (all.length) playQueue(all, Math.max(0, Math.min(all.length - 1, i)), false); return; }
+      const artistCard = e.target.closest('[data-spotify-artist]');
+      if (artistCard) { m.querySelector('#spotify-page-url').value = artistCard.dataset.spotifyArtist; void showSearch(artistCard.dataset.spotifyArtist); return; }
+      const card = e.target.closest('[data-spotify-open]');
+      if (card) { void showCollection(card.dataset.spotifyOpen); return; }
+    });
+    view.addEventListener('contextmenu', e => {
+      const row = e.target.closest('#spotify-page-list [data-pl-id]'); if (!row) return;
+      const pl = playlists.find(p => String(p.id) === row.dataset.plId); if (pl) showPlaylistContextMenu(e, pl);
+    });
+
     bindHiveBeePrefControls(spotifyPage);
+    showBrowse();
     return spotifyPage;
   }
   let spotifyLibraryCache = null;
@@ -2120,7 +2289,7 @@
     host.innerHTML = list.map(pl => {
       const url = `https://open.spotify.com/playlist/${String(pl.uri).split(':').pop()}`;
       const imported = findImportedSpotifyPlaylist(url);
-      return `<div class="spotify-library-card">${/^https:/.test(pl.image) ? `<img class="spotify-library-art" src="${escapeHtml(pl.image)}" alt="" loading="lazy">` : '<span class="spotify-library-art spotify-library-art-blank">♪</span>'}
+      return `<div class="spotify-library-card spotify-card-open" data-spotify-open="${escapeHtml(url)}">${/^https:/.test(pl.image) ? `<img class="spotify-library-art" src="${escapeHtml(pl.image)}" alt="" loading="lazy">` : '<span class="spotify-library-art spotify-library-art-blank">♪</span>'}
         <strong>${escapeHtml(pl.name)}</strong><small>${escapeHtml([pl.owner, pl.count ? `${pl.count} songs` : ''].filter(Boolean).join(' · '))}</small>
         <span class="spotify-library-actions">${imported ? `<button type="button" class="sidebar-add" data-sl="open" data-url="${escapeHtml(url)}">Open</button>` : `<button type="button" class="sidebar-add" data-sl="import" data-url="${escapeHtml(url)}">Import</button>`}<button type="button" class="sidebar-add icon-only-btn" data-sl="download" data-url="${escapeHtml(url)}" title="Download" aria-label="Download ${escapeHtml(pl.name)}">${theaterIcon('download')}</button></span></div>`;
     }).join('') || '<div class="radio-empty">No playlists in your Spotify library.</div>';
@@ -2139,14 +2308,14 @@
         ? (findImportedSpotifyPlaylist(url) ? `<button type="button" class="sidebar-add" data-sl="open" data-url="${escapeHtml(url)}">Open</button>` : `<button type="button" class="sidebar-add" data-sl="import" data-url="${escapeHtml(url)}">Import</button>`)
           + `<button type="button" class="sidebar-add icon-only-btn" data-sl="download" data-url="${escapeHtml(url)}" title="Download" aria-label="Download ${escapeHtml(it.name)}">${theaterIcon('download')}</button>`
         : `<button type="button" class="sidebar-add" data-sh-open="${escapeHtml(url)}">Open in Spotify</button>`;
-      return `<div class="spotify-library-card${it.kind === 'artist' ? ' spotify-artist-card' : ''}">${art}<strong>${escapeHtml(it.name)}</strong><small>${escapeHtml(it.subtitle || it.kind)}</small><span class="spotify-library-actions">${actions}</span></div>`;
+      return `<div class="spotify-library-card${it.kind === 'artist' ? ' spotify-artist-card' : ''}${it.kind === 'playlist' ? ' spotify-card-open' : ''}"${it.kind === 'playlist' ? ` data-spotify-open="${escapeHtml(url)}"` : ''}>${art}<strong>${escapeHtml(it.name)}</strong><small>${escapeHtml(it.subtitle || it.kind)}</small><span class="spotify-library-actions">${actions}</span></div>`;
     }).join('')}</div>`).join('');
   }
   let spotifyHomeCache = null;
   async function loadSpotifyHome() {
     try {
       const r = await window.beehive.getSpotifyHome?.();
-      if (r?.connected && Array.isArray(r.data?.shelves)) { spotifyHomeCache = r.data.shelves; renderSpotifyHome(spotifyHomeCache); }
+      if (r?.connected && Array.isArray(r.data?.shelves)) { spotifyHomeCache = r.data.shelves; renderSpotifyHome(spotifyHomeCache); setHbPref('spotify.homeCache', spotifyHomeCache); }
     } catch {}
   }
   async function loadSpotifyLibrary() {
@@ -2155,16 +2324,16 @@
     status.textContent = spotifyLibraryCache ? '' : 'Looking for the Spotify app…';
     let r = null;
     try { r = await window.beehive.getSpotifyLibraryPlaylists?.(); } catch {}
-    if (r?.connected && Array.isArray(r.data?.playlists)) { spotifyLibraryCache = r.data.playlists; status.textContent = ''; void loadSpotifyHome(); }
+    if (r?.connected && Array.isArray(r.data?.playlists)) { spotifyLibraryCache = r.data.playlists; status.textContent = ''; setHbPref('spotify.libraryCache', spotifyLibraryCache); void loadSpotifyHome(); }
     else if (r?.connected && r.error) status.textContent = `Spotify couldn't list your playlists (${r.error}).`;
     else if (!spotifyLibraryCache) status.textContent = 'Connect the Spotify app (signed in, with Spicetify) to see your playlists here. You can still paste any playlist link above.';
     renderSpotifyLibrary(spotifyLibraryCache);
   }
   async function connectSpotifyForLibrary() {
     const status = spotifyPage?.querySelector('#spotify-library-status');
-    if (status) status.textContent = 'Starting Spotify in the background…';
-    try { await window.beehive.spotifyLaunch?.(); } catch {}
-    for (let i = 0; i < 30; i++) {
+    // Hive doesn't start Spotify: this only finds a Spotify app the user opened.
+    if (status) status.textContent = 'Looking for the Spotify app…';
+    for (let i = 0; i < 3; i++) {
       await new Promise(r => setTimeout(r, 2000));
       const r = await window.beehive.getSpotifyLibraryPlaylists?.().catch(() => null);
       if (r?.connected && Array.isArray(r.data?.playlists)) { spotifyLibraryCache = r.data.playlists; if (status) status.textContent = ''; renderSpotifyLibrary(spotifyLibraryCache); void loadSpotifyHome(); return; }
@@ -2208,7 +2377,16 @@
     if (!tracks.length) { showAppNotice(`Every song in “${pl?.name}” is already in your library.`); return; }
     downloadStreamedTracks(tracks);
   }
+  // Signed in to Soulseek (Settings › Connections), downloads fetch the real files from there
+  // (soulseek-downloads.js); YouTube Music only streams.
+  const soulseekReady = () => !!window.hiveSoulseek?.ready();
   function downloadStreamedTracks(tracks) {
+    if (soulseekReady()) {
+      const streamed = (tracks || []).filter(t => t && !libraryTrackByPath.has(t.path) && (isYoutubeMusicTrack(t) || /^applemusic:/.test(String(t.path || ''))));
+      if (!streamed.length) { showAppNotice('Those songs are already in your library.'); return; }
+      void window.hiveSoulseek.download(streamed).catch(err => showAppNotice(`Couldn't start the download: ${String(err?.message || err).replace(/^Error invoking remote method '[^']+': (Error: )?/, '')}`));
+      return;
+    }
     const seen = new Set(downloadQueue.map(t => `${t.path}|${t.playlistFolder || ''}`));
     const add = (tracks || []).filter(t => isYoutubeMusicTrack(t) && !seen.has(`${t.path}|${t.playlistFolder || ''}`) && (seen.add(`${t.path}|${t.playlistFolder || ''}`), true));
     if (!add.length) { showAppNotice('Those songs are already downloaded or queued.'); return; }
@@ -2242,6 +2420,13 @@
     showDownloadStatus('');
     showAppNotice(`Downloaded ${done.length} song${done.length === 1 ? '' : 's'} to your music folder${failed.length ? `; ${failed.length} failed (${failed.slice(0, 3).join(', ')}${failed.length > 3 ? '…' : ''})` : ''}.`);
   }
+  // Songs a Soulseek download brought in: into the library, then playlists, the queue and likes follow them.
+  window.beehive.onSoulseekSongs?.(async songs => {
+    const got = (songs || []).filter(s => s?.path);
+    if (!got.length) return;
+    try { await runScan(false, got.map(s => s.path)); } catch (err) { console.warn('[Soulseek] library update failed:', err?.message || err); }
+    await switchPlaylistsToDownloads(got.map(s => ({ from: s.streamPath || '', to: s.path, loved: !!s.loved })));
+  });
   async function switchPlaylistsToDownloads(done) {
     const map = new Map(done.map(d => [d.from, d.to]));
     const lists = await window.beehive.getPlaylists();
@@ -2258,14 +2443,12 @@
       const local = to && libraryTrackByPath.get(to);
       if (local && i !== currentIndex) currentQueue[i] = local;
     }
-    const loves = { ...streamLoves() };
-    let lovesChanged = false;
+    // The like stays in streamLoves (marked as reached a file), so the phone keeps it too.
     for (const d of done) {
       const local = libraryTrackByPath.get(d.to);
       if (local && d.loved && !local.loved) void setTrackLove(local, true, false);
-      if (local && d.loved) { const k = streamLoveKey(local); if (loves[k]) { delete loves[k]; lovesChanged = true; } }
     }
-    if (lovesChanged) setHbPref('streamLoves', loves);
+    applyStreamLovesToFiles();
     renderQueue();
     try { renderPlaylistManager(); } catch {}
   }
@@ -3790,7 +3973,9 @@
       count = selectedSongPaths.size;
     }
     scheduleTagEditorFollowSelection();
-    node.textContent = count ? `${count.toLocaleString()} song${count === 1 ? '' : 's'} selected` : '';
+    // Just "N selected": Ctrl+A selects everything, and a plain click on another album or song deselects.
+    if (count) node.innerHTML = `<span class="selection-status-count">${count.toLocaleString()} selected</span>`;
+    else node.textContent = '';
     node.classList.toggle('hidden', count === 0);
     if (count) {
       const tracks = selectedTracksForStatus();
@@ -3846,6 +4031,18 @@
     selectedAlbumOrder.length = 0;
     albumSelectionAnchor = null;
     document.querySelectorAll('.album-card.album-selected').forEach(node => node.classList.remove('album-selected'));
+  }
+
+  // Selection is scoped to one section at a time (queue, albums, or songs).
+  // When a section takes over, drop the other sections' selection — sets,
+  // highlight classes, and the shared activeSelectionTracks — so counts and
+  // bulk actions never mix (e.g. 31 albums selected, then one queue row
+  // clicked, must leave 1 selected, not 31).
+  function clearOtherSelectionScopes(keep) {
+    if (keep !== 'queue' && selectedQueueIndices.size) { selectedQueueIndices.clear(); applyQueueSelectionClasses(); }
+    if (keep !== 'albums' && selectedAlbumKeys.size) clearAlbumSelection();
+    if (keep !== 'songs' && selectedSongPaths.size) { clearSongSelection(); applySongSelectionClasses(); }
+    if (keep === 'queue') activeSelectionTracks = [];
   }
 
   function selectAlbumKey(key) {
@@ -3971,7 +4168,21 @@
       if (key === '_searchText' || key === 'covers') return;
       add(value);
     });
-    return values.join(' ').toLowerCase();
+    return foldSearchText(values.join(' '));
+  }
+
+  // Search ignores case, accents and punctuation: "(It Goes Like) Nanana (Edit)" is
+  // "it goes like nanana edit", and Björk is bjork, as on the phone.
+  function foldSearchText(value) {
+    return ` ${String(value || '').toLowerCase().normalize('NFKD').replace(/[\u0300-\u036f]/g, '')
+      .replace(/æ/g, 'ae').replace(/œ/g, 'oe').replace(/ø/g, 'o').replace(/ß/g, 'ss')
+      .replace(/[^\p{L}\p{N}]+/gu, ' ').trim()} `;
+  }
+  // The typed words: a song matches when every one is somewhere in its tags, in any order.
+  let searchWordsFor = null, searchWordsCache = [];
+  function searchWords() {
+    if (searchWordsFor !== searchTerm) { searchWordsFor = searchTerm; searchWordsCache = foldSearchText(searchTerm).trim().split(' ').filter(Boolean); }
+    return searchWordsCache;
   }
 
   function normalizeArtistSearchValue(value) {
@@ -3998,7 +4209,7 @@
     if (artistSearchTerm) return trackMatchesArtistSearch(t);
     if (!searchTerm) return true;
     if (!t._searchText) t._searchText = buildTrackSearchIndex(t);
-    return t._searchText.includes(searchTerm);
+    return searchWords().every(w => t._searchText.includes(w));
   }
 
   function tracksForCurrentContext() {
@@ -4702,20 +4913,30 @@
 
   // Likes for streamed songs (YouTube Music, previews). They have no file to
   // tag, so Hive remembers them in its settings, keyed by artist + title:
-  // the same song stays liked in any playlist or queue it turns up in.
+  // the same song stays liked in any playlist or queue it turns up in, and on
+  // the phone (Hive Link). Unliking keeps the entry as loved:false so the
+  // phone hears of it; app/main/stream-loves.js has the same key and rules.
   function streamLoveKey(t) {
     const norm = v => String(v || '').toLowerCase().normalize('NFKD').replace(/[\u0300-\u036f]/g, '')
-      .replace(/[\(\[](feat\.?|ft\.?|with)[^\)\]]*[\)\]]/g, ' ').replace(/[^a-z0-9]+/g, '');
+      .replace(/[\(\[](feat\.?|ft\.?|with)[^\)\]]*[\)\]]/g, ' ').replace(/[^a-z0-9\p{L}\p{N}]+|(?![a-z])\p{Script=Latin}/gu, '');
     const artist = String(t?.artist || '').split(/,|&| feat\.? | ft\.? /i)[0];
     return `${norm(artist)}|${norm(t?.title)}`;
   }
   function streamLoves() { const v = hbPref('streamLoves'); return v && typeof v === 'object' && !Array.isArray(v) ? v : {}; }
-  function isStreamLoved(t) { return !!streamLoves()[streamLoveKey(t)]; }
+  function isStreamLoved(t) { const e = streamLoves()[streamLoveKey(t)]; return !!e && e.loved !== false; }
+  // Changes one song's entry here at once and in the settings file through
+  // main, which merges per song (the phone changes them there too).
+  function patchStreamLove(key, value) {
+    const next = { ...streamLoves() };
+    next[key] = { ...(next[key] || {}), ...value };
+    hivebeePrefs = { ...hivebeePrefs, streamLoves: next };
+    window.beehive.patchStreamLoves?.({ [key]: value })?.catch?.(() => {});
+  }
   // Liked streamed songs as playable tracks (Favorites shows them next to
   // loved files). Songs since downloaded are left out: the file is loved.
   function streamedLovedTracks() {
     const localLoved = new Set(library.tracks.filter(x => x?.loved).map(streamLoveKey));
-    return Object.entries(streamLoves()).filter(([key, e]) => e?.path && !localLoved.has(key)).map(([, e]) => {
+    return Object.entries(streamLoves()).filter(([key, e]) => e?.path && e.loved !== false && !localLoved.has(key)).map(([, e]) => {
       const yt = String(e.path).startsWith('ytm:');
       if (!yt && !e.streamUrl) return null;
       return { path: e.path, source: yt ? 'youtube' : 'podcast', streamUrl: yt ? '' : e.streamUrl, title: e.title, artist: e.artist, album: e.album || '',
@@ -4723,19 +4944,63 @@
         appleMusicUrl: e.appleMusicUrl || '', spotifyUri: e.spotifyUri || '', loved: true, addedAt: Number(e.at) || 0 };
     }).filter(Boolean);
   }
+  // A streamed song liked here or on the phone that is, or later becomes, a
+  // file in the library (a download, song sync from the phone, a copy): the
+  // file takes the like. Each change reaches the files once (appliedAt), so
+  // unloving the file afterwards sticks.
+  // var: library loading can call this before the renderer's setup reaches here.
+  var streamLoveFileTimer;
+  function applyStreamLovesToFiles() {
+    if (streamLoveFileTimer) return;
+    streamLoveFileTimer = setTimeout(() => {
+      streamLoveFileTimer = null;
+      const waiting = Object.entries(streamLoves()).filter(([, e]) => e && !((Number(e.appliedAt) || 0) >= (Number(e.at) || 0)));
+      if (!waiting.length || !(library.tracks || []).length) return;
+      const want = new Map(waiting);
+      const files = new Map();
+      for (const t of library.tracks) {
+        if (!t?.path || isPodcastTrack(t)) continue;
+        const k = streamLoveKey(t);
+        // A song without an artist (or title) is too vague to carry a like to files.
+        if (k.startsWith('|') || k.endsWith('|')) continue;
+        if (want.has(k)) (files.get(k) || files.set(k, []).get(k)).push(t);
+      }
+      for (const [key, e] of want) {
+        const found = files.get(key);
+        if (!found) continue;
+        const loved = e.loved !== false;
+        for (const t of found) if (!!t.loved !== loved) void setTrackLove(t, loved, false);
+        patchStreamLove(key, { appliedAt: Number(e.at) || Date.now() });
+      }
+    }, 1500);
+  }
+  window.beehive.onStreamLoves?.((loves) => {
+    if (!loves || typeof loves !== 'object') return;
+    const before = streamLoves();
+    hivebeePrefs = { ...hivebeePrefs, streamLoves: loves };
+    for (const [key, e] of Object.entries(loves)) {
+      const was = !!before[key] && before[key].loved !== false;
+      const now = e.loved !== false;
+      if (was !== now) paintStreamLove(key, now);
+    }
+    applyStreamLovesToFiles();
+  });
   function applyStreamLove(t) { if (t && isPodcastTrack(t) && !isRadioTrack(t)) t.loved = isStreamLoved(t); return t; }
   function setStreamTrackLove(t, value) {
     const key = streamLoveKey(t);
-    const next = { ...streamLoves() };
-    if (value) next[key] = { at: Date.now(), path: t.path, title: t.title, artist: t.artist, album: t.album || '', albumArtist: t.albumArtist || '', year: t.year || '', genre: t.genre || '',
+    if (value) patchStreamLove(key, { loved: true, at: Date.now(), path: t.path, title: t.title, artist: t.artist, album: t.album || '', albumArtist: t.albumArtist || '', year: t.year || '', genre: t.genre || '',
       duration: Number(t.duration) || 0, artworkUrl: t.artworkUrl || '', cover: t.cover || '', appleMusicUrl: t.appleMusicUrl || '', spotifyUri: t.spotifyUri || '',
-      ...(isYoutubeMusicTrack(t) ? {} : { streamUrl: t.streamUrl || '' }) };
-    else delete next[key];
-    setHbPref('streamLoves', next);
-    for (const q of currentQueue || []) if (q && isPodcastTrack(q) && streamLoveKey(q) === key) q.loved = value;
+      ...(isYoutubeMusicTrack(t) ? {} : { streamUrl: t.streamUrl || '' }) });
+    else patchStreamLove(key, { loved: false, at: Date.now() });
     t.loved = value;
+    paintStreamLove(key, value);
+    return value;
+  }
+  // The heart and queue for every song with this key, after a change here or from the phone.
+  function paintStreamLove(key, value) {
+    for (const q of currentQueue || []) if (q && isPodcastTrack(q) && streamLoveKey(q) === key) q.loved = value;
     const current = currentQueue[currentIndex];
-    if (current && streamLoveKey(current) === key) {
+    if (current && isPodcastTrack(current) && streamLoveKey(current) === key) {
       el.btnLove.innerHTML = (value ? ic.heartFilled : ic.heartOutline) || '';
       el.btnLove.classList.toggle('loved', value);
       el.btnLove.setAttribute('aria-pressed', value ? 'true' : 'false');
@@ -4752,6 +5017,10 @@
     if (isPodcastTrack(t) && !isRadioTrack(t)) return setStreamTrackLove(t, value);
     const oldValue = !!t.loved;
     if (oldValue === value) return value;
+    // The file is the same song as a liked (or unliked) streamed one: keep that in step.
+    const streamKey = streamLoveKey(t);
+    const streamEntry = streamLoves()[streamKey];
+    if (streamEntry && (streamEntry.loved !== false) !== value) { const now = Date.now(); patchStreamLove(streamKey, { loved: value, at: now, appliedAt: now }); }
 
     // Love is intentionally optimistic: update Beehive's canonical in-memory
     // library and Favorites immediately, then write the embedded tag in the
@@ -6267,6 +6536,7 @@
 
       activeSelectionScope = 'songs';
       activeSelectionTracks = tracks;
+      clearOtherSelectionScopes('songs');
       const path = String(track.path || '');
       if (e.shiftKey && songSelectionAnchor != null) {
         const anchorIndex = tracks.findIndex(t => String(t?.path || '') === songSelectionAnchor);
@@ -6436,7 +6706,9 @@
     // Favorites/any pinned playlist, Podcasts -- got its highlight cleared the
     // instant this ran (it runs on every tab restore, right after the click
     // handler that had just set it correctly).
-    const contextNav = specialView === 'recent' ? 'pl-recent'
+    // A sidebar destination's own context (Apple Music, Spotify, a plugin view) is always that destination.
+    const contextNav = active?.kind === 'navigation' && active.navId ? active.navId
+      : specialView === 'recent' ? 'pl-recent'
       : specialView === 'top' ? 'pl-top'
       : specialView === 'history' ? 'history'
       : specialView === 'sandbox' ? 'sandbox'
@@ -6741,6 +7013,21 @@
     return out;
   }
 
+  // A playlist's songs for a menu action, or a note when it has none.
+  function withPlaylistTracks(pl, act) {
+    const tracks = tracksForPlaylist(pl);
+    if (!tracks.length) { showAppNotice('This playlist has no tracks.'); return; }
+    act(tracks);
+  }
+  // Plays these songs in a shuffled order, whatever the Shuffle button says.
+  function playShuffled(tracks) {
+    if (!tracks?.length) return;
+    playQueue(hivebeeShuffleQueue(tracks.slice()), 0, false);
+    // Turning Shuffle off afterwards puts these songs in order, not an earlier queue.
+    const order = new Map(tracks.map((t, i) => [String(t?.path || ''), i]));
+    shuffleRestoreQueue = shuffle ? currentQueue.slice().sort((a, b) => (order.get(String(a?.path || '')) ?? 0) - (order.get(String(b?.path || '')) ?? 0)) : null;
+  }
+
   async function playPlaylist(pl){
     if (pl?.source === 'spotify') {
       // Refreshing from Spotify takes seconds; when the playlist already has
@@ -6980,9 +7267,15 @@
     if(!pl) return;
     e.preventDefault();
     showContextMenu(e.clientX,e.clientY,[
-      {label:'Add playlist to queue',action:()=>{const tracks=tracksForPlaylist(pl);if(!tracks.length){showAppNotice('This playlist has no tracks.');return;}addTracksToQueue(tracks);}},
+      // As a held playlist on the phone: play, shuffle, play next, queue, or add it to another playlist.
+      {label:'Play',icon:'play',menuKey:'play',submenu:[
+        {label:'Play playlist',icon:'play',action:()=>playPlaylist(pl)},
+        {label:'Shuffle playlist',icon:'shuffle',action:()=>withPlaylistTracks(pl, playShuffled)},
+        {label:'Play next',icon:'playNext',action:()=>withPlaylistTracks(pl, tracks=>addTracksToQueue(tracks, currentIndex + 1))},
+        {label:'Add to end of queue',icon:'queueEnd',action:()=>withPlaylistTracks(pl, tracks=>addTracksToQueue(tracks))}
+      ]},
+      ...(tracksForPlaylist(pl).length ? [{label:'Add to',icon:'plus',menuKey:'addTo',submenu:buildAddToPlaylistSubmenu(tracksForPlaylist(pl))}] : []),
       {label:'Info',action:()=>showPlaylistInfo(pl)},
-      {label:'Play playlist',action:()=>playPlaylist(pl)},
       {label:'Rename…',action:()=>openEditPlaylistModal(pl)},
       {label:'Set image…',action:()=>setPlaylistImage(pl)},
       ...(currentQueue[currentIndex] ? [{label:'Use the playing song’s cover',action:()=>setPlaylistImageFromTrack(pl, currentQueue[currentIndex])}] : []),
@@ -7273,11 +7566,9 @@
     }
   }
 
-  // Settings → Connections → "Play Spotify songs through". With YouTube
-  // Music (the default once yt-dlp is installed), a Spotify track plays from
-  // the library when it's there, otherwise as a YouTube Music stream inside
-  // Hive; the Spotify app is only used when chosen.
-  function spotifyPlaysViaYoutube() { return youtubeMusicReady === true && hbPref('spotify.playVia') !== 'spotify'; }
+  // A Spotify track plays from the library when it's there, otherwise as a
+  // YouTube Music stream inside Hive. The Spotify app is never used.
+  function spotifyPlaysViaYoutube() { return youtubeMusicReady === true; }
   let spotifyLibraryIndexCache = null, spotifyLibraryIndexFor = null;
   function youtubeTrackForSpotifyAnyway(st) {
     if (!isSpotifyTrack(st)) return st;
@@ -7339,14 +7630,9 @@
         albumArtist:entry.albumArtist || entry.artist || '', year:entry.year || ''
       })).filter(t=>t.spotifyUri);
       if(!spotifyTracks.length){ showAppNotice(`Spotify playlist “${data.name}” did not contain playable tracks.`); return false; }
-      if (await youtubeMusicAvailable(true)) {
-        const via = await themedChoice(`How should Hive play “${data.name}”?`, [
-          { label: 'Full songs in Hive (YouTube Music)', value: 'youtube' },
-          { label: 'Through the Spotify app', value: 'spotify' }
-        ], 'Import Spotify playlist');
-        if (!via) return false;
-        if (via === 'youtube') { await importSpotifyPlaylistAsYoutube(data, spotifyTracks); return true; }
-      }
+      if (await youtubeMusicAvailable(true)) { await importSpotifyPlaylistAsYoutube(data, spotifyTracks); return true; }
+      showAppNotice(`Spotify playlists play through YouTube Music in Hive, which isn't set up yet (Settings → Connections).`);
+      return false;
       const playlistCover = normalizeSpotifyArtworkSource(data.cover || data.artworkUrl || spotifyTracks[0]?.artworkUrl || '');
       const warm = await preloadSpotifyArtwork(spotifyTracks, playlistCover);
       const pl=await window.beehive.savePlaylist({name:data.name,tracks:[],spotifyTracks,smart:false,source:'spotify',sourceUrl:data.sourceUrl,spotifyPlaylistId:data.id,cover:playlistCover,artworkUrl:playlistCover,spotifyArtworkCacheFile:warm?.playlistCoverFile || '',description:'Spotify streaming playlist. Audio remains in Spotify; Hive controls the Spotify player.'});
@@ -8115,6 +8401,7 @@
 
     const tab = tabs.find(t => t.navId === nav);
     if (!tab) return false;
+    tab.navigationDrawn = true;
 
     // Podcasts is a sidebar destination, not a default pinned top-bar tab.
     // It still owns a permanent canonical context; pinning only projects it into the top bar.
@@ -11066,9 +11353,12 @@
       const unmatchedLocal = albumTracks.length - mapped.length;
       const otherRemote = release.tracks.length - mapped.length;
       const coverUrl = String(release.artworkUrl || '').trim();
+      modal._autoTagCover = coverUrl;
+      modal._autoTagMappedAll = mapped.length === albumTracks.length;
       const meta = [release.artist, release.year, release.country, release.label].filter(Boolean).map(escapeHtml).join(' · ');
       const facts = [`${mapped.length}/${albumTracks.length} of your tracks matched`, plural(changed.length, 'tag change'), coverUrl ? 'Front cover will be embedded' : 'No cover art for this release'];
       preview.innerHTML = `<div class="auto-tag-hero">${autoTagCoverHtml(coverUrl, 'auto-tag-hero-cover')}<div class="auto-tag-hero-text"><strong>${escapeHtml(release.title)}</strong><span>${meta}</span><ul>${facts.map(f => `<li data-fact>${escapeHtml(f)}</li>`).join('')}</ul></div></div>`
+        + `<div class="auto-tag-cover-choices" id="auto-tag-cover-choices"></div>`
         + `<div class="auto-tag-tracks">${rows}${unmatchedLocal ? `<div class="auto-tag-track-note warning">${unmatchedLocal} of your file${unmatchedLocal === 1 ? '' : 's'} could not be matched safely and will be left alone.</div>` : ''}${otherRemote > 0 ? `<div class="auto-tag-track-note">${plural(otherRemote, 'other track')} on this release ${otherRemote === 1 ? 'is' : 'are'} not in your library.</div>` : ''}</div>`;
       // A release-group fallback can still 404; say so instead of promising a cover.
       wireAutoTagCovers(preview, () => {
@@ -11079,9 +11369,51 @@
         ? `Matched by filename, existing tags, track number and duration. Check the release, then apply.`
         : `${mapped.length} of ${albumTracks.length} tracks matched safely. Unmatched files will not be guessed.`;
       apply.disabled = mapped.length !== albumTracks.length || (!changed.length && !coverUrl);
+      void loadAutoTagCoverChoices(modal, release);
     } catch (err) {
       preview.textContent = err?.message || 'Could not load release details.';
     }
+  }
+
+  // Broaden the auto-tag cover beyond Cover Art Archive: pull the same iTunes +
+  // MusicBrainz set the "search the internet" cover picker uses, so releases
+  // whose CAA front is missing or low-res (e.g. "Pump Up the Jam") still offer
+  // the cover the user expects. Clicking a thumbnail chooses it for embedding.
+  async function loadAutoTagCoverChoices(modal, release) {
+    const host = modal.querySelector('#auto-tag-cover-choices');
+    if (!host) return;
+    const caa = String(release.artworkUrl || '').trim();
+    let found = [];
+    try { found = await window.beehive.searchInternetCover({ album: release.title, artist: release.artist }) || []; } catch {}
+    // The user may have picked a different release while this awaited.
+    if (modal._autoTagRelease !== release) return;
+    const urls = [];
+    const seen = new Set();
+    const add = (url, source) => { const u = String(url || '').trim(); if (!u || seen.has(u)) return; seen.add(u); urls.push({ url: u, source: String(source || '') }); };
+    if (caa) add(caa, 'Cover Art Archive');
+    for (const r of (Array.isArray(found) ? found : [])) add(r.artworkUrl, r.source);
+    if (!urls.length) { host.innerHTML = ''; return; }
+    if (!modal._autoTagCover) modal._autoTagCover = urls[0].url;
+    host.innerHTML = `<div class="auto-tag-choices-label">Cover art · ${urls.length} found — click to choose</div>`
+      + `<div class="auto-tag-choices-grid">`
+      + urls.map((u, i) => `<button type="button" class="auto-tag-choice${u.url === modal._autoTagCover ? ' selected' : ''}" data-cover-index="${i}" title="${escapeHtml(u.source)}">${autoTagCoverHtml(u.url, 'auto-tag-choice-img')}</button>`).join('')
+      + `</div>`;
+    wireAutoTagCovers(host);
+    host.querySelectorAll('.auto-tag-choice').forEach(btn => btn.addEventListener('click', () => {
+      const pick = urls[Number(btn.dataset.coverIndex)];
+      if (!pick) return;
+      modal._autoTagCover = pick.url;
+      host.querySelectorAll('.auto-tag-choice').forEach(b => b.classList.toggle('selected', b === btn));
+      const hero = modal.querySelector('.auto-tag-hero-cover');
+      if (hero) { hero.innerHTML = `<img src="${escapeHtml(pick.url)}" alt="" loading="lazy" data-auto-tag-cover>`; wireAutoTagCovers(hero); }
+      const fact = modal.querySelectorAll('#auto-tag-preview [data-fact]')[2];
+      if (fact) fact.textContent = 'Front cover will be embedded';
+      const applyBtn = modal.querySelector('#auto-tag-apply');
+      if (applyBtn && modal._autoTagMappedAll) applyBtn.disabled = false;
+    }));
+    // A cover is now available even if CAA had none — reflect that in the gate.
+    const applyBtn = modal.querySelector('#auto-tag-apply');
+    if (applyBtn && modal._autoTagMappedAll && modal._autoTagCover) applyBtn.disabled = false;
   }
 
   function normalizeForSearch(value) {
@@ -11111,9 +11443,12 @@
     status.textContent = 'Preparing the shared album cover…';
     let coverPath = '';
     let coverDataUrl = '';
+    // Use whatever cover the user chose in the picker (iTunes/Apple or Cover
+    // Art Archive); fall back to the release's CAA front when none was picked.
+    const coverChoice = String(modal._autoTagCover || release.artworkUrl || '').trim();
     try {
-      if (release.artworkUrl) {
-        const chosen = await window.beehive.downloadSearchCover(release.artworkUrl);
+      if (coverChoice) {
+        const chosen = await window.beehive.downloadSearchCover(coverChoice);
         coverPath = String(chosen?.path || '');
         coverDataUrl = String(chosen?.dataUrl || '');
       }
@@ -11242,6 +11577,7 @@
     showContextMenu(e.clientX, e.clientY, [
       {label:'Play',icon:'play',menuKey:'play',submenu:[
         {label:singleAlbum ? 'Play album' : `Play ${albums.length} albums`, icon:'play', action:()=>{ if (singleAlbum) playAlbum(album); else playQueue(albumTracks, 0, true); }},
+        {label:singleAlbum ? 'Shuffle album' : `Shuffle ${albums.length} albums`, icon:'shuffle', action:()=>playShuffled(albumTracks)},
         {label:`Play next${albumCount}`, icon:'playNext', action:()=>addTracksToQueue(albumTracks, currentIndex + 1)},
         {label:`Add to end of queue${albumCount}`, icon:'queueEnd', action:()=>addTracksToQueue(albumTracks)},
         ...(singleAlbum && album.artist ? [
@@ -11330,6 +11666,7 @@
       if (e.shiftKey && selectedAlbumKeys.size && albumSelectionAnchor) {
         clearTimeout(clickTimer);
         activeSelectionScope = 'albums';
+        clearOtherSelectionScopes('albums');
         selectAlbumRangeTo(card);
         setAlbumHighlight(card, album);
         return;
@@ -11337,6 +11674,7 @@
       if (e.ctrlKey || e.metaKey) {
         clearTimeout(clickTimer);
         activeSelectionScope = 'albums';
+        clearOtherSelectionScopes('albums');
         if (selectedAlbumKeys.has(key)) deselectAlbumKey(key);
         else selectAlbumKey(key);
         albumSelectionAnchor = key;
@@ -11345,6 +11683,7 @@
         return;
       }
       activeSelectionScope = 'albums';
+      clearOtherSelectionScopes('albums');
       clearAlbumSelection();
       selectAlbumKey(key);
       albumSelectionAnchor = key;
@@ -12132,7 +12471,7 @@
     }
     const list = isPicker ? artistPickerEntries : buildArtistPickerEntries(sourceTracks);
     const filtered = searchTerm
-      ? list.filter(a => a.name.toLowerCase().includes(searchTerm))
+      ? list.filter(a => { const name = foldSearchText(a.name); return searchWords().every(w => name.includes(w)); })
       : list;
 
     el.artistsGrid.classList.add('artist-browse-grid');
@@ -12285,6 +12624,41 @@
   function setRichLabel(element, value) {
     if (!element) return;
     element.innerHTML = sanitizeRichText(value);
+  }
+
+  // A title too long for its box glides across to show the rest, then back
+  // (the playbar's always; a tab's while hovered, see .marquee in styles.css).
+  const marqueeResize = new ResizeObserver(entries => { for (const entry of entries) measureMarquee(entry.target); });
+  function setMarqueeText(box, text) {
+    if (box.dataset.marqueeText === text && box.firstElementChild?.classList.contains('marquee-track')) return;
+    box.dataset.marqueeText = text;
+    box.innerHTML = '<span class="marquee-track"></span>';
+    box.firstElementChild.textContent = text;
+    marquee(box);
+  }
+  function marquee(box) {
+    if (!box) return;
+    let track = box.firstElementChild;
+    if (!track?.classList.contains('marquee-track') || box.childNodes.length !== 1) {
+      track = document.createElement('span');
+      track.className = 'marquee-track';
+      track.append(...box.childNodes);
+      box.appendChild(track);
+    }
+    box.classList.add('marquee');
+    marqueeResize.observe(box);
+    requestAnimationFrame(() => measureMarquee(box));
+  }
+  function measureMarquee(box) {
+    const track = box.firstElementChild;
+    if (!track) return;
+    const shift = Math.ceil(track.scrollWidth - box.clientWidth);
+    const on = shift > 2;
+    box.classList.toggle('marquee-on', on);
+    if (!on) return;
+    box.style.setProperty('--marquee-shift', `${-shift}px`);
+    // About 32px a second while moving; the moves take 70% of each round trip.
+    box.style.setProperty('--marquee-time', `${Math.max(7, (2 * shift / 32) / 0.7).toFixed(1)}s`);
   }
 
   function richLabelText(value) {
@@ -12766,6 +13140,7 @@
       const i = Number(row.dataset.idx);
       if (!Number.isInteger(i) || !currentQueue[i]) return;
       activeSelectionScope = 'queue';
+      clearOtherSelectionScopes('queue');
       if (e.shiftKey && selectedQueueIndex >= 0) {
         const from = Math.min(selectedQueueIndex, i);
         const to = Math.max(selectedQueueIndex, i);
@@ -12876,6 +13251,20 @@
     updateSelectionStatus();
   }
 
+  // The songs Ctrl+A picks from: the list last clicked in.
+  function activeSongScopeTracks() {
+    return Array.isArray(activeSelectionTracks)
+      ? activeSelectionTracks
+      : (viewMode === 'songs' && !el.songsTable.classList.contains('hidden') ? (songVirtualState.tracks || []) : []);
+  }
+
+  function clearAllSelection() {
+    clearOtherSelectionScopes(null);
+    applyAlbumSelectionClasses();
+    document.querySelectorAll('.inline-track-row.selected').forEach(row => row.classList.remove('selected'));
+    updateSelectionStatus();
+  }
+
   function selectAllActiveSection() {
     // Ctrl+A is deliberately scoped to the section whose row was last clicked.
     // Use the same selection sets/classes as ordinary click selection; the
@@ -12898,9 +13287,7 @@
       return true;
     }
     if (activeSelectionScope === 'songs') {
-      const tracks = Array.isArray(activeSelectionTracks)
-        ? activeSelectionTracks
-        : (viewMode === 'songs' && !el.songsTable.classList.contains('hidden') ? (songVirtualState.tracks || []) : []);
+      const tracks = activeSongScopeTracks();
       if (!tracks.length) return false;
       clearSongSelection();
       for (const t of tracks) {
@@ -13803,7 +14190,7 @@
     el.pbCover.title = 'Double-click for cover art';
     el.pbCover.ondblclick = () => openCoverLightbox(t);
     el.pbCover.oncontextmenu = e => { e.preventDefault(); showCoverContextMenu(e, t.covers?.[0]?.file || t.cover, t); };
-    el.pbTitle.textContent = t.title || 'Unknown title';
+    setMarqueeText(el.pbTitle, t.title || 'Unknown title');
     el.pbArtist.textContent = t.artist || 'Unknown artist';
 
     el.npCover.title = 'Double-click for cover art';
@@ -14976,6 +15363,7 @@
   // ---------------- library loading / scanning ----------------
   function applyLibrary(lib, options = {}) {
     library = lib || library || { tracks: [] };
+    applyStreamLovesToFiles();
     libraryTrackByPath = new Map();
     libraryTrackByNormalizedPath = new Map();
     libraryTrackByTitleArtist = new Map();
@@ -15031,6 +15419,43 @@
       const activeTab = tabs.find(t => t.id === activeTabId);
       applyTabView(activeTab ? activeTab.kind : 'music');
     }
+    rehydrateQueueFromLibrary();
+  }
+
+  // The queue restored at launch is placeholders (file names, no length or cover): the
+  // library loads after it. Once the library is in, each becomes the library's song, and
+  // the queue and the playing song's title, artist and cover are repainted (without the
+  // track-change pop-up, which belongs to an actual change of song).
+  function rehydrateQueueFromLibrary() {
+    if (!currentQueue.length || !libraryTrackByPath.size) return;
+    let changed = false, currentChanged = false;
+    for (let i = 0; i < currentQueue.length; i++) {
+      const q = currentQueue[i];
+      if (!q?.path || isPodcastTrack(q) || isSpotifyTrack(q)) continue;
+      const real = libraryTrackByPath.get(String(q.path));
+      if (real && real !== q) { currentQueue[i] = real; changed = true; if (i === currentIndex) currentChanged = true; }
+    }
+    if (!changed) return;
+    // History and the unshuffled order point at the same songs, so Previous and Shuffle off still find them.
+    const real = q => (q?.path && !isPodcastTrack(q) && !isSpotifyTrack(q) && libraryTrackByPath.get(String(q.path))) || q;
+    playbackHistory = playbackHistory.map(real);
+    if (Array.isArray(shuffleRestoreQueue)) shuffleRestoreQueue = shuffleRestoreQueue.map(real);
+    updateQueueVirtualRows(true);
+    const t = currentQueue[currentIndex];
+    if (!currentChanged || !t) return;
+    const cover = coverSrc(visualCoverForTrack(t));
+    paintNowPlayingCoverImmediately(el.pbCover, cover, nowPlayingUiGeneration);
+    paintNowPlayingCoverImmediately(el.npCover, cover, nowPlayingUiGeneration);
+    setMarqueeText(el.pbTitle, t.title || 'Unknown title');
+    el.pbArtist.textContent = t.artist || 'Unknown artist';
+    el.npTitle.textContent = t.title || 'Unknown title';
+    el.npArtist.textContent = t.artist || 'Unknown artist';
+    el.npAlbum.textContent = t.album || 'Unknown album';
+    const release = String(t.releaseDate || t.year || '').trim();
+    el.npYear.textContent = release ? release.slice(0, 4) : '';
+    // Paused at launch, the audio isn't loaded yet: the song's own length stands in.
+    if (!(Number.isFinite(audio.duration) && audio.duration > 0) && Number(t.duration) > 0) el.pbDuration.textContent = fmtTime(Number(t.duration));
+    window.__beehiveNowPlayingTrack = t;
   }
 
 
@@ -15040,6 +15465,7 @@
   // Chromium between batches instead of monopolizing the renderer for ~1.5s.
   async function applyLibraryProgressive(lib, options = {}) {
     library = lib || { tracks: [] };
+    applyStreamLovesToFiles();
     const tracks = library.tracks || [];
     libraryTrackByPath = new Map();
     libraryTrackByNormalizedPath = new Map();
@@ -15088,6 +15514,7 @@
     artistPickerEntriesReady = false;
     const activeTab = tabs.find(t => t.id === activeTabId);
     applyTabView(activeTab ? activeTab.kind : 'music');
+    rehydrateQueueFromLibrary();
     if (options.status !== false) startupStatusUpdate('Library ready · checking for changes…', !tracks.length);
   }
 
@@ -15511,6 +15938,7 @@
         // duplicated it (e.g. both files touched by an artwork save showed up
         // twice). addLibraryTrackOnce also guards an incomplete path index.
         addLibraryTrackOnce(track);
+        applyStreamLovesToFiles();
       }
       libraryTrackByPath.set(filePath, libraryTrackByPath.get(filePath) || existing || track);
       applied++;
@@ -16551,6 +16979,7 @@
       host.appendChild(item);
     }
     el.sidebarItems = Array.from(host.querySelectorAll('.sidebar-item'));
+    syncSidebarSelectionForContext();
   }
   async function renameSidebarEntry(id) {
     const entry=sidebarEntry(id); if(!entry || entry.type==='divider' && id==='') return;
@@ -17248,6 +17677,7 @@
         (tab.closable ? `<span class="tab-close" title="Close tab" aria-label="Close tab">\u2715</span>` : '');
       setRichLabel(btn.querySelector('.tab-rich-label'), tab.label);
       el.topbarTabs.appendChild(btn);
+      marquee(btn.querySelector('.tab-rich-label'));
     }
     el.topbarTabs.appendChild(el.tabAddBtn);
   }
@@ -17472,6 +17902,14 @@
       return;
     }
     if (kind === 'navigation' && isPluginViewNav(tab?.navId)) { showPluginView(tab); return; }
+    // A sidebar destination (Apple Music, Spotify…) restored at launch draws its own page, once: later
+    // library updates leave the page as it is. Yearly Wrap is a window, opened only when asked for.
+    if (kind === 'navigation' && tab?.navId && tab.navId !== 'yearly-wrap' && !tab.drawingNavigation && !tab.navigationDrawn) {
+      tab.drawingNavigation = true;
+      Promise.resolve(showSpecialNavigation(tab.navId)).finally(() => { tab.drawingNavigation = false; syncSidebarSelectionForContext(); });
+      return;
+    }
+    if (kind === 'navigation' && tab?.navigationDrawn) return;
     const [title, body] = tabPlaceholderCopy(kind);
     el.tabPlaceholderTitle.textContent = title;
     el.tabPlaceholderBody.textContent = body;
@@ -19043,7 +19481,17 @@
     ember:{name:'Ember',description:'Warm copper and charcoal, designed for low-light listening.',vars:{'--bg':'#100b0a','--panel':'rgba(28,20,18,.76)','--panel-strong':'rgba(23,16,14,.9)','--border':'rgba(255,210,185,.10)','--text':'#f4ebe6','--text-dim':'#b8a39a','--text-dimmer':'#806d65','--accent':'#e28b63','--accent-soft':'rgba(240,145,105,.34)','--accent-glow':'rgba(226,139,99,.22)','--ambient-a':'rgba(180,75,35,.19)','--ambient-b':'rgba(95,42,25,.14)','--radius':'14px','--blur':'22px'}},
     forest:{name:'Forest',description:'Dark evergreen surfaces with a quiet mineral green.',vars:{'--bg':'#08100d','--panel':'rgba(14,25,21,.75)','--panel-strong':'rgba(10,20,16,.9)','--border':'rgba(190,230,210,.09)','--text':'#e8f0eb','--text-dim':'#9dafaa','--text-dimmer':'#657a71','--accent':'#79b79a','--accent-soft':'rgba(121,183,154,.34)','--accent-glow':'rgba(121,183,154,.21)','--ambient-a':'rgba(45,130,90,.17)','--ambient-b':'rgba(25,75,58,.14)','--radius':'15px','--blur':'26px'}},
     ocean:{name:'Ocean',description:'Cool blue-black glass with a clean modern edge.',vars:{'--bg':'#070c12','--panel':'rgba(13,22,32,.75)','--panel-strong':'rgba(10,18,27,.9)','--border':'rgba(190,220,245,.10)','--text':'#e7eef5','--text-dim':'#9aaabd','--text-dimmer':'#66788c','--accent':'#70a8d6','--accent-soft':'rgba(112,168,214,.34)','--accent-glow':'rgba(112,168,214,.22)','--ambient-a':'rgba(35,105,155,.18)','--ambient-b':'rgba(25,65,105,.15)','--radius':'13px','--blur':'28px'}},
-    violet:{name:'Midnight',description:'Muted plum and graphite with a cinematic finish.',vars:{'--bg':'#0d0911','--panel':'rgba(25,18,30,.76)','--panel-strong':'rgba(20,14,25,.91)','--border':'rgba(230,210,245,.10)','--text':'#f0eaf4','--text-dim':'#afa2b8','--text-dimmer':'#776b80','--accent':'#a88bd0','--accent-soft':'rgba(168,139,208,.34)','--accent-glow':'rgba(168,139,208,.22)','--ambient-a':'rgba(120,65,155,.18)','--ambient-b':'rgba(65,35,95,.14)','--radius':'16px','--blur':'26px'}}
+    violet:{name:'Midnight',description:'Muted plum and graphite with a cinematic finish.',vars:{'--bg':'#0d0911','--panel':'rgba(25,18,30,.76)','--panel-strong':'rgba(20,14,25,.91)','--border':'rgba(230,210,245,.10)','--text':'#f0eaf4','--text-dim':'#afa2b8','--text-dimmer':'#776b80','--accent':'#a88bd0','--accent-soft':'rgba(168,139,208,.34)','--accent-glow':'rgba(168,139,208,.22)','--ambient-a':'rgba(120,65,155,.18)','--ambient-b':'rgba(65,35,95,.14)','--radius':'16px','--blur':'26px'}},
+    lemon:{name:'Lemon',description:'Pale lemon with a burnt-orange accent.',vars:{'--bg':'#fff3a3','--panel':'rgba(255,248,204,0.72)','--panel-strong':'rgba(255,250,220,0.9)','--border':'rgba(17,17,20,0.14)','--text':'#24231f','--text-dim':'#58553f','--text-dimmer':'#837d59','--accent':'#b4530a','--accent-soft':'rgba(180,83,10,0.32)','--accent-glow':'rgba(180,83,10,0.16)','--ambient-a':'rgba(180,83,10,0.1)','--ambient-b':'rgba(218,163,86,0.16)','--radius':'14px','--blur':'24px'}},
+    sunflower:{name:'Sunflower',description:'Sunflower yellow with a deep violet accent.',vars:{'--bg':'#ffd23f','--panel':'rgba(255,230,149,0.72)','--panel-strong':'rgba(255,238,182,0.9)','--border':'rgba(17,17,20,0.14)','--text':'#242017','--text-dim':'#584b21','--text-dimmer':'#836e29','--accent':'#5a2d82','--accent-soft':'rgba(90,45,130,0.32)','--accent-glow':'rgba(90,45,130,0.16)','--ambient-a':'rgba(90,45,130,0.1)','--ambient-b':'rgba(172,128,96,0.16)','--radius':'14px','--blur':'24px'}},
+    tangerine:{name:'Tangerine',description:'Bright tangerine with a plum accent.',vars:{'--bg':'#ff9f45','--panel':'rgba(255,202,153,0.72)','--panel-strong':'rgba(255,219,184,0.9)','--border':'rgba(17,17,20,0.14)','--text':'#241c18','--text-dim':'#583c23','--text-dimmer':'#83552c','--accent':'#6a1b4d','--accent-soft':'rgba(106,27,77,0.32)','--accent-glow':'rgba(106,27,77,0.16)','--ambient-a':'rgba(106,27,77,0.1)','--ambient-b':'rgba(180,93,73,0.16)','--radius':'14px','--blur':'24px'}},
+    coral:{name:'Coral',description:'Warm coral with a navy accent.',vars:{'--bg':'#ff8a7a','--panel':'rgba(255,191,182,0.72)','--panel-strong':'rgba(255,211,204,0.9)','--border':'rgba(17,17,20,0.14)','--text':'#241b1c','--text-dim':'#583533','--text-dimmer':'#834b45','--accent':'#1f3a93','--accent-soft':'rgba(31,58,147,0.32)','--accent-glow':'rgba(31,58,147,0.16)','--ambient-a':'rgba(31,58,147,0.1)','--ambient-b':'rgba(143,98,134,0.16)','--radius':'14px','--blur':'24px'}},
+    bubblegum:{name:'Bubblegum',description:'Soft pink with a raspberry accent.',vars:{'--bg':'#ffc4e1','--panel':'rgba(255,223,238,0.72)','--panel-strong':'rgba(255,233,244,0.9)','--border':'rgba(17,17,20,0.14)','--text':'#241f24','--text-dim':'#584752','--text-dimmer':'#836776','--accent':'#c2185b','--accent-soft':'rgba(194,24,91,0.32)','--accent-glow':'rgba(194,24,91,0.16)','--ambient-a':'rgba(194,24,91,0.1)','--ambient-b':'rgba(224,110,158,0.16)','--radius':'14px','--blur':'24px'}},
+    mint:{name:'Mint',description:'Fresh mint with a deep green accent.',vars:{'--bg':'#b8f0d4','--panel':'rgba(216,247,231,0.72)','--panel-strong':'rgba(228,249,239,0.9)','--border':'rgba(17,17,20,0.14)','--text':'#1e2323','--text-dim':'#43544e','--text-dimmer':'#617c70','--accent':'#0b7a55','--accent-soft':'rgba(11,122,85,0.32)','--accent-glow':'rgba(11,122,85,0.16)','--ambient-a':'rgba(11,122,85,0.1)','--ambient-b':'rgba(98,181,148,0.16)','--radius':'14px','--blur':'24px'}},
+    lavender:{name:'Lavender',description:'Light lavender with an indigo accent.',vars:{'--bg':'#d9d2ff','--panel':'rgba(234,230,255,0.72)','--panel-strong':'rgba(241,238,255,0.9)','--border':'rgba(17,17,20,0.14)','--text':'#212027','--text-dim':'#4d4b5a','--text-dimmer':'#716e85','--accent':'#5a3fd1','--accent-soft':'rgba(90,63,209,0.32)','--accent-glow':'rgba(90,63,209,0.16)','--ambient-a':'rgba(90,63,209,0.1)','--ambient-b':'rgba(154,136,232,0.16)','--radius':'14px','--blur':'24px'}},
+    emerald:{name:'Emerald',description:'Deep emerald with a light green accent.',vars:{'--bg':'#0f5a43','--panel':'rgba(32,102,80,0.72)','--panel-strong':'rgba(27,98,76,0.9)','--border':'rgba(255,255,255,0.12)','--text':'#ecf2f0','--text-dim':'#b7cec7','--text-dimmer':'#8cb0a5','--accent':'#7cf2a8','--accent-soft':'rgba(124,242,168,0.32)','--accent-glow':'rgba(124,242,168,0.24)','--ambient-a':'rgba(124,242,168,0.2)','--ambient-b':'rgba(70,166,118,0.16)','--radius':'14px','--blur':'24px'}},
+    grape:{name:'Grape',description:'Rich grape with a pink accent.',vars:{'--bg':'#4b1f6f','--panel':'rgba(88,47,121,0.72)','--panel-strong':'rgba(84,42,118,0.9)','--border':'rgba(255,255,255,0.12)','--text':'#f1edf3','--text-dim':'#c9bcd4','--text-dimmer':'#a993ba','--accent':'#ff9de2','--accent-soft':'rgba(255,157,226,0.32)','--accent-glow':'rgba(255,157,226,0.24)','--ambient-a':'rgba(255,157,226,0.2)','--ambient-b':'rgba(165,94,168,0.16)','--radius':'14px','--blur':'24px'}},
+    cherry:{name:'Cherry',description:'Cherry pink with a deep blood-burgundy accent.',vars:{'--bg':'#f2a7b4','--panel':'rgba(248,207,214,0.72)','--panel-strong':'rgba(250,222,226,0.9)','--border':'rgba(17,17,20,0.14)','--text':'#231d21','--text-dim':'#543e44','--text-dimmer':'#7d5961','--accent':'#5c0a14','--accent-soft':'rgba(92,10,20,0.32)','--accent-glow':'rgba(92,10,20,0.16)','--ambient-a':'rgba(92,10,20,0.1)','--ambient-b':'rgba(167,88,100,0.16)','--radius':'14px','--blur':'24px'}},
   };
   const BUILTIN_THEME_KEY='beehive:builtin-theme';
   const THEME_OPTIONS_KEY='beehive:theme-options';
@@ -19073,6 +19521,26 @@
   // writes. Cached here so the <select>'s change handler doesn't need to
   // re-fetch the folder on every selection.
   let themeFolderThemes = [];
+  // The theme list shows Hive's own colourful set and the user's own themes;
+  // the older ones (MusicBee skins, most of them the same near black with
+  // another accent, and Hive's early dark variants) wait behind Settings →
+  // Appearance → Show legacy themes. The theme in use always shows.
+  const REGULAR_THEME_FILES = new Set(['light.hive-theme', 'dark.hive-theme', 'ocean.hive-theme',
+    'musicbee-mellon-remix.hive-theme', 'musicbee-sky-blue.hive-theme', 'musicbee-absolute-zero.hive-theme', 'musicbee-ultramarine.hive-theme', 'musicbee-pop-pink.hive-theme',
+    'lemon.hive-theme', 'sunflower.hive-theme', 'tangerine.hive-theme', 'coral.hive-theme', 'bubblegum.hive-theme', 'mint.hive-theme',
+    'lavender.hive-theme', 'emerald.hive-theme', 'grape.hive-theme', 'cherry.hive-theme']);
+  const LEGACY_THEMES_KEY = 'beehive:legacy-themes';
+  function showLegacyThemes() { try { return localStorage.getItem(LEGACY_THEMES_KEY) === '1'; } catch { return false; } }
+  function isLegacyTheme(t) { return !REGULAR_THEME_FILES.has(String(t?.file || '').toLowerCase()) && (t?.stock || /^musicbee-/i.test(String(t?.file || ''))); }
+  /** The themes the lists offer: regular ones, legacy ones too when switched on, and whichever is in use. */
+  function listedThemes(keep = []) {
+    const legacy = showLegacyThemes();
+    const kept = new Set([keep].flat().filter(Boolean));
+    return themeFolderThemes.filter(t => legacy || !isLegacyTheme(t) || kept.has(t.file) || t.css === customCssRawSource);
+  }
+  function themeOptionsHtml(prefix = 'folder:', keep = []) {
+    return listedThemes(keep).map(t => `<option value="${prefix}${escapeHtml(t.file)}">${escapeHtml(t.name)}</option>`).join('');
+  }
   function builtinThemeToCss(theme){
     const lines = Object.entries(theme.vars).map(([k,v]) => `  ${k}: ${v};`);
     return `:root {\n${lines.join('\n')}\n}\n`;
@@ -19144,7 +19612,7 @@
       const select = document.getElementById('builtin-theme-select');
       const current = select?.value;
       await loadThemeFolderThemes();
-      if (select) { select.innerHTML = themeFolderThemes.map(t => `<option value="folder:${escapeHtml(t.file)}">${escapeHtml(t.name)}</option>`).join(''); if (current) select.value = current; }
+      if (select) { select.innerHTML = themeOptionsHtml('folder:', (select?.value || '').replace(/^folder:/, '')); if (current) select.value = current; }
     }
     if (result.imported.length || result.failed.length) showAppNotice(`${result.imported.length ? `Imported ${result.imported.length} MusicBee skin${result.imported.length === 1 ? '' : 's'}: ${result.imported.join(', ')}.\nPick one under Base theme.` : 'No skins imported.'}${result.failed.length ? `\n\nCouldn't convert:\n${result.failed.slice(0, 5).join('\n')}` : ''}`);
   }), 0);
@@ -19185,7 +19653,7 @@
         const { file } = await window.beehive.saveCustomTheme({ name: String(name).trim(), css: colourEditorCss(colourEditorValues()) });
         await loadThemeFolderThemes();
         const select = document.getElementById('builtin-theme-select');
-        if (select) { select.innerHTML = themeFolderThemes.map(t => `<option value="folder:${escapeHtml(t.file)}">${escapeHtml(t.name)}</option>`).join(''); select.value = `folder:${file}`; }
+        if (select) { select.innerHTML = themeOptionsHtml('folder:', (select?.value || '').replace(/^folder:/, '')); select.value = `folder:${file}`; }
         await applyFolderTheme(file, true);
         clearColourPreview();
         refreshColourEditor();
@@ -19198,7 +19666,7 @@
     const select=document.getElementById('builtin-theme-select');
     if(!select)return;
     await loadThemeFolderThemes();
-    select.innerHTML=themeFolderThemes.map(t=>`<option value="folder:${escapeHtml(t.file)}">${escapeHtml(t.name)}</option>`).join('');
+    select.innerHTML=themeOptionsHtml('folder:');
     select.addEventListener('change',()=>{
       void applyFolderTheme(select.value.slice('folder:'.length),true);
     });
@@ -19250,6 +19718,21 @@
     if(theme && baseSelect) baseSelect.value=`folder:${file}`;
     themeScheduleTimer=setTimeout(applyThemeSchedule, Math.min(60000, lib.msUntilNextSwitch(now, dayStart, nightStart)+500));
   }
+  // Settings → Appearance → Show legacy themes: the lists of themes gain (or lose) the older ones.
+  (function initLegacyThemesSwitch(){
+    const box=document.getElementById('theme-show-legacy');
+    if(!box) return;
+    box.checked=showLegacyThemes();
+    box.addEventListener('change',()=>{
+      try { localStorage.setItem(LEGACY_THEMES_KEY, box.checked ? '1' : '0'); } catch {}
+      const select=document.getElementById('builtin-theme-select');
+      if(select){ const current=select.value; select.innerHTML=themeOptionsHtml('folder:', current.replace(/^folder:/, '')); select.value=current; }
+      for(const id of ['theme-schedule-day-theme','theme-schedule-night-theme']){
+        const s=document.getElementById(id); if(!s) continue;
+        const current=s.value; s.innerHTML=themeOptionsHtml('', current); s.value=current;
+      }
+    });
+  })();
   // Settings → Appearance: the shuffle button left of the theme list picks
   // a different theme at random, applied through the list's own change path.
   (function initThemeShuffleButton(){
@@ -19276,7 +19759,7 @@
     const dayStart=document.getElementById('theme-schedule-day-start');
     const nightStart=document.getElementById('theme-schedule-night-start');
     if(!toggle||!rows||!daySelect||!nightSelect||!dayStart||!nightStart) return;
-    const options=themeFolderThemes.map(t=>`<option value="${escapeHtml(t.file)}">${escapeHtml(t.name)}</option>`).join('');
+    const options=themeOptionsHtml('', (s => [s.dayTheme, s.nightTheme])(loadThemeSchedule()));
     daySelect.innerHTML=options; nightSelect.innerHTML=options;
     const schedule=loadThemeSchedule();
     toggle.checked=!!schedule.enabled;
@@ -20113,8 +20596,6 @@
     layoutPanel.append(section('Player bar', 'Choose the buttons on the right of the player bar (also by right-clicking that area).',
       PLAYERBAR_BUTTONS.map(([key, label]) => row(label, '', `<input type="checkbox" data-hivebee-pref="playerbar.${key}">`)).join('')));
     move(layoutPanel, ['Right-click menu', 'Column browser', 'Layout']);
-    document.getElementById('settings-panel-connections')?.prepend(section('Spotify playback', 'Spotify playlists give Hive the songs and their tags. Choose where the audio comes from.',
-      row('Play Spotify songs through', 'YouTube Music plays full songs inside Hive (songs you own play from your library). The Spotify app needs Spicetify.', '<select class="settings-select" data-hivebee-pref="spotify.playVia"><option value="youtube">YouTube Music (in Hive)</option><option value="spotify">Spotify app</option></select>')));
     const hotkeys = makePanel('hotkeys', 'Hotkeys', 'layout');
     hotkeys.append(section('Keyboard shortcuts', 'Click a shortcut and press the new keys. They work while Hive is focused, but not while you type in a text box.', '<div id="hotkey-settings"></div><div class="settings-row settings-row-actions-only"><span class="settings-row-control"><button type="button" class="sidebar-add" id="hotkeys-reset-btn">Restore defaults</button></span></div>'));
     hotkeys.querySelector('#hotkeys-reset-btn').addEventListener('click', () => { setHbPref('hotkeys', null); renderHotkeySettings(); });
@@ -20291,6 +20772,10 @@
   }
   document.addEventListener('pointerover', e => {
     const node=e.target?.closest?.('[data-tooltip]'); if(!node) return;
+    // Moving between parts of the same thing (an album card's cover, title and
+    // artist) fires pointerover again: the tooltip it shows stays as it is,
+    // instead of hiding and appearing a second time.
+    if(node===globalTooltipTarget) return;
     const text=tooltipTextFor(node); if(!text) return;
     prepareTooltipNode(node); globalTooltipTarget=node;
     if(!globalTooltip){ globalTooltip=document.createElement('div'); globalTooltip.className='beehive-global-tooltip'; document.body.appendChild(globalTooltip); }
@@ -20997,6 +21482,13 @@ Open Yearly Wrap to browse the imported years.`, 'Yearly Wrap');
     'queue-panel': [120, () => Math.max(280, window.innerWidth - 260)]
   };
 
+  // A side panel keeps the width it was dragged to, but never more than this
+  // share of the window: on a smaller window the music in the middle keeps
+  // its room (the queue panel dragged wide on a big screen used to squeeze
+  // the album grid to one column).
+  const widthCap = { sidebar: 20, 'queue-panel': 32 };
+  const sizeStyle = (key, px) => widthCap[key] ? `min(${px}px, ${widthCap[key]}vw)` : px + 'px';
+
   function applySavedSizes() {
     for (const key of Object.keys(panelEls)) {
       const target = panelEls[key];
@@ -21004,7 +21496,7 @@ Open Yearly Wrap to browse the imported years.`, 'Yearly Wrap');
         const min = limits[key]?.[0] || 0;
         const savedSize = Math.max(min, Number(layout[key]) || min);
         layout[key] = savedSize;
-        target.style[sizeProp[key]] = savedSize + 'px';
+        target.style[sizeProp[key]] = sizeStyle(key, savedSize);
       }
     }
   }
@@ -21025,22 +21517,25 @@ Open Yearly Wrap to browse the imported years.`, 'Yearly Wrap');
     const invertNow = () => (handle.dataset.invert === 'true') !== (axis === 'x' && document.documentElement.classList.contains('hb-swap-panels'));
     const [min, maxValue] = limits[key];
     const max = () => typeof maxValue === 'function' ? maxValue() : maxValue;
-    let startPos = 0, startSize = 0, dragging = false;
+    let startPos = 0, startSize = 0, dragging = false, dragged = 0;
 
     function onMove(e) {
       const pos = axis === 'x' ? e.clientX : e.clientY;
       let delta = pos - startPos;
       if (invertNow()) delta = -delta;
-      const newSize = clamp(startSize + delta, min, max());
-      targetEl.style[sizeProp[key]] = newSize + 'px';
+      // The sidebar and queue stop at their share of the window, so letting go doesn't snap them narrower.
+      const cap = widthCap[key] ? window.innerWidth * widthCap[key] / 100 : Infinity;
+      dragged = clamp(startSize + delta, min, Math.max(min, Math.min(max(), cap)));
+      targetEl.style[sizeProp[key]] = dragged + 'px';
     }
     function onUp() {
       dragging = false;
       handle.classList.remove('dragging');
       document.removeEventListener('mousemove', onMove);
       document.removeEventListener('mouseup', onUp);
-      layout[key] = parseFloat(targetEl.style[sizeProp[key]]) || startSize;
-      saveLayout(layout);
+      // A click without a drag keeps the saved size.
+      if (dragged) { layout[key] = Math.round(dragged); saveLayout(layout); }
+      if (layout[key]) targetEl.style[sizeProp[key]] = sizeStyle(key, layout[key]);
     }
     handle.addEventListener('mousedown', (e) => {
       if (isLocked) return;
@@ -21049,6 +21544,7 @@ Open Yearly Wrap to browse the imported years.`, 'Yearly Wrap');
       handle.classList.add('dragging');
       startPos = axis === 'x' ? e.clientX : e.clientY;
       startSize = targetEl.getBoundingClientRect()[axis === 'x' ? 'width' : 'height'];
+      dragged = 0;
       document.addEventListener('mousemove', onMove);
       document.addEventListener('mouseup', onUp);
     });
@@ -21105,7 +21601,7 @@ Open Yearly Wrap to browse the imported years.`, 'Yearly Wrap');
   const LYRICS_HEIGHT_KEY = 'beehive:lyrics-height';
   const savedLyricsHeight = Number(localStorage.getItem(LYRICS_HEIGHT_KEY));
   if (Number.isFinite(savedLyricsHeight) && savedLyricsHeight > 80) {
-    lyricsSection.style.flex = '0 0 ' + savedLyricsHeight + 'px';
+    lyricsSection.style.flex = '0 1 ' + savedLyricsHeight + 'px';
   }
   if (lyricsResize && sidebarUpper && lyricsSection) {
     let draggingLyrics = false;
@@ -21118,7 +21614,7 @@ Open Yearly Wrap to browse the imported years.`, 'Yearly Wrap');
       const min = 105;
       const max = Math.max(min + 20, sidebarHeight - 120);
       const next = Math.max(min, Math.min(max, startHeight + delta));
-      lyricsSection.style.flex = '0 0 ' + next + 'px';
+      lyricsSection.style.flex = '0 1 ' + next + 'px';
     };
     const onLyricsUp = () => {
       if (!draggingLyrics) return;

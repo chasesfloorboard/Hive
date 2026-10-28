@@ -82,6 +82,27 @@ class SongPlannerTest {
         assertTrue(plan.toPhone.isEmpty() && plan.toPc.isEmpty())
     }
 
+    @Test fun onlyExtraCopiesAndModFilesMayBeDeletedOnTheOtherSide() {
+        fun file(id: Long, title: String, artist: String, size: Long, name: String = "$title.mp3") =
+            Track(id, title, artist, "A", "", 1, 210_000, 1, 1, 2020, "", "Music", name, 0, size)
+        val phoneFiles = listOf(
+            file(1, "We're Here", "Meat Puppets", 7_107_491), file(2, "We're Here", "Meat Puppets", 7_107_491, "06 - We're Here.mp3"),
+            file(3, "Huge", "Boris", 5_000_000), file(4, "voice_017", "", 90_000, "Elden Ring - Nurse Harrow voice.wav"),
+        )
+        val pcFiles = listOf(
+            PcTrack(id = "orig", title = "We're Here", artist = "Meat Puppets", duration = 210_000, file = "We're Here.mp3", size = 7_107_491),
+            PcTrack(id = "dup", title = "We're Here", artist = "Meat Puppets", duration = 210_000, file = "06 - We're Here.mp3", size = 7_107_491),
+            PcTrack(id = "huge", title = "Huge", artist = "Boris", duration = 210_000, file = "Huge.mp3", size = 5_000_000),
+            PcTrack(id = "mod", title = "voice_017", duration = 210_000, file = "Elden Ring - Nurse Harrow voice.wav", size = 90_000),
+        )
+        val first = SongPlanner.plan(phoneFiles, pcFiles, emptySet())
+        // The PC loses its extra We're Here, its only Huge and the mod file.
+        val plan = SongPlanner.plan(phoneFiles, pcFiles.filter { it.id == "orig" }, first.onBoth)
+        assertEquals(3, plan.goneFromPc.size)
+        val deletable = plan.goneFromPc.filter { plan.phoneKeys.getValue(it.id) in plan.deletable }.map { it.fileName }.toSet()
+        assertEquals("the phone's extra copy and the mod file may go; its only Huge never", setOf("06 - We're Here.mp3", "Elden Ring - Nurse Harrow voice.wav"), deletable)
+    }
+
     @Test fun eachCopyOfASongHasItsOwnLedgerEntry() {
         // Both versions synced once; then the phone deletes one of them: only that one stays deleted.
         val first = SongPlanner.plan(

@@ -76,10 +76,6 @@ class EqualiserTest {
         assertNull(EqState.presetForGenre(EqState.BUILT_IN, "Podcast"))
     }
 
-    @Test fun sdeRoundTrips() {
-        val p = EqState.BUILT_IN.first { it.name == "Rock" }
-        assertEquals(p, EqState.parseSde(EqState.serializeSde(p), "Rock"))
-    }
 }
 
 @androidx.annotation.OptIn(androidx.media3.common.util.UnstableApi::class)

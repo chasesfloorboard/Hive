@@ -29,6 +29,18 @@ object WavTags {
         return chunks["LIST"]?.let { fromInfo(it) }?.takeIf { !it.isEmpty }
     }
 
+    /** An MP3's ID3v2 tag (its title, artist and album as written), or null when it has none. */
+    fun readId3(input: InputStream): WavInfo? {
+        val stream = input.buffered()
+        stream.mark(3)
+        val magic = ByteArray(3).also { if (stream.read(it) != 3) return null }
+        if (String(magic, Charsets.ISO_8859_1) != "ID3") return null
+        stream.reset()
+        // Only the tag is read, not the audio after it.
+        val frames = runCatching { EmbeddedPictures.id3Frames(DataInputStream(stream)) }.getOrNull() ?: return null
+        return fromFrames(frames).takeIf { !it.isEmpty }
+    }
+
     /** The bytes of each [wanted] chunk (the first of each), the rest skipped; null if not a WAV. */
     fun chunks(input: DataInputStream, wanted: Set<String>): Map<String, ByteArray>? {
         val head = ByteArray(12)
@@ -54,8 +66,10 @@ object WavTags {
         return out
     }
 
-    private fun fromId3(tag: ByteArray): WavInfo? {
-        val frames = runCatching { EmbeddedPictures.id3Frames(DataInputStream(tag.inputStream())) }.getOrNull() ?: return null
+    private fun fromId3(tag: ByteArray): WavInfo? =
+        runCatching { EmbeddedPictures.id3Frames(DataInputStream(tag.inputStream())) }.getOrNull()?.let(::fromFrames)
+
+    private fun fromFrames(frames: List<Pair<String, ByteArray>>): WavInfo {
         fun text(vararg ids: String): String = ids.firstNotNullOfOrNull { id -> frames.firstOrNull { it.first == id }?.second?.let(::id3Text)?.takeIf { it.isNotBlank() } }.orEmpty()
         return WavInfo(
             title = text("TIT2", "TT2"), artist = text("TPE1", "TP1"), album = text("TALB", "TAL"), albumArtist = text("TPE2", "TP2"),

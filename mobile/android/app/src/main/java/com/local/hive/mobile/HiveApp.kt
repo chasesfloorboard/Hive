@@ -56,7 +56,6 @@ class HiveApp : Application(), coil3.SingletonImageLoader.Factory {
     val appleMusic by lazy { com.local.hive.mobile.stream.AppleMusic() }
     val spotify by lazy { com.local.hive.mobile.stream.Spotify() }
     val youTubeMusic by lazy { com.local.hive.mobile.stream.YouTubeMusic(this) }
-    val downloader by lazy { com.local.hive.mobile.stream.Downloader(this, youTubeMusic) }
     val likedAlbums by lazy { com.local.hive.mobile.data.LikedAlbums(this, database.dao()) }
     val spotifyAccount by lazy { com.local.hive.mobile.stream.SpotifyAccount(this) }
     val lyrics by lazy { com.local.hive.mobile.stream.LyricsProvider(this) }
@@ -68,7 +67,14 @@ class HiveApp : Application(), coil3.SingletonImageLoader.Factory {
     val scrobbler by lazy { com.local.hive.mobile.stream.Scrobbler(this) }
     val artistImages by lazy { com.local.hive.mobile.stream.ArtistImages(this) }
     val linkStore by lazy { LinkStore(this) }
-    val sync by lazy { SyncEngine(database.dao(), linkStore, HiveLinkClient(), scope, afterSync = { if (linkStore.songSync) com.local.hive.mobile.link.SongSync.schedule(this) }, onThemes = { themes.setPcThemes(it) }) }
+    val sync: SyncEngine by lazy { SyncEngine(database.dao(), linkStore, HiveLinkClient(), scope, afterSync = { scope.launch { sync.pcConnection()?.let { pcEdits.send(it) } }; if (linkStore.songSync) com.local.hive.mobile.link.SongSync.schedule(this, now = true) }, onThemes = { themes.setPcThemes(it.themes, it.current) }, streamLoves = streamLoves) }
+    val streamLoves by lazy { com.local.hive.mobile.link.StreamLoves(this) }
+    /** Tag and cover edits on their way to Hive on the PC. */
+    val pcEdits by lazy { com.local.hive.mobile.link.PcEdits(this, database.dao(), linkStore) }
+    /** Smart playlists made on the phone. */
+    val smartPlaylists by lazy { com.local.hive.mobile.data.SmartPlaylists(this) }
+    /** Soulseek downloads: queued, coming in, and the latest done. */
+    val downloads by lazy { com.local.hive.mobile.soulseek.Downloads(this) }
     val songSync by lazy { com.local.hive.mobile.link.SongSync(this, database.dao(), linkStore, HiveLinkClient(), sync) }
     private val playerConnection = lazy { PlayerConnection(this, scope) }
     val player by playerConnection
@@ -126,6 +132,8 @@ class HiveApp : Application(), coil3.SingletonImageLoader.Factory {
         )
         requestRescan(delayMs = 0)
         likedAlbums.start(scope)
+        // The scheduled theme (Settings › Appearance) switches by itself.
+        themes.runSchedule(scope)
         // Live Hive Link updates while Hive is on screen; the periodic worker
         // covers the rest of the time.
         ProcessLifecycleOwner.get().lifecycle.addObserver(object : DefaultLifecycleObserver {

@@ -2,6 +2,8 @@
 <manifest xmlns:android="http://schemas.android.com/apk/res/android"
     xmlns:tools="http://schemas.android.com/tools">
 
+    <!-- Only for the car diagnostics log (CarLog); granted by hand over USB. -->
+    <uses-permission android:name="android.permission.READ_LOGS" tools:ignore="ProtectedPermissions" />
     <uses-permission android:name="android.permission.READ_MEDIA_AUDIO" />
     <uses-permission android:name="android.permission.READ_EXTERNAL_STORAGE" android:maxSdkVersion="32" />
     <uses-permission android:name="android.permission.INTERNET" />
@@ -16,6 +18,11 @@
     <uses-permission android:name="android.permission.WAKE_LOCK" />
     <!-- The lock-screen player: Android lets an app open a screen from the background only with "Display over other apps". -->
     <uses-permission android:name="android.permission.SYSTEM_ALERT_WINDOW" />
+
+    <!-- Seeker (Soulseek), for "Download with Seeker". -->
+    <queries>
+        <package android:name="com.companyname.andriodapp1" />
+    </queries>
 
     <application
         android:name=".HiveApp"
@@ -38,6 +45,11 @@
             </intent-filter>
             <intent-filter>
                 <action android:name="android.intent.action.MUSIC_PLAYER" />
+                <category android:name="android.intent.category.DEFAULT" />
+            </intent-filter>
+            <!-- "Hey Google, play …": the assistant lists Hive as a music app and hands it the words. -->
+            <intent-filter>
+                <action android:name="android.media.action.MEDIA_PLAY_FROM_SEARCH" />
                 <category android:name="android.intent.category.DEFAULT" />
             </intent-filter>
             <!-- Spotify sign-in returns here from the browser. -->
@@ -94,6 +106,18 @@
             tools:node="merge" />
 
         <!-- Album covers for Android Auto, read by the car through per-cover grants. -->
+        <!-- Emoji in the phone's own emoji font (a Galaxy Themes or iPhone-style one included),
+             not the Google emoji font androidx would otherwise draw every emoji with. -->
+        <provider
+            android:name="androidx.startup.InitializationProvider"
+            android:authorities="${applicationId}.androidx-startup"
+            android:exported="false"
+            tools:node="merge">
+            <meta-data
+                android:name="androidx.emoji2.text.EmojiCompatInitializer"
+                tools:node="remove" />
+        </provider>
+
         <provider
             android:name=".playback.CoverProvider"
             android:authorities="${applicationId}.covers"

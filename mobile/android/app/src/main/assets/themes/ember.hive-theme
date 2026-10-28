@@ -1,6 +1,0 @@
-{
-  "format": "hive-theme",
-  "version": 1,
-  "name": "Ember",
-  "css": ":root {\n  --bg: #100b0a;\n  --panel: rgba(28,20,18,.76);\n  --panel-strong: rgba(23,16,14,.9);\n  --border: rgba(255,210,185,.10);\n  --text: #f4ebe6;\n  --text-dim: #b8a39a;\n  --text-dimmer: #806d65;\n  --accent: #e28b63;\n  --accent-soft: rgba(240,145,105,.34);\n  --accent-glow: rgba(226,139,99,.22);\n  --ambient-a: rgba(180,75,35,.19);\n  --ambient-b: rgba(95,42,25,.14);\n  --radius: 14px;\n  --blur: 22px;\n}\n"
-}
