@@ -117,6 +117,7 @@ fun StreamRow(stream: StreamTrack, playing: Boolean, isPlaying: Boolean, full: B
         playing, isPlaying, onClick, number = number, trailing = if (number != null && stream.durationMs > 0) formatDuration(stream.durationMs) else null,
         loved = liked,
         picked = selection != null && stream in selection, picking = selection?.active == true, onPick = selection?.let { s -> { s.toggle(stream) } },
+        onHold = selection?.let { s -> { s.startTrackDrag(stream) } },
         enabled = playable,
         badge = if (full) null else { { StreamBadge(if (playable) "Preview" else "${stream.source} only") } },
         menu = if (vm == null && onRemove == null) null else { expanded, dismiss ->
@@ -297,7 +298,7 @@ fun PlaylistScreen(vm: MainViewModel, id: Long, actions: TrackActions, bottomPad
     HiveGlassLayers(Modifier.fillMaxSize(), content = {
         AlbumBackdrop(colors)
         // Hold a song and drag to pick the ones between (not while reordering).
-        val dragRows = remember(listed, byKey, editing) { if (editing) emptyMap() else listed.mapNotNull { k -> byKey[k]?.track?.let { k as Any to it } }.toMap() }
+        val dragRows = remember(listed, byKey, editing) { if (editing) emptyMap() else listed.mapNotNull { k -> byKey[k]?.let { r -> (r.track ?: r.stream)?.let { k as Any to (it as Any) } } }.toMap() }
         LazyColumn(Modifier.fillMaxSize().nestedScroll(search.connection).songDragSelect(list, dragRows, dragRows.values.toList()), state = list, contentPadding = PaddingValues(bottom = bottomPadding + 16.dp)) {
             item {
                 Column(Modifier.fillMaxWidth().statusBarsPadding().padding(top = 64.dp, start = 24.dp, end = 24.dp, bottom = 18.dp), horizontalAlignment = Alignment.CenterHorizontally) {
@@ -425,7 +426,9 @@ fun HistoryScreen(vm: MainViewModel, actions: TrackActions, bottomPadding: Dp, o
     PickableList(tracks = rows.mapNotNull { it.track }, streams = rows.filter { it.track == null }.mapNotNull { it.stream })
     Column(Modifier.fillMaxSize()) {
         PageBar("", 0f, onBack)
-        LazyColumn(Modifier.fillMaxSize(), contentPadding = PaddingValues(bottom = bottomPadding + 16.dp)) {
+        val historyList = androidx.compose.foundation.lazy.rememberLazyListState()
+        val dragRows: Map<Any, Any> = remember(rows) { rows.mapNotNull { r -> (r.track ?: r.stream)?.let { (r.entry.streamKey.ifBlank { r.entry.trackId.toString() } as Any) to (it as Any) } }.toMap() }
+        LazyColumn(Modifier.fillMaxSize().songDragSelect(historyList, dragRows, dragRows.values.toList()), state = historyList, contentPadding = PaddingValues(bottom = bottomPadding + 16.dp)) {
             item { PanelHeader("Recently played") }
             if (rows.isEmpty()) item { EmptyState("Nothing here yet", "Songs show here after a few seconds of listening.") }
             else {

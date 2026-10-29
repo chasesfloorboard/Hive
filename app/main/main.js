@@ -4682,6 +4682,7 @@ ipcMain.handle('library:scanChanged', async (evt, changedPaths = []) => {
   // could immediately resurrect stale metadata after a restart.
   await persistLibraryDatabase(ordered);
   scanLog('Incremental library scan finished', { requested: requested.length, existing: existing.length, removed: removed.length, tracks: ordered.length });
+  adoptEmbeddedPlayCounts(requested);
   const changedPayload = [];
   for (const { info } of changedResults) {
     const merged = tracksByPath.get(path.resolve(info.path));
@@ -5171,6 +5172,8 @@ ipcMain.handle('library:scan', async (evt, options = {}) => {
   // compatibility migration are refreshed by the bounded Love pass above.
   // There is no separate Favorites scan in the normal library path.
   scanLog('Library scan finished', { total, tracks: ordered.length, skipped, finalizationMs: Date.now() - finalizationStartedAt });
+  const knownBefore = new Set((((await libraryCacheStore.get()) || {}).tracks || []).map(t => t.path));
+  adoptEmbeddedPlayCounts(ordered.map(t => t.path).filter(p => !knownBefore.has(p)));
   const scannedAt = Date.now();
   const result = { tracks: ordered, scannedAt };
   if (cacheNeedsRewrite) {
@@ -5672,10 +5675,23 @@ async function recordPhonePlays(plays) {
   const updates = [];
   await withStatsMutation(async () => {
     const stats = await readJsonSafe(STATS_PATH(), {});
+    const config = await readJsonSafe(CONFIG_PATH(), { folders: [] });
     for (const [trackPath, c] of counted) {
       const entry = stats[trackPath] || { playCount: 0, lastPlayedAt: 0 };
       entry.playCount = Number(entry.playCount || 0) + c.n;
       entry.lastPlayedAt = Math.max(Number(entry.lastPlayedAt || 0), c.last);
+      // Phone plays go into the file's P_count too, as Hive's own plays do (see track:recordPlay),
+      // so a fresh install reading the files counts them.
+      if (config.embedPlayCounts === true) {
+        const previous = Number(entry.pCountEmbeddedLocal);
+        const delta = Math.max(0, entry.playCount - (Number.isFinite(previous) && previous >= 0 ? previous : 0));
+        try {
+          if (delta > 0) await embedPlayCountDelta(trackPath, delta);
+          entry.pCountEmbeddedLocal = entry.playCount;
+        } catch (err) {
+          console.warn('Could not embed phone play count into file:', trackPath, err?.message || err);
+        }
+      }
       stats[trackPath] = entry;
       updates.push({ path: trackPath, playCount: entry.playCount, lastPlayedAt: entry.lastPlayedAt });
     }
@@ -5684,6 +5700,41 @@ async function recordPhonePlays(plays) {
   try { mainWindow?.webContents?.send('library:scanTrack', updates); } catch {}
 }
 
+
+// Songs new to the library take their play count from the file's P_count when
+// Hive has none for them (a fresh install, or files from another Hive), so play
+// counts written into the files survive a reinstall the way Love and ratings do.
+// The files are read outside the stats lock; only the result is applied under it.
+function adoptEmbeddedPlayCounts(paths) {
+  const candidates = (paths || []).filter(p => p && !isVirtualTrackPath(p));
+  if (!candidates.length) return;
+  void (async () => {
+    const before = await readJsonSafe(STATS_PATH(), {});
+    const todo = candidates.filter(p => !(Number(before[p]?.playCount) > 0));
+    const found = new Map();
+    let cursor = 0;
+    await Promise.all(Array.from({ length: Math.min(8, todo.length) }, async () => {
+      while (cursor < todo.length) {
+        const trackPath = todo[cursor++];
+        const n = await readEmbeddedPlayCount(trackPath).catch(() => 0);
+        if (n > 0) found.set(trackPath, n);
+      }
+    }));
+    const updates = [];
+    if (found.size) await withStatsMutation(async () => {
+      const stats = await readJsonSafe(STATS_PATH(), {});
+      for (const [trackPath, n] of found) {
+        if (Number(stats[trackPath]?.playCount) > 0) continue;
+        const entry = { ...(stats[trackPath] || {}), playCount: n, lastPlayedAt: Number(stats[trackPath]?.lastPlayedAt) || 0, pCountEmbeddedLocal: n };
+        stats[trackPath] = entry;
+        updates.push({ path: trackPath, playCount: n, lastPlayedAt: entry.lastPlayedAt });
+      }
+      if (updates.length) await writeJsonSafe(STATS_PATH(), stats);
+    });
+    if (updates.length) try { mainWindow?.webContents?.send('library:scanTrack', updates); } catch {}
+    scanLog('Embedded play counts adopted', { checked: todo.length, adopted: updates.length });
+  })().catch(err => console.warn('Could not adopt embedded play counts:', err?.message || err));
+}
 
 async function readEmbeddedPlayCount(trackPath) {
   const metadataLib = await ensureMM();
@@ -8108,6 +8159,17 @@ function startHiveLink() {
       return result;
     },
     onSongAdded: songPath => notifyLibraryFilesystemChange('hive-link-song', songPath),
+    // The file mirror: a phone keeps its music folder one to one with the first library folder.
+    // Files it replaces or deletes here go to Deleted songs/From phone sync, never away.
+    files: {
+      root: async () => {
+        const config = await readJsonSafe(CONFIG_PATH(), { folders: [] });
+        const first = Array.isArray(config.folders) ? config.folders.find(Boolean) : null;
+        return first ? path.resolve(String(first)) : null;
+      },
+      keepDir: path.join(USER_DATA(), 'Deleted songs', 'From phone sync')
+    },
+    onFileChanged: filePath => notifyLibraryFilesystemChange('hive-link-file', filePath),
     // Tags and covers edited on the phone go through the tag editor's own save
     // queue, so the files, the library and the open window all update as after
     // a Save in Hive. The queue is awaited so a cover's temp file outlives it.
@@ -8133,6 +8195,11 @@ function startHiveLink() {
       return (Array.isArray(events) ? events : []).filter(e => e && e.path && Number(e.playedAt) > since && e.source !== 'hive-mobile' && e.source !== 'musicbee-wrapped');
     },
     recordPlays: recordPhonePlays,
+    // The listening history file itself, so the phone keeps a byte-for-byte copy.
+    getListening: async () => {
+      const bytes = await fsp.readFile(LISTENING_EVENTS_PATH()).catch(() => Buffer.from('[]'));
+      return { version: crypto.createHash('sha1').update(bytes).digest('hex'), bytes };
+    },
     // Plays from the phone count at once (Yearly Wrap, play counts, history);
     // only Love changes wait in the inbox for review.
     acceptPhonePlays: true,

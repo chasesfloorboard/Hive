@@ -88,7 +88,7 @@ The installer sets up Hive's dependencies, Electron runtime, native GStreamer he
 
 Download `Hive-<version>-Win-x64.zip`, extract it, and run `Hive\Hive.exe`. Nothing else to install: the zip includes Hive's audio engine (GStreamer) and Python. Windows 10 or 11, 64-bit.
 
-On Windows, Hive plays the same formats as on Linux (MP3, FLAC, AAC/ALAC/M4A, Ogg Vorbis, Opus, WMA, WavPack, APE, WAV, AIFF and more). Linux-only features: bit-perfect output, output-device selection, and syncing to a phone over MTP (USB file transfer). Spotify and Apple Music songs play in full from YouTube Music inside Hive; Hive never needs the Spotify app. Media keys, the tray icon and Hive Mobile (below) work on both.
+On Windows, Hive plays the same formats as on Linux (MP3, FLAC, AAC/ALAC/M4A, Ogg Vorbis, Opus, WMA, WavPack, APE, WAV, AIFF and more). Linux-only features: bit-perfect output, output-device selection, and syncing to a phone over MTP (USB file transfer). Spotify and Apple Music songs play in full inside Hive; Hive never needs the Spotify app. Media keys, the tray icon and Hive Mobile (below) work on both.
 
 The build is not code-signed yet, so Windows SmartScreen may warn the first time: choose **More info → Run anyway**. Maintainers build the zip on Linux with `scripts/build-windows.sh`.
 

@@ -62,14 +62,6 @@ fun SettingsScreen(vm: MainViewModel, bottomPadding: Dp, onOpenEqualiser: () -> 
                 }
             }
             item {
-                Section("Streaming", "Apple Music and Spotify songs that aren't on this phone.") {
-                    val yt by vm.youTubeMusic.enabled.collectAsStateWithLifecycle()
-                    SettingRow("Full songs from YouTube Music", if (yt) "Found on YouTube Music, as Hive on your PC does. Through your PC when it's on." else "Off: they play as 30-second previews.") {
-                        HiveToggle(listOf("Off", "On"), if (yt) 1 else 0, { i -> vm.youTubeMusic.setEnabled(i == 1) })
-                    }
-                }
-            }
-            item {
                 Section("Spotify", "Sign in to see your playlists and Liked Songs, and to search Spotify. Shared links work without signing in.") { SpotifyRows(vm) }
             }
             item {
@@ -203,7 +195,15 @@ private fun SongSyncRows(vm: MainViewModel) {
     val on by vm.songSyncOn.collectAsStateWithLifecycle()
     val s by vm.songSync.collectAsStateWithLifecycle()
     fun size(bytes: Long) = android.text.format.Formatter.formatShortFileSize(context, bytes)
-    fun songs(n: Int) = if (n == 1) "1 song" else "%,d songs".format(n)
+    // With All files access, song sync keeps the music folders one to one, file for file (FileMirror).
+    val lifecycle = androidx.lifecycle.compose.LocalLifecycleOwner.current
+    var mirrors by remember { mutableStateOf(com.local.hive.mobile.link.FileMirror.available(context)) }
+    androidx.compose.runtime.DisposableEffect(lifecycle) {
+        val o = androidx.lifecycle.LifecycleEventObserver { _, e -> if (e == androidx.lifecycle.Lifecycle.Event.ON_RESUME) mirrors = com.local.hive.mobile.link.FileMirror.available(context) }
+        lifecycle.lifecycle.addObserver(o); onDispose { lifecycle.lifecycle.removeObserver(o) }
+    }
+    val unit = if (mirrors) "file" else "song"
+    fun songs(n: Int) = if (n == 1) "1 $unit" else "%,d ${unit}s".format(n)
     val plan = s.plan
     val planText = plan?.let { p ->
         // Nothing to copy also covers songs deleted on one side on purpose.
@@ -233,6 +233,15 @@ private fun SongSyncRows(vm: MainViewModel) {
         SettingRow("Song sync", status) { HiveButton("Turn off") { vm.setSongSync(false) } }
     }
     s.message?.let { Text(it, style = HiveText.small, color = Color(0xFFFF8A8A), modifier = Modifier.padding(horizontal = 18.dp, vertical = 4.dp)) }
+    if (android.os.Build.VERSION.SDK_INT >= 30) SettingRow(
+        "Keep files one to one",
+        if (mirrors) "On: this phone's music folder and the PC's hold the same files, in the same folders. A file changed on one side is copied to the other; anything replaced is kept in Hive's Deleted songs on the PC."
+        else "Allow “All files access” for Hive and song sync keeps this phone's music folder exactly like the PC's: every file, in the same folders, updated when it changes on either side.",
+    ) {
+        if (!mirrors) HiveButton("Allow") {
+            runCatching { context.startActivity(android.content.Intent(android.provider.Settings.ACTION_MANAGE_APP_ALL_FILES_ACCESS_PERMISSION, android.net.Uri.parse("package:${context.packageName}"))) }
+        }
+    }
     // Songs deleted on one side since they were on both: the user decides what happens on the other.
     val gone by vm.deletions.collectAsStateWithLifecycle()
     if (gone.count > 0) SettingRow("Deleted songs", listOfNotNull(
@@ -544,7 +553,7 @@ private fun CustomThemeDialog(vm: MainViewModel, onDismiss: () -> Unit) {
     var editingAccent by remember { mutableStateOf(false) }
     val target = if (editingAccent) accent else bg
     fun set(color: Color) { if (editingAccent) accent = color else bg = color }
-    val preview = remember(bg, accent) { com.local.hive.mobile.ui.theme.HiveColors.fromCss(com.local.hive.mobile.ui.theme.ThemeMaker.css(bg, accent)) }
+    val preview = remember(bg, accent) { com.local.hive.mobile.ui.theme.HiveColors.fromCss(com.local.hive.mobile.ui.theme.ThemeMaker.css(bg, accent, exact = true)) }
 
     HiveDialog(onDismiss, wide = true, spacing = 12.dp) {
         Text("Custom theme", style = HiveText.year, color = c.text)
@@ -561,6 +570,8 @@ private fun CustomThemeDialog(vm: MainViewModel, onDismiss: () -> Unit) {
             }
             Text("Now playing", style = HiveText.small, color = preview.accent)
         }
+        var bgHsl by remember { mutableStateOf(com.local.hive.mobile.ui.theme.toHsl(bg)) }
+        var accentHsl by remember { mutableStateOf(com.local.hive.mobile.ui.theme.toHsl(accent)) }
         HiveToggle(listOf("Background", "Accent"), if (editingAccent) 1 else 0, { editingAccent = it == 1 })
         // Swatches: bright, soft and deep colours for either.
         val swatches = remember {
@@ -570,16 +581,25 @@ private fun CustomThemeDialog(vm: MainViewModel, onDismiss: () -> Unit) {
         }
         androidx.compose.foundation.layout.FlowRow(horizontalArrangement = Arrangement.spacedBy(8.dp), verticalArrangement = Arrangement.spacedBy(8.dp)) {
             swatches.forEach { sw ->
-                Box(Modifier.size(34.dp).clip(CircleShape).background(sw).border(if (sw == target) 3.dp else 1.dp, if (sw == target) c.accent else c.border, CircleShape).clickable { set(sw) })
+                Box(Modifier.size(34.dp).clip(CircleShape).background(sw).border(if (sw == target) 3.dp else 1.dp, if (sw == target) c.accent else c.border, CircleShape).clickable {
+                    set(sw); if (editingAccent) accentHsl = com.local.hive.mobile.ui.theme.toHsl(sw) else bgHsl = com.local.hive.mobile.ui.theme.toHsl(sw)
+                })
             }
         }
-        // Fine-tuning, as hue, colour (saturation) and brightness (lightness).
-        val (h, sat, light) = remember(target) { com.local.hive.mobile.ui.theme.toHsl(target) }
-        HslSlider("Hue", h / 360f) { set(com.local.hive.mobile.ui.theme.hsl(it * 360f, sat, light, 1f)) }
-        HslSlider("Colour", sat) { set(com.local.hive.mobile.ui.theme.hsl(h, it, light, 1f)) }
-        HslSlider("Brightness", light) { set(com.local.hive.mobile.ui.theme.hsl(h, sat, it, 1f)) }
+        // Fine-tuning, as hue, colour (saturation) and brightness (lightness), anywhere on each. The
+        // sliders keep their own places: black, white and greys don't hold a hue to read back.
+        val (h, sat, light) = if (editingAccent) accentHsl else bgHsl
+        fun tune(next: Triple<Float, Float, Float>) {
+            if (editingAccent) accentHsl = next else bgHsl = next
+            set(com.local.hive.mobile.ui.theme.hsl(next.first, next.second, next.third, 1f))
+        }
+        HslSlider("Hue", h / 360f) { tune(Triple(it * 360f, sat, light)) }
+        HslSlider("Colour", sat) { tune(Triple(h, it, light)) }
+        HslSlider("Brightness", light) { tune(Triple(h, sat, it)) }
         val stands = com.local.hive.mobile.ui.theme.HiveColors.contrast(accent, bg)
-        Text(if (stands >= 3f) "The accent stands out well on this background." else "The accent is close to the background; Hive will darken or lighten it so buttons and text stay readable.", style = HiveText.small, color = c.textDim)
+        // Any colours are allowed; a pair that's hard to read is only pointed out.
+        if (stands < 3f) Text("Heads up: the accent is close to the background, so buttons and accent-coloured text might be hard to see.", style = HiveText.small, color = Color(0xFFFF8A8A))
+        else Text("The accent stands out well on this background.", style = HiveText.small, color = c.textDim)
         Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(10.dp, Alignment.End)) {
             HiveButton("Cancel") { onDismiss() }
             HiveButton("Use these colours", primary = true) { vm.themes.setCustom(bg, accent); onDismiss() }

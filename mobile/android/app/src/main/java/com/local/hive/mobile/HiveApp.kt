@@ -67,7 +67,7 @@ class HiveApp : Application(), coil3.SingletonImageLoader.Factory {
     val scrobbler by lazy { com.local.hive.mobile.stream.Scrobbler(this) }
     val artistImages by lazy { com.local.hive.mobile.stream.ArtistImages(this) }
     val linkStore by lazy { LinkStore(this) }
-    val sync: SyncEngine by lazy { SyncEngine(database.dao(), linkStore, HiveLinkClient(), scope, afterSync = { scope.launch { sync.pcConnection()?.let { pcEdits.send(it) } }; if (linkStore.songSync) com.local.hive.mobile.link.SongSync.schedule(this, now = true) }, onThemes = { themes.setPcThemes(it.themes, it.current) }, streamLoves = streamLoves) }
+    val sync: SyncEngine by lazy { SyncEngine(database.dao(), linkStore, HiveLinkClient(), scope, afterSync = { scope.launch { sync.pcConnection()?.let { pcEdits.send(it) } }; if (linkStore.songSync) com.local.hive.mobile.link.SongSync.schedule(this, now = true) }, onThemes = { themes.setPcThemes(it.themes, it.current) }, streamLoves = streamLoves, saveListening = { com.local.hive.mobile.data.ListeningFile.save(this, it) }) }
     val streamLoves by lazy { com.local.hive.mobile.link.StreamLoves(this) }
     /** Tag and cover edits on their way to Hive on the PC. */
     val pcEdits by lazy { com.local.hive.mobile.link.PcEdits(this, database.dao(), linkStore) }

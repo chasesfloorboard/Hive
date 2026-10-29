@@ -1,3 +1,14 @@
+# 2.1.0 — Phone and computer one to one, play history everywhere, Hive Mobile grows up
+
+- **Song sync keeps the music folders one to one, file for file.** With "All files access" for Hive Mobile (Settings → Song sync → Keep files one to one), the phone's music folder and Hive's library folder hold the same files in the same folders. A file changed on one side (a play count, a Favorite, a tag edit, a new download) is copied to the other; when both changed, the newer wins and the phone's copy is kept on the computer. Files deleted on one side are only ever deleted on the other after you say so. Nothing is destroyed: whatever the computer replaces or deletes for the phone goes to `Hive Data/Deleted songs/From phone sync/`.
+- **Listening history on both sides.** Phone plays count at once in Hive's play counts, history and Yearly Wrap, and are written into each file's play count. The phone keeps a byte-for-byte copy of Hive's history file, `Documents/Hive/listening-events.json`.
+- **A fresh install keeps your counts.** Favorites and ratings already lived in the files; now play counts are read back from them too, so wiping the computer and importing the library brings everything back.
+- **Full songs just play.** Songs you don't own play in full on the computer and the phone, with nothing to switch on.
+- **Hive Mobile 2.13:** edit tags and covers, auto-tag, lyrics and smart playlists; hold a song and drag to pick (streamed songs too, drag back to un-pick) with a small Actions pill; a colourful theme set and a Custom theme with any colours; seamless crossfade; the lock-screen player lets the screen sleep like the lock screen; Favorites among your playlists; Soulseek downloads that skip songs you already have a playable copy of.
+- **Hive (computer):** a colourful theme set with the older themes behind a switch; long titles glide in the player bar and tabs; Ctrl+A picks everything and a click lets go (no Select all button); Hive never starts the Spotify app; tag and cover edits from a trusted phone; Soulseek downloads.
+- **Windows:** everything above, including the phone link and the file mirror (checked on the Windows build); a song the phone replaces is swapped in even while it's playing.
+- **Fixes:** Python byte-code is no longer part of the source; Hive Link's tests no longer fail at random on busy machines.
+
 # 2.0.0 — MusicBee's features and settings, in Hive
 
 Hive 2.0 rebuilds most of what MusicBee does well, in Hive's own UI. See `docs/HIVE-2.0.md` for how each part works.

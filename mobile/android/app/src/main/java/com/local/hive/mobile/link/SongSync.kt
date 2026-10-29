@@ -181,7 +181,7 @@ data class SongSyncState(
 )
 
 /** A song deleted on one side since it was on both: [phone] is the copy left on this phone, or [pc] the one left on the PC. */
-data class GoneSong(val key: String, val title: String, val artist: String, val album: String, val phone: Track? = null, val pc: PcTrack? = null, val canDelete: Boolean = false)
+data class GoneSong(val key: String, val title: String, val artist: String, val album: String, val phone: Track? = null, val pc: PcTrack? = null, val canDelete: Boolean = false, val file: String? = null)
 
 /** Deleted songs waiting for the user: delete them on the other side too, copy them back, or leave them. */
 data class Deletions(val fromPc: List<GoneSong> = emptyList(), val fromPhone: List<GoneSong> = emptyList()) {
@@ -204,6 +204,8 @@ class SongSync(
     private val sync: SyncEngine,
 ) {
     private val mutex = Mutex()
+    /** The file mirror: used instead of song matching when Hive offers it and Hive may write the music folder. */
+    private val mirror = FileMirror(context)
     private val _state = MutableStateFlow(SongSyncState())
     val state: StateFlow<SongSyncState> = _state.asStateFlow()
     private val _deletions = MutableStateFlow(Deletions())
@@ -229,6 +231,25 @@ class SongSync(
         store.announcedDeleted = announced + fresh.map { it.key }
         announce(found)
     }
+
+    /** The file mirror's files gone from one side: asked about like songs, by their paths. */
+    private fun noteFileDeletions(plan: MirrorPlan) {
+        val left = store.leftDeleted
+        fun gone(path: String) = GoneSong(
+            FILE_KEY + path, path.substringAfterLast('/').substringBeforeLast('.'), path.substringBeforeLast('/', ""), "",
+            canDelete = true, file = path,
+        ).takeIf { it.key !in left }
+        val found = Deletions(fromPc = plan.goneFromPc.mapNotNull { gone(it) }, fromPhone = plan.goneFromPhone.mapNotNull { gone(it) })
+        _deletions.value = found
+        if (found.count == 0) runCatching { context.getSystemService(NotificationManager::class.java).cancel(DELETIONS_NOTIFICATION_ID) }
+        val announced = store.announcedDeleted
+        val fresh = (found.fromPc + found.fromPhone).filter { it.key !in announced }
+        if (fresh.isEmpty()) return
+        store.announcedDeleted = announced + fresh.map { it.key }
+        announce(found)
+    }
+
+    private fun leftFiles() = store.leftDeleted.filter { it.startsWith(FILE_KEY) }.mapTo(HashSet()) { it.removePrefix(FILE_KEY) }
 
     private fun announce(d: Deletions) {
         val nm = context.getSystemService(NotificationManager::class.java)
@@ -279,7 +300,8 @@ class SongSync(
 
     /** Copy these back to the side they were deleted on, so both sides match again. */
     suspend fun copyBack(songs: List<GoneSong>) {
-        dao.forgetSyncedSongs(songs.map { it.key })
+        mirror.forget(songs.mapNotNull { it.file })
+        dao.forgetSyncedSongs(songs.filter { it.file == null }.map { it.key })
         drop(songs)
         if (store.songSync) schedule(context)
     }
@@ -293,11 +315,22 @@ class SongSync(
     /** Sends these (deleted on this phone) to the Trash on the PC. Returns how many went. */
     suspend fun deleteOnPc(songs: List<GoneSong>): Int {
         val conn = sync.pcConnection() ?: throw IOException("Can't reach Hive on the PC. Is it open?")
-        val deleted = client.deleteSongs(conn, songs.filter { it.canDelete }.mapNotNull { it.pc?.id }).toSet()
-        val gone = songs.filter { it.pc?.id in deleted }
+        val files = songs.mapNotNull { it.file }
+        val filesGone = if (files.isEmpty()) emptySet() else client.deleteFiles(conn, files).toSet().also { mirror.forget(it) }
+        val deleted = client.deleteSongs(conn, songs.filter { it.canDelete && it.file == null }.mapNotNull { it.pc?.id }).toSet()
+        val gone = songs.filter { it.pc?.id in deleted || it.file in filesGone }
         drop(gone)
         announceDeleted(gone, "on your PC (in its Trash)")
-        return deleted.size
+        return gone.size
+    }
+
+    /** Files deleted on the PC, deleted from this phone too (the user agreeing). Returns how many went. */
+    fun deleteFilesOnPhone(songs: List<GoneSong>): Int {
+        val deleted = mirror.deleteOnPhone(songs.mapNotNull { it.file }).toSet()
+        val gone = songs.filter { it.file in deleted }
+        drop(gone)
+        announceDeleted(gone, "from this phone")
+        return gone.size
     }
 
     /** These were deleted from this phone (after Android asked the user). */
@@ -311,9 +344,25 @@ class SongSync(
     /** Works out what would be copied, without copying anything. */
     suspend fun check(): SongPlan? = mutex.withLock {
         _state.update { it.copy(checking = true, message = null) }
-        try { planNow().first } catch (e: CancellationException) { throw e } catch (e: Exception) {
+        try {
+            val conn = sync.pcConnection() ?: throw IOException("Can't reach Hive on the PC. Is it open?")
+            val info = client.info(conn)
+            if (mirrors(info)) { mirrorPlan(conn, info); null } else planNow().first
+        } catch (e: CancellationException) { throw e } catch (e: Exception) {
             _state.update { it.copy(message = e.message ?: e.javaClass.simpleName) }; null
         } finally { _state.update { it.copy(checking = false) } }
+    }
+
+    /** Whether this sync keeps the music folders one to one, file for file (see FileMirror). */
+    private fun mirrors(info: InfoResponse) = info.files && FileMirror.available(context) && mirror.root() != null
+
+    private suspend fun mirrorPlan(conn: HiveLinkClient.Connection, info: InfoResponse): MirrorPlan {
+        val plan = mirror.check(client, conn, leftFiles())
+        android.util.Log.i("HiveSongSync", "file mirror: ${plan.toPhone.size} to the phone, ${plan.toPc.size} to the PC, ${plan.goneFromPc.size} gone from the PC, ${plan.goneFromPhone.size} gone from the phone, ${plan.agreed.size} the same" +
+            (plan.toPc + plan.toPhone + plan.goneFromPc + plan.goneFromPhone).take(10).joinToString("") { "\n  $it" })
+        noteFileDeletions(plan)
+        _state.update { it.copy(plan = PlanSummary(plan.toPhone.size, plan.bytesToPhone, plan.toPc.size, plan.bytesToPc, true)) }
+        return plan
     }
 
     private suspend fun planNow(): Pair<SongPlan, HiveLinkClient.Connection> {
@@ -332,6 +381,9 @@ class SongSync(
         if (!store.songSync) return true
         _state.update { it.copy(running = true, done = 0, total = 0, failed = 0, current = "", message = null) }
         try {
+            val conn0 = sync.pcConnection() ?: throw IOException("Can't reach Hive on the PC. Is it open?")
+            val info0 = client.info(conn0)
+            if (mirrors(info0)) return@withLock runMirror(conn0, info0, onProgress)
             sendReplacements()
             val (plan, conn) = planNow()
             val pcTakesSongs = _state.value.plan?.pcTakesSongs == true
@@ -360,6 +412,20 @@ class SongSync(
         } finally {
             _state.update { it.copy(running = false, current = "") }
         }
+    }
+
+    /** The file mirror's run: everything changed on one side copied to the other. */
+    private suspend fun runMirror(conn: HiveLinkClient.Connection, info: InfoResponse, onProgress: suspend (SongSyncState) -> Unit): Boolean {
+        val plan = mirrorPlan(conn, info)
+        _state.update { it.copy(total = plan.toPhone.size + plan.toPc.size) }
+        val free = MusicHome.freeBytes(context, (MusicHome.find(context) ?: MusicHome.Place(MediaStore.VOLUME_EXTERNAL_PRIMARY, "Hive")).volume)
+        val budget = if (free == null) Long.MAX_VALUE else free - 2L * 1024 * 1024 * 1024
+        val result = mirror.run(client, conn, leftFiles(), budget) { label, work -> step(label, onProgress, work) }
+        if (plan.bytesToPhone > budget) _state.update { it.copy(message = "This phone is nearly full, so some files from the PC weren't copied.") }
+        // New files on the PC are new songs there: matching again (once Hive has scanned them)
+        // lets their Love and plays line up.
+        if (result.plan.toPc.isNotEmpty()) sync.matchAgainNextSync()
+        return true
     }
 
     /**
@@ -400,14 +466,17 @@ class SongSync(
         if (gone.isNotEmpty()) announceDeleted(gone.map { GoneSong("", it.title, it.artist, it.album, pc = it) }, "on your PC (in its Trash), replaced by a better copy")
     }
 
-    private suspend fun step(label: String, onProgress: suspend (SongSyncState) -> Unit, work: suspend () -> Unit) {
+    /** Runs one copy; false when it failed (counted, logged, and the sync goes on). */
+    private suspend fun step(label: String, onProgress: suspend (SongSyncState) -> Unit, work: suspend () -> Unit): Boolean {
         _state.update { it.copy(current = label) }
         onProgress(_state.value)
-        try { work() } catch (e: CancellationException) { throw e } catch (e: Exception) {
+        val ok = try { work(); true } catch (e: CancellationException) { throw e } catch (e: Exception) {
             android.util.Log.w("HiveSongSync", "$label: ${e.message}")
             _state.update { it.copy(failed = it.failed + 1) }
+            false
         }
         _state.update { it.copy(done = it.done + 1) }
+        return ok
     }
 
     private suspend fun download(conn: HiveLinkClient.Connection, song: PcTrack, plan: SongPlan) {
@@ -467,6 +536,8 @@ class SongSync(
         private const val DELETIONS_NOTIFICATION_ID = 4712
         private const val UNUSUAL_DELETIONS = 40
         private const val DELETED_NOTIFICATION_ID = 4713
+        /** Deletion keys of the file mirror's files: "f:" and the file's path. */
+        const val FILE_KEY = "f:"
 
         /**
          * Runs song sync in the background on Wi-Fi (or any unmetered network). [now]: Hive was

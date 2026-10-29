@@ -52,7 +52,7 @@ class SoulseekSettings(context: Context) {
     }
     val configured get() = username.isNotBlank() && password.isNotBlank()
 
-    /** Where downloads go, said plainly: "Music/beautiful sounds pc on the SD card". */
+    /** Where downloads go, said plainly: "Music/My Music on the SD card". */
     fun where(context: Context): String {
         val volume = volumeNow(context)
         val storage = if (volume == MediaStore.VOLUME_EXTERNAL_PRIMARY) "the phone" else storages(context).firstOrNull { it.first == volume }?.second?.let { "the $it" } ?: "the SD card"
@@ -115,6 +115,12 @@ class SoulseekWorker(context: Context, params: WorkerParameters) : CoroutineWork
         if (downloads.jobs.value.none { it.id == request.id }) downloads.add(jobFor(request))
         // A run that was stopped (Hive closed by the system) starts over on the songs not yet done.
         downloads.update(request.id) { j -> j.copy(state = "searching", message = "Searching Soulseek…", songs = j.songs.map { if (it.state == "done") it else DownloadSong(it.title) }) }
+        // Songs the library already has a playable copy of aren't downloaded again (a better copy
+        // meant to replace one, [SoulseekRequest.Track.replaces], still is).
+        val have = alreadyHave(request)
+        for (i in have) downloads.song(request.id, i) { it.copy(state = "done", percent = 100, from = "already in your library") }
+        if (have.isNotEmpty()) log("Already in the library, not downloaded: " + have.joinToString { request.tracks[it].title })
+        if (have.size == request.tracks.size) { finish("${request.label} is already in your library", request, "done"); return Result.success() }
         if (!settings.configured) { finish("Sign in to Soulseek to download", request, "failed"); return Result.success() }
         title = "Finding ${request.label}"
         line = "Searching Soulseek…"
@@ -216,6 +222,23 @@ class SoulseekWorker(context: Context, params: WorkerParameters) : CoroutineWork
             client.close()
         }
         return Result.success()
+    }
+
+    /**
+     * The requested songs the library already has a playable copy of: same title, the artist among
+     * its artists, a real length (Android could read it), and the same length give or take 10 s.
+     */
+    private suspend fun alreadyHave(request: SoulseekRequest): Set<Int> {
+        val library = runCatching { (applicationContext as com.local.hive.mobile.HiveApp).database.dao().allTracks() }.getOrDefault(emptyList())
+        val artists = com.local.hive.mobile.link.TrackMatcher.artistParts(request.artist)
+        val byTitle = library.filter { it.durationMs > 0 && it.sizeBytes > 0 }.groupBy { com.local.hive.mobile.link.TrackMatcher.normalize(it.title) }
+        return request.tracks.indices.filterTo(HashSet()) { i ->
+            val t = request.tracks[i]
+            t.replaces == null && byTitle[com.local.hive.mobile.link.TrackMatcher.normalize(t.title)].orEmpty().any { have ->
+                com.local.hive.mobile.link.TrackMatcher.artistParts(have.artist.ifBlank { have.albumArtist }).any { it in artists } &&
+                    (t.durationMs <= 0 || kotlin.math.abs(have.durationMs - t.durationMs) <= 10_000)
+            }
+        }
     }
 
     /** "Artist Album", then the album alone (some folders leave the artist out). */

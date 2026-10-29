@@ -122,7 +122,7 @@ fun AppleMusicScreen(vm: MainViewModel, bottomPadding: Dp, onBack: () -> Unit, o
                 Column(Modifier.padding(start = 20.dp, end = 20.dp, top = 2.dp, bottom = 12.dp)) {
                     HiveLabel("Browse")
                     Text("Apple Music", style = HiveText.viewTitle, color = c.text)
-                    Text(if (vm.fullSongs.collectAsStateWithLifecycle().value) "Songs in your library play from your files; the rest play in full from YouTube Music." else "Songs in your library play from your files; the rest play Apple's 30-second previews.", style = HiveText.small, color = c.textDim, modifier = Modifier.padding(top = 4.dp))
+                    Text(if (vm.fullSongs.collectAsStateWithLifecycle().value) "Songs in your library play from your files; the rest play in full." else "Songs in your library play from your files; the rest play Apple's 30-second previews.", style = HiveText.small, color = c.textDim, modifier = Modifier.padding(top = 4.dp))
                 }
             }
             item {
@@ -408,7 +408,7 @@ private fun ServiceCollectionScreen(
                                 }
                             }
                             val full by vm.fullSongs.collectAsStateWithLifecycle()
-                            Text(if (full) "Songs you don't own play in full from YouTube Music." else "Songs you don't own play as 30-second previews. Turn on full songs in Settings › Streaming.",
+                            Text(if (full) "Songs you don't own play in full." else "Songs you don't own play as 30-second previews.",
                                 style = HiveText.small, color = c.textDimmer, textAlign = TextAlign.Center, modifier = Modifier.padding(top = 12.dp))
                         }
                     }
@@ -473,7 +473,7 @@ fun SpotifyScreen(vm: MainViewModel, bottomPadding: Dp, onBack: () -> Unit, onOp
                 Column(Modifier.padding(start = 20.dp, end = 20.dp, top = 2.dp, bottom = 12.dp)) {
                     HiveLabel(if (user.signedIn) "Signed in as ${user.name}" else "Browse")
                     Text("Spotify", style = HiveText.viewTitle, color = c.text)
-                    Text(if (vm.fullSongs.collectAsStateWithLifecycle().value) "Songs in your library play from your files; the rest play in full from YouTube Music." else "Songs in your library play from your files; the rest play Spotify's 30-second previews where Spotify shares them.", style = HiveText.small, color = c.textDim, modifier = Modifier.padding(top = 4.dp))
+                    Text(if (vm.fullSongs.collectAsStateWithLifecycle().value) "Songs in your library play from your files; the rest play in full." else "Songs in your library play from your files; the rest play Spotify's 30-second previews where Spotify shares them.", style = HiveText.small, color = c.textDim, modifier = Modifier.padding(top = 4.dp))
                 }
             }
             item { SearchField(query, { query = it; hint = null }, "Search Spotify, or paste a link", onSubmit = ::submit, onClear = { query = ""; submitted = ""; hint = null }) }

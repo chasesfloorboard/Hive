@@ -169,8 +169,11 @@ class EqualiserProcessor : BaseAudioProcessor() {
     fun copyTo(other: EqualiserProcessor) { other.setCurve(target); other.setSongGain(songGain) }
 
     // A crossfade's fade-in: armed before the player seeks to the next song, it
-    // starts with the flush that seek causes, so it begins on that song's first sample.
+    // begins on that song's first sample. The seek's flush makes it pending, and the
+    // first audio after it starts it: a song in another format is flushed twice
+    // (the seek, then the new format), and the second flush mustn't lose the fade.
     @Volatile private var armedFadeMs = 0
+    private var pendingFadeMs = 0
     private var fadeFrames = 0
     private var fadeDone = 0
 
@@ -207,6 +210,7 @@ class EqualiserProcessor : BaseAudioProcessor() {
         if (dirty) rebuild()
         val size = inputBuffer.remaining()
         if (size == 0) return
+        if (pendingFadeMs > 0) { fadeFrames = (rate.toLong() * pendingFadeMs / 1000).toInt(); fadeDone = 0; pendingFadeMs = 0 }
         val out = replaceOutputBuffer(size).order(ByteOrder.nativeOrder())
         val input = inputBuffer.order(ByteOrder.nativeOrder())
         val fading = fadeDone < fadeFrames
@@ -238,7 +242,8 @@ class EqualiserProcessor : BaseAudioProcessor() {
         z1.fill(0f); z2.fill(0f)
         val ms = armedFadeMs
         armedFadeMs = 0
-        fadeFrames = (rate.toLong() * ms / 1000).toInt(); fadeDone = 0
+        if (ms > 0) pendingFadeMs = ms
+        fadeFrames = 0; fadeDone = 0
     }
     override fun onReset() { filters = emptyArray(); z1 = FloatArray(0); z2 = FloatArray(0); dirty = true }
 }

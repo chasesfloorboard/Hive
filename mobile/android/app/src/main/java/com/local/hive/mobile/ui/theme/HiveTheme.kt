@@ -62,7 +62,7 @@ data class HiveColors(
             val vars = ThemeCss.rootVariables(css)
             fun c(name: String, fallback: Color) = vars[name]?.let { ThemeCss.parseColor(it, vars) } ?: fallback
             fun d(name: String, fallback: Dp) = vars[name]?.let { ThemeCss.parsePx(it) }?.dp ?: fallback
-            return readable(HiveColors(
+            return readable(exactAccent = vars.containsKey("accent-exact"), t = HiveColors(
                 bg = c("bg", base.bg),
                 panel = c("panel", base.panel),
                 panelStrong = c("panel-strong", base.panelStrong),
@@ -87,11 +87,12 @@ data class HiveColors(
          * the others move toward white on dark themes or black on light ones,
          * just far enough. (MusicBee skins especially set text near their background.)
          */
-        fun readable(t: HiveColors): HiveColors = t.copy(
+        fun readable(t: HiveColors, exactAccent: Boolean = false): HiveColors = t.copy(
             text = contrasted(t.text, t.bg, 4.5f),
             textDim = contrasted(t.textDim, t.bg, 3f),
             textDimmer = contrasted(t.textDimmer, t.bg, 2f),
-            accent = contrasted(t.accent, t.bg, 3f),
+            // A Custom theme's accent is left exactly as the user picked it.
+            accent = if (exactAccent) t.accent else contrasted(t.accent, t.bg, 3f),
         )
 
         fun contrast(a: Color, b: Color): Float {
@@ -253,7 +254,7 @@ class ThemeStore(private val context: Context) {
     )
     /** The Custom theme's background and accent. */
     val custom: StateFlow<Pair<Color, Color>> = _custom.asStateFlow()
-    private fun customPack() = ThemePack(CUSTOM, ThemeMaker.css(_custom.value.first, _custom.value.second))
+    private fun customPack() = ThemePack(CUSTOM, ThemeMaker.css(_custom.value.first, _custom.value.second, exact = true))
 
     /** Shows the Custom theme as last saved. */
     fun applyCustom() = apply(customPack().css, CUSTOM)
@@ -286,17 +287,10 @@ class ThemeStore(private val context: Context) {
     val accentFromCover: StateFlow<Boolean> = _accentFromCover.asStateFlow()
     fun setAccentFromCover(on: Boolean) { prefs.edit { putBoolean("accentFromCover", on) }; _accentFromCover.value = on }
 
-    fun apply(css: String, name: String = "Custom") {
-        show(css, name)
-        // Choosing a theme shows its own accent; the cover can take over again in Appearance.
-        setAccentFromCover(false)
-    }
+    // Switching themes leaves the Accent choice (Theme or Cover) as the user set it.
+    fun apply(css: String, name: String = "Custom") = show(css, name)
 
-    fun reset() {
-        show(null, YOUR_THEME)
-        // Your Hive theme takes its accent from the playing cover, as Hive does on the PC.
-        setAccentFromCover(true)
-    }
+    fun reset() = show(null, YOUR_THEME)
 
     /** Shows a theme (null css: Your Hive theme) without touching the Accent choice. */
     private fun show(css: String?, name: String) {

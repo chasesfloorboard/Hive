@@ -31,3 +31,7 @@ Hive Data/
 .env
 *.pem
 *.key
+
+# Python byte-code: rebuilt on the fly, and it records local file paths.
+__pycache__/
+*.pyc

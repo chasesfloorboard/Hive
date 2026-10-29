@@ -28,6 +28,20 @@
 //   GET  /api/stream/song?key=…    a song Hive doesn't have (Apple Music,
 //                                  Spotify), streamed from YouTube Music
 //                                  through Hive, as Hive itself plays them
+//   GET  /api/listening?have=      Hive's listening history file, byte for byte
+//                                  (every play: Hive's, imports and the phone's),
+//                                  so the phone keeps the same file; 304 when
+//                                  the phone already has this version
+//   GET  /api/files                every file in Hive's library folder (path, size,
+//                                  modified), so a phone can keep its music folder
+//                                  one to one with it (trusted phones only, as are:)
+//   GET  /api/files/get?p=         one of those files
+//   PUT  /api/files?p=&m=          a file from the phone, saved at that path; a file
+//                                  already there goes to Hive's Deleted songs first
+//   POST /api/files/keep?p=        a phone copy that lost to a newer one, kept in
+//                                  Hive's Deleted songs (nothing put in the library)
+//   POST /api/files/delete         files deleted on the phone ({ p: [...] }), moved
+//                                  to Hive's Deleted songs
 //   GET  /api/wrap/years           years Hive has a Yearly Wrap for
 //   GET  /api/wrap?year=           one year's Wrap, exactly as Hive shows it
 //                                  (Hive's plays, imports and the phone's), so
@@ -74,6 +88,7 @@ const path = require('path');
 const { Readable } = require('stream');
 const zlib = require('zlib');
 const { createIndex, normalize, artistParts } = require('./song-match');
+const fileMirror = require('./file-mirror');
 
 const PROTOCOL_VERSION = 1;
 const DEFAULT_PORT = 47800;
@@ -163,7 +178,7 @@ function lanAddresses() {
   return out;
 }
 
-function createHiveLink({ dataDir, getTracks, setLove, onPaired, streamSong = null, coversDir = null, remote = null, getPlaylists = null, getPlays = null, recordPlays = null, spotifySearch = null, songTarget = null, onSongAdded = () => {}, acceptPhonePlays = false, getWrap = null, getWrapYears = null, getThemes = null, getCurrentTheme = null, onPairRequest = null, deleteSongs = null, editSongs = null, getStreamLoves = null, applyStreamLoves = null, onInbox = () => {}, log = () => {}, port = DEFAULT_PORT, discoveryPort = DISCOVERY_PORT, acceptPhoneChanges = false }) {
+function createHiveLink({ dataDir, getTracks, setLove, onPaired, streamSong = null, coversDir = null, remote = null, getPlaylists = null, getPlays = null, recordPlays = null, spotifySearch = null, songTarget = null, onSongAdded = () => {}, acceptPhonePlays = false, getWrap = null, getWrapYears = null, getListening = null, files = null, onFileChanged = () => {}, getThemes = null, getCurrentTheme = null, onPairRequest = null, deleteSongs = null, editSongs = null, getStreamLoves = null, applyStreamLoves = null, onInbox = () => {}, log = () => {}, port = DEFAULT_PORT, discoveryPort = DISCOVERY_PORT, acceptPhoneChanges = false }) {
   const statePath = path.join(dataDir, 'hive-link.json');
   let state = loadState();
   let server = null;
@@ -228,6 +243,9 @@ function createHiveLink({ dataDir, getTracks, setLove, onPaired, streamSong = nu
       // Song sync: whether Hive takes song files from the phone.
       songs: { receive: !!songTarget && state.receiveSongs },
       wrap: !!getWrap,
+      listening: !!getListening,
+      // The file mirror (see file-mirror.js): only for a phone Hive trusts.
+      files: !!files,
       themes: !!getThemes,
       // Phone changes waiting for the user in Hive.
       inbox: inboxSummary()
@@ -705,6 +723,19 @@ function createHiveLink({ dataDir, getTracks, setLove, onPaired, streamSong = nu
       }
       case 'GET /api/plays':
         return send(res, 200, await playsSince(num(url.searchParams.get('since'))));
+      case 'GET /api/files':
+      case 'GET /api/files/get':
+      case 'PUT /api/files':
+      case 'POST /api/files/keep':
+      case 'POST /api/files/delete':
+        return mirrorFiles(req, res, url, device);
+      case 'GET /api/listening': {
+        if (!getListening) return send(res, 404, { error: 'This Hive shares no listening history.' });
+        const { version, bytes } = await getListening();
+        if (url.searchParams.get('have') === version) { res.writeHead(304, { 'X-Hive-Version': version }); return res.end(); }
+        res.writeHead(200, { 'Content-Type': 'application/json; charset=utf-8', 'Content-Length': bytes.length, 'X-Hive-Version': version });
+        return res.end(bytes);
+      }
       case 'GET /api/spotify/search': {
         if (!spotifySearch) return send(res, 404, { error: 'This Hive cannot search Spotify.' });
         const r = await spotifySearch(String(url.searchParams.get('q') || '').slice(0, 200));
@@ -824,6 +855,55 @@ function createHiveLink({ dataDir, getTracks, setLove, onPaired, streamSong = nu
     finally { fs.rm(file, { force: true }, () => {}); }
     log('Hive Link: phone changed a cover', device.name, songs.length);
     return send(res, 200, { edited: songs.map(trackIdFor) });
+  }
+
+  // ---- the file mirror (see file-mirror.js) ---------------------------------
+
+  async function mirrorFiles(req, res, url, device) {
+    const refuse = (status, error) => { req.resume(); return send(res, status, { error }); };
+    if (!files) return refuse(404, "This Hive doesn't share its files.");
+    if (!trusted(device)) return refuse(403, 'Apply this phone\'s changes in Hive once (Settings › Connections) before it can keep its files one to one.');
+    const root = await files.root();
+    if (!root) return refuse(503, 'Hive has no library folder yet.');
+    const route = `${req.method} ${url.pathname}`;
+    if (route === 'GET /api/files') return send(res, 200, { files: await fileMirror.list(root) });
+    if (route === 'POST /api/files/delete') {
+      const body = await readJson(req);
+      const deleted = [];
+      for (const rel of (Array.isArray(body?.p) ? body.p : []).slice(0, 5000).map(String)) {
+        const abs = fileMirror.safeRel(root, rel);
+        if (!abs || !fs.existsSync(abs)) continue;
+        try { await fileMirror.archive(root, files.keepDir, rel); deleted.push(rel); onFileChanged(abs); } catch (err) { log('Hive Link: file not deleted', rel, err?.message || err); }
+      }
+      log('Hive Link: phone deleted files', device.name, deleted.length);
+      return send(res, 200, { deleted });
+    }
+    const rel = String(url.searchParams.get('p') || '');
+    const abs = fileMirror.safeRel(root, rel);
+    if (!abs || fileMirror.HIVE_TEMP.test(abs)) return refuse(400, 'Not a path inside the library.');
+    if (route === 'GET /api/files/get') {
+      let st;
+      try { st = await fs.promises.stat(abs); } catch { return refuse(404, 'Hive no longer has that file.'); }
+      if (!st.isFile()) return refuse(404, 'Hive no longer has that file.');
+      res.writeHead(200, { 'Content-Type': 'application/octet-stream', 'Content-Length': st.size, 'X-Mtime': String(Math.floor(st.mtimeMs)) });
+      return fs.createReadStream(abs).pipe(res);
+    }
+    const size = Number(req.headers['content-length']);
+    if (!Number.isFinite(size) || size < 0) return refuse(411, 'The file needs its length.');
+    try {
+      if (route === 'POST /api/files/keep') {
+        const kept = fileMirror.freeName(path.join(files.keepDir, 'Phone copies replaced', ...rel.split('/')));
+        const keepRoot = path.dirname(kept);
+        await fileMirror.write(keepRoot, files.keepDir, path.basename(kept), req, size, 0);
+        return send(res, 200, { status: 'kept' });
+      }
+      const result = await fileMirror.write(root, files.keepDir, rel, req, size, num(url.searchParams.get('m')));
+      onFileChanged(abs);
+      log('Hive Link: phone sent a file', device.name, rel);
+      return send(res, 200, { status: 'saved', ...result });
+    } catch (err) {
+      return send(res, 500, { error: err?.message || String(err) });
+    }
   }
 
   async function receiveSong(req, res, params, device) {

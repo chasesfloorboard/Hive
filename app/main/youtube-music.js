@@ -116,10 +116,11 @@ function create({ userDataDir, net }) {
 
   function ytDlp(args, timeoutMs = 45000) {
     const bin = ytDlpPath();
-    if (!bin) return Promise.reject(Object.assign(new Error('yt-dlp is not installed. Hive needs it to stream from YouTube Music (Settings → Connections → YouTube Music → Install).'), { code: 'NO_YTDLP' }));
+    if (!bin) return Promise.reject(Object.assign(new Error('Full songs aren\'t set up yet: use “Play full songs” on the Apple Music page.'), { code: 'NO_YTDLP' }));
     return new Promise((resolve, reject) => {
       execFile(bin, [...runtimeArgs(), '--no-warnings', '--no-playlist', ...args], { timeout: timeoutMs, maxBuffer: 32 * 1024 * 1024, env: runtimeEnv(), windowsHide: true }, (err, stdout, stderr) => {
-        if (err) return reject(new Error(String(stderr || err.message).trim().split('\n').pop() || 'yt-dlp failed'));
+        // What went wrong goes to the log; the message people see doesn't say where songs come from.
+        if (err) { console.warn('[full songs]', String(stderr || err.message).trim().split('\n').pop()); return reject(new Error("Couldn't load the full song.")); }
         resolve(stdout);
       });
     });
@@ -160,7 +161,7 @@ function create({ userDataDir, net }) {
     if (cached && cached.expires - Date.now() > 5 * 60 * 1000) return cached.info;
     const raw = await ytDlp(['-j', '-f', 'bestaudio[ext=webm]/bestaudio[ext=m4a]/bestaudio', `https://music.youtube.com/watch?v=${videoId}`]);
     const info = JSON.parse(raw);
-    if (!/^https:\/\//.test(String(info.url || ''))) throw new Error('YouTube Music did not return an audio stream.');
+    if (!/^https:\/\//.test(String(info.url || ''))) throw new Error('No audio came for this song.');
     const slim = { id: info.id, title: info.title, track: info.track, artist: info.artist, artists: info.artists, album: info.album,
       release_year: info.release_year, release_date: info.release_date, duration: info.duration, channel: info.channel, url: info.url,
       ext: info.ext, acodec: info.acodec, thumbnail: info.thumbnail };
@@ -211,7 +212,7 @@ function create({ userDataDir, net }) {
   // to a playable stream. Concurrent requests for one track share work.
   async function resolve(track, { fresh = false } = {}) {
     const key = String(track?.path || '');
-    if (!key.startsWith('ytm:')) throw new Error('Not a YouTube Music track.');
+    if (!key.startsWith('ytm:')) throw new Error('Not a streamed song.');
     if (inflight.has(key)) return inflight.get(key);
     const job = (async () => {
       const all = await loadMatches();
@@ -225,7 +226,7 @@ function create({ userDataDir, net }) {
       if (videoId) { try { info = await videoInfo(videoId); } catch { info = null; } }
       if (!info) {
         info = await findMatch({ title: track.title, artist: track.artist, album: track.album, duration: track.duration });
-        if (!info) throw new Error(`Couldn't find “${track.title}” on YouTube Music.`);
+        if (!info) throw new Error(`Couldn't find “${track.title}” to play in full.`);
         videoId = info.id;
       }
       all[key] = { videoId, title: info.track || info.title, artist: info.artist || '', at: Date.now() };
@@ -343,10 +344,10 @@ function create({ userDataDir, net }) {
       const info = await videoInfo(videoId);
       const res = await net.fetch(info.url, { headers: { Range: `bytes=${from}-${to}` } });
       if (res.status === 403 || res.status === 410) continue;
-      if (!res.ok) throw new Error(`YouTube answered ${res.status}`);
+      if (!res.ok) throw new Error(`The song server answered ${res.status}`);
       return res;
     }
-    throw new Error('YouTube refused the audio stream.');
+    throw new Error('The song server refused the audio stream.');
   }
   async function streamRange(videoId, rangeHeader) {
     const m = /bytes=(\d+)-(\d*)/.exec(String(rangeHeader || ''));
@@ -389,9 +390,9 @@ function create({ userDataDir, net }) {
           '-o', path.join(dir, `${baseName}.%(ext)s`), '--print', 'after_move:filepath', `https://music.youtube.com/watch?v=${videoId}`], 10 * 60 * 1000);
       } catch (err) { lastErr = err; }
     }
-    if (!out) throw lastErr || new Error('yt-dlp failed');
+    if (!out) throw lastErr || new Error("Couldn't load the full song.");
     const file = String(out).trim().split('\n').filter(Boolean).pop() || '';
-    if (!file || !fs.existsSync(file)) throw new Error('yt-dlp did not produce a file.');
+    if (!file || !fs.existsSync(file)) throw new Error("The full song didn't download.");
     return file;
   }
 

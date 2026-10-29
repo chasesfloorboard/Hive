@@ -62,7 +62,7 @@ import java.util.concurrent.TimeUnit
 @Serializable data class InboxSummary(val loves: Int = 0, val plays: Int = 0)
 /** Song sync on the PC: whether Hive takes song files from the phone. */
 @Serializable data class SongCaps(val receive: Boolean = false)
-@Serializable data class InfoResponse(val serverId: String, val name: String, val port: Int, val seq: Long, val addresses: List<HiveAddress> = emptyList(), val streams: StreamCaps = StreamCaps(), val remote: Boolean = false, val plays: Boolean = false, val inbox: InboxSummary = InboxSummary(), val songs: SongCaps = SongCaps(), val wrap: Boolean = false, val themes: Boolean = false)
+@Serializable data class InfoResponse(val serverId: String, val name: String, val port: Int, val seq: Long, val addresses: List<HiveAddress> = emptyList(), val streams: StreamCaps = StreamCaps(), val remote: Boolean = false, val plays: Boolean = false, val inbox: InboxSummary = InboxSummary(), val songs: SongCaps = SongCaps(), val wrap: Boolean = false, val listening: Boolean = false, val files: Boolean = false, val themes: Boolean = false)
 /** One year's Yearly Wrap as Hive on the PC counts it (its plays, imports and this phone's). */
 @Serializable data class PcWrap(
     val year: Int,
@@ -92,6 +92,12 @@ import java.util.concurrent.TimeUnit
 @Serializable data class SongUpload(val status: String, val id: String = "")
 /** A play, as sent to Hive ([clientId] is this phone's own id for it) or fetched from it. */
 @Serializable data class PlayOut(val clientId: String, val id: String, val playedAt: Long, val listenedMs: Long)
+/** A file in Hive's library folder (the file mirror): path relative to the folder, size, modified (ms). */
+@Serializable data class RemoteFile(val p: String, val s: Long, val m: Long)
+@Serializable data class FilesResponse(val files: List<RemoteFile> = emptyList())
+@Serializable data class FileSaved(val status: String = "", val s: Long = 0, val m: Long = 0)
+@Serializable data class DeleteFiles(val p: List<String>)
+@Serializable data class DeletedFiles(val deleted: List<String> = emptyList())
 @Serializable data class PlaysRequest(val plays: List<PlayOut>)
 /** Hive's answer to phone plays: [counted] at once, or [staged] for review; [unknown] songs it doesn't have (by clientId). */
 @Serializable data class PlaysStaged(val staged: Int = 0, val counted: Int = 0, val unknown: List<String> = emptyList())
@@ -280,6 +286,20 @@ class HiveLinkClient(private val http: OkHttpClient = defaultHttp()) {
         http.newCall(authed(conn, "/api/wrap?year=$year").build()).execute().use { read(it) }
     }
     fun parseWrap(text: String): PcWrap = json.decodeFromString(PcWrap.serializer(), text)
+    /**
+     * Hive's listening history file exactly as Hive saves it, with its version;
+     * null when the phone's copy ([have]) is still that version.
+     */
+    suspend fun listening(conn: Connection, have: String?): Pair<String, ByteArray>? = withContext(Dispatchers.IO) {
+        val query = have?.let { "?have=" + java.net.URLEncoder.encode(it, "UTF-8") }.orEmpty()
+        http.newBuilder().readTimeout(60, java.util.concurrent.TimeUnit.SECONDS).build()
+            .newCall(authed(conn, "/api/listening$query").build()).execute().use { res ->
+                if (res.code == 304) return@use null
+                if (!res.isSuccessful) read(res)
+                res.header("X-Hive-Version").orEmpty() to res.body.bytes()
+            }
+    }
+
     suspend fun wrapYears(conn: Connection): List<Int> = get(conn, "/api/wrap/years", WrapYears.serializer()).years
 
     suspend fun playlists(conn: Connection): List<PcPlaylist> = get(conn, "/api/playlists", PlaylistsResponse.serializer()).playlists
@@ -334,6 +354,39 @@ class HiveLinkClient(private val http: OkHttpClient = defaultHttp()) {
         transferHttp.newCall(authed(conn, "/api/songs?$query").put(body).build()).execute().use {
             json.decodeFromString(SongUpload.serializer(), read(it))
         }
+    }
+
+    // ---- the file mirror: the phone's music folder one to one with Hive's library folder ----
+
+    /** Every file in Hive's library folder. */
+    suspend fun files(conn: Connection): List<RemoteFile> =
+        withContext(Dispatchers.IO) { transferHttp.newCall(authed(conn, "/api/files").build()).execute().use { json.decodeFromString(FilesResponse.serializer(), read(it)).files } }
+
+    /** Writes one of Hive's files to [out]; returns its modified time on the PC. */
+    suspend fun downloadFile(conn: Connection, rel: String, out: java.io.OutputStream): Long = withContext(Dispatchers.IO) {
+        transferHttp.newCall(authed(conn, "/api/files/get?p=" + java.net.URLEncoder.encode(rel, "UTF-8")).build()).execute().use { res ->
+            if (!res.isSuccessful) read(res)
+            res.body.byteStream().use { it.copyTo(out, 1 shl 16) }
+            res.header("X-Mtime")?.toLongOrNull() ?: 0L
+        }
+    }
+
+    /** Sends a file to Hive at [rel] (Hive keeps any file already there); [keep]: only keep it aside there. */
+    suspend fun uploadFile(conn: Connection, rel: String, modified: Long, size: Long, keep: Boolean = false, open: () -> java.io.InputStream): FileSaved = withContext(Dispatchers.IO) {
+        val body = object : okhttp3.RequestBody() {
+            override fun contentType() = "application/octet-stream".toMediaType()
+            override fun contentLength() = size
+            override fun writeTo(sink: okio.BufferedSink) { open().use { input -> sink.outputStream().let { input.copyTo(it, 1 shl 16); it.flush() } } }
+        }
+        val q = java.net.URLEncoder.encode(rel, "UTF-8")
+        val request = if (keep) authed(conn, "/api/files/keep?p=$q").post(body) else authed(conn, "/api/files?p=$q&m=$modified").put(body)
+        transferHttp.newCall(request.build()).execute().use { json.decodeFromString(FileSaved.serializer(), read(it)) }
+    }
+
+    /** Files deleted on the phone: Hive moves them into its Deleted songs. Returns the ones it moved. */
+    suspend fun deleteFiles(conn: Connection, rels: List<String>): List<String> = withContext(Dispatchers.IO) {
+        val body = json.encodeToString(DeleteFiles.serializer(), DeleteFiles(rels)).toRequestBody(jsonType)
+        http.newCall(authed(conn, "/api/files/delete").post(body).build()).execute().use { json.decodeFromString(DeletedFiles.serializer(), read(it)).deleted }
     }
 
     // Song files take minutes on slow Wi-Fi; only a stalled connection should time out.

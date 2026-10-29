@@ -16,9 +16,10 @@ const zlib = require('node:zlib');
 const { createHiveLink, trackIdFor } = require('../app/main/hive-link');
 
 // A wide random range: test files run in parallel, and two picking the same port fails one of them.
-let nextPort = 20000 + Math.floor(Math.random() * 15000) * 2;
+// Below Linux's ephemeral range (32768+), where other programs' outgoing connections take ports at random.
+let nextPort = 20000 + Math.floor(Math.random() * 6000) * 2;
 
-function setup({ acceptPhoneChanges = true, streamSong = null, coversDir = null, remote = null, getPlaylists = null, getPlays = null, spotifySearch = null, songTarget = null, onSongAdded = undefined, acceptPhonePlays = false, getWrap = null, getWrapYears = null, getThemes = null, getCurrentTheme = null, onPairRequest = null, deleteSongs = null, editSongs = null, getStreamLoves = null, applyStreamLoves = null } = {}) {
+function setup({ acceptPhoneChanges = true, streamSong = null, coversDir = null, remote = null, getPlaylists = null, getPlays = null, spotifySearch = null, songTarget = null, onSongAdded = undefined, acceptPhonePlays = false, getWrap = null, getWrapYears = null, getListening = null, files = null, getThemes = null, getCurrentTheme = null, onPairRequest = null, deleteSongs = null, editSongs = null, getStreamLoves = null, applyStreamLoves = null } = {}) {
   const dataDir = fs.mkdtempSync(path.join(os.tmpdir(), 'hive-link-'));
   const tracks = [
     { id: 'a1', path: '/music/Pearl Jam - Black.mp3', title: 'Black', artist: 'Pearl Jam', album: 'Ten', duration: '343.2', loved: false },
@@ -51,6 +52,8 @@ function setup({ acceptPhoneChanges = true, streamSong = null, coversDir = null,
     acceptPhonePlays,
     getWrap,
     getWrapYears,
+    getListening,
+    files,
     recordPlays: async plays => { recorded.push(...plays); },
     getTracks: async () => tracks,
     setLove: async (trackPath, loved) => {
@@ -729,6 +732,91 @@ test("the phone gets Hive's own Wrap, with covers it can fetch and no recent-pla
   assert.equal(got.topTrack.cover, 'a'.repeat(40) + '.jpg');
   assert.equal(got.topArtists[0].cover, 'b'.repeat(40) + '.png');
   assert.equal(got.topAlbums[0].cover, 'https://example.com/ten.jpg');
+});
+
+test('the listening history file reaches the phone byte for byte, and only when it changed', async t => {
+  const file = Buffer.from('[{"id":"x","playedAt":1,"title":"Black","source":"hive-mobile"}]\n');
+  const ctx = setup({ getListening: async () => ({ version: 'v1', bytes: file }) });
+  t.after(() => ctx.link.stop());
+  await waitListening(ctx.port);
+  const token = await pair(ctx);
+  assert.equal((await request(ctx.port, 'GET', '/api/info', { token })).body.listening, true);
+  const got = await rawGet(ctx.port, '/api/listening', token);
+  assert.equal(got.status, 200);
+  assert.equal(got.headers['x-hive-version'], 'v1');
+  assert.ok(got.body.equals(file));
+  const again = await rawGet(ctx.port, '/api/listening?have=v1', token);
+  assert.equal(again.status, 304);
+  assert.equal(again.body.length, 0);
+  assert.equal((await rawGet(ctx.port, '/api/listening')).status, 401);
+});
+
+function putBytes(port, urlPath, token, bytes) {
+  return new Promise((resolve, reject) => {
+    const req = http.request({ host: '127.0.0.1', port, method: urlPath.startsWith('/api/files/keep') ? 'POST' : 'PUT', path: urlPath, headers: { Authorization: `Bearer ${token}`, 'Content-Length': bytes.length } }, res => {
+      const chunks = [];
+      res.on('data', c => chunks.push(c));
+      res.on('end', () => resolve({ status: res.statusCode, body: JSON.parse(Buffer.concat(chunks).toString('utf8') || '{}') }));
+    });
+    req.on('error', reject);
+    req.end(bytes);
+  });
+}
+
+test('the file mirror lists, sends and takes files, keeping every one it replaces or deletes', async t => {
+  const root = fs.mkdtempSync(path.join(os.tmpdir(), 'hive-mirror-root-'));
+  const keepDir = fs.mkdtempSync(path.join(os.tmpdir(), 'hive-mirror-keep-'));
+  t.after(() => { fs.rmSync(root, { recursive: true, force: true }); fs.rmSync(keepDir, { recursive: true, force: true }); });
+  fs.mkdirSync(path.join(root, 'Artist', 'Album'), { recursive: true });
+  fs.writeFileSync(path.join(root, 'Artist', 'Album', 'Song.mp3'), 'old song');
+  fs.writeFileSync(path.join(root, 'notes.txt'), 'notes');
+  fs.writeFileSync(path.join(root, 'Song.mp3.beehive-musicbee-0123456789ab.mp3'), 'half a tag write');
+  const ctx = setup({ files: { root: async () => root, keepDir } });
+  t.after(() => ctx.link.stop());
+  await waitListening(ctx.port);
+  const token = await pair(ctx);
+  assert.equal((await request(ctx.port, 'GET', '/api/info', { token })).body.files, true);
+
+  // Hive's own half-written files are never part of the mirror.
+  const listed = (await request(ctx.port, 'GET', '/api/files', { token })).body.files.map(f => f.p).sort();
+  assert.deepEqual(listed, ['Artist/Album/Song.mp3', 'notes.txt']);
+  const got = await rawGet(ctx.port, '/api/files/get?p=' + encodeURIComponent('Artist/Album/Song.mp3'), token);
+  assert.equal(got.body.toString(), 'old song');
+  assert.ok(Number(got.headers['x-mtime']) > 0);
+
+  // A newer copy from the phone takes the file's place; the old one is kept, not lost.
+  const saved = await putBytes(ctx.port, '/api/files?p=' + encodeURIComponent('Artist/Album/Song.mp3') + '&m=1700000000000', token, Buffer.from('new song!'));
+  assert.equal(saved.body.status, 'saved');
+  assert.equal(fs.readFileSync(path.join(root, 'Artist', 'Album', 'Song.mp3'), 'utf8'), 'new song!');
+  assert.equal(Math.floor(fs.statSync(path.join(root, 'Artist', 'Album', 'Song.mp3')).mtimeMs / 1000), 1700000000);
+  assert.equal(fs.readFileSync(path.join(keepDir, 'Artist', 'Album', 'Song.mp3'), 'utf8'), 'old song');
+
+  // Nothing outside the library folder, however the path is written.
+  for (const bad of ['../escape.mp3', '/etc/passwd', 'Artist/../../escape.mp3', 'C:/x.mp3'])
+    assert.equal((await putBytes(ctx.port, '/api/files?p=' + encodeURIComponent(bad), token, Buffer.from('x'))).status, 400);
+  assert.equal(fs.existsSync(path.join(path.dirname(root), 'escape.mp3')), false);
+
+  // A phone copy that lost to a newer one is kept aside, not put in the library.
+  assert.equal((await putBytes(ctx.port, '/api/files/keep?p=' + encodeURIComponent('notes.txt'), token, Buffer.from('phone notes'))).body.status, 'kept');
+  assert.equal(fs.readFileSync(path.join(keepDir, 'Phone copies replaced', 'notes.txt'), 'utf8'), 'phone notes');
+  assert.equal(fs.readFileSync(path.join(root, 'notes.txt'), 'utf8'), 'notes');
+
+  // Deleted on the phone: moved into the keep folder.
+  assert.deepEqual((await request(ctx.port, 'POST', '/api/files/delete', { token, body: { p: ['notes.txt', '../nope'] } })).body.deleted, ['notes.txt']);
+  assert.equal(fs.existsSync(path.join(root, 'notes.txt')), false);
+  assert.equal(fs.readFileSync(path.join(keepDir, 'notes.txt'), 'utf8'), 'notes');
+});
+
+test('only a trusted phone may use the file mirror', async t => {
+  const root = fs.mkdtempSync(path.join(os.tmpdir(), 'hive-mirror-root-'));
+  t.after(() => fs.rmSync(root, { recursive: true, force: true }));
+  const ctx = setup({ acceptPhoneChanges: false, files: { root: async () => root, keepDir: root } });
+  t.after(() => ctx.link.stop());
+  await waitListening(ctx.port);
+  const token = await pair(ctx);
+  assert.equal((await request(ctx.port, 'GET', '/api/files', { token })).status, 403);
+  assert.equal((await putBytes(ctx.port, '/api/files?p=a.mp3', token, Buffer.from('x'))).status, 403);
+  assert.equal(fs.existsSync(path.join(root, 'a.mp3')), false);
 });
 
 test('streamed-song likes: same key as the PC, newest change wins, unlikes kept', () => {

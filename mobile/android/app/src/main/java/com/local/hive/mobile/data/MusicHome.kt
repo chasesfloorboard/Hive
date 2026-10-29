@@ -40,7 +40,7 @@ object MusicHome {
                 }
             }
         }
-        // A folder holding most of the phone's songs loose is the library (Music/beautiful sounds pc/<song>);
+        // A folder holding most of the phone's songs loose is the library (Music/My Music/<song>);
         // fewer, and it's more likely one artist's folder.
         for ((p, n) in loose) (if (n * 2 > total) p else Place(p.volume, "")).let { counts[it] = (counts[it] ?: 0) + n }
         val place = counts.maxByOrNull { it.value }?.key?.takeIf { it.volume in MediaStore.getExternalVolumeNames(context) }

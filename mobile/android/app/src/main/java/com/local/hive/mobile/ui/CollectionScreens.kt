@@ -337,8 +337,8 @@ fun SongsScreen(
 fun SearchScreen(vm: MainViewModel, actions: TrackActions, bottomPadding: Dp, onBack: () -> Unit, onOpenAlbum: (Long) -> Unit, onOpenArtist: (String) -> Unit, onOpenService: (String) -> Unit = {}) {
     val c = Hive.colors
     var query by rememberSaveable { mutableStateOf("") }
-    var online by rememberSaveable { mutableStateOf(false) }
-    var onlineAlbums by rememberSaveable { mutableStateOf(true) }
+    var online by rememberSetting("search.online", false)
+    var onlineAlbums by rememberSetting("search.onlineAlbums", true)
     var results by remember { mutableStateOf<List<Track>>(emptyList()) }
     val loved by vm.lovedIds.collectAsStateWithLifecycle()
     val now by vm.nowPlaying.collectAsStateWithLifecycle()
@@ -392,7 +392,10 @@ fun SearchScreen(vm: MainViewModel, actions: TrackActions, bottomPadding: Dp, on
             return@Column
         }
         Box(Modifier.fillMaxSize()) {
-            LazyColumn(Modifier.fillMaxSize(), contentPadding = PaddingValues(top = 8.dp, bottom = bottomPadding + 12.dp)) {
+            // Hold a song and drag over the others: library songs and liked streamed ones alike.
+            val searchList = androidx.compose.foundation.lazy.rememberLazyListState()
+            val dragRows: Map<Any, Any> = remember(results, likedHits) { (results.associate { ("t" + it.id) as Any to (it as Any) } + likedHits.associate { ("s" + it.key) as Any to (it as Any) }) }
+            LazyColumn(Modifier.fillMaxSize().songDragSelect(searchList, dragRows, dragRows.values.toList()), state = searchList, contentPadding = PaddingValues(top = 8.dp, bottom = bottomPadding + 12.dp)) {
                 if (q.isEmpty()) item { EmptyState("Search your library", "Songs, albums and artists on this phone.") }
                 else if (results.isEmpty() && albumHits.isEmpty() && artistHits.isEmpty() && likedHits.isEmpty()) item { EmptyState("No results", "Nothing matches “$q”.") }
                 if (artistHits.isNotEmpty()) {

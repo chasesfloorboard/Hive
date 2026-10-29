@@ -112,7 +112,7 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
         viewModelScope.launch {
             nowPlaying.map { s -> listOf(s.queueIndex, s.queueIndex + 1, s.queueIndex - 1).mapNotNull { i -> if (i == s.queueIndex) s.artworkUri else s.queue.getOrNull(i)?.artworkUri } }
                 .distinctUntilChanged()
-                .collect { uris -> uris.forEach { loader.enqueue(coil3.request.ImageRequest.Builder(app).data(it).size(px, px).build()) } }
+                .collect { uris -> uris.forEach { loader.enqueue(coil3.request.ImageRequest.Builder(app).data(it).size(px, px).listener(onSuccess = { r, ok -> noteLoadedCover(r.data, ok.memoryCacheKey, ok.image.width.toLong() * ok.image.height) }).build()) } }
         }
     }
 

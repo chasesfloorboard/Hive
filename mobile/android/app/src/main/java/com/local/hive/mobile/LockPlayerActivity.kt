@@ -44,6 +44,13 @@ class LockPlayerActivity : ComponentActivity() {
             navigationBarStyle = androidx.activity.SystemBarStyle.dark(android.graphics.Color.TRANSPARENT),
         )
         window.attributes.layoutInDisplayCutoutMode = android.view.WindowManager.LayoutParams.LAYOUT_IN_DISPLAY_CUTOUT_MODE_SHORT_EDGES
+        // The screen goes off as soon as it would on the lock screen itself, not after the phone's
+        // longer screen timeout. (The window field the lock screen uses for this isn't in the SDK.)
+        runCatching {
+            val attrs = window.attributes
+            android.view.WindowManager.LayoutParams::class.java.getField("userActivityTimeout").setLong(attrs, SLEEP_AFTER_MS)
+            window.attributes = attrs
+        }.onFailure { CarLog.lockPlayer(this, "screen timeout not set: $it") }
         (application as HiveApp).player.connect()
         ContextCompat.registerReceiver(this, unlocked, IntentFilter(Intent.ACTION_USER_PRESENT), ContextCompat.RECEIVER_NOT_EXPORTED)
         // Back on a locked phone stays here; the phone's own unlock is the way out.
@@ -114,6 +121,8 @@ class LockPlayerActivity : ComponentActivity() {
         private val broughtBack = mutableListOf<Long>()
         private const val PREF = "lock-player"
         private const val HOME_AFTER_MS = 2_000L
+        /** The lock screen's own screen timeout. */
+        private const val SLEEP_AFTER_MS = 10_000L
 
         /** Whether Hive shows itself over the lock screen while music plays. */
         fun enabled(context: Context) = context.getSharedPreferences("ui", Context.MODE_PRIVATE).getBoolean(PREF, false)

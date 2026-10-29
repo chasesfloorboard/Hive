@@ -101,10 +101,13 @@ fun DeletionsSheet(vm: MainViewModel, onDismiss: () -> Unit, onToast: (String) -
                     val extra = picked.filter { it.canDelete }
                     Actions(
                         picked, extra.isNotEmpty(),
-                        "Delete extra copies from this phone" to {
-                            val uris = extra.mapNotNull { it.phone?.uri }
+                        (if (extra.all { it.file != null }) "Delete from this phone" else "Delete extra copies from this phone") to {
+                            // Files of the file mirror: Hive deletes them itself (it has All files access).
+                            val files = extra.filter { it.file != null }
+                            if (files.isNotEmpty()) onToast(countOf(vm.songSyncOps.deleteFilesOnPhone(files), "file") + " deleted from this phone")
+                            val uris = extra.filter { it.file == null }.mapNotNull { it.phone?.uri }
                             if (uris.isNotEmpty()) {
-                                deletingOnPhone = extra
+                                deletingOnPhone = extra.filter { it.file == null }
                                 phoneDelete.launch(IntentSenderRequest.Builder(MediaStore.createDeleteRequest(context.contentResolver, uris).intentSender).build())
                             }
                         },
@@ -115,7 +118,7 @@ fun DeletionsSheet(vm: MainViewModel, onDismiss: () -> Unit, onToast: (String) -
                 section("Deleted on this phone", "Still on your PC.", d.fromPhone) { picked ->
                     Actions(
                         picked, picked.any { it.canDelete },
-                        "Delete extra copies on PC" to {
+                        (if (picked.all { it.file != null }) "Delete on the PC too" else "Delete extra copies on PC") to {
                             busy = true
                             scope.launch {
                                 runCatching { vm.songSyncOps.deleteOnPc(picked) }

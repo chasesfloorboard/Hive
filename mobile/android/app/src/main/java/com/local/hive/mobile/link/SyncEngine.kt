@@ -58,6 +58,8 @@ class SyncEngine(
     private val onThemes: (ThemesResponse) -> Unit = {},
     /** Likes for streamed songs, shared with Hive too. */
     val streamLoves: StreamLoves? = null,
+    /** Saves Hive's listening history file on the phone (see ListeningFile). */
+    private val saveListening: (ByteArray) -> Unit = {},
 ) {
     private val mutex = Mutex()
     private val _streams = MutableStateFlow<PcStreams?>(null)
@@ -329,6 +331,11 @@ class SyncEngine(
             .filter { dao.playCountAt(it.trackId, it.playedAt) == 0 }
         if (fresh.isNotEmpty()) dao.insertPlays(fresh)
         fetched.maxOfOrNull { it.playedAt }?.let { store.lastPcPlayAt = maxOf(store.lastPcPlayAt, it) }
+        // With this phone's plays now in it, Hive's listening history file comes here as a
+        // byte-for-byte copy, so phone and PC keep the same readable history.
+        if (info.listening) runCatchingNotCancelled {
+            client.listening(conn, store.listeningVersion)?.let { (version, bytes) -> saveListening(bytes); store.listeningVersion = version }
+        }.onFailure { android.util.Log.w("HiveSync", "listening history not saved", it) }
         _status.update { it.copy(waitingOnPc = info.inbox.loves + info.inbox.plays) }
     }
 

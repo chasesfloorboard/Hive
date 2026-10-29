@@ -465,7 +465,7 @@
       // Not ready yet: stop the previous song now so the click feels answered.
       try { if (podcastActive) audioElement.pause(); else if (gstActive) gstSend('PAUSE'); } catch {}
       updateNowPlayingUI(t); renderQueue();
-      if (el.pbArtist) el.pbArtist.textContent = 'Loading from YouTube Music…';
+      if (el.pbArtist) el.pbArtist.textContent = 'Loading…';
     }, 250);
     try {
       const r = await window.beehive.resolveYouTubeMusic({ path: t.path, title: t.title, artist: t.artist, album: t.album, duration: t.duration, ytVideoId: t.ytVideoId || '' }, { fresh });
@@ -1854,7 +1854,7 @@
       appleMusicModal.className = 'streaming-page apple-page';
       appleMusicModal.setAttribute('aria-label', 'Apple Music');
       appleMusicModal.innerHTML = `<header class="streaming-page-head"><div><div class="streaming-kicker">BROWSE</div><h1>Apple Music</h1>
-          <p>Search Apple Music for anything, or paste a music.apple.com link. Songs in your library play from your files; the rest stream from YouTube Music.</p></div></header>
+          <p>Search Apple Music for anything, or paste a music.apple.com link. Songs in your library play from your files; the rest stream in full.</p></div></header>
           <form class="radio-search streaming-search" id="apple-search-form"><span class="streaming-search-icon" aria-hidden="true">${theaterIcon('search')}</span><input type="search" class="streaming-search-input" id="apple-query" placeholder="Search artists, songs, albums and playlists, or paste a link" spellcheck="false" aria-label="Search Apple Music"><button type="submit" class="streaming-search-btn">Search</button></form>
           <div class="streaming-page-bar"><button type="button" class="sidebar-add hidden" id="apple-back">← Back</button><button type="button" class="sidebar-add hidden" id="apple-home">Browse</button><div class="organise-status" id="apple-status"></div></div>
           <div id="apple-view"></div>`;
@@ -1919,12 +1919,12 @@
         const rows = current.tracks.map((at, i) => {
           const local = appleLocalMatch(index, at);
           const badge = local ? '<span class="apple-badge apple-badge-local" title="Plays the full song from your library">In library</span>'
-            : youtubeMusicReady ? '<span class="apple-badge apple-badge-yt" title="Plays the full song from YouTube Music">YouTube Music</span>'
+            : youtubeMusicReady ? '<span class="apple-badge apple-badge-yt" title="Plays the full song">Full song</span>'
             : (at.previewUrl ? '<span class="apple-badge">Preview</span>' : '<span class="apple-badge apple-badge-none" title="Apple has no preview for this song">Apple Music only</span>');
           return `<div class="apple-track" data-i="${i}" data-apple-id="${escapeHtml(at.appleId)}" data-local-path="${escapeHtml(local?.path || '')}"><span class="apple-track-n">${i + 1}</span>${at.artwork ? `<img class="apple-track-art" src="${escapeHtml(at.artwork)}" alt="" loading="lazy">` : '<span class="apple-track-art"></span>'}<div class="apple-track-text"><div>${escapeHtml(at.title)}</div><small>${escapeHtml([at.artist, at.album].filter(Boolean).join(' — '))}</small></div>${badge}<span class="apple-track-time">${fmtTime(at.duration)}</span><button type="button" class="icon-btn" data-apple-play="${i}" title="Play" ${local || youtubeMusicReady || at.previewUrl ? '' : 'disabled'}>${theaterIcon('play')}</button></div>`;
         }).join('');
         const localCount = current.tracks.filter(at => appleLocalMatch(index, at)).length;
-        const ytNote = youtubeMusicReady ? '' : `<div class="apple-yt-note">Songs you don't own play as 30-second previews. <button type="button" class="sidebar-add" id="apple-install-ytdlp">Play full songs from YouTube Music</button></div>`;
+        const ytNote = youtubeMusicReady ? '' : `<div class="apple-yt-note">Songs you don't own play as 30-second previews. <button type="button" class="sidebar-add" id="apple-install-ytdlp">Play full songs</button></div>`;
         view.innerHTML = `<div class="apple-head">${current.artwork ? `<img src="${escapeHtml(current.artwork)}" alt="">` : ''}<div><div class="apple-kicker">${current.kind === 'album' ? 'ALBUM' : 'PLAYLIST'}</div><h3>${escapeHtml(current.name)}</h3><div class="dim">${escapeHtml(current.curator)} · ${current.tracks.length} songs · ${localCount} in your library</div>
             ${current.description ? `<p class="apple-desc">${escapeHtml(current.description)}</p>` : ''}
             <div class="apple-actions"><button type="button" class="sidebar-add" id="apple-play-all">Play</button><button type="button" class="sidebar-add" id="apple-import">Import as playlist</button><button type="button" class="sidebar-add icon-only-btn" id="apple-download" title="Download playlist" aria-label="Download playlist">${theaterIcon('download')}</button><a class="sidebar-add" href="${escapeHtml(current.url)}" target="_blank" rel="noopener">Open in Apple Music</a></div></div></div>
@@ -1978,7 +1978,7 @@
         }
         if (e.target.closest('#apple-play-all')) { const all = appleTracksForPlayback(current); if (all.length) playQueue(all, 0, false); return; }
         if (e.target.closest('#apple-download')) {
-          if (!youtubeMusicReady && !soulseekReady()) { status.textContent = 'Sign in to Soulseek in Settings › Connections to download, or install yt-dlp with “Play full songs from YouTube Music” above.'; return; }
+          if (!youtubeMusicReady && !soulseekReady()) { status.textContent = 'Sign in to Soulseek in Settings › Connections to download, or turn on “Play full songs” above.'; return; }
           const tracks = appleTracksForPlayback(current).map((t, i) => (isYoutubeMusicTrack(t) || (soulseekReady() && /^applemusic:/.test(String(t.path || '')))) ? { ...t, playlistFolder: current.name || 'Apple Music playlist', playlistPosition: i + 1 } : null).filter(Boolean);
           if (!tracks.length) { status.textContent = 'Every song here is already in your library.'; return; }
           status.textContent = soulseekReady() ? `Looking for ${tracks.length === 1 ? tracks[0].title : `${tracks.length} songs`} on Soulseek…` : `Downloading ${tracks.length} songs to Playlists/${current.name}…`;
@@ -1986,8 +1986,8 @@
           return;
         }
         if (e.target.closest('#apple-install-ytdlp')) {
-          status.textContent = 'Installing yt-dlp…';
-          try { await window.beehive.installYtDlp(); } catch (err) { status.textContent = `Couldn't install yt-dlp (${cleanError(err)}).`; return; }
+          status.textContent = 'Setting up full songs…';
+          try { await window.beehive.installYtDlp(); } catch (err) { status.textContent = `Couldn't set up full songs (${cleanError(err)}).`; return; }
           await youtubeMusicAvailable(true);
           showCollection(current.url);
           return;
@@ -2009,7 +2009,7 @@
           renderPlaylistManager(); renderNavigationEditors();
           const streamed = Object.values(snapshots);
           const yt = streamed.filter(isYoutubeMusicTrack).length, previews = streamed.length - yt;
-          const summary = `Created “${created.name}”: ${all.length - streamed.length} from your library${yt ? `, ${yt} from YouTube Music` : ''}${previews ? `, ${previews} previews` : ''}${all.length < current.tracks.length ? `, ${current.tracks.length - all.length} skipped` : ''}.`;
+          const summary = `Created “${created.name}”: ${all.length - streamed.length} from your library${yt ? `, ${yt} streamed in full` : ''}${previews ? `, ${previews} previews` : ''}${all.length < current.tracks.length ? `, ${current.tracks.length - all.length} skipped` : ''}.`;
           status.textContent = summary;
           const toTag = streamed.filter(isYoutubeMusicTrack);
           if (toTag.length) {
@@ -2076,7 +2076,7 @@
     spotifyPage.className = 'streaming-page spotify-page apple-page';
     spotifyPage.setAttribute('aria-label', 'Spotify');
     spotifyPage.innerHTML = `<header class="streaming-page-head"><div><div class="streaming-kicker">BROWSE</div><h1>Spotify</h1>
-        <p>Spotify's playlists and charts, and search for anything. Songs in your library play from your files; the rest stream from YouTube Music.</p></div></header>
+        <p>Spotify's playlists and charts, and search for anything. Songs in your library play from your files; the rest stream in full.</p></div></header>
       <form class="radio-search streaming-search" id="spotify-page-form"><span class="streaming-search-icon" aria-hidden="true">${theaterIcon('search')}</span><input type="search" class="streaming-search-input" id="spotify-page-url" placeholder="Paste a Spotify link, or search songs and albums" spellcheck="false" aria-label="Search Spotify"><button type="submit" class="streaming-search-btn">Search</button></form>
       <div class="streaming-page-bar"><button type="button" class="sidebar-add hidden" id="spotify-back">← Back</button><button type="button" class="sidebar-add hidden" id="spotify-home-btn">Browse</button><div class="organise-status" id="spotify-page-status"></div></div>
       <div id="spotify-view"></div>`;
@@ -2162,7 +2162,7 @@
       const rows = records.map((st, i) => {
         const local = appleLocalMatch(index, st);
         const badge = local ? '<span class="apple-badge apple-badge-local" title="Plays the full song from your library">In library</span>'
-          : youtubeMusicReady ? '<span class="apple-badge apple-badge-yt" title="Plays the full song from YouTube Music">YouTube Music</span>'
+          : youtubeMusicReady ? '<span class="apple-badge apple-badge-yt" title="Plays the full song">Full song</span>'
           : '<span class="apple-badge">Spotify app</span>';
         return `<div class="apple-track" data-i="${i}" data-spotify-id="${escapeHtml(st.spotifyId)}" data-local-path="${escapeHtml(local?.path || '')}"><span class="apple-track-n">${i + 1}</span>${/^https?:/i.test(st.artworkUrl) ? `<img class="apple-track-art" src="${escapeHtml(st.artworkUrl)}" alt="" loading="lazy">` : '<span class="apple-track-art"></span>'}<div class="apple-track-text"><div>${escapeHtml(st.title)}</div><small>${escapeHtml([st.artist, st.album].filter(Boolean).join(' — '))}</small></div>${badge}<span class="apple-track-time">${st.duration ? fmtTime(st.duration) : ''}</span><button type="button" class="icon-btn" data-spotify-play="${i}" title="Play">${theaterIcon('play')}</button></div>`;
       }).join('');
@@ -7607,7 +7607,7 @@
       description: `From Spotify: ${data.sourceUrl}`, cover: /^https?:\/\//i.test(cover) ? cover : '', artworkUrl: /^https?:\/\//i.test(cover) ? cover : '' });
     playlists = await window.beehive.getPlaylists(); closeModal(el.playlistImportModal); renderPlaylistManager(); renderNavigationEditors();
     const yt = Object.keys(snapshots).length;
-    showAppNotice(`Imported “${created.name}”: ${all.length - yt} songs from your library, ${yt} from YouTube Music. Tagging them from MusicBrainz in the background…`);
+    showAppNotice(`Imported “${created.name}”: ${all.length - yt} songs from your library, ${yt} streamed in full. Tagging them from MusicBrainz in the background…`);
     void (async () => {
       const tagged = await tagStreamedTracksFromMusicBrainz(Object.values(snapshots));
       const fresh = (await window.beehive.getPlaylists()).find(p => String(p.id) === String(created.id));
@@ -7631,7 +7631,7 @@
       })).filter(t=>t.spotifyUri);
       if(!spotifyTracks.length){ showAppNotice(`Spotify playlist “${data.name}” did not contain playable tracks.`); return false; }
       if (await youtubeMusicAvailable(true)) { await importSpotifyPlaylistAsYoutube(data, spotifyTracks); return true; }
-      showAppNotice(`Spotify playlists play through YouTube Music in Hive, which isn't set up yet (Settings → Connections).`);
+      showAppNotice(`Spotify playlists play in full in Hive once full songs are set up (Settings → Connections).`);
       return false;
       const playlistCover = normalizeSpotifyArtworkSource(data.cover || data.artworkUrl || spotifyTracks[0]?.artworkUrl || '');
       const warm = await preloadSpotifyArtwork(spotifyTracks, playlistCover);
@@ -9297,10 +9297,6 @@
       links.push({ label: 'Open song in Apple Music', icon: 'play', url: appleUrl });
       links.push({ label: 'Open album in Apple Music', icon: 'album', url: appleUrl.replace(/\?i=\d+.*$/, '') });
       links.push({ label: 'Open artist in Apple Music', icon: 'artist', url: `https://music.apple.com/us/search?term=${q(artist)}` });
-    }
-    if (isYoutubeMusicTrack(t)) {
-      links.push({ label: 'Open song in YouTube Music', icon: 'play', url: t.ytVideoId ? `https://music.youtube.com/watch?v=${t.ytVideoId}` : `https://music.youtube.com/search?q=${q(`${artist} ${t.title}`)}` });
-      if (!spotifyId && !appleUrl) links.push({ label: 'Open album in YouTube Music', icon: 'album', url: `https://music.youtube.com/search?q=${q(`${artist} ${t.album || t.title}`)}` });
     }
     return links;
   }
@@ -14218,7 +14214,7 @@
     const trackNo = t.track != null && t.track !== '' ? String(t.track) : '';
     el.npTrack.textContent = (disc || trackNo) ? `Disc ${disc || '—'}  ·  Track ${trackNo || '—'}` : '';
     // Streamed tracks have no file extension; name their source instead.
-    const streamLabel = isYoutubeMusicTrack(t) ? 'YOUTUBE MUSIC' : isRadioTrack(t) ? 'RADIO' : isAppleMusicPreview(t) ? 'PREVIEW' : isPodcastTrack(t) ? 'PODCAST' : '';
+    const streamLabel = isYoutubeMusicTrack(t) ? 'STREAM' : isRadioTrack(t) ? 'RADIO' : isAppleMusicPreview(t) ? 'PREVIEW' : isPodcastTrack(t) ? 'PODCAST' : '';
     const ext = streamLabel ? '' : String(t.path || '').split('.').pop().toUpperCase();
     const formatLabel = streamLabel || ext || String(t.codec || '').toUpperCase();
     el.npFormat.textContent = formatLabel;
@@ -19483,8 +19479,8 @@
     ocean:{name:'Ocean',description:'Cool blue-black glass with a clean modern edge.',vars:{'--bg':'#070c12','--panel':'rgba(13,22,32,.75)','--panel-strong':'rgba(10,18,27,.9)','--border':'rgba(190,220,245,.10)','--text':'#e7eef5','--text-dim':'#9aaabd','--text-dimmer':'#66788c','--accent':'#70a8d6','--accent-soft':'rgba(112,168,214,.34)','--accent-glow':'rgba(112,168,214,.22)','--ambient-a':'rgba(35,105,155,.18)','--ambient-b':'rgba(25,65,105,.15)','--radius':'13px','--blur':'28px'}},
     violet:{name:'Midnight',description:'Muted plum and graphite with a cinematic finish.',vars:{'--bg':'#0d0911','--panel':'rgba(25,18,30,.76)','--panel-strong':'rgba(20,14,25,.91)','--border':'rgba(230,210,245,.10)','--text':'#f0eaf4','--text-dim':'#afa2b8','--text-dimmer':'#776b80','--accent':'#a88bd0','--accent-soft':'rgba(168,139,208,.34)','--accent-glow':'rgba(168,139,208,.22)','--ambient-a':'rgba(120,65,155,.18)','--ambient-b':'rgba(65,35,95,.14)','--radius':'16px','--blur':'26px'}},
     lemon:{name:'Lemon',description:'Pale lemon with a burnt-orange accent.',vars:{'--bg':'#fff3a3','--panel':'rgba(255,248,204,0.72)','--panel-strong':'rgba(255,250,220,0.9)','--border':'rgba(17,17,20,0.14)','--text':'#24231f','--text-dim':'#58553f','--text-dimmer':'#837d59','--accent':'#b4530a','--accent-soft':'rgba(180,83,10,0.32)','--accent-glow':'rgba(180,83,10,0.16)','--ambient-a':'rgba(180,83,10,0.1)','--ambient-b':'rgba(218,163,86,0.16)','--radius':'14px','--blur':'24px'}},
-    sunflower:{name:'Sunflower',description:'Sunflower yellow with a deep violet accent.',vars:{'--bg':'#ffd23f','--panel':'rgba(255,230,149,0.72)','--panel-strong':'rgba(255,238,182,0.9)','--border':'rgba(17,17,20,0.14)','--text':'#242017','--text-dim':'#584b21','--text-dimmer':'#836e29','--accent':'#5a2d82','--accent-soft':'rgba(90,45,130,0.32)','--accent-glow':'rgba(90,45,130,0.16)','--ambient-a':'rgba(90,45,130,0.1)','--ambient-b':'rgba(172,128,96,0.16)','--radius':'14px','--blur':'24px'}},
-    tangerine:{name:'Tangerine',description:'Bright tangerine with a plum accent.',vars:{'--bg':'#ff9f45','--panel':'rgba(255,202,153,0.72)','--panel-strong':'rgba(255,219,184,0.9)','--border':'rgba(17,17,20,0.14)','--text':'#241c18','--text-dim':'#583c23','--text-dimmer':'#83552c','--accent':'#6a1b4d','--accent-soft':'rgba(106,27,77,0.32)','--accent-glow':'rgba(106,27,77,0.16)','--ambient-a':'rgba(106,27,77,0.1)','--ambient-b':'rgba(180,93,73,0.16)','--radius':'14px','--blur':'24px'}},
+    sunflower:{name:'Sunflower',description:'Sunflower yellow with a golden mustard accent.',vars:{'--bg':'#ffd23f','--panel':'rgba(255,230,149,0.72)','--panel-strong':'rgba(255,238,182,0.9)','--border':'rgba(17,17,20,0.14)','--text':'#242017','--text-dim':'#584b21','--text-dimmer':'#836e29','--accent':'#8c6200','--accent-soft':'rgba(140,98,0,0.32)','--accent-glow':'rgba(140,98,0,0.16)','--ambient-a':'rgba(140,98,0,0.1)','--ambient-b':'rgba(198,154,32,0.16)','--radius':'14px','--blur':'24px'}},
+    tangerine:{name:'Tangerine',description:'Bright tangerine with a dark stem-green accent.',vars:{'--bg':'#ff9f45','--panel':'rgba(255,202,153,0.72)','--panel-strong':'rgba(255,219,184,0.9)','--border':'rgba(17,17,20,0.14)','--text':'#241c18','--text-dim':'#583c23','--text-dimmer':'#83552c','--accent':'#1f4d14','--accent-soft':'rgba(31,77,20,0.32)','--accent-glow':'rgba(31,77,20,0.16)','--ambient-a':'rgba(31,77,20,0.1)','--ambient-b':'rgba(143,118,44,0.16)','--radius':'14px','--blur':'24px'}},
     coral:{name:'Coral',description:'Warm coral with a navy accent.',vars:{'--bg':'#ff8a7a','--panel':'rgba(255,191,182,0.72)','--panel-strong':'rgba(255,211,204,0.9)','--border':'rgba(17,17,20,0.14)','--text':'#241b1c','--text-dim':'#583533','--text-dimmer':'#834b45','--accent':'#1f3a93','--accent-soft':'rgba(31,58,147,0.32)','--accent-glow':'rgba(31,58,147,0.16)','--ambient-a':'rgba(31,58,147,0.1)','--ambient-b':'rgba(143,98,134,0.16)','--radius':'14px','--blur':'24px'}},
     bubblegum:{name:'Bubblegum',description:'Soft pink with a raspberry accent.',vars:{'--bg':'#ffc4e1','--panel':'rgba(255,223,238,0.72)','--panel-strong':'rgba(255,233,244,0.9)','--border':'rgba(17,17,20,0.14)','--text':'#241f24','--text-dim':'#584752','--text-dimmer':'#836776','--accent':'#c2185b','--accent-soft':'rgba(194,24,91,0.32)','--accent-glow':'rgba(194,24,91,0.16)','--ambient-a':'rgba(194,24,91,0.1)','--ambient-b':'rgba(224,110,158,0.16)','--radius':'14px','--blur':'24px'}},
     mint:{name:'Mint',description:'Fresh mint with a deep green accent.',vars:{'--bg':'#b8f0d4','--panel':'rgba(216,247,231,0.72)','--panel-strong':'rgba(228,249,239,0.9)','--border':'rgba(17,17,20,0.14)','--text':'#1e2323','--text-dim':'#43544e','--text-dimmer':'#617c70','--accent':'#0b7a55','--accent-soft':'rgba(11,122,85,0.32)','--accent-glow':'rgba(11,122,85,0.16)','--ambient-a':'rgba(11,122,85,0.1)','--ambient-b':'rgba(98,181,148,0.16)','--radius':'14px','--blur':'24px'}},

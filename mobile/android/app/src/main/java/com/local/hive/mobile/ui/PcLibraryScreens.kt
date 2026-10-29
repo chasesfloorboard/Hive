@@ -68,7 +68,7 @@ fun PcLibraryScreen(vm: MainViewModel, bottomPadding: Dp, onBack: () -> Unit, on
     val now by vm.nowPlaying.collectAsStateWithLifecycle()
     var reachable by remember { mutableStateOf<Boolean?>(null) }
     var query by rememberSaveable { mutableStateOf("") }
-    var view by rememberSaveable { mutableStateOf(0) }
+    var view by rememberSetting("view.pcLibrary", 0)
     LaunchedEffect(Unit) { reachable = runCatching { vm.pcLibrary.refresh() }.getOrDefault(false) }
     val albums by rememberComputed(emptyList(), tracks) { pcAlbums(tracks) }
     // Songs are put in order once, off the main thread; typing only filters.

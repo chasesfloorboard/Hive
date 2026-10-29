@@ -36,16 +36,13 @@ class YouTubeMusic(context: Context, private val http: OkHttpClient = AppleMusic
     private val prefs = context.getSharedPreferences("youtube-music", Context.MODE_PRIVATE)
     private val links = ConcurrentHashMap<String, Pair<String, Long>>() // videoId -> (audio url, expires at)
     private val locks = ConcurrentHashMap<String, Any>()
-    private val _enabled = kotlinx.coroutines.flow.MutableStateFlow(prefs.getBoolean("enabled", true))
-    /** Whether songs the phone doesn't have play in full from YouTube Music (else as previews). */
-    val enabled: kotlinx.coroutines.flow.StateFlow<Boolean> = _enabled
-
-    fun setEnabled(on: Boolean) { _enabled.value = on; prefs.edit().putBoolean("enabled", on).apply() }
+    /** Songs the phone doesn't have always play in full this way (there's no setting for it). */
+    val enabled: kotlinx.coroutines.flow.StateFlow<Boolean> = kotlinx.coroutines.flow.MutableStateFlow(true)
 
     /** The playable address for [song]; blocking, so call it off the main thread. */
     fun resolve(song: WantedSong): String = synchronized(locks.getOrPut(song.key) { Any() }) {
         prefs.getString("match:${song.key}", null)?.let { id -> runCatching { return audioUrl(id) } }
-        val id = findMatch(song) ?: throw IOException("Couldn't find “${song.title}” on YouTube Music.")
+        val id = findMatch(song) ?: throw IOException("Couldn't find “${song.title}” to play in full.")
         prefs.edit().putString("match:${song.key}", id).apply()
         audioUrl(id)
     }
@@ -121,14 +118,14 @@ class YouTubeMusic(context: Context, private val http: OkHttpClient = AppleMusic
         if (status?.str("status") != "OK") {
             // A refused visitor id is dropped, so the next try gets a new one.
             if (status?.str("status") == "LOGIN_REQUIRED") prefs.edit().remove("visitor").apply()
-            throw IOException(status?.str("reason") ?: "YouTube wouldn't play this song.")
+            throw IOException(status?.str("reason") ?: "This song can't be played in full right now.")
         }
         val formats = ((o["streamingData"] as? JsonObject)?.get("adaptiveFormats") as? JsonArray).orEmpty().mapNotNull { it as? JsonObject }
             .filter { it.str("mimeType")?.startsWith("audio/") == true && it.str("url") != null }
         // Opus first (the best YouTube offers), then AAC; the highest bitrate of the kind.
         val preferred = "audio/webm"
         val best = formats.maxWithOrNull(compareBy<JsonObject> { if (it.str("mimeType")!!.startsWith(preferred)) 1 else 0 }.thenBy { it.str("bitrate")?.toIntOrNull() ?: 0 })
-            ?: throw IOException("YouTube didn't give an audio stream.")
+            ?: throw IOException("No audio came for this song.")
         val url = best.str("url")!!
         val expires = Uri.parse(url).getQueryParameter("expire")?.toLongOrNull()?.times(1000) ?: (System.currentTimeMillis() + 3_600_000)
         links[cacheKey] = url to expires
@@ -151,8 +148,8 @@ class YouTubeMusic(context: Context, private val http: OkHttpClient = AppleMusic
             .apply { visitor?.let { header("X-Goog-Visitor-Id", it) }; clientName?.let { header("X-YouTube-Client-Name", it) }; clientVersion?.let { header("X-YouTube-Client-Version", it) } }
             .post(body.toString().toRequestBody("application/json".toMediaType())).build()
         return http.newCall(request).execute().use { res ->
-            if (!res.isSuccessful) throw IOException("YouTube answered ${res.code}")
-            Json.parseToJsonElement(res.body.string()) as? JsonObject ?: throw IOException("YouTube gave an unreadable answer.")
+            if (!res.isSuccessful) throw IOException("The song server answered ${res.code}")
+            Json.parseToJsonElement(res.body.string()) as? JsonObject ?: throw IOException("The song server gave an unreadable answer.")
         }
     }
 

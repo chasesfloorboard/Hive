@@ -19,8 +19,8 @@ object ThemeMaker {
         Swatch("Melon", Color(0xFFCDEBFF), Color(0xFF5F8A14)),
         Swatch("Sky Blue", Color(0xFF8FCBE6), Color(0xFF1F4E79)),
         Swatch("Lemon", Color(0xFFFFF3A3), Color(0xFFB4530A)),
-        Swatch("Sunflower", Color(0xFFFFD23F), Color(0xFF5A2D82)),
-        Swatch("Tangerine", Color(0xFFFF9F45), Color(0xFF6A1B4D)),
+        Swatch("Sunflower", Color(0xFFFFD23F), Color(0xFF8C6200)),
+        Swatch("Tangerine", Color(0xFFFF9F45), Color(0xFF1F4D14)),
         Swatch("Coral", Color(0xFFFF8A7A), Color(0xFF1F3A93)),
         Swatch("Bubblegum", Color(0xFFFFC4E1), Color(0xFFC2185B)),
         Swatch("Cherry", Color(0xFFF2A7B4), Color(0xFF5C0A14)),
@@ -38,8 +38,12 @@ object ThemeMaker {
 
     fun pack(s: Swatch) = ThemePack(s.name, css(s.bg, s.accent))
 
-    /** A whole Hive theme (its CSS variables) from a background and an accent. */
-    fun css(bg: Color, accent: Color): String {
+    /**
+     * A whole Hive theme (its CSS variables) from a background and an accent.
+     * [exact]: the accent stays as picked even where it's hard to see (Custom);
+     * otherwise Hive darkens or lightens it just enough to read.
+     */
+    fun css(bg: Color, accent: Color, exact: Boolean = false): String {
         val light = bg.luminance() > 0.4f
         val ink = if (light) Color(0xFF111114) else Color.White
         fun v(name: String, c: Color) = "  --$name: ${cssColor(c)};\n"
@@ -56,6 +60,7 @@ object ThemeMaker {
             v("accent-glow", accent.copy(alpha = if (light) 0.16f else 0.24f)) +
             v("ambient-a", accent.copy(alpha = if (light) 0.10f else 0.20f)) +
             v("ambient-b", mix(accent, bg, 0.5f).copy(alpha = 0.16f)) +
+            (if (exact) "  --accent-exact: 1;\n" else "") +
             "  --radius: 14px;\n  --blur: 24px;\n}\n"
     }
 

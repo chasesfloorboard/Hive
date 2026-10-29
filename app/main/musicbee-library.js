@@ -198,7 +198,7 @@ function parseMusicBeeAutoPlaylist(xmlText, name = '') {
 // MusicBee stores paths with Windows separators, relative to the drive root
 // of its music folder (or absolute in playlists). Match by file name, then
 // break ties with duration and title, since Hive's library may live
-// somewhere else entirely (it does here: ~/Music vs D:\beautiful sounds pc).
+// somewhere else entirely (it does here: ~/Music vs D:\My Music).
 function createTrackMatcher(tracks) {
   const byName = new Map();
   for (const track of tracks) {

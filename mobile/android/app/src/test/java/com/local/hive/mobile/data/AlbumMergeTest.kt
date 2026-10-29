@@ -6,7 +6,7 @@ import org.junit.Test
 
 class AlbumMergeTest {
     private var nextId = 1L
-    private fun song(albumId: Long, album: String, artist: String, albumArtist: String = "", folder: String = "Music/beautiful sounds pc") = Track(
+    private fun song(albumId: Long, album: String, artist: String, albumArtist: String = "", folder: String = "Music/My Music") = Track(
         id = nextId++, title = "t$nextId", artist = artist, album = album, albumArtist = albumArtist, albumId = albumId,
         durationMs = 1, trackNumber = 1, discNumber = 1, year = 0, genre = "", folder = folder, fileName = "f.mp3", dateAdded = 0, sizeBytes = 0,
     )

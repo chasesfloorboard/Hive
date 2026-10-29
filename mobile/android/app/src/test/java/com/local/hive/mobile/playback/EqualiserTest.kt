@@ -35,11 +35,17 @@ class EqualiserTest {
 
     private fun db(ratio: Double) = 20 * kotlin.math.log10(ratio)
 
-    /** A crossfade's fade-in starts at the seek's flush: silent first, rising, then full, two channels alike. */
+    /**
+     * A crossfade's fade-in starts on the next song's first sample: silent first, rising, then full,
+     * two channels alike. A song in another format is flushed twice (the seek, then the new format);
+     * the fade survives that.
+     */
     @Test fun crossfadeFadesTheNextSongIn() {
         val eq = EqualiserProcessor()
-        eq.configure(AudioProcessor.AudioFormat(rate, 2, C.ENCODING_PCM_FLOAT))
+        eq.configure(AudioProcessor.AudioFormat(48_000, 2, C.ENCODING_PCM_FLOAT))
         eq.fadeInOnNextFlush(1000)
+        eq.flush(AudioProcessor.StreamMetadata.DEFAULT)
+        eq.configure(AudioProcessor.AudioFormat(rate, 2, C.ENCODING_PCM_FLOAT))
         eq.flush(AudioProcessor.StreamMetadata.DEFAULT)
         val frames = rate * 2
         val input = ByteBuffer.allocateDirect(frames * 2 * 4).order(ByteOrder.nativeOrder())

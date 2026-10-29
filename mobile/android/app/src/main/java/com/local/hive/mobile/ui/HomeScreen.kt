@@ -239,7 +239,7 @@ fun <T> ListHeader(
 @Composable
 private fun AlbumsTab(vm: MainViewModel, nav: HomeNavigation, bottom: Dp) {
     val albums by vm.albums.collectAsStateWithLifecycle()
-    var sort by rememberSaveable { mutableStateOf(AlbumSort.Year) }
+    var sort by rememberSetting("sort.albums", AlbumSort.Year)
     val sections by rememberComputed(emptyList<Pair<String, List<AlbumSummary>>>(), albums, sort) {
         when (sort) {
             AlbumSort.Year -> albums.groupBy { it.year }.toSortedMap(compareByDescending { it }).map { (y, list) -> (if (y > 0) "$y" else "Unknown year") to list }
@@ -310,7 +310,7 @@ private fun sortTracks(tracks: List<Track>, sort: TrackSort): List<Track> = when
 @Composable
 private fun TracksTab(vm: MainViewModel, actions: TrackActions, bottom: Dp) {
     val all by vm.tracks.collectAsStateWithLifecycle()
-    var sort by rememberSaveable { mutableStateOf(TrackSort.Title) }
+    var sort by rememberSetting("sort.tracks", TrackSort.Title)
     val tracks by rememberComputed(all, all, sort) { sortTracks(all, sort) }
     TrackList(vm, tracks, actions, bottom, "No music yet", "Hive plays the music stored on this phone.", indexed = sort == TrackSort.Title,
         sortHeader = { count, shuffle, play -> ListHeader(TrackSort.entries, sort, { it.label }, { sort = it }, count, shuffle, play) })
@@ -349,8 +349,11 @@ fun TrackList(
     val play = { if (rows == null) vm.play(tracks) else vm.playRows(rows) }
     val shuffle = { if (rows == null) vm.shuffle(tracks) else vm.playRows(rows, shuffle = true) }
     // Hold a song and drag: the songs between are picked (keys as the rows below use them).
-    val dragRows = remember(tracks, rows) { if (rows == null) tracks.associateBy<Track, Any> { it.id } else rows.mapNotNull { r -> r.track?.let { t -> (t.id.toString() as Any) to t } }.toMap() }
-    val dragOrder = remember(tracks, rows) { rows?.mapNotNull { it.track } ?: tracks }
+    val dragRows: Map<Any, Any> = remember(tracks, rows) {
+        if (rows == null) tracks.associateBy<Track, Any> { it.id }
+        else rows.mapNotNull { r -> r.track?.let { t -> (t.id.toString() as Any) to (t as Any) } ?: r.stream?.let { st -> (st.key as Any) to (st as Any) } }.toMap()
+    }
+    val dragOrder: List<Any> = remember(tracks, rows) { rows?.mapNotNull { it.track ?: it.stream } ?: tracks }
     Box(Modifier.fillMaxSize()) {
         LazyColumn(Modifier.fillMaxSize().songDragSelect(list, dragRows, dragOrder), state = list, contentPadding = PaddingValues(bottom = bottom + 12.dp, end = if (showIndex) 14.dp else 0.dp)) {
             if (header != null) item { header() }
@@ -387,7 +390,7 @@ fun TrackList(
 @Composable
 private fun ArtistsTab(vm: MainViewModel, nav: HomeNavigation, bottom: Dp) {
     val all by vm.artists.collectAsStateWithLifecycle()
-    var sort by rememberSaveable { mutableStateOf(ArtistSort.Name) }
+    var sort by rememberSetting("sort.artists", ArtistSort.Name)
     val artists = remember(all, sort) { if (sort == ArtistSort.Songs) all.sortedByDescending { it.trackCount } else all }
     LazyColumn(Modifier.fillMaxSize(), contentPadding = PaddingValues(bottom = bottom + 12.dp)) {
         item { ListHeader(ArtistSort.entries, sort, { it.label }, { sort = it }, countOf(artists.size, "artist")) }
@@ -464,10 +467,14 @@ private fun PlaylistsTab(vm: MainViewModel, nav: HomeNavigation, bottom: Dp, onC
             item {
                 LazyRow(contentPadding = PaddingValues(horizontal = 16.dp, vertical = 10.dp), horizontalArrangement = Arrangement.spacedBy(12.dp)) {
                     // Favorites counts the liked streamed songs it lists too.
-                    items(smart) { (kind, tracks, icon) -> SmartCard(kind.title, countOf(tracks.size + if (kind == AutoPlaylist.Favorites) likedStreams.size else 0, "track"), tracks.map { it.artworkUri }.distinct().take(4), icon) { nav.openPlaylist(kind) } }
+                    // Holding a card opens the playlist's menu, as holding a playlist does.
+                    items(smart) { (kind, tracks, icon) -> SmartCard(kind.title, countOf(tracks.size + if (kind == AutoPlaylist.Favorites) likedStreams.size else 0, "track"), tracks.map { it.artworkUri }.distinct().take(4), icon,
+                        onLongClick = { nav.collection(AutoDjRequest(kind.title) { tracks }) }) { nav.openPlaylist(kind) } }
                     // Recently played holds streamed songs too, so it's built from its rows.
-                    item { SmartCard(AutoPlaylist.RecentlyPlayed.title, countOf(played.size, "track"), played.mapNotNull { it.art }.distinct().take(4), Icons.Rounded.History) { nav.openPlaylist(AutoPlaylist.RecentlyPlayed) } }
-                    item { SmartCard(AutoPlaylist.TopRated.title, countOf(rated.size, "track"), rated.map { it.artworkUri }.distinct().take(4), Icons.Rounded.Star) { nav.openPlaylist(AutoPlaylist.TopRated) } }
+                    item { SmartCard(AutoPlaylist.RecentlyPlayed.title, countOf(played.size, "track"), played.mapNotNull { it.art }.distinct().take(4), Icons.Rounded.History,
+                        onLongClick = { nav.collection(AutoDjRequest(AutoPlaylist.RecentlyPlayed.title) { played.mapNotNull { it.track } }) }) { nav.openPlaylist(AutoPlaylist.RecentlyPlayed) } }
+                    item { SmartCard(AutoPlaylist.TopRated.title, countOf(rated.size, "track"), rated.map { it.artworkUri }.distinct().take(4), Icons.Rounded.Star,
+                        onLongClick = { nav.collection(AutoDjRequest(AutoPlaylist.TopRated.title) { rated }) }) { nav.openPlaylist(AutoPlaylist.TopRated) } }
                 }
             }
             item {
@@ -480,12 +487,14 @@ private fun PlaylistsTab(vm: MainViewModel, nav: HomeNavigation, bottom: Dp, onC
             // Favorites heads the user's playlists too, not only as the card above.
             item(key = "favorites") {
                 LibraryRow(favorites.firstOrNull()?.artworkUri ?: likedStreams.firstOrNull()?.first?.artworkUrl, Icons.Rounded.Favorite, AutoPlaylist.Favorites.title,
-                    countOf(favorites.size + likedStreams.size, "track"), modifier = Modifier.animateItem()) { nav.openPlaylist(AutoPlaylist.Favorites) }
+                    countOf(favorites.size + likedStreams.size, "track"), modifier = Modifier.animateItem(),
+                    onLongClick = { nav.collection(AutoDjRequest(AutoPlaylist.Favorites.title) { favorites }) }) { nav.openPlaylist(AutoPlaylist.Favorites) }
             }
             if (mine.isEmpty()) item { LibraryRow(null, Icons.Rounded.Add, "Create playlist", "Or add songs from any ⋮ menu", onClick = onCreate) }
             // Smart playlists: made here by rules, kept up to date by themselves.
             items(smartLists, key = { "smart" + it.id }) { p ->
-                LibraryRow(null, Icons.Rounded.AutoAwesome, p.name, "Smart · " + countOf(p.rules.size, "rule"), modifier = Modifier.animateItem()) { nav.open("smart/${p.id}") }
+                LibraryRow(null, Icons.Rounded.AutoAwesome, p.name, "Smart · " + countOf(p.rules.size, "rule"), modifier = Modifier.animateItem(),
+                    onLongClick = { nav.collection(AutoDjRequest(p.name) { vm.smartTracks(p.id).first() }) }) { nav.open("smart/${p.id}") }
             }
             item { NewSmartPlaylistRow { newSmart = true } }
             items(mine, key = { it.id }) { p ->
@@ -508,9 +517,10 @@ private fun PlaylistsTab(vm: MainViewModel, nav: HomeNavigation, bottom: Dp, onC
 
 /** An automatic playlist as a card: up to four of its covers in a square, its name and size. */
 @Composable
-private fun SmartCard(title: String, detail: String, covers: List<Any>, icon: ImageVector, onClick: () -> Unit) {
+private fun SmartCard(title: String, detail: String, covers: List<Any>, icon: ImageVector, onLongClick: (() -> Unit)? = null, onClick: () -> Unit) {
     val c = Hive.colors
-    Column(Modifier.width(132.dp).pressable(onClick)) {
+    val haptics = androidx.compose.ui.platform.LocalHapticFeedback.current
+    Column(Modifier.width(132.dp).pressable(onClick, onLongClick = onLongClick?.let { hold -> { haptics.performHapticFeedback(androidx.compose.ui.hapticfeedback.HapticFeedbackType.LongPress); hold() } })) {
         Box(Modifier.size(132.dp).shadow(12.dp, HiveShape.art, ambientColor = c.accentGlow).clip(HiveShape.art).background(mix(c.accent, c.panelStrong, 0.12f))) {
             when {
                 // A tile whose song has no cover shows another of the four, never an empty square.
@@ -570,7 +580,7 @@ private fun FavoritesTab(vm: MainViewModel, nav: HomeNavigation, actions: TrackA
     val tracks by rememberComputed(allTracks, allTracks, q) { if (q.isEmpty()) allTracks else allTracks.filter { LibrarySort.matches("${it.title} ${it.artist} ${it.album}", q) } }
     val streams by rememberComputed(allStreams, allStreams, q) { if (q.isEmpty()) allStreams else allStreams.filter { (s, _) -> LibrarySort.matches("${s.title} ${s.artist} ${s.album}", q) } }
     val albums by rememberComputed(allAlbums, allAlbums, q) { if (q.isEmpty()) allAlbums else allAlbums.filter { LibrarySort.matches("${it.album} ${it.artist}", q) } }
-    var view by rememberSaveable { mutableStateOf(FavoriteView.Tracks) }
+    var view by rememberSetting("view.favorites", FavoriteView.Tracks)
     var sort by rememberSaveable { mutableStateOf(TrackSort.Added) }
     // The artists of favorite songs, most favorited first.
     val artists by rememberComputed(emptyList(), allTracks, q) {

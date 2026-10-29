@@ -222,6 +222,16 @@ fun rotatingCover(base: Any?, trackId: Long?): CoverFrame {
 /** The sharpest memory-cache entry each cover has been drawn from, with its size in pixels. */
 private val ShownCovers = java.util.concurrent.ConcurrentHashMap<String, Pair<coil3.memory.MemoryCache.Key, Long>>()
 
+/**
+ * Notes a cover loaded ahead of time (the playing song's, the next one's) as
+ * the sharpest copy there is, so the big player and Now Playing show it at once
+ * rather than a list row's thumbnail stretched up while the full one loads.
+ */
+fun noteLoadedCover(model: Any?, key: coil3.memory.MemoryCache.Key?, pixels: Long) {
+    if (model == null || key == null) return
+    ShownCovers.merge(model.toString(), key to pixels) { old, new -> if (new.second >= old.second) new else old }
+}
+
 /** Forgets which covers were shown, once a cover changed (the stand-ins would be the old picture). */
 fun forgetShownCovers() { ShownCovers.clear(); CoverGeneration.intValue++ }
 
@@ -483,40 +493,49 @@ class Selection {
 
     fun endAlbumDrag() { dragAnchor = null; dragOver = null }
 
-    // ---- hold and drag over songs ----
+    // ---- hold and drag over songs (library songs and streamed ones alike) ----
+
+    /** A song's id for a drag: a library song by its id, a streamed song by its key. */
+    private fun dragId(x: Any): String = when (x) { is Track -> "t${x.id}"; is StreamTrack -> "s${x.key}"; else -> "" }
+    private fun picked(x: Any) = when (x) { is Track -> x in this; is StreamTrack -> x in this; else -> false }
 
     /** The song the finger went down on, while a hold-and-drag is picking songs. */
-    var trackDragAnchor: Long? = null
+    var trackDragAnchor: String? = null
         private set
-    private var trackDragBase: List<Track> = emptyList()
-    private var trackDragOver: Long? = null
-    /** The songs of the list on screen, in order, so a drag picks the ones between. */
-    var trackOrder: List<Track> = emptyList()
+    private var trackDragBase: List<Any> = emptyList()
+    private var trackDragOver: String? = null
+    /** The songs of the list on screen (Track or StreamTrack), in order, so a drag picks the ones between. */
+    var trackOrder: List<Any> = emptyList()
 
     /** Whether the drag un-picks: it began on a song already picked. */
     private var trackDragRemoves = false
 
-    fun startTrackDrag(t: Track) {
-        trackDragRemoves = t in this
-        trackDragBase = if (trackDragRemoves) tracks.toList() else tracks.filter { it.id != t.id }
-        trackDragAnchor = t.id
+    fun startTrackDrag(song: Any) {
+        val id = dragId(song)
+        trackDragRemoves = picked(song)
+        val all: List<Any> = tracks.toList() + streams.toList()
+        trackDragBase = if (trackDragRemoves) all else all.filter { dragId(it) != id }
+        trackDragAnchor = id
         trackDragOver = null
-        dragToTrack(t)
+        dragToTrack(song)
     }
 
-    fun dragToTrack(t: Track) {
+    fun dragToTrack(song: Any) {
         val anchor = trackDragAnchor ?: return
-        if (t.id == trackDragOver) return
-        trackDragOver = t.id
-        val from = trackOrder.indexOfFirst { it.id == anchor }
-        val to = trackOrder.indexOfFirst { it.id == t.id }
-        val range = if (from < 0 || to < 0) listOf(t) else trackOrder.subList(minOf(from, to), maxOf(from, to) + 1)
-        val next = if (trackDragRemoves) range.mapTo(HashSet()) { it.id }.let { gone -> trackDragBase.filter { it.id !in gone } }
-            else (trackDragBase + range).distinctBy { it.id }
-        val keep = next.mapTo(HashSet()) { it.id }
-        tracks.removeAll { it.id !in keep }
-        trackIds.retainAll(keep)
-        next.forEach(::add)
+        val id = dragId(song)
+        if (id == trackDragOver) return
+        trackDragOver = id
+        val from = trackOrder.indexOfFirst { dragId(it) == anchor }
+        val to = trackOrder.indexOfFirst { dragId(it) == id }
+        val range = if (from < 0 || to < 0) listOf(song) else trackOrder.subList(minOf(from, to), maxOf(from, to) + 1)
+        val next = if (trackDragRemoves) range.mapTo(HashSet(), ::dragId).let { gone -> trackDragBase.filter { dragId(it) !in gone } }
+            else (trackDragBase + range).distinctBy(::dragId)
+        val keep = next.mapTo(HashSet(), ::dragId)
+        tracks.removeAll { "t${it.id}" !in keep }
+        trackIds.retainAll { "t$it" in keep }
+        streams.removeAll { "s${it.key}" !in keep }
+        streamKeys.retainAll { "s$it" in keep }
+        next.forEach { when (it) { is Track -> add(it); is StreamTrack -> add(it) } }
     }
 
     fun endTrackDrag() { trackDragAnchor = null; trackDragOver = null }
@@ -575,7 +594,7 @@ fun Modifier.albumDragSelect(list: androidx.compose.foundation.lazy.LazyListStat
  * when the finger nears its top or bottom edge. [rows] maps list keys to songs.
  */
 @Composable
-fun Modifier.songDragSelect(list: androidx.compose.foundation.lazy.LazyListState, rows: Map<Any, Track>, order: List<Track>): Modifier {
+fun Modifier.songDragSelect(list: androidx.compose.foundation.lazy.LazyListState, rows: Map<Any, Any>, order: List<Any>): Modifier {
     val selection = LocalSelection.current ?: return this
     androidx.compose.runtime.SideEffect { selection.trackOrder = order }
     val currentRows by androidx.compose.runtime.rememberUpdatedState(rows)
@@ -605,6 +624,8 @@ private fun Modifier.pickDrag(
     return pointerInput(selection, list) {
         awaitEachGesture {
             awaitFirstDown(requireUnconsumed = false, pass = androidx.compose.ui.input.pointer.PointerEventPass.Initial)
+            // A new touch: a drag left over from a hold in a list without hold-and-drag ends here.
+            end()
             var speed = 0f
             var finger = androidx.compose.ui.geometry.Offset.Zero
             var scroller: kotlinx.coroutines.Job? = null
@@ -825,7 +846,7 @@ fun replaceFromSoulseek(context: android.content.Context, track: Track, onToast:
     com.local.hive.mobile.soulseek.SoulseekWorker.enqueue(context, com.local.hive.mobile.soulseek.SoulseekRequest(
         track.displayAlbumArtist.substringBefore(",").trim(), track.album,
         listOf(com.local.hive.mobile.soulseek.SoulseekRequest.Track(track.title, track.durationMs, replaces = track.id)), "track", losslessOnly = lossless))
-    onToast(if (lossless) "Looking for a lossless copy of ${track.title} on Soulseek" else "Getting ${track.title} from Soulseek; it replaces the YouTube copy")
+    onToast(if (lossless) "Looking for a lossless copy of ${track.title} on Soulseek" else "Getting ${track.title} from Soulseek; it replaces the old copy")
 }
 
 @Composable
@@ -1127,3 +1148,39 @@ fun rememberPullToReveal(keepShown: Boolean): PullToReveal {
     return remember { PullToReveal(px) { keep } }
 }
 
+
+/**
+ * A choice that stays chosen (a sort, a view): kept in the phone's settings,
+ * so leaving the page or closing Hive doesn't put it back to the default.
+ */
+@Composable
+fun <T : Enum<T>> rememberSetting(key: String, default: T): androidx.compose.runtime.MutableState<T> {
+    val context = androidx.compose.ui.platform.LocalContext.current
+    val prefs = remember { context.getSharedPreferences("ui", android.content.Context.MODE_PRIVATE) }
+    val state = remember(key) {
+        val saved = prefs.getString(key, null)?.let { name -> default.javaClass.enumConstants?.firstOrNull { it.name == name } }
+        mutableStateOf(saved ?: default)
+    }
+    androidx.compose.runtime.LaunchedEffect(state.value) { prefs.edit().putString(key, state.value.name).apply() }
+    return state
+}
+
+/** A yes/no choice that stays chosen, as [rememberSetting]. */
+@Composable
+fun rememberSetting(key: String, default: Boolean): androidx.compose.runtime.MutableState<Boolean> {
+    val context = androidx.compose.ui.platform.LocalContext.current
+    val prefs = remember { context.getSharedPreferences("ui", android.content.Context.MODE_PRIVATE) }
+    val state = remember(key) { mutableStateOf(prefs.getBoolean(key, default)) }
+    androidx.compose.runtime.LaunchedEffect(state.value) { prefs.edit().putBoolean(key, state.value).apply() }
+    return state
+}
+
+/** A numbered choice (a tab of a page) that stays chosen, as [rememberSetting]. */
+@Composable
+fun rememberSetting(key: String, default: Int): androidx.compose.runtime.MutableState<Int> {
+    val context = androidx.compose.ui.platform.LocalContext.current
+    val prefs = remember { context.getSharedPreferences("ui", android.content.Context.MODE_PRIVATE) }
+    val state = remember(key) { mutableStateOf(prefs.getInt(key, default)) }
+    androidx.compose.runtime.LaunchedEffect(state.value) { prefs.edit().putInt(key, state.value).apply() }
+    return state
+}

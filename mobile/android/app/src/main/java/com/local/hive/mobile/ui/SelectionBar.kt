@@ -88,7 +88,7 @@ fun SelectionBar(vm: MainViewModel, selection: Selection, modifier: Modifier, on
                         // Streamed songs (Apple Music, Spotify), with any library songs picked beside them.
                         item("Play next", Icons.AutoMirrored.Rounded.PlaylistPlay) { vm.playNextStreams(streams); if (picked.isNotEmpty()) vm.playNext(picked); done("${countOf(all, "song")} play next") }()
                         item("Add to queue", Icons.AutoMirrored.Rounded.QueueMusic) { if (picked.isNotEmpty()) vm.addToQueue(picked); vm.addToQueueStreams(streams); done("Added ${countOf(all, "song")} to the queue") }()
-                        item("Download", Icons.Rounded.Download) {
+                        item("Download streamed songs", Icons.Rounded.Download) {
                             if (com.local.hive.mobile.soulseek.SoulseekSettings(context).configured) { downloadStreams(context, streams, onToast); selection.clear() } else signIn = streams
                         }()
                         item("Add to Favorites", Icons.Rounded.Favorite) { if (picked.isNotEmpty()) vm.setLoved(picked, true); streams.forEach { vm.likeStream(it) }; done("Added ${countOf(all, "song")} to Favorites") }()

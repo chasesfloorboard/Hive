@@ -32,7 +32,7 @@ class LinkStore(context: Context) {
         set(value) = prefs.edit {
             if (value == null) {
                 remove("token"); remove("serverId"); remove("name"); remove("port"); remove("deviceId"); remove("hosts")
-                remove("lastSeq"); remove("lastSyncAt"); remove("fullSyncDone"); remove("lastFullSyncAt"); remove("lastPcPlayAt"); remove("songSync")
+                remove("lastSeq"); remove("lastSyncAt"); remove("fullSyncDone"); remove("lastFullSyncAt"); remove("lastPcPlayAt"); remove("listeningVersion"); remove("songSync")
             } else {
                 putString("token", value.token)
                 putString("serverId", value.serverId)
@@ -56,6 +56,11 @@ class LinkStore(context: Context) {
     var lastFullSyncAt: Long
         get() = prefs.getLong("lastFullSyncAt", 0)
         set(value) = prefs.edit { putLong("lastFullSyncAt", value) }
+
+    /** The version of Hive's listening history file last saved on this phone (see ListeningFile). */
+    var listeningVersion: String?
+        get() = prefs.getString("listeningVersion", null)
+        set(value) = prefs.edit { putString("listeningVersion", value) }
 
     /** The time of the newest Hive (PC) play brought to this phone. */
     var lastPcPlayAt: Long
