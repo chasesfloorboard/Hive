@@ -13,16 +13,25 @@ android {
         applicationId = "com.local.hive.mobile"
         minSdk = 29
         targetSdk = 36
-        versionCode = 99
-        versionName = "2.18.3"
+        versionCode = 100
+        versionName = "2.18.4"
         testInstrumentationRunner = "androidx.test.runner.AndroidJUnitRunner"
+    }
+
+    // Hive Mobile has one key, so every build updates every install: the keystore in HIVE_KEYSTORE
+    // when it's set (GitHub's build, from the HIVE_MOBILE_KEYSTORE secret), else the debug keystore of
+    // the PC building it, which is the same key.
+    signingConfigs {
+        System.getenv("HIVE_KEYSTORE")?.takeIf { it.isNotBlank() }?.let { path ->
+            create("hive") { storeFile = file(path); storePassword = "android"; keyAlias = "androiddebugkey"; keyPassword = "android" }
+        }
     }
 
     buildTypes {
         release {
             isMinifyEnabled = true
             proguardFiles(getDefaultProguardFile("proguard-android-optimize.txt"), "proguard-rules.pro")
-            signingConfig = signingConfigs.getByName("debug")
+            signingConfig = signingConfigs.findByName("hive") ?: signingConfigs.getByName("debug")
         }
     }
     compileOptions {
