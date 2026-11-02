@@ -30,6 +30,8 @@ android {
         targetCompatibility = JavaVersion.VERSION_17
     }
     buildFeatures { compose = true }
+    // A failing unit test prints its whole stack trace (GitHub's log is all there is to go on).
+    testOptions { unitTests.all { it.testLogging { exceptionFormat = org.gradle.api.tasks.testing.logging.TestExceptionFormat.FULL } } }
 }
 
 ksp { arg("room.schemaLocation", "$projectDir/schemas") }
