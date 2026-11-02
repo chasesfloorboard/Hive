@@ -109,6 +109,8 @@ const EDITABLE_TAGS = ['title', 'artist', 'album', 'albumArtist', 'genre', 'year
 const MAX_INBOX_PLAYS = 50000;
 const MAX_COUNTED_PLAY_IDS = 100000;
 const MAX_SONG_BYTES = 1024 * 1024 * 1024;
+// A copy of everything Hive Mobile keeps (see receivePhoneBackup).
+const MAX_PHONE_BACKUP_BYTES = 1024 * 1024 * 1024;
 const SONG_EXTENSIONS = new Set(['mp3', 'flac', 'm4a', 'mp4', 'aac', 'ogg', 'oga', 'opus', 'wav', 'aiff', 'aif', 'wv', 'ape', 'wma', 'alac']);
 
 // The inbox as saved: Love by song id, plays in a list. Anything malformed is dropped.
@@ -722,6 +724,11 @@ function createHiveLink({ dataDir, getTracks, setLove, onPaired, streamSong = nu
         res.writeHead(200, { 'Content-Type': 'application/json; charset=utf-8', 'Content-Encoding': 'gzip', ETag: payload.etag, 'Content-Length': payload.gzip.length });
         return res.end(payload.gzip);
       }
+      // Hive Mobile as it is (its database, settings and files), one copy per phone, so a reinstalled
+      // phone comes back exactly as it was. Any paired phone may fetch them: it was let in at this PC.
+      case 'PUT /api/phone-backup': return receivePhoneBackup(req, res, device);
+      case 'GET /api/phone-backups': return send(res, 200, { backups: listPhoneBackups() });
+      case 'GET /api/phone-backup': return sendPhoneBackup(res, String(url.searchParams.get('device') || ''));
       // A trusted phone may update Hive Mobile from here, at home or over Tailscale.
       case 'GET /api/app': {
         const found = trusted(device) ? await mobileAppInfo() : null;
@@ -976,6 +983,54 @@ function createHiveLink({ dataDir, getTracks, setLove, onPaired, streamSong = nu
     } catch (err) {
       return send(res, 500, { error: err?.message || String(err) });
     }
+  }
+
+  // ---- phone backups ---------------------------------------------------------
+
+  const phoneBackupsDir = path.join(dataDir, 'phone-backups');
+  const backupId = id => /^[0-9a-f-]{8,64}$/i.test(String(id || '')) ? String(id) : null;
+
+  function listPhoneBackups() {
+    let names = [];
+    try { names = fs.readdirSync(phoneBackupsDir).filter(f => f.endsWith('.json')); } catch { return []; }
+    return names.map(f => { try { return JSON.parse(fs.readFileSync(path.join(phoneBackupsDir, f), 'utf8')); } catch { return null; } })
+      .filter(b => b && backupId(b.device) && fs.existsSync(path.join(phoneBackupsDir, `${b.device}.zip`)))
+      .sort((a, b) => num(b.savedAt) - num(a.savedAt));
+  }
+
+  async function receivePhoneBackup(req, res, device) {
+    const refuse = (status, error) => { req.resume(); return send(res, status, { error }); };
+    const id = backupId(device.id);
+    if (!id) return refuse(400, 'This phone has no usable id.');
+    const size = Number(req.headers['content-length']);
+    if (!Number.isFinite(size) || size <= 0) return refuse(411, 'The backup needs its length.');
+    if (size > MAX_PHONE_BACKUP_BYTES) return refuse(413, 'That backup is too big.');
+    fs.mkdirSync(phoneBackupsDir, { recursive: true });
+    const part = path.join(phoneBackupsDir, `${id}.zip.part`);
+    try {
+      await require('stream/promises').pipeline(req, fs.createWriteStream(part));
+      const head = Buffer.alloc(2);
+      const fd = fs.openSync(part, 'r'); try { fs.readSync(fd, head, 0, 2, 0); } finally { fs.closeSync(fd); }
+      if (fs.statSync(part).size !== size || head.toString('latin1') !== 'PK') throw new Error('The backup arrived incomplete.');
+      // The one before stays beside it until this one is safely in place.
+      const zip = path.join(phoneBackupsDir, `${id}.zip`);
+      if (fs.existsSync(zip)) fs.copyFileSync(zip, path.join(phoneBackupsDir, `${id}.previous.zip`));
+      fs.renameSync(part, zip);
+      const meta = { device: id, deviceName: device.name, savedAt: num(req.headers['x-saved-at']) || Date.now(), versionName: text(req.headers['x-version-name']).slice(0, 40), size, receivedAt: Date.now() };
+      fs.writeFileSync(path.join(phoneBackupsDir, `${id}.json`), JSON.stringify(meta));
+      log('Hive Link phone backup saved', device.name, `${Math.round(size / 1024)} KB`);
+      return send(res, 200, { ok: true, savedAt: meta.savedAt });
+    } catch (err) {
+      try { fs.rmSync(part, { force: true }); } catch {}
+      return send(res, 500, { error: err?.message || String(err) });
+    }
+  }
+
+  function sendPhoneBackup(res, id) {
+    const file = backupId(id) && path.join(phoneBackupsDir, `${id}.zip`);
+    if (!file || !fs.existsSync(file)) return send(res, 404, { error: 'No backup of that phone here.' });
+    res.writeHead(200, { 'Content-Type': 'application/zip', 'Content-Length': fs.statSync(file).size });
+    return fs.createReadStream(file).on('error', () => res.destroy()).pipe(res);
   }
 
   async function receiveSong(req, res, params, device) {

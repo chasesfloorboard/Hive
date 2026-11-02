@@ -328,7 +328,9 @@ class SyncEngine(
         val trackFor = dao.allMatches().groupBy({ it.pcId }, { it.trackId })
         val fetched = client.plays(conn, store.lastPcPlayAt)
         val fresh = fetched.flatMap { p -> trackFor[p.id].orEmpty().take(1).map { Play(trackId = it, playedAt = p.playedAt, listenedMs = p.listenedMs, synced = true, fromPc = true) } }
-            .filter { dao.playCountAt(it.trackId, it.playedAt) == 0 }
+            // Plays made on this phone come back from the PC too (a fresh install gets its listening back);
+            // one already here, at the same moment, isn't added twice.
+            .filter { dao.playsAtTime(it.playedAt) == 0 }
         if (fresh.isNotEmpty()) dao.insertPlays(fresh)
         fetched.maxOfOrNull { it.playedAt }?.let { store.lastPcPlayAt = maxOf(store.lastPcPlayAt, it) }
         // With this phone's plays now in it, Hive's listening history file comes here as a

@@ -143,6 +143,16 @@ class PlaybackService : MediaLibraryService() {
         // The queue's name in the car's and other controllers' queue view.
         player.playlistMetadata = androidx.media3.common.MediaMetadata.Builder().setTitle("Up next").build()
         player.addListener(PlayCounter(app.playRecorder, app.scrobbler, scope, player))
+        // The songs the player has open (this one, and the ones either side a skip or crossfade opens):
+        // their files aren't rewritten to keep Love in them until they're closed (see LoveFiles).
+        player.addListener(object : Player.Listener {
+            override fun onEvents(player: Player, events: Player.Events) {
+                if (!events.containsAny(Player.EVENT_MEDIA_ITEM_TRANSITION, Player.EVENT_TIMELINE_CHANGED)) return
+                val i = player.currentMediaItemIndex
+                OpenSongs.ids = (i - 1..i + 2).filter { it in 0 until player.mediaItemCount }
+                    .mapNotNull { player.getMediaItemAt(it).mediaId.substringAfterLast('|').toLongOrNull() }.toSet()
+            }
+        })
         // A shuffle starts from the song playing and plays every other song once after it. ExoPlayer's
         // own order put the starting song anywhere, so the songs ahead of it in the order never played.
         player.addListener(object : Player.Listener {
@@ -483,6 +493,7 @@ class PlaybackService : MediaLibraryService() {
     }
 
     override fun onDestroy() {
+        OpenSongs.ids = emptySet()
         screenOff?.let { runCatching { unregisterReceiver(it) } }
         session?.player?.let { memory.saveCursor(it) }
         if (::crossfader.isInitialized) crossfader.close()
@@ -609,3 +620,6 @@ val HIVE_SKIP = androidx.media3.session.SessionCommand("hive.skip", android.os.B
 
 /** The playing song's notification channel (no icon badge). */
 const val PLAYBACK_CHANNEL = "hive-playback"
+
+/** Library songs the player has open now, so their files aren't rewritten under it. */
+object OpenSongs { @Volatile var ids: Set<Long> = emptySet() }

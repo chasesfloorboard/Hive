@@ -74,7 +74,7 @@ class HiveApp : Application(), coil3.SingletonImageLoader.Factory {
     val linkStore by lazy { LinkStore(this) }
     /** Hive Mobile updates from Hive on the PC (see AppUpdater). */
     val appUpdater: com.local.hive.mobile.link.AppUpdater by lazy { com.local.hive.mobile.link.AppUpdater(this, HiveLinkClient(), scope) { sync.pcConnection() } }
-    val sync: SyncEngine by lazy { SyncEngine(database.dao(), linkStore, HiveLinkClient(), scope, afterSync = { scope.launch { sync.pcConnection()?.let { pcEdits.send(it); appUpdater.check(it) } }; scope.launch { runCatching { pcLibrary.refreshPlaylists() }; syncPlaylists() }; if (linkStore.songSync) com.local.hive.mobile.link.SongSync.schedule(this, now = true) }, onThemes = { themes.setPcThemes(it.themes, it.current) }, streamLoves = streamLoves, saveListening = { com.local.hive.mobile.data.ListeningFile.save(this, it) }) }
+    val sync: SyncEngine by lazy { SyncEngine(database.dao(), linkStore, HiveLinkClient(), scope, afterSync = { scope.launch { keepSafeOnPc() }; scope.launch { sync.pcConnection()?.let { pcEdits.send(it); appUpdater.check(it) } }; scope.launch { runCatching { pcLibrary.refreshPlaylists() }; syncPlaylists() }; if (linkStore.songSync) com.local.hive.mobile.link.SongSync.schedule(this, now = true) }, onThemes = { themes.setPcThemes(it.themes, it.current) }, streamLoves = streamLoves, saveListening = { com.local.hive.mobile.data.ListeningFile.save(this, it) }) }
     val streamLoves by lazy { com.local.hive.mobile.link.StreamLoves(this) }
     /** Tag and cover edits on their way to Hive on the PC. */
     val pcEdits by lazy { com.local.hive.mobile.link.PcEdits(this, database.dao(), linkStore, pcTracks = { pcLibrary.tracks.value }) }
@@ -82,6 +82,37 @@ class HiveApp : Application(), coil3.SingletonImageLoader.Factory {
     val smartPlaylists by lazy { com.local.hive.mobile.data.SmartPlaylists(this) }
     /** Soulseek downloads: queued, coming in, and the latest done. */
     val downloads by lazy { com.local.hive.mobile.soulseek.Downloads(this) }
+    /** Hive Mobile as it is, kept on the phone and the PC where an uninstall can't reach it (see PhoneBackup). */
+    val phoneBackup by lazy { com.local.hive.mobile.data.PhoneBackup(this, database.dao(), { database }, HiveLinkClient()) }
+    /** Love kept in the song files themselves, as on the PC (see LoveFiles). */
+    val loveFiles by lazy {
+        com.local.hive.mobile.data.LoveFiles(this, database.dao(), scope, paired = { linkStore.pairing != null }, inUse = { com.local.hive.mobile.playback.OpenSongs.ids },
+            mirrored = { com.local.hive.mobile.link.FileMirror(this).mirroredPhonePaths() })
+    }
+    private var backupJob: Job? = null
+    /** Saves the backup a little later, once a burst of changes has settled. */
+    fun backupSoon(delayMs: Long = 10_000) {
+        synchronized(this) {
+            backupJob?.cancel()
+            backupJob = scope.launch { delay(delayMs); phoneBackup.save() }
+        }
+    }
+    /**
+     * After a scan, a sync, and whenever Hive comes on screen (All files access may just have been
+     * given): a fresh install looks for a backup to offer, Loves go into the files, a copy is saved.
+     */
+    private suspend fun keepSafe() {
+        phoneBackup.lookForOffer(conn = null, ownDevice = null)
+        loveFiles.request()
+        backupSoon(delayMs = 2_000)
+    }
+    /** After a sync: a backup kept on the PC is offered to a fresh install, and the phone's copy goes there. */
+    private suspend fun keepSafeOnPc() {
+        val conn = sync.pcConnection() ?: return
+        phoneBackup.lookForOffer(conn, linkStore.pairing?.deviceId)
+        phoneBackup.save()
+        phoneBackup.sendToPc(conn)
+    }
     val songSync by lazy { com.local.hive.mobile.link.SongSync(this, database.dao(), linkStore, HiveLinkClient(), sync) }
     private val playerConnection = lazy { PlayerConnection(this, scope) }
     val player by playerConnection
@@ -98,10 +129,10 @@ class HiveApp : Application(), coil3.SingletonImageLoader.Factory {
     val themes by lazy { ThemeStore(this) }
     val playRecorder = object : PlayRecorder {
         override fun record(trackId: Long, listenedMs: Long) {
-            scope.launch { database.dao().insertPlay(Play(trackId = trackId, playedAt = System.currentTimeMillis(), listenedMs = listenedMs)) }
+            scope.launch { database.dao().insertPlay(Play(trackId = trackId, playedAt = System.currentTimeMillis(), listenedMs = listenedMs)); backupSoon(30_000) }
         }
         override fun recordPc(pcId: String, listenedMs: Long) {
-            scope.launch { database.dao().insertPlay(Play(trackId = 0, playedAt = System.currentTimeMillis(), listenedMs = listenedMs, pcId = pcId)) }
+            scope.launch { database.dao().insertPlay(Play(trackId = 0, playedAt = System.currentTimeMillis(), listenedMs = listenedMs, pcId = pcId)); backupSoon(30_000) }
         }
         override fun history(item: androidx.media3.common.MediaItem) {
             // Android Auto lists songs as "<list>|<id>".
@@ -137,6 +168,8 @@ class HiveApp : Application(), coil3.SingletonImageLoader.Factory {
     @OptIn(kotlinx.coroutines.FlowPreview::class)
     override fun onCreate() {
         super.onCreate()
+        // A restore asked for puts Hive's files back before anything opens them.
+        com.local.hive.mobile.data.PhoneBackup.applyPending(this)
         // A playlist made, changed or deleted here reaches Hive a few seconds later, not at the next sync.
         scope.launch {
             database.dao().playlists().map { l -> l.map { it.id to it.updatedAt } }.distinctUntilChanged().drop(1).debounce(3_000)
@@ -158,16 +191,27 @@ class HiveApp : Application(), coil3.SingletonImageLoader.Factory {
         )
         requestRescan(delayMs = 0)
         likedAlbums.start(scope)
+        // Loves go into the song files, and everything into the backup, as they change.
+        scope.launch {
+            val dao = database.dao()
+            kotlinx.coroutines.flow.merge(
+                dao.loveStates().map { it.size.toLong() + it.sumOf { l -> l.changedAt } },
+                dao.playlists().map { l -> l.sumOf { it.updatedAt + it.trackCount } },
+                dao.ratings().map { it.sumOf { r -> r.changedAt } },
+                dao.favoriteAlbums().map { it.size.toLong() }, dao.favoriteItems().map { it.size.toLong() },
+            ).drop(5).collect { loveFiles.request(); backupSoon() }
+        }
         // The scheduled theme (Settings › Appearance) switches by itself.
         themes.runSchedule(scope)
         // Live Hive Link updates while Hive is on screen; the periodic worker
         // covers the rest of the time.
         ProcessLifecycleOwner.get().lifecycle.addObserver(object : DefaultLifecycleObserver {
             override fun onStart(owner: LifecycleOwner) {
+                scope.launch { keepSafe() }
                 scope.launch { sync.syncNow(); sync.autoConnect() }
                 sync.startLive()
             }
-            override fun onStop(owner: LifecycleOwner) = sync.stopLive()
+            override fun onStop(owner: LifecycleOwner) { sync.stopLive(); backupSoon(0) }
         })
         WorkManager.getInstance(this).enqueueUniquePeriodicWork(
             "hive-link-sync",
@@ -204,6 +248,8 @@ class HiveApp : Application(), coil3.SingletonImageLoader.Factory {
     /** Re-reads MediaStore, then re-matches against Hive so new files sync too. */
     suspend fun rescanLibrary() {
         if (!canReadMusic) { Log.i(TAG, "Library scan skipped: no permission to read music"); return }
+        // Before the first scan fills anything in: whether this is a fresh install (see PhoneBackup).
+        phoneBackup.noteInstall()
         var changed = 0
         scanMutex.withLock {
             _scanning.value = true
@@ -226,6 +272,7 @@ class HiveApp : Application(), coil3.SingletonImageLoader.Factory {
         }
         // Re-matching downloads Hive's whole library and matches every song, so
         // it only runs when the phone's library actually changed (or never has).
+        keepSafe()
         if (changed > 0 || !linkStore.fullSyncDone) sync.rematch()
     }
 }

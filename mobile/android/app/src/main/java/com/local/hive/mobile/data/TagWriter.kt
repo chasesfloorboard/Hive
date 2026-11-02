@@ -34,6 +34,8 @@ data class TagEdit(
     val track: String? = null,
     val disc: String? = null,
     val lyrics: String? = null,
+    /** Love, kept in the file as Hive on the PC keeps it (see [LoveTag]); not one of the PC's tag-editor fields. */
+    val loved: Boolean? = null,
 ) {
     val isEmpty get() = pcTags().isEmpty()
 
@@ -112,6 +114,7 @@ object TagWriter {
             val check = AudioFileIO.read(work)
             if (kotlin.math.abs(check.audioHeader.trackLength - file.audioHeader.trackLength) > 1) throw IOException("The edited copy of ${track.fileName} didn't read back")
             edit.title?.let { if (check.tag?.getFirst(FieldKey.TITLE).orEmpty() != it) throw IOException("The new title didn't stick in ${track.fileName}") }
+            edit.loved?.let { if (LoveTag.read(check.tag) != it) throw IOException("Love didn't stick in ${track.fileName}") }
             try {
                 resolver.openOutputStream(track.uri, "wt")?.use { out -> work.inputStream().use { it.copyTo(out) } } ?: throw IOException("Can't write ${track.fileName}")
             } catch (e: Exception) {
@@ -135,6 +138,7 @@ object TagWriter {
         set(FieldKey.TRACK, e.track?.takeIf { it.isBlank() || it.trim().toIntOrNull() != null })
         set(FieldKey.DISC_NO, e.disc?.takeIf { it.isBlank() || it.trim().toIntOrNull() != null })
         e.lyrics?.let { if (it.isBlank()) runCatching { tag.deleteField(FieldKey.LYRICS) } else tag.setField(FieldKey.LYRICS, it) }
+        e.loved?.let { LoveTag.set(tag, it) }
     }
 
     /** The song's pictures become exactly these, in order. FLAC and Ogg pictures are built here, as the library's own way needs desktop Java. */

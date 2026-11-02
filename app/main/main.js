@@ -5363,8 +5363,14 @@ async function recordListeningEvent(payload = {}) {
 // song's play count, as a play in Hive would. Files aren't written.
 async function recordPhonePlays(plays) {
   const counted = new Map();
+  // A play Hive already has from a phone (same song, same moment) isn't counted again: a reinstalled
+  // Hive Mobile may send plays from its backup that reached Hive before it was uninstalled.
+  const known = new Set((await readJsonSafe(LISTENING_EVENTS_PATH(), []) || []).filter(e => e && e.source === 'hive-mobile').map(e => `${e.path}|${Number(e.playedAt)}`));
   for (const p of [...plays].sort((a, b) => a.playedAt - b.playedAt)) {
     const t = p.track || {};
+    const key = `${String(t.path || '')}|${Number(p.playedAt)}`;
+    if (known.has(key)) continue;
+    known.add(key);
     await recordListeningEvent({
       playedAt: p.playedAt, duration: Math.round((Number(p.listenedMs) || 0) / 1000), trackDuration: Number(t.duration) || 0,
       path: String(t.path || ''), title: t.title, artist: t.artist, album: t.album, albumArtist: t.albumArtist, genre: t.genre,
@@ -7944,7 +7950,9 @@ function startHiveLink() {
     // Hive's own listening (not imports, not plays that came from the phone).
     getPlays: async since => {
       const events = await readJsonSafe(LISTENING_EVENTS_PATH(), []);
-      return (Array.isArray(events) ? events : []).filter(e => e && e.path && Number(e.playedAt) > since && e.source !== 'hive-mobile' && e.source !== 'musicbee-wrapped');
+      // The phone's own plays come back too: a fresh install of Hive Mobile gets all its listening
+      // back from here (the phone skips any it already has, by their time).
+      return (Array.isArray(events) ? events : []).filter(e => e && e.path && Number(e.playedAt) > since && e.source !== 'musicbee-wrapped');
     },
     recordPlays: recordPhonePlays,
     // The listening history file itself, so the phone keeps a byte-for-byte copy.

@@ -142,6 +142,12 @@ import java.util.concurrent.TimeUnit
 
 class HiveLinkException(message: String, val status: Int = 0) : IOException(message)
 
+@kotlinx.serialization.Serializable
+data class PhoneBackupInfo(val device: String, val deviceName: String = "", val savedAt: Long = 0, val versionName: String = "", val size: Long = 0)
+
+@kotlinx.serialization.Serializable
+data class PhoneBackupList(val backups: List<PhoneBackupInfo> = emptyList())
+
 class HiveLinkClient(private val http: OkHttpClient = defaultHttp()) {
     private val json = Json { ignoreUnknownKeys = true; explicitNulls = false }
     private val jsonType = "application/json; charset=utf-8".toMediaType()
@@ -407,6 +413,27 @@ class HiveLinkClient(private val http: OkHttpClient = defaultHttp()) {
         val q = java.net.URLEncoder.encode(rel, "UTF-8")
         val request = if (keep) authed(conn, "/api/files/keep?p=$q").post(body) else authed(conn, "/api/files?p=$q&m=$modified").put(body)
         transferHttp.newCall(request.build()).execute().use { json.decodeFromString(FileSaved.serializer(), read(it)) }
+    }
+
+    /** Sends a copy of Hive Mobile as it is (see AppSnapshot) to keep on the PC. */
+    suspend fun sendPhoneBackup(conn: Connection, file: java.io.File, savedAt: Long, versionName: String) = withContext(Dispatchers.IO) {
+        val body = object : okhttp3.RequestBody() {
+            override fun contentType() = "application/zip".toMediaType()
+            override fun contentLength() = file.length()
+            override fun writeTo(sink: okio.BufferedSink) { file.inputStream().use { input -> sink.outputStream().let { input.copyTo(it, 1 shl 16); it.flush() } } }
+        }
+        transferHttp.newCall(authed(conn, "/api/phone-backup").header("X-Saved-At", savedAt.toString()).header("X-Version-Name", versionName).put(body).build()).execute().use { read(it) }
+    }
+
+    /** The copies of Hive Mobile the PC keeps, newest first; none from a Hive that keeps none. */
+    suspend fun phoneBackups(conn: Connection): List<PhoneBackupInfo> =
+        runCatching { get(conn, "/api/phone-backups", PhoneBackupList.serializer()).backups }.getOrElse { if (it is HiveLinkException && it.status == 404) emptyList() else throw it }
+
+    suspend fun downloadPhoneBackup(conn: Connection, device: String, out: java.io.OutputStream) = withContext(Dispatchers.IO) {
+        transferHttp.newCall(authed(conn, "/api/phone-backup?device=" + java.net.URLEncoder.encode(device, "UTF-8")).build()).execute().use { res ->
+            if (!res.isSuccessful) read(res)
+            res.body.byteStream().use { it.copyTo(out, 1 shl 16) }
+        }
     }
 
     /** Files deleted on the phone: Hive moves them into its Deleted songs. Returns the ones it moved. */

@@ -61,6 +61,7 @@ data class LoveState(
  * An album in Favorites, as in Samsung Music: separate from loving its songs.
  * Keyed by name rather than MediaStore's album id so it survives a rescan.
  */
+@kotlinx.serialization.Serializable
 @Entity(tableName = "favorite_albums")
 data class FavoriteAlbum(
     @PrimaryKey val key: String,
@@ -77,6 +78,7 @@ data class FavoriteAlbum(
  * A liked artist or playlist (any playlist: the phone's, a smart one, the PC's, Apple Music's or
  * Spotify's), shown on the Favorites page. [route] opens it; [artwork] is its picture when it has one.
  */
+@kotlinx.serialization.Serializable
 @Entity(tableName = "favorite_items")
 data class FavoriteItem(
     @PrimaryKey val key: String,
@@ -560,6 +562,20 @@ interface LibraryDao {
     suspend fun insertPlays(plays: List<Play>)
 
     /** Whether a play of this song at this moment is already here (a PC play fetched twice). */
+    /** Plays at this moment, of any song: a play coming back from the PC that's already here. */
+    @Query("SELECT COUNT(*) FROM plays WHERE playedAt = :playedAt")
+    suspend fun playsAtTime(playedAt: Long): Int
+
+    /** The phone's own plays not yet sent to the PC (for the backup). */
+    @Query("SELECT * FROM plays WHERE synced = 0 AND fromPc = 0")
+    suspend fun unsentPlays(): List<Play>
+
+    @Query("SELECT * FROM favorite_albums")
+    suspend fun favoriteAlbumsOnce(): List<FavoriteAlbum>
+
+    @Query("SELECT * FROM favorite_items")
+    suspend fun favoriteItemsOnce(): List<FavoriteItem>
+
     @Query("SELECT COUNT(*) FROM plays WHERE trackId = :trackId AND playedAt = :playedAt")
     suspend fun playCountAt(trackId: Long, playedAt: Long): Int
 

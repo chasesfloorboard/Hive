@@ -230,6 +230,14 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
 
     // ---- love ----
 
+    /** A backup a fresh install could restore (see PhoneBackup). */
+    val restoreOffer = app.phoneBackup.offer
+    fun declineRestore() = app.phoneBackup.decline()
+    fun restoreBackup(offer: com.local.hive.mobile.data.PhoneBackup.Offer, onError: (String) -> Unit) = viewModelScope.launch {
+        runCatching { app.phoneBackup.restore(offer, if (offer.pcDevice != null) app.sync.pcConnection() else null) }
+            .onFailure { onError(it.message ?: it.javaClass.simpleName) }
+    }
+
     fun setLoved(tracks: List<Track>, loved: Boolean) = viewModelScope.launch { app.sync.setLoved(tracks.map { it.id }, loved) }
     /** Album Favorites stay on this phone and never change the songs' Love. */
     fun toggleFavoriteAlbum(album: String, artist: String) = viewModelScope.launch {

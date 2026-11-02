@@ -180,6 +180,15 @@ class FileMirror(private val context: Context) {
         return File(volume, home.base).takeIf { it.isDirectory }
     }
 
+    /**
+     * The phone files the mirror shares with the PC (full paths, lowercase). Their Love is written on the
+     * PC and comes back with the file, so the phone doesn't rewrite them itself (see LoveFiles).
+     */
+    fun mirroredPhonePaths(): Set<String> {
+        val root = root() ?: return emptySet()
+        return ledger().keys.mapTo(HashSet()) { File(root, MirrorPlanner.phonePath(it)).path.lowercase() }
+    }
+
     fun ledger(): Map<String, Agreed> = runCatching { json.decodeFromString(ledgerSerializer, ledgerFile.readText()) }.getOrDefault(emptyMap())
 
     private fun saveLedger(ledger: Map<String, Agreed>) {

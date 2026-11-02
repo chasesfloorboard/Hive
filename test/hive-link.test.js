@@ -1090,3 +1090,28 @@ test('a trusted phone can fetch Hive Mobile updates; an untrusted one, or an APK
   assert.equal(got.status, 200);
   assert.ok(got.body.equals(bytes));
 });
+
+test('a phone keeps a copy of Hive Mobile here, and a reinstalled phone (paired anew) gets it back', async t => {
+  const ctx = setup();
+  t.after(() => { ctx.link.stop(); fs.rmSync(ctx.dataDir, { recursive: true, force: true }); });
+  await waitListening(ctx.port);
+  const oldPhone = await pair(ctx);
+  const zip = Buffer.concat([Buffer.from('PK\x03\x04', 'latin1'), crypto.randomBytes(5000)]);
+  const put = body => new Promise((resolve, reject) => {
+    const req = http.request({ host: '127.0.0.1', port: ctx.port, method: 'PUT', path: '/api/phone-backup', headers: { Authorization: `Bearer ${oldPhone}`, 'Content-Length': body.length, 'X-Saved-At': '1793500000000', 'X-Version-Name': '2.18.3' } }, res => { res.resume(); res.on('end', () => resolve(res.statusCode)); });
+    req.on('error', reject); req.end(body);
+  });
+  assert.equal(await put(Buffer.from('not a zip')), 500);
+  assert.equal(await put(zip), 200);
+  // The phone is uninstalled and Hive Mobile installed again: a new pairing finds the old phone's copy.
+  const newPhone = await pair(ctx);
+  const list = await request(ctx.port, 'GET', '/api/phone-backups', { token: newPhone });
+  assert.equal(list.body.backups.length, 1);
+  const [b] = list.body.backups;
+  assert.deepEqual([b.deviceName, b.savedAt, b.versionName, b.size], ['Galaxy A55', 1793500000000, '2.18.3', zip.length]);
+  const got = await rawGet(ctx.port, `/api/phone-backup?device=${b.device}`, newPhone);
+  assert.equal(got.status, 200);
+  assert.ok(got.body.equals(zip));
+  assert.equal((await rawGet(ctx.port, '/api/phone-backup?device=../hive-link', newPhone)).status, 404);
+  assert.equal((await rawGet(ctx.port, `/api/phone-backup?device=${b.device}`, null)).status, 401);
+});

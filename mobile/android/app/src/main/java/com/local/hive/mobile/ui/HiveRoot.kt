@@ -144,6 +144,7 @@ private fun HiveContent(vm: MainViewModel, openPlayerInitially: Boolean) {
     // Every ⋮/⋯ menu ends with Settings (HiveMenu's `settings`); from the player too, so it closes first.
     val openSettings = remember(nav) { { playerOpen = false; queueOpen = false; lyricsOpen = false; go("settings") } }
     var toast by remember { mutableStateOf<String?>(null) }
+    RestoreOfferDialog(vm)
     var addTarget by remember { mutableStateOf<List<Track>?>(null) }
     val context = androidx.compose.ui.platform.LocalContext.current
     var deleting by remember { mutableStateOf<List<Track>?>(null) }
