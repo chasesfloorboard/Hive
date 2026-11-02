@@ -287,7 +287,7 @@ private fun HiveContent(vm: MainViewModel, openPlayerInitially: Boolean) {
                         page("remote") { RemoteScreen(vm, bottomPadding, onBack = { nav.popBackStack() }, onToast = { toast = it }) }
                         page("pc") { PcLibraryScreen(vm, bottomPadding, onBack = { nav.popBackStack() }) { key -> nav.navigate("pc/album?key=${enc(key)}") } }
                         page("pc/album?key={key}") { entry -> PcAlbumScreen(vm, entry.arguments?.getString("key").orEmpty(), bottomPadding) { nav.popBackStack() } }
-                        page("wrap") { YearlyWrapScreen(vm, 0.dp) { nav.popBackStack() } }
+                        page("wrap") { YearlyWrapScreen(vm, 0.dp, onOpenAlbum = homeNav.openAlbum, onOpenArtist = homeNav.openArtist) { nav.popBackStack() } }
                         page("podcasts") { PodcastsScreen(vm, bottomPadding, onBack = { nav.popBackStack() }) { url -> nav.navigate("podcast?feed=${enc(url)}") } }
                         page("podcast?feed={feed}") { entry -> PodcastShowScreen(vm, entry.arguments?.getString("feed").orEmpty(), bottomPadding) { nav.popBackStack() } }
                         page("radio") { RadioScreen(vm, bottomPadding, onBack = { nav.popBackStack() }, onToast = { toast = it }) }

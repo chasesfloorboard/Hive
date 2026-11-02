@@ -191,6 +191,13 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
         pcWrap(fresh)?.let { emit(withUnsent(it)) }
     }
 
+    /** One month of a Wrap, from the plays on this phone (the PC's among them, for songs the phone has). */
+    suspend fun wrapMonth(year: Int, month: Int): Wrap = kotlinx.coroutines.withContext(kotlinx.coroutines.Dispatchers.Default) {
+        val zone = java.time.ZoneId.systemDefault()
+        val start = java.time.LocalDate.of(year, month, 1).atStartOfDay(zone)
+        Wrap.from(year, dao.playsBetween(start.toInstant().toEpochMilli(), start.plusMonths(1).toInstant().toEpochMilli()))
+    }
+
     /** Years with a Wrap, newest first: as last known at once, then Hive's when it can be reached. */
     fun wrapYears(): kotlinx.coroutines.flow.Flow<List<Int>> = kotlinx.coroutines.flow.flow {
         val first = dao.firstPlay()?.let { java.time.Instant.ofEpochMilli(it).atZone(java.time.ZoneId.systemDefault()).year }
