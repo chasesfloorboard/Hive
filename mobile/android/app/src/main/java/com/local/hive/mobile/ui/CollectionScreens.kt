@@ -331,17 +331,28 @@ fun ArtistScreen(
                 }
             } else {
                 var at = 0
-                byAlbum.forEach { album ->
+                byAlbum.forEachIndexed { n, album ->
                     val first = album.first()
                     val year = album.maxOf { it.year }
+                    // A line between albums; each album under its cover and name, its songs by number
+                    // (as the album's own page lists them), with a heading where each disc starts.
+                    if (n > 0) item(key = "sep${first.albumId}") {
+                        Box(Modifier.fillMaxWidth().padding(start = 18.dp, end = 18.dp, top = 14.dp).height(1.dp).background(c.border))
+                    }
                     item(key = "h${first.albumId}") {
                         AlbumGroupHeader(first.albumId, first.album.ifBlank { "Unknown album" },
                             listOfNotNull(year.takeIf { it > 0 }?.toString(), countOf(album.size, "track"), formatLength(album.sumOf { it.durationMs })).joinToString(" · ")) { onOpenAlbum(first.albumId) }
                     }
-                    album.forEach { t ->
+                    val discs = album.mapTo(HashSet()) { it.discNumber }.size > 1
+                    album.forEachIndexed { j, t ->
                         val i = at++
+                        if (discs && t.discNumber != album.getOrNull(j - 1)?.discNumber) item(key = "d${first.albumId}-${t.discNumber}-$j") {
+                            YearHeading(if (t.discNumber > 0) "Disc ${t.discNumber}" else "No disc number")
+                        }
                         item(key = "t${t.id}") {
-                            TrackRow(t, t.id in loved, now.trackId == t.id, now.isPlaying, actions, onClick = { vm.play(byTitle, i) }, subtitle = t.artist)
+                            // The artist shows only when it isn't this page's (a feature, a split release).
+                            TrackRow(t, t.id in loved, now.trackId == t.id, now.isPlaying, actions, onClick = { vm.play(byTitle, i) },
+                                subtitle = if (t.artist.equals(name, true)) "" else t.artist, number = t.trackNumber.takeIf { it > 0 } ?: (j + 1))
                         }
                     }
                 }
