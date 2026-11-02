@@ -19,7 +19,11 @@ import org.junit.Test
 import kotlin.math.abs
 
 class WholeMp3Test {
-    @Before fun quiet() = Log.setLogLevel(Log.LOG_LEVEL_OFF)
+    @Before fun offThePhone() {
+        Log.setLogLevel(Log.LOG_LEVEL_OFF)
+        // Media3 asks Build.FINGERPRINT whether it runs in a test; off a phone that's null and throws.
+        ParsableByteArray.setShouldEnforceLimitOnLegacyMethods(true)
+    }
 
     @Test fun androidsReaderStopsWhereTheHeaderSays() {
         // The file this guards against: what Android's own reader does with it.
