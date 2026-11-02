@@ -62,7 +62,8 @@ import java.util.concurrent.TimeUnit
 @Serializable data class InboxSummary(val loves: Int = 0, val plays: Int = 0)
 /** Song sync on the PC: whether Hive takes song files from the phone. */
 @Serializable data class SongCaps(val receive: Boolean = false)
-@Serializable data class InfoResponse(val serverId: String, val name: String, val port: Int, val seq: Long, val addresses: List<HiveAddress> = emptyList(), val streams: StreamCaps = StreamCaps(), val remote: Boolean = false, val plays: Boolean = false, val inbox: InboxSummary = InboxSummary(), val songs: SongCaps = SongCaps(), val wrap: Boolean = false, val listening: Boolean = false, val files: Boolean = false, val themes: Boolean = false)
+@Serializable data class AppUpdate(val versionCode: Long, val versionName: String, val size: Long, val sha256: String)
+@Serializable data class InfoResponse(val serverId: String, val name: String, val port: Int, val seq: Long, val addresses: List<HiveAddress> = emptyList(), val streams: StreamCaps = StreamCaps(), val remote: Boolean = false, val plays: Boolean = false, val inbox: InboxSummary = InboxSummary(), val songs: SongCaps = SongCaps(), val wrap: Boolean = false, val listening: Boolean = false, val files: Boolean = false, val themes: Boolean = false, val playlistSync: Boolean = false)
 /** One year's Yearly Wrap as Hive on the PC counts it (its plays, imports and this phone's). */
 @Serializable data class PcWrap(
     val year: Int,
@@ -107,6 +108,10 @@ import java.util.concurrent.TimeUnit
 @Serializable data class PcPlaylistSong(val kind: String, val id: String = "", val key: String = "", val title: String = "", val artist: String = "", val album: String = "", val duration: Long = 0, val cover: String = "")
 @Serializable data class PcPlaylist(val id: String, val name: String, val source: String = "", val cover: String = "", val artworkUrl: String = "", val updatedAt: Double = 0.0, val songs: List<PcPlaylistSong> = emptyList())
 @Serializable data class PlaylistsResponse(val playlists: List<PcPlaylist> = emptyList())
+/** A phone playlist as Hive keeps it: [id] is Hive's, blank for a new one. */
+@Serializable data class PlaylistOut(val id: String, val name: String, val updatedAt: Long, val songs: List<PcPlaylistSong>)
+@Serializable data class PlaylistSaved(val id: String, val updatedAt: Double = 0.0)
+@Serializable data class PlaylistDeleted(val deleted: Boolean = false)
 
 /** What Hive on the PC is playing. */
 @Serializable data class RemoteState(
@@ -304,6 +309,17 @@ class HiveLinkClient(private val http: OkHttpClient = defaultHttp()) {
 
     suspend fun playlists(conn: Connection): List<PcPlaylist> = get(conn, "/api/playlists", PlaylistsResponse.serializer()).playlists
 
+    /** Makes or changes one of Hive's playlists to match the phone's (trusted phones, see [InfoResponse.playlistSync]). */
+    suspend fun savePlaylist(conn: Connection, playlist: PlaylistOut): PlaylistSaved = withContext(Dispatchers.IO) {
+        val body = json.encodeToString(PlaylistOut.serializer(), playlist).toRequestBody(jsonType)
+        http.newCall(authed(conn, "/api/playlist").put(body).build()).execute().use { json.decodeFromString(PlaylistSaved.serializer(), read(it)) }
+    }
+
+    /** Deletes one of Hive's playlists (it's kept aside on the PC). */
+    suspend fun deletePlaylist(conn: Connection, id: String): Boolean = withContext(Dispatchers.IO) {
+        http.newCall(authed(conn, "/api/playlist?id=${android.net.Uri.encode(id)}").delete().build()).execute().use { json.decodeFromString(PlaylistDeleted.serializer(), read(it)).deleted }
+    }
+
     suspend fun remoteState(conn: Connection): RemoteState = get(conn, "/api/remote", RemoteState.serializer())
 
     suspend fun remote(conn: Connection, command: String, positionMs: Long? = null, volume: Double? = null) = withContext(Dispatchers.IO) {
@@ -340,6 +356,16 @@ class HiveLinkClient(private val http: OkHttpClient = defaultHttp()) {
     suspend fun sendCover(conn: Connection, ids: List<String>, image: ByteArray): List<String> = withContext(Dispatchers.IO) {
         val query = java.net.URLEncoder.encode(ids.joinToString(","), "UTF-8")
         transferHttp.newCall(authed(conn, "/api/songs/cover?ids=$query").put(image.toRequestBody("application/octet-stream".toMediaType())).build()).execute().use {
+            json.decodeFromString(EditedSongs.serializer(), read(it)).edited
+        }
+    }
+
+    /** A back cover for these songs: [place] among their back covers (from 0; past the last adds one), or null to take it off. */
+    suspend fun sendBackCover(conn: Connection, ids: List<String>, place: Int, image: ByteArray?): List<String> = withContext(Dispatchers.IO) {
+        val query = java.net.URLEncoder.encode(ids.joinToString(","), "UTF-8")
+        val path = "/api/songs/back-cover?ids=$query&place=$place"
+        val request = if (image == null) authed(conn, path).delete() else authed(conn, path).put(image.toRequestBody("application/octet-stream".toMediaType()))
+        transferHttp.newCall(request.build()).execute().use {
             json.decodeFromString(EditedSongs.serializer(), read(it)).edited
         }
     }
@@ -390,7 +416,9 @@ class HiveLinkClient(private val http: OkHttpClient = defaultHttp()) {
     }
 
     // Song files take minutes on slow Wi-Fi; only a stalled connection should time out.
-    private val transferHttp by lazy { http.newBuilder().readTimeout(2, TimeUnit.MINUTES).writeTimeout(2, TimeUnit.MINUTES).build() }
+    // 30 s without a byte is a dead connection (Hive on the PC closed, the network gone): the copy
+    // stops and its half file is deleted, rather than hanging on for minutes.
+    private val transferHttp by lazy { http.newBuilder().readTimeout(30, TimeUnit.SECONDS).writeTimeout(30, TimeUnit.SECONDS).build() }
 
     suspend fun unpair(conn: Connection) = withContext(Dispatchers.IO) {
         runCatching { http.newCall(authed(conn, "/api/unpair").post(ByteArray(0).toRequestBody()).build()).execute().close() }
@@ -435,6 +463,21 @@ class HiveLinkClient(private val http: OkHttpClient = defaultHttp()) {
     private fun base(host: String, port: Int): String {
         val h = if (host.contains(':') && !host.startsWith("[")) "[$host]" else host
         return "http://$h:$port"
+    }
+
+    /** The newest Hive Mobile on the PC, or null when it has none for this phone. */
+    suspend fun appUpdate(conn: Connection): AppUpdate? = withContext(Dispatchers.IO) {
+        http.newCall(authed(conn, "/api/app").build()).execute().use { res ->
+            if (res.code == 404) null else json.decodeFromString(AppUpdate.serializer(), read(res))
+        }
+    }
+
+    /** Fetches that APK into [out]. */
+    suspend fun downloadApp(conn: Connection, out: java.io.OutputStream) = withContext(Dispatchers.IO) {
+        transferHttp.newCall(authed(conn, "/api/app/apk").build()).execute().use { res ->
+            if (!res.isSuccessful) read(res)
+            res.body.byteStream().use { it.copyTo(out, 1 shl 16) }
+        }
     }
 
     data class Connection(val host: String, val port: Int, val token: String)

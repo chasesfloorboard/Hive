@@ -1,5 +1,6 @@
 package com.local.hive.mobile.ui
 
+import androidx.compose.foundation.combinedClickable
 import android.text.format.DateUtils
 import androidx.compose.foundation.background
 import androidx.compose.foundation.border
@@ -123,7 +124,13 @@ fun SettingsScreen(vm: MainViewModel, bottomPadding: Dp, onOpenEqualiser: () -> 
                 }
             }
             item {
-                Section("Appearance", "Your Hive theme from the PC, Hive Mobile's own colours, or Custom with a background and an accent you pick. The backdrop follows the playing cover; the accent is the theme's own, or the cover's (Accent).") { ThemeRows(vm) }
+                Section("Appearance", "Your Hive theme from the PC, Hive Mobile's own colours, or Custom with a background and an accent you pick. The backdrop follows the playing cover; the accent is the theme's own, or the cover's (Accent).") {
+                    ThemeRows(vm)
+                    val photos by vm.artistPhotos.collectAsStateWithLifecycle()
+                    SettingRow("Artist pictures", if (photos) "Photos looked up online by the artist's name." else "One of the artist's album covers. Nothing is looked up online.") {
+                        HiveToggle(listOf("Covers", "Photos"), if (photos) 1 else 0, { vm.setArtistPhotos(it == 1) })
+                    }
+                }
             }
             item {
                 val context = androidx.compose.ui.platform.LocalContext.current
@@ -235,12 +242,25 @@ private fun SongSyncRows(vm: MainViewModel) {
     s.message?.let { Text(it, style = HiveText.small, color = Color(0xFFFF8A8A), modifier = Modifier.padding(horizontal = 18.dp, vertical = 4.dp)) }
     if (android.os.Build.VERSION.SDK_INT >= 30) SettingRow(
         "Keep files one to one",
-        if (mirrors) "On: this phone's music folder and the PC's hold the same files, in the same folders. A file changed on one side is copied to the other; anything replaced is kept in Hive's Deleted songs on the PC."
+        if (mirrors) "On: this phone's music folder and the PC's hold the same files, in the same folders. A file changed, added or deleted on one side is changed, added or deleted on the other; anything replaced or deleted on the PC is kept in Hive's Deleted songs there."
         else "Allow “All files access” for Hive and song sync keeps this phone's music folder exactly like the PC's: every file, in the same folders, updated when it changes on either side.",
     ) {
         if (!mirrors) HiveButton("Allow") {
             runCatching { context.startActivity(android.content.Intent(android.provider.Settings.ACTION_MANAGE_APP_ALL_FILES_ACCESS_PERMISSION, android.net.Uri.parse("package:${context.packageName}"))) }
         }
+    }
+    // Hive Mobile updates come from Hive on the PC (at home or over Tailscale), or GitHub when it's off.
+    val updater = (context.applicationContext as com.local.hive.mobile.HiveApp).appUpdater
+    val update by updater.state.collectAsStateWithLifecycle()
+    val updateScope = androidx.compose.runtime.rememberCoroutineScope()
+    SettingRow("App updates", when (val u = update) {
+        is com.local.hive.mobile.link.AppUpdater.State.Ready -> "Hive Mobile ${u.versionName} is ready (you have ${updater.installedName})."
+        is com.local.hive.mobile.link.AppUpdater.State.Downloading -> "Getting Hive Mobile ${u.versionName}…"
+        is com.local.hive.mobile.link.AppUpdater.State.Failed -> u.message
+        else -> "Hive Mobile ${updater.installedName}. New versions come from Hive on your PC, or from GitHub when the PC is off."
+    }) {
+        if (update is com.local.hive.mobile.link.AppUpdater.State.Ready) HiveButton("Install") { updater.install(context) }
+        else HiveButton("Check now") { updater.checkAnywhere(force = true) }
     }
     // Songs deleted on one side since they were on both: the user decides what happens on the other.
     val gone by vm.deletions.collectAsStateWithLifecycle()
@@ -374,10 +394,11 @@ private fun ThemeRows(vm: MainViewModel) {
         if (uri == null) return@rememberLauncherForActivityResult
         val name = uri.lastPathSegment?.substringAfterLast('/')?.substringBeforeLast('.') ?: "Imported theme"
         val pack = runCatching { context.contentResolver.openInputStream(uri)?.bufferedReader()?.readText() }.getOrNull()?.let { com.local.hive.mobile.ui.theme.ThemePack.parse(it, name) }
-        if (pack == null) note = "That file isn't a Hive theme." else { vm.applyTheme(pack); note = null }
+        if (pack == null) note = "That file isn't a Hive theme." else { vm.themes.saveTheme(pack.name, pack.css); note = null }
     }
     // Two rows of themes, side-scrolling; Custom opens its colour picker.
     var customizing by remember { mutableStateOf(false) }
+    var holding by remember { mutableStateOf<String?>(null) }
     androidx.compose.foundation.lazy.grid.LazyHorizontalGrid(
         androidx.compose.foundation.lazy.grid.GridCells.Fixed(2), Modifier.fillMaxWidth().height(210.dp),
         contentPadding = PaddingValues(horizontal = 16.dp, vertical = 6.dp), horizontalArrangement = Arrangement.spacedBy(10.dp), verticalArrangement = Arrangement.spacedBy(10.dp),
@@ -385,13 +406,26 @@ private fun ThemeRows(vm: MainViewModel) {
         items(packs.size) { i ->
             val pack = packs[i]
             val custom = pack.name == com.local.hive.mobile.ui.theme.ThemeStore.CUSTOM
+            val own = vm.themes.isSaved(pack.name)
             // Custom comes back as last saved; tapped again (it's on), its colours open to change.
-            ThemeSwatch(pack, pack.name == current, editable = custom) {
+            // A theme you saved: hold it to rename or delete it.
+            ThemeSwatch(pack, pack.name == current, editable = custom, onHold = if (own) { { holding = pack.name } } else null) {
                 when { !custom -> vm.applyTheme(pack); pack.name == current -> customizing = true; else -> vm.themes.applyCustom() }
             }
         }
     }
     if (customizing) CustomThemeDialog(vm) { customizing = false }
+    holding?.let { name ->
+        var renaming by remember(name) { mutableStateOf(false) }
+        if (!renaming) HiveDialog({ holding = null }, spacing = 10.dp) {
+            Text(name, style = HiveText.year, color = c.text)
+            Text("One of your saved themes.", style = HiveText.body, color = c.textDim)
+            Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(8.dp, Alignment.End)) {
+                HiveButton("Delete") { vm.themes.deleteTheme(name); holding = null }
+                HiveButton("Rename", primary = true) { renaming = true }
+            }
+        } else NameDialog("Rename theme", name, "Rename", onDismiss = { holding = null }, hint = "Theme name") { vm.themes.renameTheme(name, it); holding = null }
+    }
     val fromCover by vm.themes.accentFromCover.collectAsStateWithLifecycle()
     SettingRow("Accent", if (fromCover) "Taken from the playing song's cover." else "The theme's own colour.") {
         HiveToggle(listOf("Theme", "Cover"), if (fromCover) 1 else 0, { i -> vm.themes.setAccentFromCover(i == 1) })
@@ -446,10 +480,12 @@ private fun ScheduleRows(vm: MainViewModel, names: List<String>) {
 
 /** A theme as a little window: its background, a panel and its accent. */
 @Composable
-private fun ThemeSwatch(pack: com.local.hive.mobile.ui.theme.ThemePack, selected: Boolean, editable: Boolean = false, onClick: () -> Unit) {
+@OptIn(androidx.compose.foundation.ExperimentalFoundationApi::class)
+private fun ThemeSwatch(pack: com.local.hive.mobile.ui.theme.ThemePack, selected: Boolean, editable: Boolean = false, onHold: (() -> Unit)? = null, onClick: () -> Unit) {
     val c = Hive.colors
     val t = remember(pack) { pack.colors }
-    Column(Modifier.width(96.dp).clip(RoundedCornerShape(14.dp)).clickable(onClick = onClick), horizontalAlignment = Alignment.CenterHorizontally) {
+    val haptics = androidx.compose.ui.platform.LocalHapticFeedback.current
+    Column(Modifier.width(96.dp).clip(RoundedCornerShape(14.dp)).combinedClickable(onClick = onClick, onLongClick = onHold?.let { h -> { haptics.performHapticFeedback(androidx.compose.ui.hapticfeedback.HapticFeedbackType.LongPress); h() } }), horizontalAlignment = Alignment.CenterHorizontally) {
         Box(
             Modifier.size(96.dp, 70.dp).clip(RoundedCornerShape(14.dp)).background(t.bg)
                 .border(if (selected) 2.dp else 1.dp, if (selected) c.accent else c.border, RoundedCornerShape(14.dp)).padding(10.dp),
@@ -551,6 +587,7 @@ private fun CustomThemeDialog(vm: MainViewModel, onDismiss: () -> Unit) {
     var bg by remember { mutableStateOf(start.first) }
     var accent by remember { mutableStateOf(start.second) }
     var editingAccent by remember { mutableStateOf(false) }
+    var naming by remember { mutableStateOf(false) }
     val target = if (editingAccent) accent else bg
     fun set(color: Color) { if (editingAccent) accent = color else bg = color }
     val preview = remember(bg, accent) { com.local.hive.mobile.ui.theme.HiveColors.fromCss(com.local.hive.mobile.ui.theme.ThemeMaker.css(bg, accent, exact = true)) }
@@ -602,8 +639,15 @@ private fun CustomThemeDialog(vm: MainViewModel, onDismiss: () -> Unit) {
         else Text("The accent stands out well on this background.", style = HiveText.small, color = c.textDim)
         Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(10.dp, Alignment.End)) {
             HiveButton("Cancel") { onDismiss() }
-            HiveButton("Use these colours", primary = true) { vm.themes.setCustom(bg, accent); onDismiss() }
+            // Kept as a theme of its own, by name, beside Hive's; Custom stays free for the next idea.
+            HiveButton("Save as theme") { naming = true }
+            HiveButton("Use", primary = true) { vm.themes.setCustom(bg, accent); onDismiss() }
         }
+    }
+    if (naming) NameDialog("Save theme", "", "Save", onDismiss = { naming = false }, hint = "Theme name") { name ->
+        naming = false
+        vm.themes.saveTheme(name, com.local.hive.mobile.ui.theme.ThemeMaker.css(bg, accent, exact = true))
+        onDismiss()
     }
 }
 

@@ -270,7 +270,7 @@ private fun ServiceSongRow(vm: MainViewModel, s: StreamTrack, local: Track?, now
             else -> { { StreamBadge("${s.source} only") } }
         },
     ) { expanded, dismiss ->
-        HiveMenu(expanded, dismiss) {
+        HiveMenu(expanded, dismiss, settings = true) {
             HiveMenuItem("Play next", Icons.AutoMirrored.Rounded.PlaylistPlay) { dismiss(); vm.playNextStreams(listOf(s)) }
             HiveMenuItem("Add to queue", Icons.AutoMirrored.Rounded.QueueMusic) { dismiss(); vm.addToQueueStreams(listOf(s)) }
             val liked = loved[com.local.hive.mobile.link.StreamLoves.key(s.artist, s.title)]?.loved == true
@@ -425,6 +425,11 @@ private fun ServiceCollectionScreen(
         }
     }, overlay = {
         PageBar(collection?.name.orEmpty(), titleAlpha, onBack, veil) {
+            if (collection != null) {
+                val route = (if (collection.source == "Spotify") "spotify/c?url=" else "apple/c?url=") + Uri.encode(collection.url)
+                FavoriteBarActions(vm, favoritePlaylist(collection.source.lowercase().replace(" ", "") + ":" + collection.url, collection.name, route, collection.artwork.ifBlank { null }, collection.source))
+                androidx.compose.foundation.layout.Spacer(Modifier.size(8.dp))
+            }
             if (collection != null) Box(Modifier.size(42.dp).hiveGlass(CircleShape).clickable {
                 runCatching { context.startActivity(Intent(Intent.ACTION_VIEW, Uri.parse(collection.url))) }
             }, contentAlignment = Alignment.Center) {

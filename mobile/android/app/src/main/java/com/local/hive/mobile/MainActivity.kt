@@ -26,6 +26,9 @@ class MainActivity : ComponentActivity() {
         if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU) Manifest.permission.READ_MEDIA_AUDIO else Manifest.permission.READ_EXTERNAL_STORAGE
 
     override fun onCreate(savedInstanceState: Bundle?) {
+        // Opened by a test (scripts/e2e) with "Connect automatically" off, so it only ever pairs
+        // with the test's own Hive, never with a Hive it finds on the network.
+        if (intent?.getBooleanExtra(EXTRA_NO_AUTO_CONNECT, false) == true) (application as HiveApp).linkStore.autoConnect = false
         super.onCreate(savedInstanceState)
         // Black status and navigation bars, as in Samsung Music's dark mode.
         enableEdgeToEdge(
@@ -45,12 +48,21 @@ class MainActivity : ComponentActivity() {
         if (missing.isNotEmpty()) permissions.launch(missing.toTypedArray())
         handleSpotifyReturn(intent)
         if (savedInstanceState == null) handleVoice(intent)
+        // "Hive Mobile x is ready": tapping the notification installs it.
+        if (intent?.getBooleanExtra(EXTRA_INSTALL_UPDATE, false) == true) (application as HiveApp).appUpdater.install(this)
+    }
+
+    // Opening Hive looks for an update: from the PC when it's reachable, else GitHub (every 10 minutes at most).
+    override fun onResume() {
+        super.onResume()
+        (application as HiveApp).appUpdater.checkAnywhere()
     }
 
     override fun onNewIntent(intent: Intent) {
         super.onNewIntent(intent)
         setIntent(intent)
         if (intent.getBooleanExtra(EXTRA_OPEN_DELETIONS, false)) vm.openDeletions.value = true
+        if (intent.getBooleanExtra(EXTRA_INSTALL_UPDATE, false)) (application as HiveApp).appUpdater.install(this)
         handleSpotifyReturn(intent)
         handleVoice(intent)
     }
@@ -81,5 +93,8 @@ class MainActivity : ComponentActivity() {
         const val EXTRA_OPEN_PLAYER = "open_player"
         /** Opens the deleted-songs choice (from its notification). */
         const val EXTRA_OPEN_DELETIONS = "open_deletions"
+        /** "Connect automatically" off from the start (the end-to-end test). */
+        const val EXTRA_NO_AUTO_CONNECT = "no_auto_connect"
+        const val EXTRA_INSTALL_UPDATE = "install_update"
     }
 }

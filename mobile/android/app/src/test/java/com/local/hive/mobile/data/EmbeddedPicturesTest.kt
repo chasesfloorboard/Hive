@@ -23,9 +23,9 @@ class EmbeddedPicturesTest {
         return "ID3".toByteArray() + byteArrayOf(version.toByte(), 0, 0) + syncsafe(tag.size) + tag + ByteArray(32)
     }
 
-    private fun apic(data: ByteArray, utf16: Boolean = false): ByteArray {
+    private fun apic(data: ByteArray, utf16: Boolean = false, type: Int = 3): ByteArray {
         val out = ByteArrayOutputStream()
-        out.write(if (utf16) 1 else 0); out.write("image/jpeg".toByteArray()); out.write(0); out.write(3)
+        out.write(if (utf16) 1 else 0); out.write("image/jpeg".toByteArray()); out.write(0); out.write(type)
         if (utf16) out.write(byteArrayOf(0xFF.toByte(), 0xFE.toByte(), 'x'.code.toByte(), 0, 0, 0)) else { out.write("cover".toByteArray()); out.write(0) }
         out.write(data)
         return out.toByteArray()
@@ -57,6 +57,15 @@ class EmbeddedPicturesTest {
         val got = EmbeddedPictures.read(file.inputStream())
         assertEquals(2, got.size)
         assertArrayEquals(front, got[0])
+    }
+
+    @Test fun knowsTheFrontFromTheBackCovers() {
+        val mp3 = id3(3, listOf("APIC" to apic(front), "APIC" to apic(back, utf16 = true, type = 4), "APIC" to apic(back, type = 4)))
+        assertEquals(listOf(3, 4, 4), EmbeddedPictures.readTyped(mp3.inputStream()).map { it.type })
+        fun block(type: Int, last: Boolean, body: ByteArray) = byteArrayOf(((if (last) 0x80 else 0) or type).toByte()) + be(body.size, 3) + body
+        fun pic(data: ByteArray, type: Int) = be(type) + be(10) + "image/jpeg".toByteArray() + be(0) + ByteArray(16) + be(data.size) + data
+        val flac = "fLaC".toByteArray() + block(0, false, ByteArray(34)) + block(6, false, pic(front, 3)) + block(6, true, pic(back, 4))
+        assertEquals(listOf(false, true), EmbeddedPictures.readTyped(flac.inputStream()).map { it.back })
     }
 
     @Test fun aFileWithoutTagsHasNone() = assertEquals(0, EmbeddedPictures.read(ByteArray(64).inputStream()).size)

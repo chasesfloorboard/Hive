@@ -23,12 +23,16 @@ class PlaybackMemory(
 
     fun saveQueue(player: Player) {
         val ids = (0 until player.mediaItemCount).map { player.getMediaItemAt(it).mediaId }
+        // A radio station or podcast never replaces the music kept for resuming: plugging the phone in
+        // (the car, headphones) after the radio picks the music back up, not the station.
+        if (ids.isNotEmpty() && ids.all(::notMusic)) return
         prefs.edit().putString(KEY_QUEUE, ids.joinToString(SEPARATOR)).apply()
         saveCursor(player)
     }
 
     fun saveCursor(player: Player) {
         if (player.mediaItemCount == 0) return
+        if (player.currentMediaItem?.mediaId?.let(::notMusic) == true) return
         prefs.edit()
             .putString(KEY_CURRENT, player.currentMediaItem?.mediaId)
             .putInt(KEY_INDEX, player.currentMediaItemIndex)
@@ -67,13 +71,15 @@ class PlaybackMemory(
         )
     }
 
-    private companion object {
-        const val SEPARATOR = "\n"
-        const val KEY_QUEUE = "queue"
-        const val KEY_CURRENT = "current"
-        const val KEY_INDEX = "index"
-        const val KEY_POSITION = "position"
-        const val KEY_SHUFFLE = "shuffle"
-        const val KEY_REPEAT = "repeat"
+    companion object {
+        /** A radio station or podcast episode, not a song. */
+        fun notMusic(mediaId: String) = mediaId.startsWith("radio:") || mediaId.startsWith("pod:")
+        private const val SEPARATOR = "\n"
+        private const val KEY_QUEUE = "queue"
+        private const val KEY_CURRENT = "current"
+        private const val KEY_INDEX = "index"
+        private const val KEY_POSITION = "position"
+        private const val KEY_SHUFFLE = "shuffle"
+        private const val KEY_REPEAT = "repeat"
     }
 }

@@ -36,6 +36,10 @@ import kotlinx.coroutines.SupervisorJob
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.asStateFlow
+import kotlinx.coroutines.flow.map
+import kotlinx.coroutines.flow.distinctUntilChanged
+import kotlinx.coroutines.flow.drop
+import kotlinx.coroutines.flow.debounce
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.sync.Mutex
 import kotlinx.coroutines.sync.withLock
@@ -57,6 +61,7 @@ class HiveApp : Application(), coil3.SingletonImageLoader.Factory {
     val spotify by lazy { com.local.hive.mobile.stream.Spotify() }
     val youTubeMusic by lazy { com.local.hive.mobile.stream.YouTubeMusic(this) }
     val likedAlbums by lazy { com.local.hive.mobile.data.LikedAlbums(this, database.dao()) }
+    val playlistImages by lazy { com.local.hive.mobile.data.PlaylistImages(this) }
     val spotifyAccount by lazy { com.local.hive.mobile.stream.SpotifyAccount(this) }
     val lyrics by lazy { com.local.hive.mobile.stream.LyricsProvider(this) }
     val equaliser by lazy { com.local.hive.mobile.playback.EqualiserStore(this) }
@@ -67,10 +72,12 @@ class HiveApp : Application(), coil3.SingletonImageLoader.Factory {
     val scrobbler by lazy { com.local.hive.mobile.stream.Scrobbler(this) }
     val artistImages by lazy { com.local.hive.mobile.stream.ArtistImages(this) }
     val linkStore by lazy { LinkStore(this) }
-    val sync: SyncEngine by lazy { SyncEngine(database.dao(), linkStore, HiveLinkClient(), scope, afterSync = { scope.launch { sync.pcConnection()?.let { pcEdits.send(it) } }; if (linkStore.songSync) com.local.hive.mobile.link.SongSync.schedule(this, now = true) }, onThemes = { themes.setPcThemes(it.themes, it.current) }, streamLoves = streamLoves, saveListening = { com.local.hive.mobile.data.ListeningFile.save(this, it) }) }
+    /** Hive Mobile updates from Hive on the PC (see AppUpdater). */
+    val appUpdater: com.local.hive.mobile.link.AppUpdater by lazy { com.local.hive.mobile.link.AppUpdater(this, HiveLinkClient(), scope) { sync.pcConnection() } }
+    val sync: SyncEngine by lazy { SyncEngine(database.dao(), linkStore, HiveLinkClient(), scope, afterSync = { scope.launch { sync.pcConnection()?.let { pcEdits.send(it); appUpdater.check(it) } }; scope.launch { runCatching { pcLibrary.refreshPlaylists() }; syncPlaylists() }; if (linkStore.songSync) com.local.hive.mobile.link.SongSync.schedule(this, now = true) }, onThemes = { themes.setPcThemes(it.themes, it.current) }, streamLoves = streamLoves, saveListening = { com.local.hive.mobile.data.ListeningFile.save(this, it) }) }
     val streamLoves by lazy { com.local.hive.mobile.link.StreamLoves(this) }
     /** Tag and cover edits on their way to Hive on the PC. */
-    val pcEdits by lazy { com.local.hive.mobile.link.PcEdits(this, database.dao(), linkStore) }
+    val pcEdits by lazy { com.local.hive.mobile.link.PcEdits(this, database.dao(), linkStore, pcTracks = { pcLibrary.tracks.value }) }
     /** Smart playlists made on the phone. */
     val smartPlaylists by lazy { com.local.hive.mobile.data.SmartPlaylists(this) }
     /** Soulseek downloads: queued, coming in, and the latest done. */
@@ -80,6 +87,13 @@ class HiveApp : Application(), coil3.SingletonImageLoader.Factory {
     val player by playerConnection
     /** A sleep timer is set to stop at the end of this song (no crossfade into the next). */
     val stopsAtSongEnd: Boolean get() = playerConnection.isInitialized() && player.sleep.value?.endOfSong == true
+    /** The phone's playlists and Hive's, kept the same (see [com.local.hive.mobile.link.PlaylistSync]). */
+    val playlistSync by lazy { com.local.hive.mobile.link.PlaylistSync(this, database.dao(), HiveLinkClient(), pcLibrary) }
+    private suspend fun syncPlaylists() {
+        runCatching { sync.pcConnection()?.let { playlistSync.run(it) { line -> android.util.Log.i("HiveSync", line) } } }
+            .onFailure { android.util.Log.w("HiveSync", "playlists: ${it.message}") }
+    }
+
     val pcLibrary by lazy { com.local.hive.mobile.link.PcLibrary(this, HiveLinkClient(), linkStore, sync) }
     val themes by lazy { ThemeStore(this) }
     val playRecorder = object : PlayRecorder {
@@ -120,8 +134,20 @@ class HiveApp : Application(), coil3.SingletonImageLoader.Factory {
             if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU) Manifest.permission.READ_MEDIA_AUDIO else Manifest.permission.READ_EXTERNAL_STORAGE,
         ) == PackageManager.PERMISSION_GRANTED
 
+    @OptIn(kotlinx.coroutines.FlowPreview::class)
     override fun onCreate() {
         super.onCreate()
+        // A playlist made, changed or deleted here reaches Hive a few seconds later, not at the next sync.
+        scope.launch {
+            database.dao().playlists().map { l -> l.map { it.id to it.updatedAt } }.distinctUntilChanged().drop(1).debounce(3_000)
+                .collect { if (linkStore.pairing != null) syncPlaylists() }
+        }
+        // Hive's notifications put no number on its icon. A channel's badge can't be changed once it
+        // exists, so the ones made before that are replaced by new ones (their ids end in -2).
+        getSystemService(android.app.NotificationManager::class.java).let { nm ->
+            listOf("hive-downloads", "hive-song-deletions", "hive-song-sync", "updates", "default_channel_id").forEach { runCatching { nm.deleteNotificationChannel(it) } }
+            nm.createNotificationChannel(android.app.NotificationChannel(com.local.hive.mobile.playback.PLAYBACK_CHANNEL, "Playback", android.app.NotificationManager.IMPORTANCE_LOW).apply { setShowBadge(false) })
+        }
         // Read the library at every start and whenever MediaStore changes
         // (new downloads, files copied over USB, deletions), like Samsung Music.
         contentResolver.registerContentObserver(

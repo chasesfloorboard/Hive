@@ -55,7 +55,12 @@ data class NowPlaying(
     /** The covers of the songs a skip either way plays next (shuffle and repeat included), to load ahead. */
     val nextArtworkUri: String? = null,
     val previousArtworkUri: String? = null,
+    /** The song a crossfade is bringing in, while this one (shown until then) fades out. */
+    val incoming: Incoming? = null,
 )
+
+/** The song a crossfade brings in: shown as a card that flips over when the fade is done. */
+data class Incoming(val mediaId: String, val title: String, val artist: String, val artworkUri: String?, val startedAt: Long, val ms: Int)
 
 /** Pause at [endsAt] (fading out over the last seconds), or when the current song ends. */
 data class SleepTimer(val endsAt: Long? = null, val endOfSong: Boolean = false)
@@ -85,10 +90,15 @@ class PlayerConnection(private val context: Context, private val scope: Coroutin
     fun connect() {
         if (controller != null) return
         val token = SessionToken(context, ComponentName(context, PlaybackService::class.java))
-        val future = MediaController.Builder(context, token).buildAsync()
+        val future = MediaController.Builder(context, token)
+            .setListener(object : MediaController.Listener {
+                override fun onExtrasChanged(controller: MediaController, extras: android.os.Bundle) { handover = Handover.from(extras); publish() }
+            })
+            .buildAsync()
         future.addListener({
             val c = runCatching { future.get() }.getOrNull() ?: return@addListener
             controller = c
+            handover = Handover.from(c.sessionExtras)
             c.addListener(object : Player.Listener {
                 override fun onEvents(player: Player, events: Player.Events) {
                     if (events.contains(Player.EVENT_TIMELINE_CHANGED)) queueStale = true
@@ -107,7 +117,7 @@ class PlayerConnection(private val context: Context, private val scope: Coroutin
         // MediaController may only be touched from the main thread.
         scope.launch(Dispatchers.Main) {
             while (isActive) {
-                controller?.takeIf { it.isPlaying }?.let { _position.value = it.currentPosition.coerceAtLeast(0) }
+                controller?.takeIf { it.isPlaying }?.let { _position.value = handoverPosition() ?: it.currentPosition.coerceAtLeast(0) }
                 delay(500)
             }
         }
@@ -135,6 +145,7 @@ class PlayerConnection(private val context: Context, private val scope: Coroutin
             // a streamed song would wait on YouTube first.
             val start = if (shuffle) items.indices.filter { items[it].isOnPhone() }.ifEmpty { items.indices.toList() }.random() else startIndex.coerceIn(items.indices)
             if (shuffle) shuffleStart = items[start].mediaId
+            beforeShuffle = if (shuffle) c.currentMediaItem?.let { BeforeShuffle(it, c.currentPosition, items[start].mediaId) } else null
             c.shuffleModeEnabled = shuffle
             c.setMediaItems(items, start, startPositionMs)
             c.prepare()
@@ -157,8 +168,38 @@ class PlayerConnection(private val context: Context, private val scope: Coroutin
     }
 
     fun togglePlay() = withController { if (it.isPlaying) it.pause() else { if (it.playbackState == Player.STATE_IDLE) it.prepare(); it.play() } }
-    fun next() = withController { it.seekToNext() }
-    fun previous() = withController { it.seekToPrevious() }
+    fun next() = withController { c ->
+        lastSkipBackAt = 0L
+        if (c.isSessionCommandAvailable(HIVE_SKIP)) c.sendCustomCommand(HIVE_SKIP, android.os.Bundle.EMPTY) else c.seekToNext()
+    }
+    fun previous() = withController { c ->
+        lastSkipBackAt = System.currentTimeMillis()
+        // Back from the first song of a new shuffle: the song that was playing when Shuffle was
+        // pressed comes back (where it was), as if the shuffle had started after it.
+        val back = beforeShuffle
+        if (back != null && c.currentMediaItem?.mediaId == back.shuffleFirst) {
+            beforeShuffle = null
+            val at = c.currentMediaItemIndex
+            c.addMediaItem(at, back.item)
+            c.seekTo(at, back.positionMs)
+            return@withController
+        }
+        c.seekToPrevious()
+    }
+
+    /** Whether the last skip was back (for the cover to come in from the left), within the last few seconds. */
+    fun wentBack(): Boolean = System.currentTimeMillis() - lastSkipBackAt < 4_000
+    private var lastSkipBackAt = 0L
+
+    /** Moves through the playing song by [deltaMs] (holding Previous or Next). */
+    fun seekBy(deltaMs: Long) = withController { c ->
+        val end = c.duration.takeIf { it > 0 } ?: return@withController
+        c.seekTo((c.currentPosition + deltaMs).coerceIn(0, (end - 1_000).coerceAtLeast(0)))
+    }
+
+    /** The song that was playing when a new shuffle started, and that shuffle's first song. */
+    private data class BeforeShuffle(val item: MediaItem, val positionMs: Long, val shuffleFirst: String)
+    private var beforeShuffle: BeforeShuffle? = null
     fun seekTo(positionMs: Long) = withController { it.seekTo(positionMs) }
     fun skipToQueueIndex(index: Int) = withController { it.seekTo(index, 0L) }
     fun removeFromQueue(index: Int) = withController { c ->
@@ -250,9 +291,29 @@ class PlayerConnection(private val context: Context, private val scope: Coroutin
         }
     }
 
+    /** The crossfade under way (see [Crossfader.handover]). */
+    private var handover: Handover? = null
+
+    /** Where the song fading out is, during a crossfade. */
+    private fun handoverPosition(): Long? = handover?.let { h ->
+        val at = h.fromPositionMs + (android.os.SystemClock.elapsedRealtime() - h.startedAt)
+        if (h.fromDurationMs > 0) at.coerceAtMost(h.fromDurationMs) else at
+    }
+
+    /** A queue entry by its id, looked for around the current one first. */
+    private fun itemById(c: MediaController, id: String): MediaItem? {
+        val at = c.currentMediaItemIndex
+        for (i in listOf(at, at - 1, at + 1)) if (i in 0 until c.mediaItemCount && c.getMediaItemAt(i).mediaId == id) return c.getMediaItemAt(i)
+        return (0 until c.mediaItemCount).firstOrNull { c.getMediaItemAt(it).mediaId == id }?.let { c.getMediaItemAt(it) }
+    }
+
     private fun publish() {
         val c = controller ?: return
-        val item = c.currentMediaItem
+        // During a crossfade the song fading out is the one shown; the one coming in is [NowPlaying.incoming].
+        val h = handover
+        val fromItem = h?.let { itemById(c, it.fromId) }
+        val toItem = h?.let { itemById(c, it.toId) }
+        val item = fromItem ?: c.currentMediaItem
         val meta = item?.mediaMetadata
         val radio = item?.mediaId?.startsWith("radio:") == true
         // A station's song comes from its ICY title ("Artist - Title"), which the player merges into its live metadata.
@@ -262,7 +323,8 @@ class PlayerConnection(private val context: Context, private val scope: Coroutin
         // The shuffle asked for is under way: the next tap on Shuffle is a new one.
         if (shuffleStart != null && ((c.isPlaying && item?.mediaId == shuffleStart) || c.playerError != null)) { shuffleStartedAt = 0L; shuffleStart = null }
         if (queueStale) { queue = (0 until c.mediaItemCount).map { c.getMediaItemAt(it).toQueueItem() }; queueStale = false }
-        _position.value = c.currentPosition.coerceAtLeast(0)
+        val position = (if (fromItem != null) handoverPosition() else null) ?: c.currentPosition.coerceAtLeast(0)
+        _position.value = position
         _state.value = NowPlaying(
             mediaId = item?.mediaId,
             trackId = item?.mediaId?.toLongOrNull(),
@@ -274,14 +336,17 @@ class PlayerConnection(private val context: Context, private val scope: Coroutin
             album = meta?.albumTitle?.toString().orEmpty(),
             artworkUri = meta?.artworkUri?.toString(),
             isPlaying = c.isPlaying,
-            positionMs = c.currentPosition.coerceAtLeast(0),
-            durationMs = c.duration.coerceAtLeast(0),
+            positionMs = position,
+            durationMs = if (fromItem != null) h!!.fromDurationMs else c.duration.coerceAtLeast(0),
             shuffle = c.shuffleModeEnabled,
             repeatMode = c.repeatMode,
             queue = queue,
             queueIndex = c.currentMediaItemIndex,
             nextArtworkUri = c.nextMediaItemIndex.takeIf { it >= 0 }?.let { c.getMediaItemAt(it).mediaMetadata.artworkUri?.toString() },
             previousArtworkUri = c.previousMediaItemIndex.takeIf { it >= 0 }?.let { c.getMediaItemAt(it).mediaMetadata.artworkUri?.toString() },
+            incoming = if (fromItem != null && toItem != null) toItem.mediaMetadata.let { m ->
+                Incoming(toItem.mediaId, m.title?.toString().orEmpty(), m.artist?.toString().orEmpty(), m.artworkUri?.toString(), h!!.startedAt, h.ms)
+            } else null,
         )
     }
 }

@@ -168,6 +168,9 @@ class EqualiserProcessor : BaseAudioProcessor() {
     /** The same curve and song gain in [other] (a crossfade's companion player). */
     fun copyTo(other: EqualiserProcessor) { other.setCurve(target); other.setSongGain(songGain) }
 
+    /** Only the curve (the other player's song has its own gain). */
+    fun copyCurveTo(other: EqualiserProcessor) { other.setCurve(target) }
+
     // A crossfade's fade-in: armed before the player seeks to the next song, it
     // begins on that song's first sample. The seek's flush makes it pending, and the
     // first audio after it starts it: a song in another format is flushed twice

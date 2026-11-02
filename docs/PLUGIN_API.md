@@ -4,7 +4,7 @@ Hive's community extension standard is **Hive Plugin API v2**.
 
 ## What a plugin is
 
-A plugin is a trusted local extension folder containing:
+A plugin is a local extension folder containing:
 
 ```text
 manifest.json
@@ -13,9 +13,24 @@ style.css      # optional
 README.md      # optional
 ```
 
-Hive installs these folders under the user's Hive plugins directory. The host reads the manifest, loads optional CSS, then executes `plugin.js` against the documented `window.HivePlugin` host API.
+Hive installs these folders under the user's Hive plugins directory. The host reads the manifest, then runs `plugin.js` (with `style.css`) in the plugin's own sandbox, handing it the `Hive` object described below.
 
-This is intentionally a **trusted-local renderer extension model**, not a security sandbox. A user should only install code they trust. Plugins do not receive Node.js or Electron APIs through the Hive API.
+## The sandbox
+
+Each plugin runs in its own frame (`app/renderer/plugin-frame.html`, with `sandbox="allow-scripts"` and no origin of its own):
+
+- It can't reach Hive's window, its DOM, `window.beehive`, Node.js or Electron.
+- It has no network: the frame's CSP allows no connections, and Hive's main process cancels any request a frame makes. A plugin that navigates its frame away is stopped and its frame removed.
+- It has no storage (no `localStorage`, cookies or IndexedDB) and can't open windows.
+- It talks to Hive only through `Hive`. Hive checks each request against the plugin's declared permissions.
+- Images can come from `data:`, `blob:` and Hive's cover URLs (`Hive.player.getCoverUrl`). A plugin can request files inside the user's library folders, as Hive's player does, but can't send what it reads anywhere.
+
+Its pages (`registerView`, `registerSandboxPanel`) are drawn inside its frame, which Hive lays over the spot in the window where the page goes. So:
+
+- `Hive.ui.addStyle(css)` and the plugin's `style.css` style the plugin's own pages, not Hive.
+- Hive's theme reaches the frame as CSS custom properties on `:root` (`--accent`, `--text`, `--text-dim`, …), plus the font and text colour, and they follow theme changes.
+- Size things with `var(--hive-vh)` and `var(--hive-vw)`, one hundredth of Hive's window, where you would write `vh`/`vw` (inside the frame those units mean the frame).
+- `Hive.player.getCurrent()`, `getState()`, `getCoverUrl()`, `Hive.audio.getSpectrum()` and `Hive.library.getTracks()` answer at once, from copies Hive keeps up to date. `getCoverUrl(track)` knows the current track's cover and the covers of tracks that have played since the plugin loaded.
 
 ## Manifest contract
 
@@ -46,7 +61,7 @@ Supported permission identifiers are deliberately small:
 - `ui.sandbox`
 - `settings`
 
-The host API checks these permissions before exposing the corresponding operation.
+Hive checks these permissions before it sends a plugin anything or does anything for it.
 
 ## Runtime API
 

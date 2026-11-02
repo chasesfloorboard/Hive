@@ -1,5 +1,7 @@
 package com.local.hive.mobile.ui
 
+import androidx.compose.material.icons.rounded.Album
+import androidx.compose.material.icons.rounded.Person
 import com.local.hive.mobile.ui.theme.HiveIcons
 import android.net.Uri
 import androidx.compose.animation.core.animateFloatAsState
@@ -93,7 +95,7 @@ import androidx.compose.material.icons.rounded.SaveAlt
 
 val PlaylistRow.title: String get() = track?.title ?: stream?.title.orEmpty()
 val PlaylistRow.artist: String get() = track?.artist ?: stream?.artist.orEmpty()
-val PlaylistRow.art: Any? get() = track?.artworkUri ?: stream?.artworkUrl?.ifBlank { null }
+val PlaylistRow.art: Any? get() = track?.songArtUri ?: stream?.artworkUrl?.ifBlank { null }
 val PlaylistRow.durationMs: Long get() = track?.durationMs ?: stream?.durationMs ?: 0
 
 /**
@@ -121,17 +123,23 @@ fun StreamRow(stream: StreamTrack, playing: Boolean, isPlaying: Boolean, full: B
         enabled = playable,
         badge = if (full) null else { { StreamBadge(if (playable) "Preview" else "${stream.source} only") } },
         menu = if (vm == null && onRemove == null) null else { expanded, dismiss ->
-            HiveMenu(expanded, dismiss) {
+            HiveMenu(expanded, dismiss, settings = true) {
+                SongMenuHeader(stream.artworkUrl.ifBlank { null }, stream.title, listOf(stream.artist, stream.album).filter { it.isNotBlank() }.joinToString(" · "))
                 if (vm != null) {
-                    HiveMenuItem("Play next", Icons.AutoMirrored.Rounded.PlaylistPlay) { dismiss(); vm.playNextStreams(listOf(stream)) }
-                    HiveMenuItem("Add to queue", Icons.AutoMirrored.Rounded.QueueMusic) { dismiss(); vm.addToQueueStreams(listOf(stream)) }
-                    HiveMenuItem(if (liked) "Remove from Favorites" else "Add to Favorites", if (liked) Icons.Rounded.FavoriteBorder else Icons.Rounded.Favorite) { dismiss(); vm.setStreamLiked(stream, !liked) }
-                    if (!stream.key.startsWith("pc:")) HiveMenuItem("Download", Icons.Rounded.Download) {
-                        dismiss()
-                        if (com.local.hive.mobile.soulseek.SoulseekSettings(context).configured) downloadStreams(context, listOf(stream), toast) else signIn = true
+                    val go = LocalStreamNav.current
+                    SongMenuQuickRow {
+                        SongMenuQuick("Next", Icons.AutoMirrored.Rounded.PlaylistPlay) { dismiss(); vm.playNextStreams(listOf(stream)) }
+                        SongMenuQuick("Queue", Icons.AutoMirrored.Rounded.QueueMusic) { dismiss(); vm.addToQueueStreams(listOf(stream)) }
+                        SongMenuQuick(if (liked) "Loved" else "Love", if (liked) Icons.Rounded.Favorite else Icons.Rounded.FavoriteBorder, active = liked) { dismiss(); vm.setStreamLiked(stream, !liked) }
+                        if (!stream.key.startsWith("pc:")) SongMenuQuick("Download", Icons.Rounded.Download) {
+                            dismiss()
+                            if (com.local.hive.mobile.soulseek.SoulseekSettings(context).configured) downloadStreams(context, listOf(stream), toast) else signIn = true
+                        }
                     }
+                    HiveMenuItem("Go to album", Icons.Rounded.Album) { dismiss(); go.album(stream) }
+                    HiveMenuItem("Go to artist", Icons.Rounded.Person) { dismiss(); go.artist(stream) }
                 }
-                onRemove?.let { remove -> HiveMenuItem("Remove from playlist", Icons.Rounded.RemoveCircleOutline, destructive = true) { dismiss(); remove() } }
+                onRemove?.let { remove -> HiveMenuDivider(); HiveMenuItem("Remove from playlist", Icons.Rounded.RemoveCircleOutline, destructive = true) { dismiss(); remove() } }
             }
         },
     )
@@ -187,14 +195,14 @@ fun AddToPlaylistSheet(vm: MainViewModel, tracks: List<Track>, onDismiss: () -> 
 
 /** A small Hive dialog asking for a name. */
 @Composable
-fun NameDialog(title: String, initial: String, confirm: String, onDismiss: () -> Unit, onConfirm: (String) -> Unit) {
+fun NameDialog(title: String, initial: String, confirm: String, onDismiss: () -> Unit, hint: String = "Playlist name", onConfirm: (String) -> Unit) {
     val c = Hive.colors
     var name by remember { mutableStateOf(initial) }
     val focus = remember { FocusRequester() }
     LaunchedEffect(Unit) { focus.requestFocus() }
     HiveDialog(onDismiss, spacing = 14.dp) {
             Text(title, style = HiveText.year, color = c.text)
-            HiveField(name, { name = it }, "Playlist name", capitalization = KeyboardCapitalization.Sentences, focus = focus, onDone = { if (name.isNotBlank()) onConfirm(name) })
+            HiveField(name, { name = it }, hint, capitalization = KeyboardCapitalization.Sentences, focus = focus, onDone = { if (name.isNotBlank()) onConfirm(name) })
             Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(8.dp, Alignment.End)) {
                 HiveButton("Cancel", onClick = onDismiss)
                 HiveButton(confirm, primary = true, enabled = name.isNotBlank()) { onConfirm(name) }
@@ -248,7 +256,10 @@ fun PlaylistScreen(vm: MainViewModel, id: Long, actions: TrackActions, bottomPad
     val allRows by remember(id) { vm.playlistRows(id) }.collectAsStateWithLifecycle(emptyList())
     LaunchedEffect(allRows.size) { vm.fillSpotifyCovers(allRows) }
     // Slots whose library song has since gone from the phone are left out.
-    val rows = remember(allRows) { allRows.filter { it.track != null || it.stream != null } }
+    val saved = remember(allRows) { allRows.filter { it.track != null || it.stream != null } }
+    // Shown and played in the custom order (the saved one, which Edit rearranges) or sorted.
+    var sort by rememberSetting("sort.playlist.$id", PlaylistSort.Custom)
+    val rows = remember(saved, sort) { sortedRows(saved, sort) }
     val summaries by vm.playlists.collectAsStateWithLifecycle()
     val summary = summaries.firstOrNull { it.id == id }
     val loved by vm.lovedIds.collectAsStateWithLifecycle()
@@ -266,7 +277,7 @@ fun PlaylistScreen(vm: MainViewModel, id: Long, actions: TrackActions, bottomPad
     val scope = androidx.compose.runtime.rememberCoroutineScope()
     val toast = LocalToast.current
     // The playlist's picture: a photo from the phone, copied into Hive's files.
-    val photo = androidx.activity.compose.rememberLauncherForActivityResult(androidx.activity.result.contract.ActivityResultContracts.PickVisualMedia()) { uri -> if (uri != null) vm.setPlaylistPhoto(id, uri) }
+    val photo = androidx.activity.compose.rememberLauncherForActivityResult(androidx.activity.result.contract.ActivityResultContracts.PickVisualMedia()) { uri -> if (uri != null) { vm.removePlaylistImage(com.local.hive.mobile.data.PlaylistImages.user(id)); vm.setPlaylistPhoto(id, uri) } }
     val exporter = androidx.activity.compose.rememberLauncherForActivityResult(androidx.activity.result.contract.ActivityResultContracts.CreateDocument("audio/x-mpegurl")) { uri ->
         if (uri != null) scope.launch {
             val text = vm.m3uFor(id)
@@ -275,8 +286,9 @@ fun PlaylistScreen(vm: MainViewModel, id: Long, actions: TrackActions, bottomPad
     }
 
     // While editing, a local order of slots, saved when done.
-    val keys = remember(rows) { rows.map { it.entry.rowId.toString() } }
-    val byKey = remember(rows) { rows.associateBy { it.entry.rowId.toString() } }
+    val keys = remember(saved) { saved.map { it.entry.rowId.toString() } }
+    val shownKeys = remember(rows) { rows.map { it.entry.rowId.toString() } }
+    val byKey = remember(saved) { saved.associateBy { it.entry.rowId.toString() } }
     var order by remember(keys) { mutableStateOf(keys) }
     var dragKey by remember { mutableStateOf<String?>(null) }
     var dragOffset by remember { mutableFloatStateOf(0f) }
@@ -288,12 +300,17 @@ fun PlaylistScreen(vm: MainViewModel, id: Long, actions: TrackActions, bottomPad
     // Searching the playlist: its songs by title, artist or album. A found song plays the playlist from there.
     var query by rememberSaveable(id) { mutableStateOf(initialQuery) }
     val q = LibrarySort.words(query)
-    val positions = remember(keys) { keys.withIndex().associate { it.value to it.index } }
-    val listed = if (editing || q.isEmpty()) (if (editing) order else keys) else keys.filter { k -> byKey[k]?.let { r -> LibrarySort.matches(songText(r), q) } == true }
+    val positions = remember(shownKeys) { shownKeys.withIndex().associate { it.value to it.index } }
+    val listed = if (editing || q.isEmpty()) (if (editing) order else shownKeys) else shownKeys.filter { k -> byKey[k]?.let { r -> LibrarySort.matches(songText(r), q) } == true }
     val listedRows = listed.mapNotNull { byKey[it] }
     PickableList(tracks = listedRows.mapNotNull { it.track }, streams = listedRows.filter { it.track == null }.mapNotNull { it.stream })
     val search = rememberPullToReveal(keepShown = query.isNotEmpty())
     val name = playlist?.name.orEmpty()
+    // Its songs, or the albums and artists they're from (editing is always of the songs).
+    var view by rememberSaveable(id) { mutableStateOf(SongsView.Tracks) }
+    var groupSort by rememberSaveable(id) { mutableStateOf(GroupSort.Most) }
+    val shownTracks = remember(listedRows) { listedRows.mapNotNull { it.track } }
+    val counts = remember(shownTracks, listedRows.size) { songsCounts(shownTracks, listedRows.size) }
 
     HiveGlassLayers(Modifier.fillMaxSize(), content = {
         AlbumBackdrop(colors)
@@ -302,7 +319,8 @@ fun PlaylistScreen(vm: MainViewModel, id: Long, actions: TrackActions, bottomPad
         LazyColumn(Modifier.fillMaxSize().nestedScroll(search.connection).songDragSelect(list, dragRows, dragRows.values.toList()), state = list, contentPadding = PaddingValues(bottom = bottomPadding + 16.dp)) {
             item {
                 Column(Modifier.fillMaxWidth().statusBarsPadding().padding(top = 64.dp, start = 24.dp, end = 24.dp, bottom = 18.dp), horizontalAlignment = Alignment.CenterHorizontally) {
-                    Artwork(summary?.let(::playlistCover), Modifier.size(200.dp), HiveShape.art, Icons.AutoMirrored.Rounded.QueueMusic, glow = colors?.primary, elevation = 30.dp)
+                    val images by vm.playlistImages.collectAsStateWithLifecycle()
+                    Artwork(images[com.local.hive.mobile.data.PlaylistImages.user(id)] ?: summary?.let(::playlistCover), Modifier.size(200.dp), HiveShape.art, Icons.AutoMirrored.Rounded.QueueMusic, glow = colors?.primary, elevation = 30.dp)
                     Text(name, style = HiveText.heroTitle, color = c.text, textAlign = TextAlign.Center, maxLines = 2, overflow = TextOverflow.Ellipsis, modifier = Modifier.padding(top = 22.dp))
                     Text(
                         listOfNotNull(playlist?.source?.ifBlank { null }?.let { "From $it" }, countOf(rows.size, "track"), formatLength(rows.sumOf { it.durationMs })).joinToString(" · "),
@@ -311,7 +329,7 @@ fun PlaylistScreen(vm: MainViewModel, id: Long, actions: TrackActions, bottomPad
                     Row(Modifier.padding(top = 18.dp), horizontalArrangement = Arrangement.spacedBy(12.dp), verticalAlignment = Alignment.CenterVertically) {
                         ControlButton(HiveIcons.Shuffle, "Shuffle", { vm.playRows(rows, shuffle = true) }, size = 46.dp)
                         AccentPlayButton(false, { vm.playRows(rows) }, size = 58.dp)
-                        ControlButton(if (editing) Icons.Rounded.Check else Icons.Rounded.Edit, if (editing) "Done editing" else "Edit playlist", { if (editing) finishEditing() else editing = true }, size = 46.dp, tint = if (editing) c.accent else null)
+                        ControlButton(if (editing) Icons.Rounded.Check else Icons.Rounded.Edit, if (editing) "Done editing" else "Edit playlist", { if (editing) finishEditing() else { sort = PlaylistSort.Custom; view = SongsView.Tracks; editing = true } }, size = 46.dp, tint = if (editing) c.accent else null)
                     }
                 }
             }
@@ -323,14 +341,22 @@ fun PlaylistScreen(vm: MainViewModel, id: Long, actions: TrackActions, bottomPad
                 }
             }
             if (rows.isEmpty() && playlist != null) item { EmptyState("This playlist is empty", "Add songs from any song's ⋯ menu, or an album's.") }
+            else if (!editing && view != SongsView.Tracks) {
+                item { SongsHeader(view, counts, { view = it }, GroupSort.entries.map { it.label }, groupSort.ordinal, { groupSort = GroupSort.entries[it] }, groupDetail(view, counts, groupSort)) }
+                songGroups(vm, view, shownTracks, actions, groupSort)
+            }
             else if (listed.isEmpty()) item { EmptyState("No songs match", "Nothing in “$name” matches “${query.trim()}”.") }
             else {
+                item {
+                    SongsHeader(view, counts, { if (editing) finishEditing(); view = it }, PlaylistSort.entries.map { it.label }, sort.ordinal, { if (editing) finishEditing(); sort = PlaylistSort.entries[it] },
+                        listOf(sort.label, if (editing) "Drag to move songs" else if (sort == PlaylistSort.Custom) "Edit to move songs" else "").filter { it.isNotBlank() }.joinToString(" · "))
+                }
                 item { PanelTop() }
                 itemsIndexed(listed, key = { _, k -> k }) { pos, k ->
                     val row = byKey[k] ?: return@itemsIndexed
                     // Its place in the playlist (what plays and what's removed), not in the search results.
                     val i = if (editing) pos else positions[k] ?: pos
-                    val remove: () -> Unit = { vm.setPlaylistEntries(id, rows.filterIndexed { j, _ -> j != i }.map { it.entry }) }
+                    val remove: () -> Unit = { vm.setPlaylistEntries(id, saved.filter { it.entry.rowId != row.entry.rowId }.map { it.entry }) }
                     PanelSlice {
                         if (!editing) {
                             val t = row.track
@@ -386,11 +412,13 @@ fun PlaylistScreen(vm: MainViewModel, id: Long, actions: TrackActions, bottomPad
         }
     }, overlay = {
         PageBar(name, titleAlpha, { if (editing) finishEditing(); onBack() }, veil) {
+            FavoriteBarActions(vm, favoritePlaylist("user:$id", name, "userplaylist/$id", summary?.let(::playlistCover)?.toString(), playlist?.source.orEmpty()), com.local.hive.mobile.data.PlaylistImages.user(id))
+            androidx.compose.foundation.layout.Spacer(Modifier.size(8.dp))
             Box {
                 Box(Modifier.size(42.dp).hiveGlass(CircleShape).clickable { menu = true }, contentAlignment = Alignment.Center) {
                     Icon(Icons.Rounded.MoreHoriz, "Playlist options", tint = c.text, modifier = Modifier.size(20.dp))
                 }
-                HiveMenu(menu, { menu = false }) {
+                HiveMenu(menu, { menu = false }, settings = true) {
                     HiveMenuItem("Play next", Icons.AutoMirrored.Rounded.PlaylistPlay) { menu = false; vm.playNextRows(shown) }
                     HiveMenuItem("Add to queue", Icons.AutoMirrored.Rounded.QueueMusic) { menu = false; vm.addToQueueRows(shown) }
                     HiveMenuItem("Add to another playlist", Icons.AutoMirrored.Rounded.PlaylistAdd) { menu = false; actions.onAddToPlaylist(shown.mapNotNull { it.track }) }
@@ -398,7 +426,13 @@ fun PlaylistScreen(vm: MainViewModel, id: Long, actions: TrackActions, bottomPad
                     HiveMenuItem("Export as M3U", Icons.Rounded.SaveAlt) { menu = false; exporter.launch("$name.m3u8") }
                     HiveMenuItem("Rename", Icons.Rounded.Edit) { menu = false; renaming = true }
                     HiveMenuItem("Choose a photo", Icons.Rounded.Image) { menu = false; photo.launch(androidx.activity.result.PickVisualMediaRequest(androidx.activity.result.contract.ActivityResultContracts.PickVisualMedia.ImageOnly)) }
-                    if (playlist?.imageUrl?.startsWith("file:") == true) HiveMenuItem("Remove photo", Icons.Rounded.HideImage) { menu = false; vm.setPlaylistPhoto(id, null) }
+                    // A picture chosen with the old picture button counts too, so it can still come off.
+                    val oldImage = com.local.hive.mobile.data.PlaylistImages.user(id) in vm.playlistImages.collectAsStateWithLifecycle().value
+                    if (playlist?.imageUrl?.startsWith("file:") == true || oldImage) HiveMenuItem("Remove photo", Icons.Rounded.HideImage) {
+                        menu = false
+                        if (playlist?.imageUrl?.startsWith("file:") == true) vm.setPlaylistPhoto(id, null)
+                        if (oldImage) vm.removePlaylistImage(com.local.hive.mobile.data.PlaylistImages.user(id))
+                    }
                     HiveMenuItem("Duplicate", Icons.Rounded.ContentCopy) { menu = false; vm.duplicatePlaylist(id) { toast("Made “$name copy”") } }
                     HiveMenuItem("Delete playlist", Icons.Rounded.Delete, destructive = true) { menu = false; deleting = true }
                 }
@@ -410,6 +444,18 @@ fun PlaylistScreen(vm: MainViewModel, id: Long, actions: TrackActions, bottomPad
         deleting = false; vm.deletePlaylist(id); onBack()
     }
 }
+
+/** How a playlist's songs are listed: its own order (which Edit rearranges and saves), or sorted. */
+enum class PlaylistSort(val label: String) { Custom("Custom order"), Title("Name"), Artist("Artist"), Album("Album") }
+
+internal fun sortedRows(rows: List<PlaylistRow>, sort: PlaylistSort): List<PlaylistRow> = when (sort) {
+    PlaylistSort.Custom -> rows
+    PlaylistSort.Title -> LibrarySort.sorted(rows) { it.title }
+    PlaylistSort.Artist -> LibrarySort.sorted(rows, compareBy { r -> LibrarySort.key(rowAlbum(r)) }) { it.artist }
+    PlaylistSort.Album -> LibrarySort.sorted(rows) { rowAlbum(it) }
+}
+
+private fun rowAlbum(r: PlaylistRow) = r.track?.album ?: r.stream?.album.orEmpty()
 
 /**
  * Recently played: library songs and streamed ones (from the PC, Apple

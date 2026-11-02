@@ -2,6 +2,7 @@ package com.local.hive.mobile.playback
 
 import android.app.PendingIntent
 import android.content.Intent
+import android.os.Build
 import androidx.media3.common.AudioAttributes
 import androidx.media3.common.C
 import androidx.media3.common.Player
@@ -95,6 +96,8 @@ class PlaybackService : MediaLibraryService() {
 
     override fun onCreate() {
         super.onCreate()
+        // The playing song's notification, on Hive's own channel (made in HiveApp, with no icon badge).
+        setMediaNotificationProvider(androidx.media3.session.DefaultMediaNotificationProvider.Builder(this).setChannelId(PLAYBACK_CHANNEL).setChannelName(com.local.hive.mobile.R.string.app_name).build())
         val app = application as HiveApp
         // Streams from Hive on the PC carry the pairing token; nothing else does.
         val dataSources = ResolvingDataSource.Factory(DefaultDataSource.Factory(this, DefaultHttpDataSource.Factory().setUserAgent("HiveMobile"))) { spec ->
@@ -125,14 +128,18 @@ class PlaybackService : MediaLibraryService() {
             .setHandleAudioBecomingNoisy(true)
             .setWakeMode(C.WAKE_MODE_LOCAL)
             .build()
-        // The crossfade's companion plays the outgoing song under the main player's audio focus.
+        // The crossfade's second player takes every other song, under the main player's audio focus.
         crossfader = Crossfader(scope, player, equaliser, app.equaliser.state, newCompanion = { processor ->
             ExoPlayer.Builder(this, renderers(processor))
                 .setMediaSourceFactory(DefaultMediaSourceFactory(dataSources))
                 .setLoadControl(quickStart())
                 .setAudioAttributes(musicAttributes, /* handleAudioFocus = */ false)
                 .build()
-        }, stopsAtSongEnd = { app.stopsAtSongEnd })
+        }, stopsAtSongEnd = { app.stopsAtSongEnd }, songGain = { tracks ->
+            val eq = app.equaliser.state.value
+            val mode = if (eq.replayGain == "smart") (if (ReplayGain.smartUsesAlbum(player)) "album" else "track") else eq.replayGain
+            ReplayGain.linear(ReplayGain.tagsOf(tracks), mode, eq.clippingGuard)
+        })
         // The queue's name in the car's and other controllers' queue view.
         player.playlistMetadata = androidx.media3.common.MediaMetadata.Builder().setTitle("Up next").build()
         player.addListener(PlayCounter(app.playRecorder, app.scrobbler, scope, player))
@@ -165,6 +172,7 @@ class PlaybackService : MediaLibraryService() {
         screenOff = object : android.content.BroadcastReceiver() {
             override fun onReceive(context: Context, intent: Intent) {
                 val locked = (getSystemService(KEYGUARD_SERVICE) as android.app.KeyguardManager).isKeyguardLocked
+                com.local.hive.mobile.LockPlayerActivity.screenChanged()
                 if (intent.action == Intent.ACTION_SCREEN_ON && !locked) return
                 if (wantsLockPlayer(player)) com.local.hive.mobile.LockPlayerActivity.showIfWanted(this@PlaybackService)
             }
@@ -295,7 +303,7 @@ class PlaybackService : MediaLibraryService() {
                         CarLog.note(this@PlaybackService, controller.packageName, "connect (controller version ${controller.controllerVersion}, trusted ${controller.isTrusted})")
                         CarLog.car(this@PlaybackService, controller.packageName, connected = true)
                     }
-                    .setAvailableSessionCommands(MediaSession.ConnectionResult.DEFAULT_SESSION_AND_LIBRARY_COMMANDS.buildUpon().add(CMD_LOVE).add(CMD_SHUFFLE).add(CMD_REPEAT).build())
+                    .setAvailableSessionCommands(MediaSession.ConnectionResult.DEFAULT_SESSION_AND_LIBRARY_COMMANDS.buildUpon().add(CMD_LOVE).add(CMD_SHUFFLE).add(CMD_REPEAT).add(CMD_SKIP).build())
                     .build()
 
             override fun onDisconnected(session: MediaSession, controller: MediaSession.ControllerInfo) =
@@ -304,10 +312,32 @@ class PlaybackService : MediaLibraryService() {
             override fun onCustomCommand(session: MediaSession, controller: MediaSession.ControllerInfo, customCommand: androidx.media3.session.SessionCommand, args: android.os.Bundle): ListenableFuture<androidx.media3.session.SessionResult> {
                 when (customCommand.customAction) {
                     CMD_LOVE.customAction -> toggleLove(player)
+                    // Hive's own skip button: what the player does is reported back, instead of the app
+                    // guessing the next song at once (it showed for a moment, then the crossfade's song).
+                    CMD_SKIP.customAction -> if (!crossfader.skip()) player.seekToNext()
                     CMD_SHUFFLE.customAction -> player.shuffleModeEnabled = !player.shuffleModeEnabled
                     CMD_REPEAT.customAction -> player.repeatMode = when (player.repeatMode) { Player.REPEAT_MODE_OFF -> Player.REPEAT_MODE_ALL; Player.REPEAT_MODE_ALL -> Player.REPEAT_MODE_ONE; else -> Player.REPEAT_MODE_OFF }
                 }
                 return com.google.common.util.concurrent.Futures.immediateFuture(androidx.media3.session.SessionResult(androidx.media3.session.SessionResult.RESULT_SUCCESS))
+            }
+
+            // Play from the car, headphones or a Bluetooth button while a radio station sits paused: Hive's
+            // music comes back (the saved queue), so a station never starts in place of it on plugging in.
+            override fun onMediaButtonEvent(session: MediaSession, controllerInfo: MediaSession.ControllerInfo, intent: Intent): Boolean {
+                @Suppress("DEPRECATION")
+                val key = (if (Build.VERSION.SDK_INT >= 33) intent.getParcelableExtra(Intent.EXTRA_KEY_EVENT, android.view.KeyEvent::class.java) else intent.getParcelableExtra(Intent.EXTRA_KEY_EVENT))
+                val play = key?.action == android.view.KeyEvent.ACTION_DOWN && key.keyCode in listOf(android.view.KeyEvent.KEYCODE_MEDIA_PLAY, android.view.KeyEvent.KEYCODE_MEDIA_PLAY_PAUSE, android.view.KeyEvent.KEYCODE_HEADSETHOOK)
+                val station = player.currentMediaItem?.mediaId?.let(PlaybackMemory::notMusic) == true
+                if (play && station && !player.isPlaying) {
+                    CarLog.note(this@PlaybackService, controllerInfo.packageName, "play with a station paused: music instead")
+                    scope.launch {
+                        val music = memory.restore()
+                        if (music != null) player.setMediaItems(music.items, music.index, music.positionMs)
+                        player.prepare(); player.play()
+                    }
+                    return true
+                }
+                return super.onMediaButtonEvent(session, controllerInfo, intent)
             }
 
             // Bluetooth play or the system's media controls after a reboot resume the saved queue.
@@ -370,6 +400,8 @@ class PlaybackService : MediaLibraryService() {
         }).setSessionActivity(open)
             .setBitmapLoader(androidx.media3.session.CacheBitmapLoader(CoverBitmapLoader(this, scope)))
             .build()
+        // A crossfade under way reaches Hive's screens, which keep showing the song fading out until it's done.
+        scope.launch { crossfader.handover.collect { h -> session?.setSessionExtras(h?.toBundle() ?: android.os.Bundle.EMPTY) } }
         // The buttons follow the song, its heart, shuffle and repeat.
         scope.launch { app.database.dao().loveStates().collect { list -> lovedIds.value = list.filter { it.loved }.mapTo(HashSet()) { it.trackId }; refreshButtons(player) } }
         scope.launch { app.streamLoves.loves.collect { refreshButtons(player) } }
@@ -392,6 +424,7 @@ class PlaybackService : MediaLibraryService() {
         const val LOCK_PLAYER_AFTER_PAUSE_MS = 30 * 60_000L
         val CMD_SHUFFLE = androidx.media3.session.SessionCommand("hive.shuffle", android.os.Bundle.EMPTY)
         val CMD_REPEAT = androidx.media3.session.SessionCommand("hive.repeat", android.os.Bundle.EMPTY)
+        val CMD_SKIP = HIVE_SKIP
     }
 
     private lateinit var libraryBrowser: LibraryBrowser
@@ -570,3 +603,9 @@ fun interface PlayRecorder {
 
 /** How long a song plays before it shows in Recently played. */
 const val HISTORY_MS = 5_000L
+
+/** Hive's own skip button (see PlayerConnection.next): the player answers with what it really did. */
+val HIVE_SKIP = androidx.media3.session.SessionCommand("hive.skip", android.os.Bundle.EMPTY)
+
+/** The playing song's notification channel (no icon badge). */
+const val PLAYBACK_CHANNEL = "hive-playback"

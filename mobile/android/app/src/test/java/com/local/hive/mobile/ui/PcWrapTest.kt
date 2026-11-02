@@ -37,4 +37,23 @@ class PcWrapTest {
         assertEquals(LocalDate.of(2026, 3, 14) to 1_800_000L, w.biggestDay)
         assertEquals(3 to 3_600_000L, w.biggestMonth)
     }
+
+    @Test fun playsHiveHasntCountedYetAddOnTopOfItsWrap() {
+        val pc = Wrap.fromPc(HiveLinkClient().parseWrap(json), emptyList()) { null }
+        fun at(day: String) = LocalDate.parse(day).atTime(12, 0).atZone(java.time.ZoneId.systemDefault()).toInstant().toEpochMilli()
+        fun play(id: Long, title: String, artist: String, album: String, day: String, ms: Long) =
+            com.local.hive.mobile.data.PlayRow(id, at(day), ms, title, artist, album, "", id, "")
+        val w = pc + listOf(
+            play(1, "Black", "Pearl Jam", "Ten", "2026-10-02", 60_000),
+            play(2, "Pink Moon", "Nick Drake", "Pink Moon", "2026-10-02", 120_000),
+        )
+        assertEquals(42, w.plays)
+        assertEquals(7_200_500L + 180_000L, w.listenedMs)
+        assertEquals(13, w.topTrack?.plays)
+        assertEquals(13, w.topArtists.first { it.name == "Pearl Jam" }.plays)
+        assertEquals(1, w.topArtists.first { it.name == "Nick Drake" }.plays)
+        assertEquals(4, w.topAlbums.first { it.name == "Pink Moon" }.plays)
+        assertEquals(3_600_500L + 180_000L, w.months[9])
+        assertEquals(w, w + emptyList())
+    }
 }

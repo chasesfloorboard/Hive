@@ -7,6 +7,17 @@ const { execFile } = require('child_process');
 const { promisify } = require('util');
 
 const execFileAsync = promisify(execFile);
+
+// A stalled MTP session (a locked phone, one mid-transfer, one that just dropped out) can leave any
+// call on its GVfs mount waiting for minutes. A synchronous call there froze Hive's whole main
+// process in a state even a force quit can't end; every check of the phone's mount is async and
+// gives up after a few seconds instead.
+const MTP_WAIT_MS = 4000;
+function giveUpAfter(promise, ms, fallback) {
+  let timer;
+  return Promise.race([promise, new Promise(resolve => { timer = setTimeout(() => resolve(fallback), ms); timer.unref?.(); })]).finally(() => clearTimeout(timer));
+}
+const mtpExists = target => giveUpAfter(fsp.access(target).then(() => true, () => false), MTP_WAIT_MS, false);
 const AUDIO_EXTENSIONS = new Set(['.mp3', '.flac', '.m4a', '.mp4', '.aac', '.ogg', '.oga', '.opus', '.wav', '.aiff', '.aif', '.alac', '.wv']);
 
 function cleanName(value, fallback = 'Unknown') {
@@ -139,7 +150,7 @@ async function attachGvfsMountPaths(devices) {
   try { gvfsEntries = await fsp.readdir(gvfsRoot, { withFileTypes: true }); } catch {}
   const candidates = gvfsEntries.filter(entry => entry.isDirectory() && entry.name.toLowerCase().startsWith('mtp:'));
   for (const device of devices) {
-    if (device.mountPath && await fsp.access(device.mountPath).then(() => true, () => false)) continue;
+    if (device.mountPath && await mtpExists(device.mountPath)) continue;
     const host = device.id.startsWith('mtp://') ? device.id.slice('mtp://'.length) : '';
     // Only fall back to "the one mounted MTP directory" when there is
     // exactly one candidate: with two or more real phones connected, picking
@@ -155,10 +166,10 @@ async function attachGvfsMountPaths(devices) {
 }
 
 async function inspectStorageRoots(device) {
-  if (!device?.mountPath || !fs.existsSync(device.mountPath)) return device;
+  if (!device?.mountPath || !await mtpExists(device.mountPath)) return device;
   let existing = Array.isArray(device.storages) ? device.storages.slice() : [];
   try {
-    const entries = await fsp.readdir(device.mountPath, { withFileTypes: true });
+    const entries = await giveUpAfter(fsp.readdir(device.mountPath, { withFileTypes: true }), MTP_WAIT_MS, []);
     let foundRealStorage = false;
     for (const entry of entries) {
       if (!entry.isDirectory() || !entry.name || entry.name === '.' || entry.name === '..') continue;
@@ -209,7 +220,7 @@ async function refreshDevices({ autoMount = true } = {}) {
   for (const device of devices) await inspectStorageRoots(device);
   return {
     supported: true,
-    devices: devices.map(device => ({ ...device, mounted: !!(device.mountPath && fs.existsSync(device.mountPath)) }))
+    devices: await Promise.all(devices.map(async device => ({ ...device, mounted: !!(device.mountPath && await mtpExists(device.mountPath)) })))
   };
 }
 
@@ -251,7 +262,7 @@ async function copyWithProgress(source, destination, onProgress) {
 }
 
 async function sendTracksToDevice(device, tracks, { onProgress } = {}) {
-  if (!device?.mountPath || !fs.existsSync(device.mountPath)) throw new Error('The Android device is not mounted. Unlock the phone, choose File Transfer (MTP), and refresh Devices.');
+  if (!device?.mountPath || !await mtpExists(device.mountPath)) throw new Error('The Android device is not mounted or not answering. Unlock the phone, choose File Transfer (MTP), and refresh Devices.');
   const items = Array.isArray(tracks) ? tracks.filter(track => track?.path && isAudioFile(track.path)) : [];
   if (!items.length) return { copied: [], skipped: [], failed: [], totalBytes: 0 };
   const copied = [], skipped = [], failed = [];
@@ -268,7 +279,7 @@ async function sendTracksToDevice(device, tracks, { onProgress } = {}) {
     const relative = path.posix.join(base || 'Music', artist, album, fileName);
     const destination = devicePath(device, relative);
     try {
-      if (fs.existsSync(destination)) {
+      if (await mtpExists(destination)) {
         const existing = await fsp.stat(destination).catch(() => null);
         if (existing?.size === stat.size) {
           skipped.push({ path: source, destination: relative, reason: 'Already on device' });

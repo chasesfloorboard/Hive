@@ -1,3 +1,11 @@
+# 2.1.1 — Safer phone sync, smooth crossfade
+
+- **Song sync, safer for new phones:** the file mirror keeps to the music folder it chose first (worked out afresh, it could change and copy a whole library a second time); a run that would copy far more than usual stops and copies nothing; files already on the phone in another folder or under another name are moved into place instead of copied both ways; a phone gets the file mirror only once Hive trusts it, and keeps to plain song sync until then.
+- **Crossfade on Hive Mobile 2.14:** two players take turns, so a song plays start to finish on one of them while the next fades in on the other. No stutter, no cut, at any crossfade length.
+- **Search in every song list on the phone:** pull Top rated, Most played, Recently added, a genre, a folder or a smart playlist down to search it, as in Favorites.
+- **The lock-screen player** lets the screen sleep as the lock screen does; **Settings** is in Now Playing's menu; short songs crossfade as much as fits instead of not at all.
+- **Tests:** an end-to-end test of a new user's first day (`scripts/e2e/fresh-user.js`): a fresh Hive, a new phone paired through its screens, song sync, the mirror, both sides' changes, and a reinstall that brings every Favorite, rating and play count back from the files.
+
 # 2.1.0 — Phone and computer one to one, play history everywhere, Hive Mobile grows up
 
 - **Song sync keeps the music folders one to one, file for file.** With "All files access" for Hive Mobile (Settings → Song sync → Keep files one to one), the phone's music folder and Hive's library folder hold the same files in the same folders. A file changed on one side (a play count, a Favorite, a tag edit, a new download) is copied to the other; when both changed, the newer wins and the phone's copy is kept on the computer. Files deleted on one side are only ever deleted on the other after you say so. Nothing is destroyed: whatever the computer replaces or deletes for the phone goes to `Hive Data/Deleted songs/From phone sync/`.

@@ -19,13 +19,14 @@ test('the bundled Monstercat Visualizer has a valid manifest using only known pe
 });
 
 test('plugin host exposes explicit lifecycle and capability surfaces without granting filesystem access', () => {
-  const source = read('app/renderer/renderer.js');
-  const block = source.slice(source.indexOf('// ---------------- Hive community plugin host API v2'));
-  assert.match(block, /lifecycle:\{ onUnload:/);
-  assert.match(block, /spectrum\.read/);
-  assert.match(block, /library\.read/);
-  assert.doesNotMatch(block, /require\(['"]fs['"]\)/);
-  assert.doesNotMatch(block, /require\(['"]child_process['"]\)/);
+  const frame = read('app/renderer/plugin-frame.js');
+  assert.match(frame, /lifecycle: \{ onUnload:/);
+  assert.match(frame, /spectrum\.read/);
+  assert.match(frame, /library\.read/);
+  for (const source of [frame, read('app/renderer/plugin-sandbox.js')]) {
+    assert.doesNotMatch(source, /require\(['"]fs['"]\)/);
+    assert.doesNotMatch(source, /require\(['"]child_process['"]\)/);
+  }
 });
 
 test('plugin enable state is persisted and disabled plugins are not executed', () => {
@@ -37,7 +38,7 @@ test('plugin enable state is persisted and disabled plugins are not executed', (
   assert.match(renderer, /setPluginEnabled/);
 });
 
-// Runs the bundled plugin the way plugins:run does (new Function('Hive', src))
+// Runs the bundled plugin the way its sandbox frame does (new Function('Hive', src))
 // against a fake host that enforces the manifest's permissions like the real one.
 async function loadVisualizer() {
   const dir = path.join(root, 'resources', 'hive-plugins', 'monstercat-visualizer');

@@ -115,7 +115,7 @@ fun TrackInfoSheet(vm: MainViewModel, track: Track, onDismiss: () -> Unit, onOpe
                                 if (bytes == null) toast("This song has no cover of its own") else vm.savePicture(bytes, "${track.displayAlbumArtist} - ${track.album.ifBlank { track.title }}", toast)
                             }
                         }
-                        HiveMenuItem("Change cover", Icons.Rounded.Image) { coverMenu = false; onDismiss(); editor.changeCover(listOf(track)) }
+                        HiveMenuItem("Edit covers", Icons.Rounded.Image) { coverMenu = false; onDismiss(); editor.changeCover(listOf(track)) }
                     }
                 }
                 Spacer(Modifier.width(14.dp))

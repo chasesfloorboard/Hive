@@ -4754,7 +4754,7 @@
     const stars = Array.from({length: 5}, (_, i) => {
       const starValue = i + 1;
       const state = rating >= starValue ? 'filled' : (rating >= starValue - 0.5 ? 'half' : 'empty');
-      return `<span class="rating-star ${state}" data-star="${starValue}" ${interactive ? '' : 'aria-hidden="true"'}>★</span>`;
+      return `<span class="rating-star ${state}" data-star="${starValue}" ${interactive ? `role="button" aria-label="${window.HiveKeyboardAccess?.starLabel(starValue) || starValue}"` : 'aria-hidden="true"'}>★</span>`;
     }).join('');
     return `<span class="rating-stars" title="Rating: ${rating % 1 ? rating.toFixed(1) : rating}/5">${stars}</span>`;
   }
@@ -6835,6 +6835,61 @@
     try { return await task; } finally { spotifyPlaylistHydrationInFlight.delete(id); }
   }
 
+  // Playlists imported from a link follow it: songs added there come in (at the end), songs taken out
+  // there go. Only songs that came from the link go (the last ones seen there, kept as sourceSongs),
+  // so a song the user added stays. Checked a minute after Hive opens and every six hours; the phone
+  // gets the change through Hive Link like any other.
+  async function followSourcePlaylist(pl) {
+    if (pl?.smart) return null;
+    if (pl?.source === 'spotify' && pl.sourceUrl) {
+      const fresh = await window.beehive.importSpotifyPlaylist(pl.sourceUrl);
+      if (!fresh?.tracks?.length) return null;
+      const uri = t => String(t?.spotifyUri || t?.path || '');
+      const seen = fresh.tracks.map(uri).filter(Boolean);
+      const before = new Set(Array.isArray(pl.sourceSongs) ? pl.sourceSongs : []);
+      const gone = fresh.likelyTruncated ? new Set() : new Set([...before].filter(u => !seen.includes(u)));
+      const kept = (pl.spotifyTracks || []).filter(t => !gone.has(uri(t)));
+      const have = new Set(kept.map(uri));
+      const added = fresh.tracks.filter(t => uri(t) && !have.has(uri(t))).map(normalizeSpotifyTrackRecord);
+      if (!added.length && kept.length === (pl.spotifyTracks || []).length && before.size === seen.length && seen.every(u => before.has(u))) return null;
+      return window.beehive.savePlaylist({ ...pl, spotifyTracks: [...kept, ...added], sourceSongs: seen });
+    }
+    if (pl?.source === 'applemusic' && /^https:\/\/music\.apple\.com\//.test(String(pl.sourceUrl || ''))) {
+      const fresh = await window.beehive.getAppleMusicCollection(pl.sourceUrl);
+      if (!fresh?.tracks?.length) return null;
+      const all = appleTracksForPlayback(fresh);
+      const seen = all.map(t => String(t.path));
+      const before = new Set(Array.isArray(pl.sourceSongs) ? pl.sourceSongs : []);
+      const gone = new Set([...before].filter(p => !seen.includes(p)));
+      // A song downloaded since takes its streamed copy's place, rather than being added again (and a
+      // playlist holding both keeps the file where the streamed copy was).
+      const kept = (pl.tracks || []).filter(p => !gone.has(String(p))).map(String);
+      const index = appleLibraryIndex();
+      for (const at of fresh.tracks) {
+        const local = at?.appleId != null && appleLocalMatch(index, at);
+        const i = local ? kept.indexOf(`ytm:apple:${at.appleId}`) : -1;
+        if (i < 0) continue;
+        if (kept.includes(String(local.path))) kept.splice(i, 1); else kept[i] = String(local.path);
+      }
+      const have = new Set(kept);
+      const added = all.filter(t => !have.has(String(t.path)));
+      const same = kept.join('\n') === (pl.tracks || []).map(String).join('\n');
+      if (!added.length && same && before.size === seen.length && seen.every(p => before.has(p))) return null;
+      const snapshots = {};
+      for (const t of added) if (!isLocalPlaybackTrack(t)) snapshots[t.path] = t;
+      return window.beehive.savePlaylist({ ...pl, tracks: [...kept, ...added.map(t => t.path)], podcastEpisodes: { ...(pl.podcastEpisodes || {}), ...snapshots }, sourceSongs: seen });
+    }
+    return null;
+  }
+  async function followSourcePlaylists() {
+    let changed = 0;
+    for (const pl of (await window.beehive.getPlaylists()) || []) {
+      try { if (await followSourcePlaylist(pl)) changed++; } catch (err) { console.warn(`[Playlists] couldn't follow “${pl?.name}”:`, err?.message || String(err)); }
+    }
+    if (changed) { playlists = await window.beehive.getPlaylists(); renderPlaylistManager(); renderNavigationEditors(); if (specialView === 'playlist') renderCurrentView(); }
+  }
+  setTimeout(() => { void followSourcePlaylists(); setInterval(() => void followSourcePlaylists(), 6 * 60 * 60 * 1000); }, 60 * 1000);
+
   // Opening a playlist prepares its first YouTube Music songs, so the
   // first click on one of them is quick too.
   const youtubeViewPrefetched = new Set();
@@ -8538,6 +8593,7 @@
     return m;
   }
   function hideContextMenu(){
+    window.HiveKeyboardAccess?.menuClosed(document.getElementById('context-menu'));
     document.getElementById('context-menu')?.classList.remove('visible');
     document.getElementById('context-menu-shield')?.classList.remove('visible');
   }
@@ -8683,7 +8739,9 @@
     m.style.top=Math.round(top)+'px';
     m.style.visibility='visible';
     shield.classList.add('visible');
+    window.HiveKeyboardAccess?.prepareMenu(m);
   }
+  window.hiveHideContextMenu = hideContextMenu;
   document.addEventListener('click',(e)=>{
     const m=document.getElementById('context-menu');
     if(m?.classList.contains('visible') && !m.contains(e.target)) hideContextMenu();
@@ -9314,13 +9372,9 @@
     // and podcast tracks (no local path in the library) keep the object they
     // were given.
     if (t?.path) t = libraryTrackByPath.get(String(t.path)) || t;
-    // Do not block menu display on Android discovery: refreshAndroidDevices()
-    // round-trips to the main process, which shells out to `gio mount -li`
-    // (up to a 5s timeout). Awaiting it here made every right-click feel
-    // unresponsive whenever no Android device was already known, which is the
-    // common case. Fire-and-forget instead, same as the Settings > Devices
-    // refresh; "Send to" simply won't list a device until the next menu open.
-    if (!androidDevices.length && window.beehive.listDevices) { void refreshAndroidDevices(); }
+    // "Send to" lists the Android devices found the last time Settings > Devices looked. A right-click
+    // never goes looking itself: that mounts and reads the phone's MTP storage, and a stalled MTP
+    // session could freeze Hive.
     const selected = selectedSongPaths.has(String(t.path || ''))
       ? orderedSelectedTracks(library.tracks)
       : [t];
@@ -11514,9 +11568,7 @@
 
   async function showAlbumContextMenu(e, album) {
     if (!album || !album.tracks?.length) return;
-    // See showTrackContextMenu: don't block menu display on the Android
-    // discovery round-trip (`gio mount -li`, up to 5s). Fire-and-forget.
-    if (!androidDevices.length && window.beehive.listDevices) void refreshAndroidDevices();
+    // As in showTrackContextMenu: the devices Settings > Devices last found, no MTP look of its own.
     // If the right-clicked album is part of an existing multi-selection,
     // operate on every selected album's tracks -- same precedent as
     // beginAlbumDrag, which already treats a selected album this way for
@@ -11808,7 +11860,16 @@
       if (first) showCoverContextMenu(e, first, album);
     });
     const list = panel.querySelector('.inline-track-list');
+    // An album on more than one disc gets a heading where each disc starts.
+    const discOf = t => mediaPositionNumber(t?.disk ?? t?.disc);
+    const manyDiscs = new Set(tracks.map(discOf)).size > 1;
     tracks.forEach((t,i) => {
+      if (manyDiscs && (i === 0 || discOf(t) !== discOf(tracks[i - 1]))) {
+        const heading = document.createElement('div');
+        heading.className = 'inline-disc-heading';
+        heading.innerHTML = `<span>${discOf(t) ? `Disc ${discOf(t)}` : 'No disc number'}</span><div class="album-year-rule"></div>`;
+        list.appendChild(heading);
+      }
       const row = document.createElement('button');
       row.className = 'inline-track-row';
       row.dataset.path = String(t.path || '');
@@ -12014,6 +12075,9 @@
     card.className = 'album-card' + (a.key === playingKey ? ' now-playing' : '') + (String(a.key) === String(highlightedAlbumKey) ? ' album-highlighted' : '') + (selectedAlbumKeys.has(String(a.key)) ? ' album-selected' : '');
     card.dataset.key = a.key;
     card.dataset.tooltip = 'Click to show tracks';
+    card.tabIndex = 0;
+    card.setAttribute('role', 'button');
+    card.setAttribute('aria-label', window.HiveKeyboardAccess?.albumLabel(a) || String(a.title || ''));
     card.innerHTML = `<div class="art-wrap">${lazyCoverImg(coverSrc(a.cover))}</div><div class="title">${escapeHtml(a.title)}</div><div class="artist">${escapeHtml(a.artist)}</div>`;
     attachCoverInteractions(card, a);
     card.addEventListener('contextmenu', e => { e.preventDefault(); showAlbumContextMenu(e, a); });
@@ -12319,7 +12383,7 @@
       if (key === 'rating') return `<span class="s-rating">${ratingStars(t)}</span>`;
       return `<span class="s-${escapeHtml(key)} dim">${escapeHtml(value)}</span>`;
     }).join('');
-    return `<div class="song-row" draggable="true" data-idx="${i}" data-path="${escapeHtml(t.path || '')}">${cells}</div>`;
+    return `<div class="song-row" draggable="true" tabindex="-1" aria-label="${escapeHtml([t.title, t.artist].filter(Boolean).join(' by '))}" data-idx="${i}" data-path="${escapeHtml(t.path || '')}">${cells}</div>`;
   }
 
   function updateVirtualSongRows(force = false) {
@@ -12409,6 +12473,8 @@
     const card = document.createElement('div');
     card.className = 'album-card artist-card';
     card.title = `Open ${a.name}`;
+    card.tabIndex = 0;
+    card.setAttribute('role', 'button');
     card.innerHTML = `<div class="art-wrap">${lazyCoverImg(coverSrc(a.cover))}</div><div class="title">${escapeHtml(a.name)}</div><div class="artist">${a.tracks.length} track${a.tracks.length===1?'':'s'}</div>`;
     card.dataset.artist = a.name;
     card.addEventListener('contextmenu', e => {
@@ -13021,7 +13087,7 @@
 
   function queueRowHtml(t, i) {
     const isCurrent = i === currentIndex;
-    return `<li class="queue-row${isCurrent ? ' playing' : ''}${selectedQueueIndices.has(i) ? ' selected' : ''}" data-idx="${i}" draggable="true">
+    return `<li class="queue-row${isCurrent ? ' playing' : ''}${selectedQueueIndices.has(i) ? ' selected' : ''}" data-idx="${i}" draggable="true" tabindex="-1">
       <img class="q-thumb" src="${coverSrc(visualCoverForTrack(t))}" alt="" loading="${isCurrent ? 'eager' : 'lazy'}" decoding="async" />
       <span class="q-dot"></span>
       <div class="q-meta">
@@ -13446,6 +13512,8 @@
     if (title) title.textContent = track.title || '';
     if (artist) artist.textContent = track.artist || '';
     if (duration) duration.textContent = fmtTime(track.duration);
+    row.tabIndex = -1;
+    row.setAttribute('aria-label', [track.title, track.artist].filter(Boolean).join(' by '));
     row.__queueAssignedIndex = index;
   }
 
@@ -15359,6 +15427,7 @@
   // ---------------- library loading / scanning ----------------
   function applyLibrary(lib, options = {}) {
     library = lib || library || { tracks: [] };
+    queuePluginLibraryUpdate();
     applyStreamLovesToFiles();
     libraryTrackByPath = new Map();
     libraryTrackByNormalizedPath = new Map();
@@ -15461,6 +15530,7 @@
   // Chromium between batches instead of monopolizing the renderer for ~1.5s.
   async function applyLibraryProgressive(lib, options = {}) {
     library = lib || { tracks: [] };
+    queuePluginLibraryUpdate();
     applyStreamLovesToFiles();
     const tracks = library.tracks || [];
     libraryTrackByPath = new Map();
@@ -19729,6 +19799,15 @@
       }
     });
   })();
+  // A playlist made, changed or deleted on the phone: the list and an open playlist show it.
+  window.beehive.onPlaylistsChanged?.(async () => {
+    try {
+      playlists = await window.beehive.getPlaylists();
+      renderPlaylistManager();
+      renderNavigationEditors();
+      if (specialView === 'playlist') renderCurrentView();
+    } catch (err) { console.warn('Playlists reload failed:', err); }
+  });
   // Settings → Appearance: the shuffle button left of the theme list picks
   // a different theme at random, applied through the list's own change path.
   (function initThemeShuffleButton(){
@@ -20131,65 +20210,88 @@
   document.getElementById('theme-export-btn')?.addEventListener('click',async()=>{ try { const css=customCssRawSource||customThemeStyle?.textContent||''; const r=await window.beehive.exportTheme({css,name:'Hive Theme'}); if(!r?.canceled) themedAlert?.('Theme exported.','Theme'); } catch(err){ themedAlert?.(err?.message||'Could not export theme.','Theme export'); } });
 
   // ---------------- Hive community plugin host API v2 ----------------
-  const hivePluginState = { plugins:new Map(), panels:new Map(), listeners:new Map() };
-  function pluginEmit(name, payload) {
-    const list = hivePluginState.listeners.get(name) || [];
-    for (const fn of [...list]) { try { fn(payload); } catch (err) { console.warn('[Hive Plugin]', name, err); } }
+  // Plugins run sandboxed, each in its own frame with no origin (plugin-sandbox.js is Hive's side,
+  // plugin-frame.js the plugin's): no access to this window, window.beehive or the network. The
+  // frame gets what the plugin's permissions allow (library.read, player.read, spectrum.read) and
+  // asks for the rest (player.control, media.artwork, settings, toasts), which is checked here.
+  // Its pages (ui.view, ui.sandbox) are drawn in the frame, laid over the spot they belong in.
+  var hivePluginState = { plugins:new Map(), panels:new Map() };
+  const pluginPlayerState = () => { const t=currentQueue[currentIndex]||null; return {track:t,position:Number(audioEngine.currentTime)||0,duration:Number(audioEngine.duration)||Number(t?.duration)||0,paused:!!audioEngine.paused}; };
+  const pluginCoverUrl = track => { const visual=track?visualCoverForTrack(track):null; return visual?coverSrc(visual):null; };
+  const pluginViewNav = (plugin, viewId) => `${PLUGIN_VIEW_NAV_PREFIX}${plugin.id}:${viewId}`;
+  var pluginSandbox = window.HivePluginSandbox?.createPluginSandbox({ hooks: {
+    snapshot: (plugin, { tracks = true } = {}) => {
+      const can = permission => (plugin.permissions || []).includes(permission);
+      const t = currentQueue[currentIndex] || null;
+      return {
+        current: can('player.read') ? t : null,
+        cover: can('player.read') && t ? pluginCoverUrl(t) : null,
+        state: can('player.read') ? pluginPlayerState() : null,
+        spectrum: can('spectrum.read') ? nowPlayingSpectrum.slice() : [],
+        tracks: tracks && can('library.read') ? (library.tracks || []) : undefined
+      };
+    },
+    // Only requests the plugin has the permission for reach this (plugin-sandbox.js checks).
+    call: async (plugin, method, args) => {
+      switch (method) {
+        case 'player.play': {
+          const track = args[0]?.path ? libraryTrackByPath.get(String(args[0].path)) : null;
+          if (!track) throw new Error('That song is not in the library.');
+          await playQueue([track], 0, false); return true;
+        }
+        case 'player.next': await goNext(); return true;
+        case 'player.previous': await goPrev(); return true;
+        case 'media.artistImage': try { return await window.beehive.artistImage?.(String(args[0] || '')) || null; } catch { return null; }
+        case 'settings.load': return await window.beehive.getPluginSettings(plugin.id);
+        case 'settings.save': { const value = await window.beehive.setPluginSettings(plugin.id, args[0] || {}); pluginEmit('settings', value, plugin.id); return value; }
+        case 'ui.toast': themedAlert?.(String(args[0] ?? ''), String(args[1] || 'Hive')); return true;
+      }
+      throw new Error(`Unknown request: ${method}`);
+    },
+    registerView: (plugin, view) => {
+      const nav = pluginViewNav(plugin, view.id);
+      pluginViewEntries.set(nav, { id:nav, label:String(view.title||plugin.name||view.id), description:String(view.description||plugin.description||''), icon:String(view.icon||''), pluginId:plugin.id, viewId:view.id,
+        mount:(host, context) => mountSandboxedPage(plugin.id, 'view', view.id, host, context),
+        unmount:host => { host._hivePluginPage?.unmount(); delete host._hivePluginPage; } });
+      refreshPluginViewNavigation();
+    },
+    unregisterView: (plugin, viewId) => {
+      const nav = pluginViewNav(plugin, viewId);
+      for (const [tabId, mounted] of mountedPluginViews) if (mounted.view.id === nav) unmountPluginView(tabId);
+      pluginViewEntries.delete(nav); refreshPluginViewNavigation();
+    },
+    registerPanel: (plugin, panel) => {
+      hivePluginState.panels.set(`${plugin.id}:${panel.id}`, { id:panel.id, order:panel.order, pluginId:plugin.id, mount:host => mountSandboxedPage(plugin.id, 'panel', panel.id, host, null) });
+      renderHivePluginPanels();
+    },
+    unregisterPanel: (plugin, panelId) => { hivePluginState.panels.delete(`${plugin.id}:${panelId}`); renderHivePluginPanels(); },
+    stopped: plugin => {
+      for (const nav of [...pluginViewEntries.keys()]) if (pluginViewEntries.get(nav)?.pluginId === plugin.id) {
+        for (const [tabId, mounted] of mountedPluginViews) if (mounted.view.id === nav) unmountPluginView(tabId);
+        pluginViewEntries.delete(nav);
+      }
+      for (const key of [...hivePluginState.panels.keys()]) if (hivePluginState.panels.get(key)?.pluginId === plugin.id) hivePluginState.panels.delete(key);
+      hivePluginState.plugins.delete(plugin.id);
+      refreshPluginViewNavigation(); renderHivePluginPanels();
+    },
+    log: (id, message) => console.warn('[Hive Plugin]', id, message)
+  } });
+  function mountSandboxedPage(pluginId, kind, id, host, context) {
+    const page = pluginSandbox?.mount(pluginId, kind, id, host);
+    if (!page) { host.textContent = 'This plugin is not running. Turn it back on in Settings → Plugins.'; return; }
+    host._hivePluginPage = page;
+    context?.onVisibilityChange?.(visible => page.setVisible(visible));
   }
-  function pluginPermission(plugin, permission) {
-    return !permission || plugin.permissions?.includes(permission);
+  // Sends an event to the plugins allowed to see it; `forPlugin` keeps it to one plugin.
+  function pluginEmit(name, payload, forPlugin = null) {
+    if (!pluginSandbox) return;
+    pluginSandbox.emit(name, payload, name === 'track-change' ? { cover: payload ? pluginCoverUrl(payload) : null } : {}, forPlugin);
   }
-  function pluginApiFor(plugin) {
-    const id = plugin.id;
-    const requirePermission = permission => { if (!pluginPermission(plugin, permission)) throw new Error(`Plugin ${id} lacks permission: ${permission}`); };
-    const settingsListeners = [];
-    const api = {
-      version:2, id, name:plugin.name,
-      library:{ getTracks:()=>{ requirePermission('library.read'); return library.tracks.slice(); } },
-      player:{
-        getCurrent:()=>{ requirePermission('player.read'); return currentQueue[currentIndex]||null; },
-        getState:()=>{ requirePermission('player.read'); const t=currentQueue[currentIndex]||null; return {track:t,position:Number(audioEngine.currentTime)||0,duration:Number(audioEngine.duration)||Number(t?.duration)||0,paused:!!audioEngine.paused}; },
-        // An image URL for the track's artwork (the current track by default).
-        getCoverUrl:(track)=>{ requirePermission('player.read'); const t=track||currentQueue[currentIndex]; const visual=t?visualCoverForTrack(t):null; return visual?coverSrc(visual):null; },
-        play:track=>{ requirePermission('player.control'); return playQueue([track],0,false); },
-        next:()=>{ requirePermission('player.control'); return goNext(); }, previous:()=>{ requirePermission('player.control'); return goPrev(); }
-      },
-      events:{
-        on:(name,fn)=>{ if(typeof fn!=='function') return ()=>{}; const allowed=['track-change','playback','spectrum']; if(!allowed.includes(name)) throw new Error(`Unsupported Hive event: ${name}`); if(name==='spectrum') requirePermission('spectrum.read'); if(name!=='spectrum') requirePermission('player.read'); const list=hivePluginState.listeners.get(name)||[]; list.push(fn); hivePluginState.listeners.set(name,list); return ()=>{const i=list.indexOf(fn);if(i>=0)list.splice(i,1);}; }
-      },
-      audio:{
-        getSpectrum:()=>{ requirePermission('spectrum.read'); return nowPlayingSpectrum.slice(); },
-        onSpectrum:fn=>{ requirePermission('spectrum.read'); if(typeof fn!=='function') return ()=>{}; const list=hivePluginState.listeners.get('spectrum')||[]; list.push(fn); hivePluginState.listeners.set('spectrum',list); return ()=>{const i=list.indexOf(fn);if(i>=0)list.splice(i,1);}; }
-      },
-      media:{
-        // A photo of the artist (looked up online once, then cached), or null.
-        getArtistImage:async(artist)=>{ requirePermission('media.artwork'); try { return await window.beehive.artistImage?.(String(artist||'')) || null; } catch { return null; } }
-      },
-      settings:{
-        load:async()=>{ requirePermission('settings'); return await window.beehive.getPluginSettings(id); },
-        save:async(next)=>{ requirePermission('settings'); const value=await window.beehive.setPluginSettings(id,next||{}); pluginEmit(`settings:${id}`,value); return value; },
-        onChange:fn=>{ requirePermission('settings'); if(typeof fn!=='function') return ()=>{}; settingsListeners.push(fn); const list=hivePluginState.listeners.get(`settings:${id}`)||[]; list.push(fn); hivePluginState.listeners.set(`settings:${id}`,list); return ()=>{const i=list.indexOf(fn);if(i>=0)list.splice(i,1);}; }
-      },
-      ui:{
-        toast:(message,title='Hive')=>themedAlert?.(String(message),String(title)),
-        addStyle:css=>{const st=document.createElement('style');st.dataset.hivePlugin=id;st.textContent=String(css||'');document.head.appendChild(st);return()=>st.remove();},
-        // A left-sidebar destination with its own page: mount(host, context)
-        // fills it, unmount(host) cleans up, context.onVisibilityChange(fn)
-        // reports when its tab is hidden or shown.
-        registerView:definition=>{
-          requirePermission('ui.view');
-          const viewId=String(definition?.id||'');
-          if(!/^[a-zA-Z0-9._-]{1,60}$/.test(viewId) || typeof definition.mount!=='function') throw new Error('registerView requires an id (letters, numbers, . _ -) and mount(host).');
-          const nav=`${PLUGIN_VIEW_NAV_PREFIX}${id}:${viewId}`;
-          pluginViewEntries.set(nav,{ id:nav, label:String(definition.title||plugin.name||viewId), description:String(definition.description||plugin.description||''), icon:String(definition.icon||''), pluginId:id, viewId, mount:definition.mount, unmount:definition.unmount });
-          refreshPluginViewNavigation();
-          return ()=>{ for(const [tabId,mounted] of mountedPluginViews) if(mounted.view.id===nav) unmountPluginView(tabId); pluginViewEntries.delete(nav); refreshPluginViewNavigation(); };
-        },
-        registerSandboxPanel:definition=>{ requirePermission('ui.sandbox'); if(!definition?.id || typeof definition.mount!=='function') throw new Error('registerSandboxPanel requires id and mount(host).'); const panel={...definition,pluginId:id}; hivePluginState.panels.set(`${id}:${definition.id}`,panel); renderHivePluginPanels(); return ()=>{hivePluginState.panels.delete(`${id}:${definition.id}`);renderHivePluginPanels();}; }
-      },
-      lifecycle:{ onUnload:fn=>{ if(typeof fn==='function') plugin._unload.push(fn); return ()=>{const i=plugin._unload.indexOf(fn);if(i>=0)plugin._unload.splice(i,1);}; } }
-    };
-    return api;
+  // Plugins that read the library get it again when it changes (at most every 2 s).
+  var pluginLibraryTimer = 0;
+  function queuePluginLibraryUpdate() {
+    clearTimeout(pluginLibraryTimer);
+    pluginLibraryTimer = setTimeout(() => pluginEmit('library', library.tracks || []), 2000);
   }
   function renderHivePluginPanels() {
     const host=document.getElementById('hive-plugin-sandbox-panels'); if(!host) return;
@@ -20259,7 +20361,7 @@
     const actions=document.createElement('div'); actions.className='settings-actions';
     const save=document.createElement('button'); save.className='sidebar-add settings-primary-action'; save.type='button'; save.textContent='Save settings';
     const cancel=document.createElement('button'); cancel.className='sidebar-add'; cancel.type='button'; cancel.textContent='Close'; cancel.addEventListener('click',closePluginSettingsModal);
-    save.addEventListener('click',async()=>{ save.disabled=true; try { await window.beehive.setPluginSettings(plugin.id,draft); pluginEmit(`settings:${plugin.id}`,draft); closePluginSettingsModal(); await loadHiveExtensions(); themedAlert?.(`${plugin.name} settings saved.`,'Plugin settings'); } catch(err){ themedAlert?.(err?.message||'Could not save plugin settings.','Plugin settings'); } finally { save.disabled=false; } });
+    save.addEventListener('click',async()=>{ save.disabled=true; try { await window.beehive.setPluginSettings(plugin.id,draft); pluginEmit('settings',draft,plugin.id); closePluginSettingsModal(); await loadHiveExtensions(); themedAlert?.(`${plugin.name} settings saved.`,'Plugin settings'); } catch(err){ themedAlert?.(err?.message||'Could not save plugin settings.','Plugin settings'); } finally { save.disabled=false; } });
     actions.append(save,cancel); body.appendChild(actions);
     openModal(modal);
   }
@@ -20279,33 +20381,21 @@
     }
   }
 
-  window.HivePlugin = window.HivePlugin || {
-    version:2, id:'', name:'',
-    library:{ getTracks:()=>library.tracks.slice() },
-    player:{ getCurrent:()=>currentQueue[currentIndex]||null, play:(track)=>playQueue([track],0,false), next:()=>goNext(), previous:()=>goPrev() },
-    ui:{ toast:(message,title='Hive')=>themedAlert?.(String(message),String(title)), addStyle:(css)=>{const st=document.createElement('style');st.dataset.hivePlugin=window.HivePlugin._activePlugin?.id||'plugin';st.textContent=String(css||'');document.head.appendChild(st);} }
-  };
-
   async function loadHiveExtensions() {
     const host=document.getElementById('plugin-list'); if(!window.beehive.listPlugins) return;
     try {
       pluginExtensionsLoading=true;
       for(const tabId of [...mountedPluginViews.keys()]) unmountPluginView(tabId);
-      for(const plugin of hivePluginState.plugins.values()) { for(const fn of plugin._unload||[]) { try { await fn(); } catch {} } }
-      hivePluginState.plugins.clear(); hivePluginState.panels.clear(); hivePluginState.listeners.clear(); pluginViewEntries.clear();
-      document.querySelectorAll('style[data-hive-plugin]').forEach(el=>el.remove());
+      await pluginSandbox?.unloadAll();
+      hivePluginState.plugins.clear(); hivePluginState.panels.clear(); pluginViewEntries.clear();
       const result=await window.beehive.listPlugins(); const plugins=Array.isArray(result?.plugins)?result.plugins:[];
       renderInstalledPlugins(plugins);
       for(const plugin of plugins){
         if(!plugin.enabled) continue;
-        if(plugin.css){ const style=document.createElement('style'); style.dataset.hivePlugin=plugin.id; style.textContent=plugin.css; document.head.appendChild(style); }
-        if(plugin.js){
-          try {
-            const pluginRuntime={...plugin,_unload:[]}; hivePluginState.plugins.set(plugin.id,pluginRuntime);
-            window.HivePlugin=pluginApiFor(pluginRuntime);
-            await window.beehive.runPlugin?.(plugin.js, plugin.id);
-          } catch(err){ console.warn('[Hive Plugin]',plugin.id,err); }
-        }
+        if(!plugin.js) continue;
+        hivePluginState.plugins.set(plugin.id,plugin);
+        // The plugin's stylesheet goes into its own frame with its code: that is where its pages are drawn.
+        if(pluginSandbox) await pluginSandbox.load(plugin);
       }
       renderHivePluginPanels();
     } catch(err){ if(host) host.textContent=err?.message||'Could not load extensions.'; }
@@ -21710,6 +21800,7 @@ Open Yearly Wrap to browse the imported years.`, 'Yearly Wrap');
   startupMark('RENDERER BOOTSTRAP COMPLETE');
   initialLoad();
   document.addEventListener('keydown', handleSelectionKeyboard, true);
+  window.HiveKeyboardAccess?.install(document);
   window.addEventListener('keydown', handleTrackTypeaheadKeydown);
 
   // Rich-label effects (Pulse/Glow/Rainbow) are decoration, but any running CSS

@@ -8,7 +8,7 @@
      boundary (sandboxed iframe/webview with its own CSP) exists yet for
      plugins -- see docs/ai/HIVE-METADATA-BACKEND-CANON.md-style canon note
      to add before 1.0: build that isolation and remove this app-wide grant. -->
-<meta http-equiv="Content-Security-Policy" content="default-src 'self' mbfile: mbcover: data:; img-src 'self' mbcover: data: https:; media-src 'self' mbfile: https: http:; connect-src 'self' https:; style-src 'self' 'unsafe-inline' https:; script-src 'self' 'unsafe-eval';">
+<meta http-equiv="Content-Security-Policy" content="default-src 'self' mbfile: mbcover: data:; img-src 'self' mbcover: data: https:; media-src 'self' mbfile: https: http:; connect-src 'self' https:; style-src 'self' 'unsafe-inline' https:; script-src 'self'; frame-src 'self';">
 <title>Hive</title>
 <link rel="stylesheet" href="styles.css" />
 </head>
@@ -138,7 +138,7 @@
         </div>
 
         <div id="albums-grid" class="grid"></div>
-        <div id="songs-table" class="hidden"></div>
+        <div id="songs-table" class="hidden" tabindex="0" data-row-list aria-label="Songs"></div>
         <div id="artists-grid" class="grid hidden"></div>
         <div id="content-tools" class="hidden"></div>
 
@@ -149,7 +149,7 @@
       <!-- ============ RIGHT QUEUE PANEL ============ -->
       <aside id="queue-panel" class="glass">
         <div class="queue-header">Playing Tracks</div>
-        <ol id="queue-list"></ol>
+        <ol id="queue-list" tabindex="0" data-row-list aria-label="Queue"></ol>
         <div id="queue-art-resize" class="queue-art-resize" title="Drag to resize queue and cover art"></div>
         <div id="now-playing-card" class="now-playing-card hidden">
           <div class="np-meta">
@@ -1311,6 +1311,9 @@
   <script src="../main/file-organiser.js"></script>
   <script src="colorExtract.js"></script>
   <script src="drag-out.js"></script>
+  <script src="keyboard-access.js"></script>
+  <script src="plugin-frame.js"></script>
+  <script src="plugin-sandbox.js"></script>
   <script src="renderer.js"></script>
   <script src="hive-link-settings.js"></script>
   <script src="soulseek-downloads.js"></script>

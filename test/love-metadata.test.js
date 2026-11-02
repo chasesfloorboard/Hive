@@ -194,7 +194,7 @@ test('the now-playing Love read-back waits for an in-flight write before trustin
 // same unresolved way and had the identical bug.
 test('the track context menu and playbar Love button always resolve to the authoritative library record, not a possibly-stale queue object', () => {
   const menuStart = renderer.indexOf('async function showTrackContextMenu(x,y,t){');
-  const menuEnd = renderer.indexOf('// Do not block menu display on Android discovery', menuStart);
+  const menuEnd = renderer.indexOf('// "Send to" lists the Android devices', menuStart);
   assert.ok(menuStart >= 0 && menuEnd > menuStart);
   const menuBlock = renderer.slice(menuStart, menuEnd);
   assert.match(menuBlock, /if \(t\?\.path\) t = libraryTrackByPath\.get\(String\(t\.path\)\) \|\| t;/);

@@ -42,6 +42,8 @@ import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
+import androidx.compose.ui.draw.blur
+import androidx.compose.ui.graphics.graphicsLayer
 import androidx.compose.ui.draw.drawWithContent
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.asAndroidBitmap
@@ -92,6 +94,37 @@ data class Wrap(
 ) {
     /** [cover]: a picture address from the PC, for albums this phone doesn't have. */
     data class Ranked(val name: String, val sub: String, val plays: Int, val albumId: Long, val cover: String? = null)
+
+    /**
+     * This Wrap with more plays added: plays Hive on the PC hasn't counted yet, on top of its Wrap.
+     * Totals, months and the top lists add up; how many different artists and albums, and the
+     * longest streak, stay as counted until Hive counts these plays too.
+     */
+    operator fun plus(rows: List<PlayRow>): Wrap {
+        if (rows.isEmpty()) return this
+        if (plays == 0) return from(year, rows).copy(fromPc = fromPc)
+        val more = from(year, rows)
+        fun fold(s: String) = LibrarySort.fold(s)
+        fun merge(mine: List<Ranked>, theirs: List<Ranked>, key: (Ranked) -> String): List<Ranked> {
+            val all = LinkedHashMap<String, Ranked>()
+            (mine + theirs).forEach { r -> all.merge(key(r), r) { a, b -> a.copy(plays = a.plays + b.plays, albumId = a.albumId.takeIf { it > 0 } ?: b.albumId, cover = a.cover ?: b.cover) } }
+            return all.values.sortedByDescending { it.plays }.take(5)
+        }
+        val monthsNow = months.zip(more.months) { a, b -> a + b }
+        // The top song: the PC's top one with these plays added, unless one of these now has more.
+        val trackKey = { r: Ranked -> fold(r.name) + "\u0000" + fold(r.sub) }
+        val top = topTrack?.let { t -> t.copy(plays = t.plays + rows.count { trackKey(Ranked(it.title, it.artist, 0, 0)) == trackKey(t) }) }
+        val newTop = more.topTrack?.takeIf { top == null || (trackKey(it) != trackKey(top) && it.plays > top.plays) }
+        val day = more.biggestDay?.let { (d, ms) -> if (biggestDay == null) d to ms else if (biggestDay.first == d) d to biggestDay.second + ms else if (ms > biggestDay.second) d to ms else biggestDay } ?: biggestDay
+        return copy(
+            listenedMs = listenedMs + more.listenedMs, plays = plays + more.plays,
+            topTrack = newTop ?: top,
+            topArtists = merge(topArtists, more.topArtists) { fold(it.name) },
+            topAlbums = merge(topAlbums, more.topAlbums) { fold(it.name) + "\u0000" + fold(it.sub) },
+            months = monthsNow, biggestDay = day,
+            biggestMonth = monthsNow.withIndex().maxByOrNull { it.value }?.takeIf { it.value > 0 }?.let { (it.index + 1) to it.value },
+        )
+    }
 
     companion object {
         /**
@@ -169,9 +202,10 @@ private fun hours(ms: Long): String {
 fun YearlyWrapScreen(vm: MainViewModel, bottomPadding: Dp, onBack: () -> Unit) {
     val c = Hive.colors
     val context = LocalContext.current
-    val years by produceState<List<Int>?>(null) { value = vm.wrapYears() }
+    val years by produceState<List<Int>?>(null) { vm.wrapYears().collect { value = it } }
     var year by remember { mutableIntStateOf(java.time.Year.now().value) }
-    val wrap by produceState<Wrap?>(null, year) { value = null; value = vm.wrap(year) }
+    // As last counted straight away, then brought up to date with the PC when it can be reached.
+    val wrap by produceState<Wrap?>(null, year) { value = null; vm.wrap(year).collect { value = it } }
     val pager = rememberPagerState { 7 }
     val layer = rememberGraphicsLayer()
     val scope = rememberCoroutineScope()
@@ -185,43 +219,83 @@ fun YearlyWrapScreen(vm: MainViewModel, bottomPadding: Dp, onBack: () -> Unit) {
                 EmptyState("Not enough listening yet", "Hive builds your Wrap from the songs you play. Play some music and come back.")
             }
             else -> HorizontalPager(pager, Modifier.fillMaxSize().drawWithContent { layer.record { this@drawWithContent.drawContent() }; drawLayer(layer) }) { page ->
-                // A story slide: the words start a third of the way down and fill the width, as a phone holds them.
-                Column(
-                    Modifier.fillMaxSize().statusBarsPadding().navigationBarsPadding()
-                        .pointerInput(Unit) {
-                            detectTapGestures { at -> scope.launch { pager.animateScrollToPage((pager.currentPage + if (at.x > size.width / 3) 1 else -1).coerceIn(0, 6)) } }
-                        }
-                        .padding(start = 24.dp, end = 24.dp, top = 84.dp, bottom = bottomPadding + 28.dp),
-                ) {
-                    Spacer(Modifier.weight(0.35f))
-                    when (page) {
-                        0 -> { Eyebrow("Hive · Yearly Wrap"); Big("${w.year}"); Title("Your year in music."); Sub(if (w.fromPc) "Everything you played, in Hive on your PC and on this phone." else "A look at what you actually listened to on this phone, kept on this phone.") }
-                        1 -> { Eyebrow("Listening time"); Big(hours(w.listenedMs)); Sub("spent with music"); Cards(listOf("Plays" to "%,d".format(w.plays), "Artists" to "%,d".format(w.artists), "Albums" to "%,d".format(w.albums), "Longest streak" to countOf(w.longestStreak, "day"))) }
-                        2 -> w.topTrack?.let { t ->
-                            Artwork(art(t), Modifier.fillMaxWidth(0.8f).aspectRatio(1f), HiveShape.art, Icons.Rounded.LibraryMusic, elevation = 30.dp)
-                            Spacer(Modifier.height(24.dp)); Eyebrow("Your top track"); Title(t.name); Sub(t.sub); Cards(listOf("Played" to countOf(t.plays, "time")))
-                        }
-                        3 -> w.topArtists.firstOrNull()?.let { a ->
-                            val photo by produceState<String?>(null, a.name) { value = vm.artistImage(a.name) }
-                            Artwork(photo ?: art(a), Modifier.fillMaxWidth(0.72f).aspectRatio(1f), CircleShape, Icons.Rounded.LibraryMusic, elevation = 30.dp)
-                            Spacer(Modifier.height(26.dp)); Eyebrow("The artist who shaped your year"); Title(a.name); Cards(listOf("Plays" to "%,d".format(a.plays), "Of your year" to "${(a.plays * 100 / w.plays.coerceAtLeast(1))}%"))
-                        }
-                        4 -> { Eyebrow("The records you returned to"); Title("Your top albums."); Spacer(Modifier.height(14.dp)); w.topAlbums.forEachIndexed { i, a -> Rank(i + 1, a) } }
-                        5 -> {
-                            Eyebrow("When you listened"); Title("Your year, by month.")
-                            Months(w.months)
-                            Cards(listOf(
-                                "Biggest day" to (w.biggestDay?.first?.format(DateTimeFormatter.ofPattern("MMM d")) ?: "—"),
-                                "Biggest month" to (w.biggestMonth?.first?.let { java.time.Month.of(it).getDisplayName(TextStyle.FULL, Locale.getDefault()) } ?: "—"),
-                            ))
-                        }
-                        else -> {
-                            Eyebrow("That's your year"); Title("The music stays with you.")
-                            Cards(listOf("Top artist" to (w.topArtists.firstOrNull()?.name ?: "—"), "Top track" to (w.topTrack?.name ?: "—"), "Top album" to (w.topAlbums.firstOrNull()?.name ?: "—"), "Top genre" to (w.topGenre ?: "—")))
-                            Sub(if (w.fromPc) "Counted by Hive on your PC, with this phone's plays in it." else "Hive keeps this on your phone. No account is needed.")
+                val month = { m: Int -> java.time.Month.of(m).getDisplayName(TextStyle.FULL, Locale.getDefault()) }
+                // Each slide sits on its subject's cover, blurred to colour, as a phone story does.
+                val backdrop: Any? = when (page) {
+                    0, 4, 6 -> w.topAlbums.firstOrNull()?.let { r -> art(r) }
+                    2 -> w.topTrack?.let { r -> art(r) }
+                    3 -> w.topArtists.firstOrNull()?.let { r -> art(r) }
+                    else -> null
+                }
+                Box(Modifier.fillMaxSize()) {
+                    if (backdrop != null) SlideBackdrop(backdrop)
+                    // The words sit low, where a thumb holds the phone; taps on the left go back, elsewhere on.
+                    Column(
+                        Modifier.fillMaxSize().statusBarsPadding().navigationBarsPadding()
+                            .pointerInput(Unit) {
+                                detectTapGestures { at -> scope.launch { pager.animateScrollToPage((pager.currentPage + if (at.x > size.width / 3) 1 else -1).coerceIn(0, 6)) } }
+                            }
+                            .padding(start = 28.dp, end = 28.dp, top = 92.dp, bottom = bottomPadding + 40.dp),
+                    ) {
+                        Spacer(Modifier.weight(1f))
+                        when (page) {
+                            0 -> {
+                                Eyebrow("Yearly Wrap")
+                                Giant("${w.year}")
+                                Title("Your year in music.")
+                                Sub(if (w.fromPc) "Everything you played, in Hive on your PC and on this phone." else "What you actually listened to on this phone, kept on this phone.")
+                            }
+                            1 -> {
+                                val h = w.listenedMs / 3_600_000
+                                Eyebrow("Listening time")
+                                Giant(if (h >= 2) "%,d".format(h) else "${w.listenedMs / 60_000}")
+                                Title(if (h >= 2) "hours with music." else "minutes with music.")
+                                Stats(listOf("%,d".format(w.plays) to "plays", "%,d".format(w.artists) to "artists", "%,d".format(w.albums) to "albums", countOf(w.longestStreak, "day") to "longest streak"))
+                            }
+                            2 -> w.topTrack?.let { t ->
+                                Artwork(art(t), Modifier.fillMaxWidth(0.78f).aspectRatio(1f).align(Alignment.CenterHorizontally), HiveShape.art, Icons.Rounded.LibraryMusic, elevation = 36.dp)
+                                Spacer(Modifier.height(32.dp))
+                                Eyebrow("Your top track")
+                                Title(t.name, big = true)
+                                Sub(t.sub)
+                                Stats(listOf("%,d".format(t.plays) to "plays"))
+                            }
+                            3 -> w.topArtists.firstOrNull()?.let { a ->
+                                val photo = rememberArtistPhoto(vm, a.name)
+                                Artwork(photo ?: art(a), Modifier.fillMaxWidth(0.66f).aspectRatio(1f).align(Alignment.CenterHorizontally), CircleShape, Icons.Rounded.LibraryMusic, elevation = 36.dp)
+                                Spacer(Modifier.height(32.dp))
+                                Eyebrow("The artist of your year")
+                                Title(a.name, big = true)
+                                Stats(listOf("%,d".format(a.plays) to "plays", "${(a.plays * 100 / w.plays.coerceAtLeast(1))}%" to "of your listening"))
+                            }
+                            4 -> {
+                                Eyebrow("The records you returned to")
+                                Title("Your top albums.")
+                                Spacer(Modifier.height(18.dp))
+                                w.topAlbums.forEachIndexed { i, a -> Rank(i + 1, a) }
+                            }
+                            5 -> {
+                                Eyebrow("When you listened")
+                                Title(w.biggestMonth?.first?.let { "${month(it)} was your month." } ?: "Your year, by month.")
+                                Months(w.months)
+                                Stats(listOf(
+                                    (w.biggestDay?.first?.format(DateTimeFormatter.ofPattern("MMM d")) ?: "—") to "biggest day",
+                                    (w.biggestDay?.second?.let { hours(it) } ?: "—") to "that day",
+                                ))
+                            }
+                            else -> {
+                                Eyebrow("That's your year")
+                                Title("The music stays with you.")
+                                Spacer(Modifier.height(18.dp))
+                                Summary("Top artist", w.topArtists.firstOrNull()?.name, w.topArtists.firstOrNull()?.let { r -> art(r) }, CircleShape)
+                                Summary("Top track", w.topTrack?.name, w.topTrack?.let { r -> art(r) }, HiveShape.thumb)
+                                Summary("Top album", w.topAlbums.firstOrNull()?.name, w.topAlbums.firstOrNull()?.let { r -> art(r) }, HiveShape.thumb)
+                                Summary("Top genre", w.topGenre, null, HiveShape.thumb)
+                                Spacer(Modifier.height(14.dp))
+                                Sub(if (w.fromPc) "Counted by Hive on your PC, with this phone's plays in it." else "Kept on your phone. No account needed.")
+                            }
                         }
                     }
-                    Spacer(Modifier.weight(0.65f))
                 }
             }
         }
@@ -251,27 +325,51 @@ fun YearlyWrapScreen(vm: MainViewModel, bottomPadding: Dp, onBack: () -> Unit) {
     }
 }
 
-@Composable private fun Eyebrow(text: String) = Text(text.uppercase(), style = HiveText.label.copy(letterSpacing = 1.6.sp), color = Hive.colors.accent)
-@Composable private fun Big(text: String) = Text(text, style = HiveText.heroTitle.copy(fontSize = 64.sp, lineHeight = 68.sp, fontWeight = FontWeight.Black), color = Hive.colors.text, modifier = Modifier.padding(top = 6.dp))
-@Composable private fun Title(text: String) = Text(text, style = HiveText.heroTitle.copy(fontSize = 34.sp, lineHeight = 38.sp), color = Hive.colors.text, maxLines = 3, overflow = TextOverflow.Ellipsis, modifier = Modifier.padding(top = 8.dp))
-@Composable private fun Sub(text: String) = Text(text, style = HiveText.body.copy(fontSize = 16.sp), color = Hive.colors.textDim, modifier = Modifier.padding(top = 8.dp))
+@Composable private fun Eyebrow(text: String) = Text(text, style = HiveText.rowStrong.copy(fontSize = 15.sp), color = Hive.colors.accent)
+/** The slide's one number, as big as the phone allows. */
+@Composable private fun Giant(text: String) = Text(text, style = HiveText.heroTitle.copy(fontSize = if (text.length <= 4) 112.sp else 84.sp, lineHeight = if (text.length <= 4) 112.sp else 88.sp, fontWeight = FontWeight.Black, letterSpacing = (-3).sp), color = Hive.colors.text, maxLines = 1, modifier = Modifier.padding(top = 2.dp))
+@Composable private fun Title(text: String, big: Boolean = false) = Text(text, style = HiveText.heroTitle.copy(fontSize = if (big) 40.sp else 32.sp, lineHeight = if (big) 44.sp else 36.sp, fontWeight = if (big) FontWeight.Black else FontWeight.Bold), color = Hive.colors.text, maxLines = 3, overflow = TextOverflow.Ellipsis, modifier = Modifier.padding(top = 6.dp))
+@Composable private fun Sub(text: String) = Text(text, style = HiveText.body.copy(fontSize = 17.sp, lineHeight = 23.sp), color = Hive.colors.textDim, modifier = Modifier.padding(top = 10.dp))
 
+/** The slide's subject cover, blurred to its colours and darkened toward the words. */
 @Composable
-private fun Cards(items: List<Pair<String, String>>) {
+private fun SlideBackdrop(model: Any) {
     val c = Hive.colors
-    // Boxes fill the width two to a row, both as tall as the taller; a lone box takes the whole row.
-    Column(Modifier.fillMaxWidth().padding(top = 22.dp), verticalArrangement = Arrangement.spacedBy(10.dp)) {
+    Box(Modifier.fillMaxSize()) {
+        Artwork(model, Modifier.fillMaxSize().graphicsLayer { scaleX = 1.4f; scaleY = 1.4f; alpha = 0.7f }.blur(70.dp), androidx.compose.ui.graphics.RectangleShape, Icons.Rounded.LibraryMusic)
+        Box(Modifier.fillMaxSize().background(androidx.compose.ui.graphics.Brush.verticalGradient(0f to c.bg.copy(alpha = 0.35f), 0.55f to c.bg.copy(alpha = 0.6f), 1f to c.bg.copy(alpha = 0.92f))))
+    }
+}
+
+/** Numbers without boxes: each large, its word under it, two to a row. */
+@Composable
+private fun Stats(items: List<Pair<String, String>>) {
+    val c = Hive.colors
+    Column(Modifier.fillMaxWidth().padding(top = 26.dp), verticalArrangement = Arrangement.spacedBy(18.dp)) {
         items.chunked(2).forEach { row ->
-            Row(Modifier.fillMaxWidth().height(IntrinsicSize.Min), horizontalArrangement = Arrangement.spacedBy(10.dp)) {
-                row.forEach { (label, value) ->
-                    Column(Modifier.weight(1f).fillMaxHeight().hiveGlass(RoundedCornerShape(18.dp)).padding(horizontal = 16.dp, vertical = 16.dp)) {
-                        HiveLabel(label)
-                        // Names run long; they take a smaller size rather than losing their end.
-                        val long = value.length > 12
-                        Text(value, style = HiveText.year.copy(fontSize = if (long) 19.sp else 24.sp, lineHeight = if (long) 23.sp else 28.sp, fontWeight = FontWeight.Bold), color = c.text, maxLines = 3, overflow = TextOverflow.Ellipsis, modifier = Modifier.padding(top = 6.dp))
+            Row(Modifier.fillMaxWidth()) {
+                row.forEach { (value, label) ->
+                    Column(Modifier.weight(1f)) {
+                        Text(value, style = HiveText.heroTitle.copy(fontSize = 30.sp, lineHeight = 34.sp, fontWeight = FontWeight.Black), color = c.text, maxLines = 1, overflow = TextOverflow.Ellipsis)
+                        Text(label, style = HiveText.body, color = c.textDim)
                     }
                 }
+                if (row.size == 1) Spacer(Modifier.weight(1f))
             }
+        }
+    }
+}
+
+/** A line of the closing slide: the picture, what it is, and its name. */
+@Composable
+private fun Summary(label: String, name: String?, art: Any?, shape: androidx.compose.ui.graphics.Shape) {
+    val c = Hive.colors
+    Row(Modifier.fillMaxWidth().padding(vertical = 7.dp), verticalAlignment = Alignment.CenterVertically) {
+        if (art != null) Artwork(art, Modifier.size(52.dp), shape, Icons.Rounded.LibraryMusic)
+        else Box(Modifier.size(52.dp).clip(HiveShape.thumb).background(c.accent.copy(alpha = 0.22f)), contentAlignment = Alignment.Center) { Icon(Icons.Rounded.LibraryMusic, null, tint = c.accent, modifier = Modifier.size(22.dp)) }
+        Column(Modifier.weight(1f).padding(start = 14.dp)) {
+            Text(label, style = HiveText.small, color = c.textDim)
+            Text(name ?: "—", style = HiveText.rowStrong.copy(fontSize = 18.sp, lineHeight = 22.sp, fontWeight = FontWeight.Bold), color = c.text, maxLines = 1, overflow = TextOverflow.Ellipsis)
         }
     }
 }
@@ -279,14 +377,14 @@ private fun Cards(items: List<Pair<String, String>>) {
 @Composable
 private fun Rank(n: Int, a: Wrap.Ranked) {
     val c = Hive.colors
-    Row(Modifier.fillMaxWidth().padding(vertical = 6.dp), verticalAlignment = Alignment.CenterVertically) {
-        Text("$n", style = HiveText.year.copy(fontSize = 22.sp), color = c.accent, modifier = Modifier.width(30.dp))
-        Artwork(art(a), Modifier.size(52.dp), HiveShape.thumb)
-        Column(Modifier.weight(1f).padding(horizontal = 12.dp)) {
-            Text(a.name, style = HiveText.rowStrong, color = c.text, maxLines = 1, overflow = TextOverflow.Ellipsis)
-            Text(a.sub, style = HiveText.small, color = c.textDim, maxLines = 1, overflow = TextOverflow.Ellipsis)
+    val first = n == 1
+    Row(Modifier.fillMaxWidth().padding(vertical = 7.dp), verticalAlignment = Alignment.CenterVertically) {
+        Text("$n", style = HiveText.heroTitle.copy(fontSize = 26.sp, fontWeight = FontWeight.Black), color = if (first) c.accent else c.textDim, modifier = Modifier.width(34.dp))
+        Artwork(art(a), Modifier.size(if (first) 76.dp else 60.dp), HiveShape.thumb, Icons.Rounded.LibraryMusic, elevation = if (first) 16.dp else 0.dp)
+        Column(Modifier.weight(1f).padding(horizontal = 14.dp)) {
+            Text(a.name, style = HiveText.rowStrong.copy(fontSize = if (first) 19.sp else 16.sp, fontWeight = FontWeight.Bold), color = c.text, maxLines = 2, overflow = TextOverflow.Ellipsis)
+            Text(listOf(a.sub, countOf(a.plays, "play")).filter { it.isNotBlank() }.joinToString(" · "), style = HiveText.small, color = c.textDim, maxLines = 1, overflow = TextOverflow.Ellipsis)
         }
-        Text(countOf(a.plays, "play"), style = HiveText.small, color = c.textDim)
     }
 }
 
@@ -294,11 +392,11 @@ private fun Rank(n: Int, a: Wrap.Ranked) {
 private fun Months(totals: List<Long>) {
     val c = Hive.colors
     val max = (totals.maxOrNull() ?: 0).coerceAtLeast(1)
-    Row(Modifier.fillMaxWidth().height(150.dp).padding(top = 18.dp), horizontalArrangement = Arrangement.spacedBy(5.dp), verticalAlignment = Alignment.Bottom) {
+    Row(Modifier.fillMaxWidth().height(220.dp).padding(top = 24.dp), horizontalArrangement = Arrangement.spacedBy(6.dp), verticalAlignment = Alignment.Bottom) {
         totals.forEachIndexed { i, t ->
             Column(Modifier.weight(1f).fillMaxHeight(), horizontalAlignment = Alignment.CenterHorizontally, verticalArrangement = Arrangement.Bottom) {
-                Box(Modifier.fillMaxWidth().fillMaxHeight((t.toFloat() / max).coerceAtLeast(0.02f) * 0.85f).clip(RoundedCornerShape(5.dp)).background(if (t == max) c.accent else c.accent.copy(alpha = 0.45f)).border(1.dp, Color.Transparent, RoundedCornerShape(5.dp)))
-                Text(java.time.Month.of(i + 1).getDisplayName(TextStyle.NARROW, Locale.getDefault()), style = HiveText.label, color = c.textDim, modifier = Modifier.padding(top = 4.dp))
+                Box(Modifier.fillMaxWidth().fillMaxHeight((t.toFloat() / max).coerceAtLeast(0.015f) * 0.86f).clip(RoundedCornerShape(topStart = 6.dp, topEnd = 6.dp, bottomStart = 2.dp, bottomEnd = 2.dp)).background(if (t == max) c.accent else c.text.copy(alpha = 0.22f)))
+                Text(java.time.Month.of(i + 1).getDisplayName(TextStyle.NARROW, Locale.getDefault()), style = HiveText.small, color = if (t == max) c.accent else c.textDim, modifier = Modifier.padding(top = 6.dp))
             }
         }
     }

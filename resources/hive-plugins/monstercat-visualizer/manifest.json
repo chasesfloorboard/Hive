@@ -3,7 +3,7 @@
   "apiVersion": 2,
   "id": "hive.monstercat-visualizer",
   "name": "Monstercat Visualizer",
-  "version": "2.1.2",
+  "version": "2.2.0",
   "author": "Hive (look based on marcopixel/monstercat-visualizer, MIT)",
   "description": "A Visualizer page in the sidebar: Monstercat-style spectrum bars with the playing track's cover art, artist and title, in Hive's theme.",
   "icon": "≈",

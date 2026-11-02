@@ -14,7 +14,6 @@ import org.jaudiotagger.tag.Tag
 import org.jaudiotagger.tag.TagOptionSingleton
 import org.jaudiotagger.tag.flac.FlacTag
 import org.jaudiotagger.tag.images.AndroidArtwork
-import org.jaudiotagger.tag.reference.PictureTypes
 import org.jaudiotagger.tag.vorbiscomment.VorbisCommentFieldKey
 import org.jaudiotagger.tag.vorbiscomment.VorbisCommentTag
 import java.io.File
@@ -47,6 +46,34 @@ data class TagEdit(
 }
 
 /**
+ * A change to a song's pictures, as Hive's artwork editor on the PC makes
+ * them: a new [front] cover, and [backs] by their place among the song's back
+ * covers (0 its first): a new picture, or null to take that one off. A place
+ * past the last back cover adds one. Every other picture stays as it was.
+ */
+class CoverEdit(val front: ByteArray? = null, val backs: Map<Int, ByteArray?> = emptyMap()) {
+    val isEmpty get() = front == null && backs.isEmpty()
+
+    /** The song's pictures after this change, as (data, ID3 type), in file order. */
+    fun applyTo(pictures: List<EmbeddedPictures.Picture>): List<Pair<ByteArray, Int>> {
+        val list = pictures.map { it.data to it.type }.toMutableList<Pair<ByteArray, Int>?>()
+        front?.let { f ->
+            // As on the PC: the front cover, or else the first picture, is replaced; a song with none gets one first.
+            val i = list.indexOfFirst { it?.second == EmbeddedPictures.FRONT }.takeIf { it >= 0 } ?: if (list.isEmpty()) -1 else 0
+            if (i < 0) list.add(0, f to EmbeddedPictures.FRONT) else list[i] = f to EmbeddedPictures.FRONT
+        }
+        val places = list.indices.filter { list[it]?.second == EmbeddedPictures.BACK }
+        for ((k, picture) in backs.toSortedMap()) {
+            when {
+                k < places.size -> list[places[k]] = picture?.let { it to EmbeddedPictures.BACK }
+                picture != null -> list.add(picture to EmbeddedPictures.BACK)
+            }
+        }
+        return list.filterNotNull()
+    }
+}
+
+/**
  * Writes tags and covers into the song files, as Hive's tag editor does on the
  * PC. Each file is edited as a copy, which is read back before it replaces the
  * original; the original is kept aside until the new one is safely in place.
@@ -61,8 +88,8 @@ object TagWriter {
 
     init { TagOptionSingleton.getInstance().isAndroid = true }
 
-    /** Writes [edit] (and [cover], a JPEG or PNG) into [track]'s file. */
-    suspend fun write(context: Context, track: Track, edit: TagEdit, cover: ByteArray? = null) = withContext(Dispatchers.IO) {
+    /** Writes [edit] (and [covers], JPEGs or PNGs) into [track]'s file. */
+    suspend fun write(context: Context, track: Track, edit: TagEdit, covers: CoverEdit? = null) = withContext(Dispatchers.IO) {
         val ext = track.fileName.substringAfterLast('.', "").lowercase()
         if (ext !in WRITABLE) throw IOException("Hive can't write tags into .$ext files")
         val dir = File(context.cacheDir, "tag-edit").apply { mkdirs() }
@@ -75,7 +102,11 @@ object TagWriter {
             val file = AudioFileIO.read(work)
             val tag = file.tagOrCreateAndSetDefault
             apply(tag, edit)
-            cover?.let { setCover(tag, it) }
+            if (covers != null && !covers.isEmpty) {
+                // Hive's own reader knows MP3, FLAC, M4A and WAV; for the rest, the tag library's.
+                val now = work.inputStream().use { EmbeddedPictures.readTyped(it) }.ifEmpty { tag.artworkList.map { EmbeddedPictures.Picture(it.binaryData, it.pictureType) } }
+                setPictures(tag, covers.applyTo(now))
+            }
             file.commit()
             // Read back: the copy must still be a song of the same length, with the new tags.
             val check = AudioFileIO.read(work)
@@ -106,21 +137,30 @@ object TagWriter {
         e.lyrics?.let { if (it.isBlank()) runCatching { tag.deleteField(FieldKey.LYRICS) } else tag.setField(FieldKey.LYRICS, it) }
     }
 
-    /** The front cover, replacing any other. FLAC and Ogg pictures are built here, as the library's own way needs desktop Java. */
-    private fun setCover(tag: Tag, bytes: ByteArray) {
-        val mime = when {
-            bytes.size > 3 && bytes[0] == 0x89.toByte() && bytes[1] == 0x50.toByte() -> "image/png"
-            bytes.size > 2 && bytes[0] == 0xFF.toByte() && bytes[1] == 0xD8.toByte() -> "image/jpeg"
-            else -> throw IOException("That picture isn't a JPEG or PNG")
-        }
+    /** The song's pictures become exactly these, in order. FLAC and Ogg pictures are built here, as the library's own way needs desktop Java. */
+    private fun setPictures(tag: Tag, pictures: List<Pair<ByteArray, Int>>) {
         tag.deleteArtworkField()
-        val size = BitmapFactory.Options().apply { inJustDecodeBounds = true }.also { BitmapFactory.decodeByteArray(bytes, 0, bytes.size, it) }
-        val picture = { MetadataBlockDataPicture(bytes, PictureTypes.DEFAULT_ID, mime, "", size.outWidth.coerceAtLeast(0), size.outHeight.coerceAtLeast(0), 24, 0) }
-        when (tag) {
-            is FlacTag -> tag.setField(picture())
-            is VorbisCommentTag -> tag.setField(tag.createField(VorbisCommentFieldKey.METADATA_BLOCK_PICTURE, String(org.jaudiotagger.tag.vorbiscomment.util.Base64Coder.encode(picture().rawContent))))
-            else -> tag.setField(AndroidArtwork().apply { binaryData = bytes; mimeType = mime; pictureType = PictureTypes.DEFAULT_ID })
+        for ((bytes, type) in pictures) {
+            val mime = when {
+                bytes.size > 3 && bytes[0] == 0x89.toByte() && bytes[1] == 0x50.toByte() -> "image/png"
+                bytes.size > 2 && bytes[0] == 0xFF.toByte() && bytes[1] == 0xD8.toByte() -> "image/jpeg"
+                bytes.size > 3 && String(bytes, 0, 3, Charsets.ISO_8859_1) == "GIF" -> "image/gif"
+                bytes.size > 11 && String(bytes, 8, 4, Charsets.ISO_8859_1) == "WEBP" -> "image/webp"
+                else -> throw IOException("That picture isn't a JPEG or PNG")
+            }
+            val size = BitmapFactory.Options().apply { inJustDecodeBounds = true }.also { BitmapFactory.decodeByteArray(bytes, 0, bytes.size, it) }
+            val picture = { MetadataBlockDataPicture(bytes, type, mime, "", size.outWidth.coerceAtLeast(0), size.outHeight.coerceAtLeast(0), 24, 0) }
+            when (tag) {
+                is FlacTag -> tag.addField(picture())
+                is VorbisCommentTag -> tag.addField(tag.createField(VorbisCommentFieldKey.METADATA_BLOCK_PICTURE, String(org.jaudiotagger.tag.vorbiscomment.util.Base64Coder.encode(picture().rawContent))))
+                else -> tag.addField(AndroidArtwork().apply { binaryData = bytes; mimeType = mime; pictureType = type })
+            }
         }
+    }
+
+    /** The song's pictures with their types, front and back covers alike. */
+    suspend fun pictures(context: Context, track: Track): List<EmbeddedPictures.Picture> = withContext(Dispatchers.IO) {
+        runCatching { context.contentResolver.openInputStream(track.uri)?.use { EmbeddedPictures.readTyped(it) } }.getOrNull().orEmpty()
     }
 
     /** Has Android read the file again, so the library shows the new tags. */
@@ -131,7 +171,7 @@ object TagWriter {
 
     /** The song's own front cover at full size, or null. */
     suspend fun cover(context: Context, track: Track): ByteArray? = withContext(Dispatchers.IO) {
-        runCatching { context.contentResolver.openInputStream(track.uri)?.use { EmbeddedPictures.read(it) }?.firstOrNull() }.getOrNull()
+        runCatching { context.contentResolver.openInputStream(track.uri)?.use { EmbeddedPictures.readTyped(it) }?.let { p -> (p.firstOrNull { it.type == EmbeddedPictures.FRONT } ?: p.firstOrNull())?.data } }.getOrNull()
             ?: runCatching { android.media.MediaMetadataRetriever().use { r -> r.setDataSource(context, track.uri); r.embeddedPicture } }.getOrNull()
     }
 }

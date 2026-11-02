@@ -1,4 +1,5 @@
-/* Monstercat Visualizer page. Everything is scoped to .mcv. */
+/* Monstercat Visualizer page. Everything is scoped to .mcv. Sizes follow Hive's window
+   (--hive-vh/--hive-vw), since the page is drawn in the plugin's own frame. */
 .mcv {
   display: flex;
   align-items: center;
@@ -13,22 +14,22 @@
   width: min(92%, 1100px);
   display: flex;
   flex-direction: column;
-  gap: clamp(12px, 2.4vh, 26px);
+  gap: clamp(12px, calc(var(--hive-vh, 1vh) * 2.4), 26px);
 }
 .mcv-bars {
   display: block;
   width: 100%;
-  height: clamp(120px, 34vh, 330px);
+  height: clamp(120px, calc(var(--hive-vh, 1vh) * 34), 330px);
 }
 .mcv-info {
   display: flex;
   align-items: center;
-  gap: clamp(14px, 2.2vw, 28px);
+  gap: clamp(14px, calc(var(--hive-vw, 1vw) * 2.2), 28px);
   min-width: 0;
 }
 .mcv-art {
   flex: none;
-  width: clamp(84px, 16vh, 160px);
+  width: clamp(84px, calc(var(--hive-vh, 1vh) * 16), 160px);
   aspect-ratio: 1;
   overflow: hidden;
   border-radius: 6px;
@@ -41,7 +42,7 @@
 .mcv-artist {
   font-family: inherit;
   font-weight: 700;
-  font-size: clamp(26px, 6vh, 64px);
+  font-size: clamp(26px, calc(var(--hive-vh, 1vh) * 6), 64px);
   line-height: 1.02;
   text-transform: uppercase;
   letter-spacing: 0.01em;
@@ -52,7 +53,7 @@
 .mcv-title {
   font-family: inherit;
   font-weight: 300;
-  font-size: clamp(16px, 3.4vh, 36px);
+  font-size: clamp(16px, calc(var(--hive-vh, 1vh) * 3.4), 36px);
   line-height: 1.15;
   white-space: nowrap;
   overflow: hidden;

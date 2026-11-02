@@ -181,7 +181,7 @@ private fun EpisodeRow(e: Episode, progress: Long?, playing: Boolean, isPlaying:
                     else if (playing) NowPlayingBars(isPlaying, c.accent)
                     else Icon(Icons.Rounded.MoreHoriz, "More options", tint = c.textDim, modifier = Modifier.size(18.dp))
                 }
-                HiveMenu(menu, { menu = false }) {
+                HiveMenu(menu, { menu = false }, settings = true) {
                     HiveMenuItem(if (finished) "Mark as unplayed" else "Mark as played", Icons.Rounded.CheckCircle) { menu = false; onMark(!finished) }
                 }
             }

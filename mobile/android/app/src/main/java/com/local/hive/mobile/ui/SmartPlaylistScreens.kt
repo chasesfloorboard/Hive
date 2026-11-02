@@ -55,7 +55,9 @@ fun SmartPlaylistScreen(vm: MainViewModel, id: Long, actions: TrackActions, bott
     SongsScreen(vm, playlist?.name ?: "", flow, actions, bottomPadding, extraMenu = { close ->
         HiveMenuItem("Edit smart playlist", Icons.Rounded.Edit) { close(); editing = true }
         HiveMenuItem("Delete smart playlist", Icons.Rounded.Delete, destructive = true) { close(); deleting = true }
-    }, onBack = onBack)
+    }, barActions = {
+        FavoriteBarActions(vm, playlist?.let { favoritePlaylist("smart:$id", it.name, "smart/$id", subtitle = "Smart playlist") }, com.local.hive.mobile.data.PlaylistImages.smart(id))
+    }, imageKey = com.local.hive.mobile.data.PlaylistImages.smart(id), onBack = onBack)
     if (editing && playlist != null) SmartPlaylistDialog(vm, playlist, onDismiss = { editing = false }) { editing = false }
     if (deleting && playlist != null) ConfirmDialog("Delete “${playlist.name}”?", "Only the playlist goes; the songs stay in your library.", "Delete", onDismiss = { deleting = false }) {
         deleting = false; vm.deleteSmartPlaylist(id); onBack()
@@ -146,6 +148,3 @@ private fun Picker(label: String, current: String, options: List<String>, modifi
     }
 }
 
-/** "New smart playlist" as a row, for the Playlists tab. */
-@Composable
-fun NewSmartPlaylistRow(onClick: () -> Unit) = LibraryRow(null, Icons.Rounded.Add, "New smart playlist", "Fills itself by rules: genre, rating, plays, when added…", onClick = onClick)

@@ -68,6 +68,16 @@ class Spotify(private val http: OkHttpClient = AppleMusic.defaultHttp()) {
         return if (covers.isEmpty()) found else found.copy(songs = found.songs.map { s -> covers[s.id]?.let { s.copy(artwork = it) } ?: s })
     }
 
+    private val albumCache = java.util.concurrent.ConcurrentHashMap<String, String>()
+
+    /** The album link of a Spotify song, read from the song's public page (no sign-in), or null. */
+    suspend fun albumOf(trackId: String): String? {
+        albumCache[trackId]?.let { return it }
+        val html = runCatching { get("https://open.spotify.com/track/$trackId") }.getOrNull() ?: return null
+        val id = albumLink.find(html)?.groupValues?.get(1) ?: return null
+        return "https://open.spotify.com/album/$id".also { albumCache[trackId] = it }
+    }
+
     private val coverCache = java.util.concurrent.ConcurrentHashMap<String, String>()
     private val coverLookups = kotlinx.coroutines.sync.Semaphore(8)
 
@@ -97,7 +107,8 @@ class Spotify(private val http: OkHttpClient = AppleMusic.defaultHttp()) {
 
     companion object {
         private const val USER_AGENT = "Mozilla/5.0 (Linux; Android 15) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/130.0 Mobile Safari/537.36"
-        private val nextData = Regex("""<script id="__NEXT_DATA__" type="application/json">([\s\S]*?)</script>""")
+        private val albumLink = Regex("""open\.spotify\.com/album/([A-Za-z0-9]{22})""")
+        private val nextData =Regex("""<script id="__NEXT_DATA__" type="application/json">([\s\S]*?)</script>""")
         private val webLink = Regex("""^https://open\.spotify\.com/(?:intl-[a-z-]+/)?(playlist|album|track)/([A-Za-z0-9]{10,})""", RegexOption.IGNORE_CASE)
         private val uriLink = Regex("""^spotify:(playlist|album|track):([A-Za-z0-9]{10,})$""")
 

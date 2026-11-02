@@ -1,5 +1,7 @@
 package com.local.hive.mobile.ui
 
+import androidx.compose.material.icons.automirrored.rounded.KeyboardArrowRight
+import androidx.compose.material.icons.rounded.Album
 import androidx.compose.material.icons.rounded.Radio
 import com.local.hive.mobile.ui.theme.HiveIcons
 import android.net.Uri
@@ -57,6 +59,8 @@ import androidx.compose.runtime.saveable.rememberSaveable
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.input.nestedscroll.nestedScroll
+import com.local.hive.mobile.ui.theme.Motion
 import androidx.compose.ui.semantics.contentDescription
 import androidx.compose.ui.semantics.semantics
 import androidx.compose.ui.draw.alpha
@@ -166,8 +170,15 @@ fun AlbumScreen(
                     }
                 }
             }
-            itemsIndexed(tracks, key = { _, t -> t.id }) { i, t ->
-                TrackRow(t, t.id in loved, now.trackId == t.id, now.isPlaying, actions, onClick = { vm.play(tracks, i) }, subtitle = if (t.artist != artist) t.artist else "", number = t.trackNumber.takeIf { it > 0 } ?: (i + 1))
+            // An album on more than one disc gets a heading where each disc starts.
+            val discs = tracks.mapTo(HashSet()) { it.discNumber }.size > 1
+            tracks.forEachIndexed { i, t ->
+                if (discs && t.discNumber != tracks.getOrNull(i - 1)?.discNumber) item(key = "disc${t.discNumber}-$i") {
+                    YearHeading(if (t.discNumber > 0) "Disc ${t.discNumber}" else "No disc number")
+                }
+                item(key = t.id) {
+                    TrackRow(t, t.id in loved, now.trackId == t.id, now.isPlaying, actions, onClick = { vm.play(tracks, i) }, subtitle = if (t.artist != artist) t.artist else "", number = t.trackNumber.takeIf { it > 0 } ?: (i + 1))
+                }
             }
         }
     }, overlay = {
@@ -232,7 +243,7 @@ private fun CollectionMenu(tracks: List<Track>, vm: MainViewModel, actions: Trac
         Box(Modifier.size(42.dp).hiveGlass(CircleShape).clickable { open = true }, contentAlignment = Alignment.Center) {
             Icon(Icons.Rounded.MoreVert, "More options", tint = Hive.colors.text, modifier = Modifier.size(20.dp))
         }
-        HiveMenu(open, { open = false }) {
+        HiveMenu(open, { open = false }, settings = true) {
             HiveMenuItem("Play next", Icons.AutoMirrored.Rounded.PlaylistPlay) { open = false; vm.playNext(tracks) }
             HiveMenuItem("Add to queue", Icons.AutoMirrored.Rounded.QueueMusic) { open = false; vm.addToQueue(tracks) }
             HiveMenuItem("Add to playlist", Icons.AutoMirrored.Rounded.PlaylistAdd) { open = false; actions.onAddToPlaylist(tracks) }
@@ -243,7 +254,7 @@ private fun CollectionMenu(tracks: List<Track>, vm: MainViewModel, actions: Trac
                 val editor = LocalEditor.current
                 HiveMenuDivider()
                 HiveMenuItem("Edit album", Icons.Rounded.Edit) { open = false; editor.editTags(tracks) }
-                HiveMenuItem("Change cover", Icons.Rounded.Image) { open = false; editor.changeCover(tracks) }
+                HiveMenuItem("Edit covers", Icons.Rounded.Image) { open = false; editor.changeCover(tracks) }
                 HiveMenuItem("Auto-tag album", Icons.Rounded.AutoFixHigh) { open = false; editor.autoTag(tracks) }
             }
             extra?.let { HiveMenuDivider(); it { open = false } }
@@ -275,6 +286,18 @@ fun ArtistScreen(
     val list = rememberLazyListState()
     val titleAlpha by animateFloatAsState(if (list.firstVisibleItemIndex > 0) 1f else 0f, tween(180), label = "title")
     val veil by list.pageVeil()
+    // Albums, or every track of the artist album by album; the choice stays for the next artist.
+    var view by rememberSetting("view.artist", ArtistView.Albums)
+    val loved by vm.lovedIds.collectAsStateWithLifecycle()
+    val now by vm.nowPlaying.collectAsStateWithLifecycle()
+    // Album by album, oldest first (RTJ, RTJ2, RTJ3, RTJ4), each in its own order. Tapping a song
+    // plays on through the rest; Shuffle at the top shuffles everything.
+    val byAlbum = remember(tracks) {
+        tracks.groupBy { it.albumId }.values
+            .sortedWith(compareBy<List<Track>> { a -> a.maxOf { it.year }.takeIf { it > 0 } ?: Int.MAX_VALUE }.thenBy { it.first().album.lowercase() })
+            .map { a -> a.sortedWith(compareBy<Track>({ it.discNumber }, { it.trackNumber }, { it.title.lowercase() })) }
+    }
+    val byTitle = remember(byAlbum) { byAlbum.flatten() }
 
     HiveGlassLayers(Modifier.fillMaxSize(), content = {
         AlbumBackdrop(colors)
@@ -282,11 +305,11 @@ fun ArtistScreen(
         val grouped = albums.groupBy { it.year }
         val rows = remember(albums) { grouped.values.flatMap { it.chunked(2) }.associate { row -> "r${row.first().albumId}" as Any to row.map { it.albumId } } }
         val order = remember(albums) { grouped.values.flatten().map { it.albumId } }
-        PickableList(albums = order)
-        LazyColumn(Modifier.fillMaxSize().albumDragSelect(list, rows, order), state = list, contentPadding = PaddingValues(bottom = bottomPadding + 16.dp)) {
+        if (view == ArtistView.Albums) PickableList(albums = order) else PickableList(tracks = byTitle)
+        LazyColumn(Modifier.fillMaxSize().then(if (view == ArtistView.Albums) Modifier.albumDragSelect(list, rows, order) else Modifier), state = list, contentPadding = PaddingValues(bottom = bottomPadding + 16.dp)) {
             item {
                 Column(Modifier.fillMaxWidth().statusBarsPadding().padding(top = 64.dp, bottom = 18.dp), horizontalAlignment = Alignment.CenterHorizontally) {
-                    val photo by produceState<String?>(null, name) { value = vm.artistImage(name) }
+                    val photo = rememberArtistPhoto(vm, name)
                     Artwork(photo ?: firstAlbum?.let { Uri.parse("content://media/external/audio/albumart/$it") }, Modifier.size(168.dp), CircleShape, Icons.Rounded.Person, glow = colors?.primary, elevation = 24.dp)
                     Text(name.ifBlank { "Unknown artist" }, style = HiveText.heroTitle, color = c.text, textAlign = TextAlign.Center, modifier = Modifier.padding(top = 18.dp, start = 24.dp, end = 24.dp))
                     Text("${countOf(albums.size, "album")} · ${countOf(tracks.size, "track")}", style = HiveText.small, color = c.textDim, modifier = Modifier.padding(top = 4.dp))
@@ -296,17 +319,60 @@ fun ArtistScreen(
                     }
                 }
             }
-            grouped.forEach { (y, list2) ->
+            item(key = "view") {
+                HiveToggle(ArtistView.entries.map { it.label }, view.ordinal, { view = ArtistView.entries[it] }, Modifier.padding(start = 16.dp, end = 16.dp, bottom = 6.dp))
+            }
+            if (view == ArtistView.Albums) grouped.forEach { (y, list2) ->
                 item(key = "y$y") { YearHeading(if (y > 0) "$y" else "Unknown year") }
                 list2.chunked(2).forEach { row ->
                     item(key = "r${row.first().albumId}") {
-                        CoverRow(row) { a, m -> AlbumCard(a, m) { onOpenAlbum(a.albumId) } }
+                        CoverRow(row) { a, m -> AlbumCard(a, m, subtitle = countOf(a.trackCount, "track")) { onOpenAlbum(a.albumId) } }
+                    }
+                }
+            } else {
+                var at = 0
+                byAlbum.forEach { album ->
+                    val first = album.first()
+                    val year = album.maxOf { it.year }
+                    item(key = "h${first.albumId}") {
+                        AlbumGroupHeader(first.albumId, first.album.ifBlank { "Unknown album" },
+                            listOfNotNull(year.takeIf { it > 0 }?.toString(), countOf(album.size, "track"), formatLength(album.sumOf { it.durationMs })).joinToString(" · ")) { onOpenAlbum(first.albumId) }
+                    }
+                    album.forEach { t ->
+                        val i = at++
+                        item(key = "t${t.id}") {
+                            TrackRow(t, t.id in loved, now.trackId == t.id, now.isPlaying, actions, onClick = { vm.play(byTitle, i) }, subtitle = t.artist)
+                        }
                     }
                 }
             }
         }
-    }, overlay = { PageBar(name, titleAlpha, onBack, veil) { CollectionMenu(tracks, vm, actions) } })
+    }, overlay = { PageBar(name, titleAlpha, onBack, veil) { FavoriteBarActions(vm, favoriteArtist(name)); Spacer(Modifier.width(8.dp)); CollectionMenu(tracks, vm, actions) } })
 }
+
+/**
+ * An album's heading in an artist's Tracks view, as Samsung Music has it: the cover, the album's
+ * name, and its year, songs and length. Tapping it opens the album.
+ */
+@Composable
+fun AlbumGroupHeader(albumId: Long, title: String, detail: String, onClick: () -> Unit) {
+    val c = Hive.colors
+    Row(
+        Modifier.fillMaxWidth().padding(start = 10.dp, end = 10.dp, top = 14.dp, bottom = 4.dp).clip(HiveShape.thumb).clickable(onClick = onClick).padding(8.dp),
+        verticalAlignment = Alignment.CenterVertically,
+    ) {
+        Artwork(Uri.parse("content://media/external/audio/albumart/$albumId"), Modifier.size(64.dp).sharedCover("album-$albumId"), HiveShape.thumb, Icons.Rounded.Album, elevation = 10.dp)
+        Spacer(Modifier.width(14.dp))
+        Column(Modifier.weight(1f)) {
+            Text(title, style = HiveText.year, color = c.text, maxLines = 2, overflow = TextOverflow.Ellipsis)
+            Text(detail, style = HiveText.small, color = c.textDim, maxLines = 1, overflow = TextOverflow.Ellipsis, modifier = Modifier.padding(top = 3.dp))
+        }
+        Icon(Icons.AutoMirrored.Rounded.KeyboardArrowRight, "Open album", tint = c.textDimmer, modifier = Modifier.size(20.dp))
+    }
+}
+
+/** An artist's page: their albums by year, or all their tracks. */
+enum class ArtistView(val label: String) { Albums("Albums"), Tracks("Tracks") }
 
 /** A genre, folder or smart playlist: its title, then its songs in a glass panel. */
 @Composable
@@ -318,13 +384,78 @@ fun SongsScreen(
     bottomPadding: Dp,
     /** The page's own items at the end of its ⋯ menu (a smart playlist's Edit and Delete). */
     extraMenu: (@Composable (close: () -> Unit) -> Unit)? = null,
+    /** Buttons before the ⋯ menu (a playlist's heart and picture). */
+    barActions: @Composable () -> Unit = {},
+    /** The page's own picture, if the user chose one (see [com.local.hive.mobile.data.PlaylistImages]). */
+    imageKey: String? = null,
+    /** What the list's own order is called in the sort menu (Favorites: "Date favorited"). */
+    ownOrder: String = "Default order",
     onBack: () -> Unit,
 ) {
-    val tracks by tracksFlow.collectAsStateWithLifecycle(emptyList())
-    Column(Modifier.fillMaxSize()) {
-        PageBar("", 0f, onBack) { CollectionMenu(tracks, vm, actions, extra = extraMenu) }
-        TrackList(vm, tracks, actions, bottomPadding, "Nothing here yet", "", header = { PanelHeader(title) })
+    val all by tracksFlow.collectAsStateWithLifecycle(emptyList())
+    // Pull the list down past its top for a search of just this page, as in Favorites.
+    var query by rememberSaveable { mutableStateOf("") }
+    val q = remember(query) { LibrarySort.words(query.trim()) }
+    // Its own order (newest favorited, most played…), or by name, artist, album or length; kept per page.
+    val sorts = remember { listOf(TrackSort.Title, TrackSort.Artist, TrackSort.Album, TrackSort.Length) }
+    var sortAt by rememberIntSetting("sort.songs.$title", 0)
+    val tracks by rememberComputed(all, all, q, sortAt) {
+        val found = if (q.isEmpty()) all else all.filter { LibrarySort.matches("${it.title} ${it.artist} ${it.album}", q) }
+        sorts.getOrNull(sortAt - 1)?.let { sortTracks(found, it) } ?: found
     }
+    val search = rememberPullToReveal(keepShown = query.isNotEmpty())
+    // Its songs, or the albums and artists they're from.
+    var view by rememberSaveable { mutableStateOf(SongsView.Tracks) }
+    var groupSort by rememberSaveable { mutableStateOf(GroupSort.Most) }
+    val counts = remember(tracks) { songsCounts(tracks) }
+    // Laid out as a playlist of your own: its picture (or four of its covers), name, length, Shuffle and Play.
+    val images by vm.playlistImages.collectAsStateWithLifecycle()
+    val chosen = imageKey?.let { images[it] }
+    val pickImage = rememberPlaylistImagePicker(vm, imageKey)
+    val covers = remember(all) { mosaicCovers(all) }
+    val firstAlbum = all.firstOrNull()?.albumId
+    val colors by produceState<AuraColors?>(null, firstAlbum) { value = firstAlbum?.let { vm.albumColors(it) } }
+    val list = rememberLazyListState()
+    val titleAlpha by animateFloatAsState(if (list.firstVisibleItemIndex > 0) 1f else 0f, tween(180), label = "title")
+    val veil by list.pageVeil()
+    val c = Hive.colors
+    val hero: @Composable () -> Unit = {
+        Column(Modifier.fillMaxWidth().statusBarsPadding().padding(top = 64.dp, start = 24.dp, end = 24.dp, bottom = 18.dp), horizontalAlignment = Alignment.CenterHorizontally) {
+            if (chosen == null && covers.size >= 4) Box(Modifier.size(200.dp).softShadow(30.dp, HiveShape.art, colors?.primary ?: Color.Black).clip(HiveShape.art)) { CoverMosaic(covers) }
+            else Artwork(chosen ?: covers.firstOrNull(), Modifier.size(200.dp), HiveShape.art, Icons.AutoMirrored.Rounded.QueueMusic, glow = colors?.primary, elevation = 30.dp)
+            Text(title, style = HiveText.heroTitle, color = c.text, textAlign = TextAlign.Center, maxLines = 2, overflow = TextOverflow.Ellipsis, modifier = Modifier.padding(top = 22.dp))
+            Text(listOf(countOf(all.size, "track"), formatLength(all.sumOf { it.durationMs })).joinToString(" · "), style = HiveText.small, color = c.textDim, modifier = Modifier.padding(top = 6.dp))
+            Row(Modifier.padding(top = 18.dp), horizontalArrangement = Arrangement.spacedBy(12.dp), verticalAlignment = Alignment.CenterVertically) {
+                ControlButton(HiveIcons.Shuffle, "Shuffle", { vm.shuffle(tracks) }, size = 46.dp)
+                AccentPlayButton(false, { vm.play(tracks) }, size = 58.dp)
+            }
+        }
+        // Hidden until the list is pulled down past its top.
+        androidx.compose.animation.AnimatedVisibility(search.shown, enter = androidx.compose.animation.expandVertically(Motion.open()) + androidx.compose.animation.fadeIn(Motion.swap()),
+            exit = androidx.compose.animation.shrinkVertically(Motion.close()) + androidx.compose.animation.fadeOut(Motion.underFade())) {
+            SearchField(query, { query = it }, "Search $title", onSubmit = {}, onClear = { query = "" }, modifier = Modifier.padding(start = 14.dp, end = 14.dp, bottom = 10.dp))
+        }
+    }
+    HiveGlassLayers(Modifier.fillMaxSize(), content = {
+        AlbumBackdrop(colors)
+        Box(Modifier.fillMaxSize().nestedScroll(search.connection)) {
+            if (view == SongsView.Tracks) TrackList(vm, tracks, actions, bottomPadding, if (q.isEmpty()) "Nothing here yet" else "Nothing matches", if (q.isEmpty()) "" else "Nothing in $title matches “${query.trim()}”.",
+                header = { Column { hero() } }, list = list,
+                sortHeader = { count, _, _ -> SongsHeader(view, counts, { view = it }, listOf(ownOrder) + sorts.map { it.label }, sortAt, { sortAt = it }, "$count · ${(listOf(ownOrder) + sorts.map { it.label })[sortAt.coerceIn(0, sorts.size)]}") },
+                indexed = sorts.getOrNull(sortAt - 1) == TrackSort.Title)
+            else LazyColumn(Modifier.fillMaxSize(), state = list, contentPadding = PaddingValues(bottom = bottomPadding + 16.dp)) {
+                item { Column { hero() } }
+                item { SongsHeader(view, counts, { view = it }, GroupSort.entries.map { it.label }, groupSort.ordinal, { groupSort = GroupSort.entries[it] }, groupDetail(view, counts, groupSort)) }
+                songGroups(vm, view, tracks, actions, groupSort)
+            }
+        }
+    }, overlay = { PageBar(title, titleAlpha, onBack, veil) {
+        barActions(); Spacer(Modifier.width(8.dp))
+        CollectionMenu(tracks, vm, actions, extra = if (imageKey == null) extraMenu else { close ->
+            PlaylistImageItems(vm, imageKey, pickImage, close)
+            if (extraMenu != null) extraMenu(close)
+        })
+    } })
 }
 
 /**

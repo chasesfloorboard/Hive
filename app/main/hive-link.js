@@ -63,6 +63,10 @@
 //   PUT  /api/songs/cover?ids=…    a cover chosen on the phone (trusted phones
 //                                  only), the image as the body, written as
 //                                  the front cover of those songs
+//   PUT  /api/songs/back-cover?ids=…&place=N   a back cover the same way: the
+//                                  Nth (from 0) back cover of each song is
+//                                  replaced, or one added past the last
+//   DELETE /api/songs/back-cover?ids=…&place=N takes that back cover off
 //
 // Love itself stays where Hive keeps it: in the music files. Phone changes
 // go through the same setLove path as the heart button, so the embedded tag,
@@ -178,7 +182,7 @@ function lanAddresses() {
   return out;
 }
 
-function createHiveLink({ dataDir, getTracks, setLove, onPaired, streamSong = null, coversDir = null, remote = null, getPlaylists = null, getPlays = null, recordPlays = null, spotifySearch = null, songTarget = null, onSongAdded = () => {}, acceptPhonePlays = false, getWrap = null, getWrapYears = null, getListening = null, files = null, onFileChanged = () => {}, getThemes = null, getCurrentTheme = null, onPairRequest = null, deleteSongs = null, editSongs = null, getStreamLoves = null, applyStreamLoves = null, onInbox = () => {}, log = () => {}, port = DEFAULT_PORT, discoveryPort = DISCOVERY_PORT, acceptPhoneChanges = false }) {
+function createHiveLink({ dataDir, getTracks, setLove, onPaired, streamSong = null, coversDir = null, remote = null, getPlaylists = null, savePlaylist = null, deletePlaylist = null, getPlays = null, recordPlays = null, spotifySearch = null, songTarget = null, onSongAdded = () => {}, acceptPhonePlays = false, getWrap = null, getWrapYears = null, getListening = null, files = null, onFileChanged = () => {}, getThemes = null, getCurrentTheme = null, onPairRequest = null, deleteSongs = null, editSongs = null, getStreamLoves = null, applyStreamLoves = null, mobileApp = null, onInbox = () => {}, log = () => {}, port = DEFAULT_PORT, discoveryPort = DISCOVERY_PORT, acceptPhoneChanges = false }) {
   const statePath = path.join(dataDir, 'hive-link.json');
   let state = loadState();
   let server = null;
@@ -386,6 +390,11 @@ function createHiveLink({ dataDir, getTracks, setLove, onPaired, streamSong = nu
         byPath = new Map(tracks.map(t => [path.resolve(String(t.path || '')), t]));
       }
       const track = byPath.get(p) || { path: p };
+      // A write that left Love as it was (a play count, a rating) isn't a change: the
+      // song keeps the date it was favorited on every device.
+      const id = trackIdFor(track);
+      const last = state.events.findLast(e => e.id === id);
+      if (!pending && last && last.loved === !!loved) continue;
       recordLove(track, loved, pending?.at || Date.now(), pending?.origin || 'pc');
     }
   }
@@ -670,6 +679,27 @@ function createHiveLink({ dataDir, getTracks, setLove, onPaired, streamSong = nu
     });
   }
 
+  // Hive Mobile updates: the APK that mobileApp() points at, with its version from the JSON file
+  // beside it ({ versionCode, versionName }). Its checksum is worked out once per file.
+  let appCache = null;
+  async function mobileAppInfo() {
+    const apk = mobileApp?.();
+    if (!apk) return null;
+    let stat;
+    try { stat = await fs.promises.stat(apk); } catch { return null; }
+    let version = {};
+    try { version = JSON.parse(await fs.promises.readFile(apk.replace(/\.apk$/i, '.json'), 'utf8')); } catch {}
+    const versionCode = Number(version.versionCode);
+    if (!Number.isInteger(versionCode) || versionCode <= 0) return null;
+    const stamp = `${apk}\t${stat.size}\t${stat.mtimeMs}`;
+    if (appCache?.stamp !== stamp) {
+      const hash = crypto.createHash('sha256');
+      await new Promise((resolve, reject) => fs.createReadStream(apk).on('data', d => hash.update(d)).on('end', resolve).on('error', reject));
+      appCache = { stamp, path: apk, size: stat.size, sha256: hash.digest('hex'), versionCode, versionName: String(version.versionName || versionCode) };
+    }
+    return appCache;
+  }
+
   async function handle(req, res) {
     const url = new URL(req.url, 'http://hive.local');
     const route = `${req.method} ${url.pathname}`;
@@ -683,12 +713,26 @@ function createHiveLink({ dataDir, getTracks, setLove, onPaired, streamSong = nu
 
     switch (route) {
       case 'GET /api/info':
-        return send(res, 200, { ...info(), deviceId: device.id, deviceName: device.name });
+        // The file mirror is only for a phone Hive trusts: an untrusted one is told it isn't there,
+        // so it keeps to plain song sync until the user trusts it.
+        return send(res, 200, { ...info(), files: !!files && trusted(device), playlistSync: !!savePlaylist && trusted(device), deviceId: device.id, deviceName: device.name });
       case 'GET /api/library': {
         const payload = await libraryPayload();
         if (req.headers['if-none-match'] === payload.etag) { res.writeHead(304, { ETag: payload.etag }); return res.end(); }
         res.writeHead(200, { 'Content-Type': 'application/json; charset=utf-8', 'Content-Encoding': 'gzip', ETag: payload.etag, 'Content-Length': payload.gzip.length });
         return res.end(payload.gzip);
+      }
+      // A trusted phone may update Hive Mobile from here, at home or over Tailscale.
+      case 'GET /api/app': {
+        const found = trusted(device) ? await mobileAppInfo() : null;
+        if (!found) return send(res, 404, { error: 'No Hive Mobile update here.' });
+        return send(res, 200, { versionCode: found.versionCode, versionName: found.versionName, size: found.size, sha256: found.sha256 });
+      }
+      case 'GET /api/app/apk': {
+        const found = trusted(device) ? await mobileAppInfo() : null;
+        if (!found) return send(res, 404, { error: 'No Hive Mobile update here.' });
+        res.writeHead(200, { 'Content-Type': 'application/vnd.android.package-archive', 'Content-Length': found.size });
+        return fs.createReadStream(found.path).on('error', () => res.destroy()).pipe(res);
       }
       case 'GET /api/love/changes':
         return send(res, 200, changesSince(num(url.searchParams.get('since'))));
@@ -745,6 +789,18 @@ function createHiveLink({ dataDir, getTracks, setLove, onPaired, streamSong = nu
       }
       case 'GET /api/playlists':
         return send(res, 200, { playlists: await playlistsPayload() });
+      // Playlists are the same on both: a trusted phone's new, changed and deleted playlists are made here too.
+      case 'PUT /api/playlist': {
+        if (!savePlaylist || !trusted(device)) return send(res, 403, { error: 'This phone can’t change Hive’s playlists.' });
+        const body = await readJson(req);
+        const saved = await savePlaylist(await playlistFromPhone(body));
+        if (!saved) return send(res, 409, { error: 'That playlist can’t be changed from the phone.' });
+        return send(res, 200, { id: String(saved.id), updatedAt: num(saved.updatedAt) });
+      }
+      case 'DELETE /api/playlist': {
+        if (!deletePlaylist || !trusted(device)) return send(res, 403, { error: 'This phone can’t change Hive’s playlists.' });
+        return send(res, 200, { deleted: !!(await deletePlaylist(String(url.searchParams.get('id') || ''))) });
+      }
       case 'GET /api/remote':
         return remoteState(res);
       case 'POST /api/remote':
@@ -792,6 +848,12 @@ function createHiveLink({ dataDir, getTracks, setLove, onPaired, streamSong = nu
       }
       case 'PUT /api/songs/cover':
         return receiveCover(req, res, url.searchParams, device);
+      case 'PUT /api/songs/back-cover':
+      case 'DELETE /api/songs/back-cover': {
+        const place = Number(url.searchParams.get('place'));
+        if (!Number.isInteger(place) || place < 0 || place > 50) { req.resume(); return send(res, 400, { error: 'Which back cover?' }); }
+        return receiveCover(req, res, url.searchParams, device, { back: place, remove: req.method === 'DELETE' });
+      }
       case 'POST /api/unpair':
         unpair(device.id);
         return send(res, 200, { ok: true });
@@ -830,10 +892,20 @@ function createHiveLink({ dataDir, getTracks, setLove, onPaired, streamSong = nu
 
   // A cover picked on the phone, for songs of the library by id: held in a
   // temp file while the tag editor's save queue writes it into each one.
-  async function receiveCover(req, res, params, device) {
+  // With `back`, it is that back cover (or, with `remove`, that one goes).
+  async function receiveCover(req, res, params, device, back = null) {
     const refuse = (status, error) => { req.resume(); return send(res, status, { error }); };
     if (!editSongs) return refuse(404, "This Hive doesn't take covers from the phone.");
     if (!trusted(device)) return refuse(403, 'Apply this phone\'s changes in Hive once (Settings › Connections) before it can change covers there.');
+    if (back?.remove) {
+      const wanted = new Set(String(params.get('ids') || '').split(',').filter(Boolean).slice(0, 2000));
+      const songs = (await getTracks()).filter(t => t?.path && !/^[a-z]+:/i.test(String(t.path)) && wanted.has(trackIdFor(t)));
+      req.resume();
+      if (!songs.length) return send(res, 404, { error: 'Hive has none of those songs.' });
+      await editSongs(songs.map(t => ({ path: path.resolve(String(t.path)) })), null, device.name, back);
+      log('Hive Link: phone took off a back cover', device.name, songs.length);
+      return send(res, 200, { edited: songs.map(trackIdFor) });
+    }
     const size = Number(req.headers['content-length']);
     if (!Number.isFinite(size) || size <= 0 || size > MAX_COVER_BYTES) return refuse(413, 'That picture is too big for a cover.');
     const wanted = new Set(String(params.get('ids') || '').split(',').filter(Boolean).slice(0, 2000));
@@ -851,7 +923,7 @@ function createHiveLink({ dataDir, getTracks, setLove, onPaired, streamSong = nu
     if (!ext) return send(res, 415, { error: 'The cover must be a JPEG or PNG picture.' });
     const file = path.join(os.tmpdir(), `hive-link-cover-${crypto.randomUUID()}.${ext}`);
     fs.writeFileSync(file, image);
-    try { await editSongs(songs.map(t => ({ path: path.resolve(String(t.path)) })), file, device.name); }
+    try { await editSongs(songs.map(t => ({ path: path.resolve(String(t.path)) })), file, device.name, back); }
     finally { fs.rm(file, { force: true }, () => {}); }
     log('Hive Link: phone changed a cover', device.name, songs.length);
     return send(res, 200, { edited: songs.map(trackIdFor) });
@@ -994,6 +1066,29 @@ function createHiveLink({ dataDir, getTracks, setLove, onPaired, streamSong = nu
   // ---- playlists (read only) -----------------------------------------------
 
   const COVER_FILE = /^[a-f0-9]{40}\.(jpe?g|png|webp)$/i;
+  /**
+   * A playlist as the phone sends it, as Hive keeps it: songs by their Hive id become their paths,
+   * streamed songs their "ytm:" entries (with what's known of them, as an import keeps it).
+   */
+  async function playlistFromPhone(body) {
+    const byId = new Map((await getTracks()).filter(t => t?.path).map(t => [trackIdFor(t), t]));
+    const tracks = [];
+    const kept = {};
+    for (const s of Array.isArray(body?.songs) ? body.songs : []) {
+      if (s?.kind === 'track') {
+        const t = byId.get(String(s.id || ''));
+        if (t) tracks.push(String(t.path));
+        continue;
+      }
+      const m = /^(am|sp):(.+)$/.exec(String(s?.key || ''));
+      if (!m) continue;
+      const ref = `ytm:${m[1] === 'am' ? 'apple' : 'spotify'}:${m[2]}`;
+      tracks.push(ref);
+      kept[ref] = { title: text(s.title), artist: text(s.artist), album: text(s.album), duration: num(s.duration) / 1000 };
+    }
+    return { id: String(body?.id || ''), name: text(body?.name) || 'Playlist', tracks, podcastEpisodes: kept, updatedAt: num(body?.updatedAt) || Date.now() };
+  }
+
   async function playlistsPayload() {
     if (!getPlaylists) return [];
     const lists = (await getPlaylists()) || [];
@@ -1012,9 +1107,19 @@ function createHiveLink({ dataDir, getTracks, setLove, onPaired, streamSong = nu
         const track = byPath.get(path.resolve(ref));
         return track ? { kind: 'track', id: trackIdFor(track) } : null;
       }).filter(Boolean);
-      return { id: String(p.id || ''), name: text(p.name) || 'Playlist', source: text(p.source), cover: COVER_FILE.test(String(p.cover || '')) ? String(p.cover) : '',
+      // A playlist that follows one on Spotify keeps its songs apart, as Spotify's; they're streamed songs to the phone.
+      const fromSpotify = (Array.isArray(p.spotifyTracks) ? p.spotifyTracks : []).map(t => {
+        const id = String(t?.spotifyId || '').trim() || (/^spotify:track:(.+)$/.exec(String(t?.spotifyUri || t?.path || '')) || [])[1];
+        return id ? { kind: 'stream', key: `sp:${id}`, title: text(t.title), artist: text(t.artist), album: text(t.album), duration: Math.round(num(t.duration) * 1000),
+          cover: COVER_FILE.test(String(t.spotifyArtworkCacheFile || '')) ? String(t.spotifyArtworkCacheFile) : '' } : null;
+      }).filter(Boolean);
+      songs.unshift(...fromSpotify);
+      // A playlist added outside Hive's own editor (an import, a file edit) may have no id: one made
+      // from its name keeps it on the phone, the same one each time.
+      const coverFile = [p.cover, p.spotifyArtworkCacheFile].map(c => String(c || '')).find(c => COVER_FILE.test(c)) || '';
+      return { id: String(p.id || (p.name ? `name:${sha256(String(p.name)).slice(0, 16)}` : '')), name: text(p.name) || 'Playlist', source: text(p.source), cover: coverFile,
         artworkUrl: /^https:\/\//.test(String(p.artworkUrl || p.cover || '')) ? String(p.artworkUrl || p.cover) : '', updatedAt: num(p.updatedAt), songs };
-    }).filter(p => p.id && p.songs.length);
+    }).filter(p => p.id && (p.songs.length || savePlaylist));
   }
 
   // ---- remote control ------------------------------------------------------

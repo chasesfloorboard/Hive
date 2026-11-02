@@ -2,6 +2,7 @@ package com.local.hive.mobile.ui
 
 import androidx.compose.foundation.combinedClickable
 import kotlinx.coroutines.flow.first
+import kotlinx.coroutines.flow.map
 import com.local.hive.mobile.ui.theme.HiveIcons
 import android.net.Uri
 import androidx.compose.foundation.background
@@ -89,6 +90,9 @@ import com.local.hive.mobile.ui.theme.Motion
 import com.local.hive.mobile.ui.theme.hiveGlass
 import com.local.hive.mobile.ui.theme.mix
 import kotlinx.coroutines.launch
+import androidx.compose.material.icons.rounded.LibraryMusic
+import androidx.compose.foundation.layout.aspectRatio
+import androidx.compose.foundation.lazy.grid.items as gridItems
 
 /** The library's tabs, in Samsung Music's order, with Hive's Browse for everything beyond the phone. */
 enum class HomeTab(val label: String) {
@@ -125,7 +129,7 @@ data class HomeNavigation(
 
 private enum class AlbumSort(val label: String) { Year("Release"), Name("Name"), Artist("Artist"), Added("Date added") }
 private enum class ArtistSort(val label: String) { Name("Name"), Songs("Most tracks") }
-private enum class TrackSort(val label: String) { Title("Name"), Artist("Artist"), Album("Album"), Added("Date added"), Length("Length") }
+internal enum class TrackSort(val label: String) { Title("Name"), Artist("Artist"), Album("Album"), Added("Date added"), Length("Length") }
 
 /**
  * Home, laid out as Samsung Music lays out its library: the app's name with
@@ -180,10 +184,10 @@ private fun HomeBar(vm: MainViewModel, nav: HomeNavigation, onCreatePlaylist: ()
     val c = Hive.colors
     val link by vm.link.collectAsStateWithLifecycle()
     var menu by remember { mutableStateOf(false) }
-    Row(Modifier.fillMaxWidth().height(60.dp).padding(start = 20.dp, end = 6.dp), verticalAlignment = Alignment.CenterVertically) {
-        // Hive's mark in the theme's accent, glowing with it.
-        HiveMark(Modifier.size(30.dp).shadow(10.dp, androidx.compose.foundation.shape.CircleShape, ambientColor = c.accentGlow, spotColor = c.accentGlow))
-        Spacer(Modifier.width(10.dp))
+    Row(Modifier.fillMaxWidth().height(60.dp).padding(start = 11.dp, end = 6.dp), verticalAlignment = Alignment.CenterVertically) {
+        // Hive's mark; held, it shuffles the themes (a 48 dp touch, the mark where it always was).
+        ShufflingHiveMark(vm.themes)
+        Spacer(Modifier.width(1.dp))
         Text("Hive", style = HiveText.viewTitle, color = c.text, modifier = Modifier.weight(1f))
         BarIcon(Icons.Rounded.Add, "Create playlist", onCreatePlaylist)
         BarIcon(Icons.Rounded.Search, "Search", nav.openSearch)
@@ -269,11 +273,11 @@ private fun AlbumsTab(vm: MainViewModel, nav: HomeNavigation, bottom: Dp) {
 
 /** A library album as Hive's album card; hold to start picking albums (and drag over others), tap to add or remove while picking. */
 @Composable
-internal fun AlbumCard(a: AlbumSummary, modifier: Modifier, onClick: () -> Unit) {
+internal fun AlbumCard(a: AlbumSummary, modifier: Modifier, subtitle: String = listOfNotNull(a.artist.ifBlank { "Unknown artist" }, a.year.takeIf { it > 0 }?.toString()).joinToString(" · "), onClick: () -> Unit) {
     val selection = LocalSelection.current
     val haptics = androidx.compose.ui.platform.LocalHapticFeedback.current
     CoverCard(
-        Uri.parse("content://media/external/audio/albumart/${a.albumId}"), a.album.ifBlank { "Unknown album" }, a.artist.ifBlank { "Unknown artist" }, modifier,
+        Uri.parse("content://media/external/audio/albumart/${a.albumId}"), a.album.ifBlank { "Unknown album" }, subtitle, modifier,
         artModifier = Modifier.sharedCover("album-${a.albumId}"),
         picked = selection?.hasAlbum(a.albumId) == true,
         onLongClick = selection?.let { s -> { haptics.performHapticFeedback(androidx.compose.ui.hapticfeedback.HapticFeedbackType.LongPress); s.startAlbumDrag(a.albumId) } },
@@ -298,7 +302,7 @@ private fun favoriteRows(tracks: List<Track>, streams: List<Pair<StreamTrack, Lo
     }.map { it.row }
 }
 
-private fun sortTracks(tracks: List<Track>, sort: TrackSort): List<Track> = when (sort) {
+internal fun sortTracks(tracks: List<Track>, sort: TrackSort): List<Track> = when (sort) {
     TrackSort.Title -> LibrarySort.sorted(tracks) { it.title }
     TrackSort.Artist -> LibrarySort.sorted(tracks, compareBy<Track> { it.album }.thenBy { it.trackNumber }) { it.artist }
     TrackSort.Album -> LibrarySort.sorted(tracks, compareBy<Track> { it.discNumber }.thenBy { it.trackNumber }) { it.album }
@@ -333,12 +337,13 @@ fun TrackList(
     sortHeader: (@Composable (count: String, shuffle: () -> Unit, play: () -> Unit) -> Unit)? = null,
     // Files and streamed songs together (Favorites with liked streamed songs), in order, playing as one queue.
     rows: List<PlaylistRow>? = null,
+    /** The list's scroll, for a page that fades its title in as the header scrolls away. */
+    list: androidx.compose.foundation.lazy.LazyListState = rememberLazyListState(),
 ) {
     val loved by vm.lovedIds.collectAsStateWithLifecycle()
     val now by vm.nowPlaying.collectAsStateWithLifecycle()
     val loaded by vm.libraryLoaded.collectAsStateWithLifecycle()
     val full by vm.fullSongs.collectAsStateWithLifecycle()
-    val list = rememberLazyListState()
     val scope = rememberCoroutineScope()
     val titles = remember(tracks, rows) { rows?.map { it.track?.title ?: it.stream?.title.orEmpty() } ?: tracks.map { it.title } }
     val firstByLetter by rememberComputed(emptyMap(), titles, indexed) {
@@ -404,7 +409,7 @@ private fun ArtistsTab(vm: MainViewModel, nav: HomeNavigation, bottom: Dp) {
 @Composable
 private fun ArtistRow(vm: MainViewModel, a: ArtistSummary, onLongClick: (() -> Unit)? = null, onClick: () -> Unit) {
     // Hive's artist photo once found, the artist's album cover until then.
-    val photo by produceState<String?>(null, a.artist) { value = vm.artistImage(a.artist) }
+    val photo = rememberArtistPhoto(vm, a.artist)
     LibraryRow(photo ?: Uri.parse("content://media/external/audio/albumart/${a.albumId}"), Icons.Rounded.Person, a.artist, "${countOf(a.albumCount, "album")} · ${countOf(a.trackCount, "track")}", round = true, onLongClick = onLongClick, onClick = onClick)
 }
 
@@ -443,10 +448,13 @@ private fun PlaylistsTab(vm: MainViewModel, nav: HomeNavigation, bottom: Dp, onC
     val mine by vm.playlists.collectAsStateWithLifecycle()
     val smartLists by vm.smartPlaylists.collectAsStateWithLifecycle()
     var newSmart by remember { mutableStateOf(false) }
+    val images by vm.playlistImages.collectAsStateWithLifecycle()
     if (newSmart) SmartPlaylistDialog(vm, null, onDismiss = { newSmart = false }) { id -> newSmart = false; nav.open("smart/$id") }
     val onPc by vm.pcPlaylists.collectAsStateWithLifecycle()
+    val playlistsInStep by vm.playlistSyncActive.collectAsStateWithLifecycle()
     val link by vm.link.collectAsStateWithLifecycle()
-    LaunchedEffect(link.paired) { if (link.paired) runCatching { vm.pcLibrary.refresh() } }
+    // Again after each sync, so a playlist made on the PC shows up without leaving the tab.
+    LaunchedEffect(link.paired, link.lastSyncAt) { if (link.paired) runCatching { vm.pcLibrary.refreshPlaylists() } }
     var note by remember { mutableStateOf<String?>(null) }
     val context = androidx.compose.ui.platform.LocalContext.current
     // Import an M3U: matched to this phone's songs by file name, then by artist and title.
@@ -468,12 +476,13 @@ private fun PlaylistsTab(vm: MainViewModel, nav: HomeNavigation, bottom: Dp, onC
                 LazyRow(contentPadding = PaddingValues(horizontal = 16.dp, vertical = 10.dp), horizontalArrangement = Arrangement.spacedBy(12.dp)) {
                     // Favorites counts the liked streamed songs it lists too.
                     // Holding a card opens the playlist's menu, as holding a playlist does.
-                    items(smart) { (kind, tracks, icon) -> SmartCard(kind.title, countOf(tracks.size + if (kind == AutoPlaylist.Favorites) likedStreams.size else 0, "track"), tracks.map { it.artworkUri }.distinct().take(4), icon,
+                    items(smart) { (kind, tracks, icon) -> SmartCard(kind.title, countOf(tracks.size + if (kind == AutoPlaylist.Favorites) likedStreams.size else 0, "track"),
+                        (if (kind == AutoPlaylist.Favorites) images[com.local.hive.mobile.data.PlaylistImages.FAVORITES] else images["auto:${kind.name}"])?.let { listOf<Any>(it) } ?: mosaicCovers(tracks), icon,
                         onLongClick = { nav.collection(AutoDjRequest(kind.title) { tracks }) }) { nav.openPlaylist(kind) } }
                     // Recently played holds streamed songs too, so it's built from its rows.
                     item { SmartCard(AutoPlaylist.RecentlyPlayed.title, countOf(played.size, "track"), played.mapNotNull { it.art }.distinct().take(4), Icons.Rounded.History,
                         onLongClick = { nav.collection(AutoDjRequest(AutoPlaylist.RecentlyPlayed.title) { played.mapNotNull { it.track } }) }) { nav.openPlaylist(AutoPlaylist.RecentlyPlayed) } }
-                    item { SmartCard(AutoPlaylist.TopRated.title, countOf(rated.size, "track"), rated.map { it.artworkUri }.distinct().take(4), Icons.Rounded.Star,
+                    item { SmartCard(AutoPlaylist.TopRated.title, countOf(rated.size, "track"), mosaicCovers(rated), Icons.Rounded.Star,
                         onLongClick = { nav.collection(AutoDjRequest(AutoPlaylist.TopRated.title) { rated }) }) { nav.openPlaylist(AutoPlaylist.TopRated) } }
                 }
             }
@@ -481,31 +490,42 @@ private fun PlaylistsTab(vm: MainViewModel, nav: HomeNavigation, bottom: Dp, onC
                 Row(Modifier.fillMaxWidth().padding(start = 18.dp, end = 8.dp, top = 10.dp), verticalAlignment = Alignment.CenterVertically) {
                     Text("My playlists", style = HiveText.year, color = Hive.colors.text, modifier = Modifier.weight(1f))
                     BarIcon(Icons.Rounded.FileOpen, "Import M3U", { importer.launch(arrayOf("audio/x-mpegurl", "audio/mpegurl", "application/vnd.apple.mpegurl", "*/*")) })
-                    BarIcon(Icons.Rounded.Add, "Create playlist", onCreate)
+                }
+            }
+            // New playlist, always first: a plain one, or a smart one kept up to date by its rules.
+            item(key = "new") {
+                var choose by remember { mutableStateOf(false) }
+                Box {
+                    LibraryRow(null, Icons.Rounded.Add, "New playlist", "", modifier = Modifier.animateItem()) { choose = true }
+                    HiveMenu(choose, { choose = false }) {
+                        HiveMenuItem("Playlist", Icons.AutoMirrored.Rounded.QueueMusic) { choose = false; onCreate() }
+                        HiveMenuItem("Smart playlist", Icons.Rounded.AutoAwesome) { choose = false; newSmart = true }
+                    }
                 }
             }
             // Favorites heads the user's playlists too, not only as the card above.
             item(key = "favorites") {
-                LibraryRow(favorites.firstOrNull()?.artworkUri ?: likedStreams.firstOrNull()?.first?.artworkUrl, Icons.Rounded.Favorite, AutoPlaylist.Favorites.title,
+                LibraryRow(images[com.local.hive.mobile.data.PlaylistImages.FAVORITES] ?: favorites.firstOrNull()?.songArtUri ?: likedStreams.firstOrNull()?.first?.artworkUrl, Icons.Rounded.Favorite, AutoPlaylist.Favorites.title,
                     countOf(favorites.size + likedStreams.size, "track"), modifier = Modifier.animateItem(),
                     onLongClick = { nav.collection(AutoDjRequest(AutoPlaylist.Favorites.title) { favorites }) }) { nav.openPlaylist(AutoPlaylist.Favorites) }
             }
-            if (mine.isEmpty()) item { LibraryRow(null, Icons.Rounded.Add, "Create playlist", "Or add songs from any ⋮ menu", onClick = onCreate) }
             // Smart playlists: made here by rules, kept up to date by themselves.
             items(smartLists, key = { "smart" + it.id }) { p ->
-                LibraryRow(null, Icons.Rounded.AutoAwesome, p.name, "Smart · " + countOf(p.rules.size, "rule"), modifier = Modifier.animateItem(),
+                // Its own picture, else the cover of the first song it holds now.
+                val first by remember(p.id) { vm.smartTracks(p.id).map { it.firstOrNull()?.songArtUri } }.collectAsStateWithLifecycle(null)
+                LibraryRow(images[com.local.hive.mobile.data.PlaylistImages.smart(p.id)] ?: first, Icons.Rounded.AutoAwesome, p.name, "Smart · " + countOf(p.rules.size, "rule"), modifier = Modifier.animateItem(),
                     onLongClick = { nav.collection(AutoDjRequest(p.name) { vm.smartTracks(p.id).first() }) }) { nav.open("smart/${p.id}") }
             }
-            item { NewSmartPlaylistRow { newSmart = true } }
             items(mine, key = { it.id }) { p ->
-                LibraryRow(playlistCover(p), Icons.AutoMirrored.Rounded.QueueMusic, p.name, listOfNotNull(countOf(p.trackCount, "track"), p.source.ifBlank { null }).joinToString(" · "), modifier = Modifier.animateItem(),
+                LibraryRow(images[com.local.hive.mobile.data.PlaylistImages.user(p.id)] ?: playlistCover(p), Icons.AutoMirrored.Rounded.QueueMusic, p.name, listOfNotNull(countOf(p.trackCount, "track"), p.source.ifBlank { null }).joinToString(" · "), modifier = Modifier.animateItem(),
                     onLongClick = { nav.collection(AutoDjRequest(p.name) { vm.playlistRows(p.id).first().mapNotNull { it.track } }) }) { nav.openUserPlaylist(p.id) }
             }
-            if (link.paired && onPc.isNotEmpty()) {
+            // Kept in step with Hive, the PC's playlists are among the ones above; only an older Hive lists them apart.
+            if (link.paired && onPc.isNotEmpty() && !playlistsInStep) {
                 // The PC's name is already "Hive on <PC>".
                 item { Text(link.serverName.ifBlank { "On your PC" }, style = HiveText.year, color = Hive.colors.text, modifier = Modifier.padding(start = 18.dp, top = 22.dp, bottom = 6.dp)) }
                 items(onPc, key = { "pc" + it.id }) { p ->
-                    LibraryRow(vm.pcLibrary.coverFor(p.cover) ?: p.artworkUrl.ifBlank { null }, Icons.AutoMirrored.Rounded.QueueMusic, p.name, countOf(p.songs.size, "song")) { nav.openPcPlaylist(p.id) }
+                    LibraryRow(images[com.local.hive.mobile.data.PlaylistImages.pc(p.id)] ?: vm.pcLibrary.playlistCover(p), Icons.AutoMirrored.Rounded.QueueMusic, p.name, countOf(p.songs.size, "song")) { nav.openPcPlaylist(p.id) }
                 }
             }
         }
@@ -523,12 +543,7 @@ private fun SmartCard(title: String, detail: String, covers: List<Any>, icon: Im
     Column(Modifier.width(132.dp).pressable(onClick, onLongClick = onLongClick?.let { hold -> { haptics.performHapticFeedback(androidx.compose.ui.hapticfeedback.HapticFeedbackType.LongPress); hold() } })) {
         Box(Modifier.size(132.dp).shadow(12.dp, HiveShape.art, ambientColor = c.accentGlow).clip(HiveShape.art).background(mix(c.accent, c.panelStrong, 0.12f))) {
             when {
-                // A tile whose song has no cover shows another of the four, never an empty square.
-                covers.size >= 4 -> Column {
-                    covers.chunked(2).forEachIndexed { r, pair -> Row(Modifier.weight(1f)) { pair.forEachIndexed { i, cover ->
-                        Artwork(cover, Modifier.weight(1f).fillMaxSize(), androidx.compose.ui.graphics.RectangleShape, orElse = covers[(r * 2 + i + 1) % covers.size])
-                    } } }
-                }
+                covers.size >= 4 -> CoverMosaic(covers)
                 covers.isNotEmpty() -> Artwork(covers.first(), Modifier.fillMaxSize(), androidx.compose.ui.graphics.RectangleShape)
             }
             // Hive's mark of what the list is, in a glass chip.
@@ -543,7 +558,7 @@ private fun SmartCard(title: String, detail: String, covers: List<Any>, icon: Im
 
 // ---- Favorites ----
 
-private enum class FavoriteView(val label: String) { Tracks("Tracks"), Albums("Albums"), Artists("Artists") }
+private enum class FavoriteView(val label: String) { Home("Favorites"), Tracks("Tracks"), Albums("Albums"), Artists("Artists"), Playlists("Playlists") }
 
 /** Which Favorites to show: the current one as a heading with ▾, the rest in a menu with their counts. */
 @Composable
@@ -573,23 +588,32 @@ private fun FavoritesTab(vm: MainViewModel, nav: HomeNavigation, actions: TrackA
     val allTracks by vm.favorites.collectAsStateWithLifecycle()
     val allStreams by vm.streamFavorites.collectAsStateWithLifecycle()
     val favoritedAt by vm.favoritedAt.collectAsStateWithLifecycle()
-    val allAlbums by vm.favoriteAlbums.collectAsStateWithLifecycle()
     // Searching Favorites searches only Favorites: songs by title, artist or album, albums by name or artist.
     var query by rememberSaveable { mutableStateOf("") }
     val q = LibrarySort.words(query)
     val tracks by rememberComputed(allTracks, allTracks, q) { if (q.isEmpty()) allTracks else allTracks.filter { LibrarySort.matches("${it.title} ${it.artist} ${it.album}", q) } }
     val streams by rememberComputed(allStreams, allStreams, q) { if (q.isEmpty()) allStreams else allStreams.filter { (s, _) -> LibrarySort.matches("${s.title} ${s.artist} ${s.album}", q) } }
-    val albums by rememberComputed(allAlbums, allAlbums, q) { if (q.isEmpty()) allAlbums else allAlbums.filter { LibrarySort.matches("${it.album} ${it.artist}", q) } }
-    var view by rememberSetting("view.favorites", FavoriteView.Tracks)
-    var sort by rememberSaveable { mutableStateOf(TrackSort.Added) }
-    // The artists of favorite songs, most favorited first.
-    val artists by rememberComputed(emptyList(), allTracks, q) {
-        allTracks.filter { it.artist.isNotBlank() && LibrarySort.matches(it.artist, q) }.groupBy { it.artist }
-            .map { (name, songs) -> ArtistSummary(name, songs.first().albumId, songs.distinctBy { it.albumId }.size, songs.size) }
-            .let { list -> LibrarySort.sorted(list) { it.artist } }
-            .sortedByDescending { it.trackCount } // stable: equal counts stay in name order
+    // Every album and artist with a song you've favorited, the most favorited first.
+    val likedAlbums by rememberComputed(emptyList<LikedGroup>(), allTracks, q) {
+        allTracks.groupBy { it.albumId }.map { (id, songs) -> LikedGroup(songs.first().album, songs.first().displayAlbumArtist, id, songs.size) }
+            .filter { q.isEmpty() || LibrarySort.matches("${it.name} ${it.artist}", q) }
+            .sortedWith(compareByDescending<LikedGroup> { it.liked }.thenBy { it.name.lowercase() })
     }
-    val counts = mapOf(FavoriteView.Tracks to tracks.size + streams.size, FavoriteView.Albums to albums.size, FavoriteView.Artists to artists.size)
+    val likedArtists by rememberComputed(emptyList<LikedGroup>(), allTracks, q) {
+        allTracks.filter { it.artist.isNotBlank() && it.artist != "<unknown>" }.groupBy { it.artist.trim().lowercase() }
+            .map { (_, songs) -> LikedGroup(songs.first().artist.trim(), "", songs.groupingBy { it.albumId }.eachCount().maxBy { it.value }.key, songs.size) }
+            .filter { q.isEmpty() || LibrarySort.matches(it.name, q) }
+            .sortedWith(compareByDescending<LikedGroup> { it.liked }.thenBy { it.name.lowercase() })
+    }
+    // A new setting name, so everyone starts on the Favorites page itself.
+    var view by rememberSetting("view.favorites.v2", FavoriteView.Home)
+    val tiles by vm.favoriteTiles.collectAsStateWithLifecycle()
+    val shownTiles by rememberComputed(tiles, tiles, q) { if (q.isEmpty()) tiles else tiles.filter { LibrarySort.matches("${it.title} ${it.subtitle}", q) } }
+    val images by vm.playlistImages.collectAsStateWithLifecycle()
+    var sort by rememberSaveable { mutableStateOf(TrackSort.Added) }
+    // Liked artists (♥ on an artist's page), the most recently liked first.
+    val playlists = shownTiles.filter { it.kind == "playlist" }
+    val counts = mapOf(FavoriteView.Home to tiles.size + 1, FavoriteView.Tracks to tracks.size + streams.size, FavoriteView.Albums to likedAlbums.size, FavoriteView.Artists to likedArtists.size, FavoriteView.Playlists to playlists.size)
     Column(Modifier.fillMaxSize()) {
         FavoriteViewPicker(view, counts) { view = it }
         // Hidden until the list is pulled down past its top.
@@ -613,30 +637,101 @@ private fun FavoritesTab(vm: MainViewModel, nav: HomeNavigation, actions: TrackA
                         indexed = sort == TrackSort.Title,
                         sortHeader = { count, shuffle, play -> ListHeader(TrackSort.entries, sort, { if (it == TrackSort.Added) "Date favorited" else it.label }, { sort = it }, count, shuffle, play) })
                 }
+                FavoriteView.Home -> FavoritesHome(vm, nav, tracks, streams, shownTiles, images[com.local.hive.mobile.data.PlaylistImages.FAVORITES], bottom, searching = q.isNotEmpty())
                 FavoriteView.Artists -> LazyColumn(Modifier.fillMaxSize(), contentPadding = PaddingValues(top = 6.dp, bottom = bottom + 12.dp)) {
-                    if (artists.isEmpty()) item { if (q.isEmpty()) EmptyState("No favorite artists yet", "Artists show up here once you ♥ their songs.") else EmptyState("No favorite artists match", "Nothing in Favorites matches “${query.trim()}”.") }
-                    items(artists, key = { it.artist }) { a ->
-                        val photo by produceState<String?>(null, a.artist) { value = vm.artistImage(a.artist) }
-                        LibraryRow(photo ?: Uri.parse("content://media/external/audio/albumart/${a.albumId}"), Icons.Rounded.Person, a.artist,
-                            countOf(a.trackCount, "favorite song"), round = true) { nav.openArtist(a.artist) }
+                    if (likedArtists.isEmpty()) item { if (q.isEmpty()) EmptyState("No favorite artists yet", "Tap ♥ on a song and its artist shows here.") else EmptyState("No favorite artists match", "Nothing in Favorites matches “${query.trim()}”.") }
+                    items(likedArtists, key = { "a" + it.name.lowercase() }) { a -> LikedArtistRow(vm, a) { nav.openArtist(a.name) } }
+                }
+                FavoriteView.Playlists -> LazyColumn(Modifier.fillMaxSize(), contentPadding = PaddingValues(top = 6.dp, bottom = bottom + 12.dp)) {
+                    if (playlists.isEmpty()) item { if (q.isEmpty()) EmptyState("No favorite playlists yet", "Tap ♥ on any playlist, yours or from Apple Music or Spotify, to keep it here.") else EmptyState("No favorite playlists match", "Nothing in Favorites matches “${query.trim()}”.") }
+                    items(playlists, key = { it.key }) { p ->
+                        LibraryRow(p.art, Icons.AutoMirrored.Rounded.QueueMusic, p.title, p.subtitle.ifBlank { "Playlist" }) { nav.open(p.route) }
                     }
                 }
-                FavoriteView.Albums -> {
-                    val list = rememberLazyListState()
-                    val rows = remember(albums) { albums.chunked(2).associate { row -> "f${row.first().albumId}" as Any to row.map { it.albumId } } }
-                    val order = remember(albums) { albums.map { it.albumId } }
-                    PickableList(albums = order)
-                    LazyColumn(Modifier.fillMaxSize().albumDragSelect(list, rows, order), state = list, contentPadding = PaddingValues(top = 6.dp, bottom = bottom + 12.dp)) {
-                    if (albums.isEmpty()) item { if (q.isEmpty()) EmptyState("No favorite albums yet", "Tap ♥ on an album's page to keep it here.") else EmptyState("No favorite albums match", "Nothing in Favorites matches “${query.trim()}”.") }
-                    albums.chunked(2).forEach { row ->
+                FavoriteView.Albums -> LazyColumn(Modifier.fillMaxSize(), contentPadding = PaddingValues(top = 6.dp, bottom = bottom + 12.dp)) {
+                    if (likedAlbums.isEmpty()) item { if (q.isEmpty()) EmptyState("No favorite albums yet", "Tap ♥ on a song and its album shows here.") else EmptyState("No favorite albums match", "Nothing in Favorites matches “${query.trim()}”.") }
+                    likedAlbums.chunked(2).forEach { row ->
                         item(key = "f${row.first().albumId}") {
-                            CoverRow(row) { a, m -> AlbumCard(a, m) { nav.openAlbum(a.albumId) } }
+                            CoverRow(row) { a, m ->
+                                CoverCard(Uri.parse("content://media/external/audio/albumart/${a.albumId}"), a.name.ifBlank { "Unknown album" }, likedLine(a.liked, a.artist.ifBlank { "Unknown artist" }), m,
+                                    artModifier = Modifier.sharedCover("album-${a.albumId}")) { nav.openAlbum(a.albumId) }
+                            }
                         }
-                    }
                     }
                 }
             }
         }
+    }
+}
+
+/** An album or artist with songs you've favorited: [liked] of them. [albumId] is the album, or the artist's most liked album (for a picture). */
+private data class LikedGroup(val name: String, val artist: String, val albumId: Long, val liked: Int)
+
+/** "♥ 3 · Artist": how many songs are favorited, then the rest. */
+private fun likedLine(liked: Int, rest: String = "") = listOf("♥ ${countOf(liked, "song")}", rest).filter { it.isNotBlank() }.joinToString(" · ")
+
+/** An artist with songs you've favorited: Hive's photo of them once found, and how many songs. */
+@Composable
+private fun LikedArtistRow(vm: MainViewModel, a: LikedGroup, onClick: () -> Unit) {
+    val photo = rememberArtistPhoto(vm, a.name)
+    LibraryRow(photo ?: Uri.parse("content://media/external/audio/albumart/${a.albumId}"), Icons.Rounded.Person, a.name, likedLine(a.liked), round = true, onClick = onClick)
+}
+
+/**
+ * The Favorites page: big squares, the Favorites playlist first, then every liked playlist, artist
+ * and album, the most recently liked first. Each square is just its picture, its name underneath.
+ */
+@Composable
+private fun FavoritesHome(vm: MainViewModel, nav: HomeNavigation, tracks: List<Track>, streams: List<Pair<StreamTrack, Long>>, tiles: List<FavoriteTile>, favoritesImage: String?, bottom: Dp, searching: Boolean) {
+    val c = Hive.colors
+    androidx.compose.foundation.lazy.grid.LazyVerticalGrid(
+        androidx.compose.foundation.lazy.grid.GridCells.Fixed(2),
+        Modifier.fillMaxSize(),
+        contentPadding = PaddingValues(start = 16.dp, end = 16.dp, top = 6.dp, bottom = bottom + 12.dp),
+        horizontalArrangement = Arrangement.spacedBy(14.dp),
+        verticalArrangement = Arrangement.spacedBy(16.dp),
+    ) {
+        if (!searching) item(key = "favorites") {
+            val covers: List<Any> = favoritesImage?.let { listOf(it) } ?: mosaicCovers(tracks) + streams.mapNotNull { it.first.artworkUrl.ifBlank { null } }.distinct().take(MOSAIC)
+            FavoriteSquare(AutoPlaylist.Favorites.title, covers, round = false, icon = Icons.Rounded.Favorite) { nav.openPlaylist(AutoPlaylist.Favorites) }
+        }
+        gridItems(tiles, key = { it.key }) { t ->
+            FavoriteSquare(t.title, listOfNotNull(t.art), round = false, icon = when (t.kind) { "artist" -> Icons.Rounded.Person; "album" -> Icons.Rounded.LibraryMusic; else -> Icons.AutoMirrored.Rounded.QueueMusic }) { nav.open(t.route) }
+        }
+        if (tiles.isEmpty() && !searching) item(span = { androidx.compose.foundation.lazy.grid.GridItemSpan(2) }) {
+            Text("Tap ♥ on an album, an artist or any playlist and it shows here.", style = HiveText.small, color = c.textDim, modifier = Modifier.padding(top = 8.dp, start = 4.dp, end = 4.dp))
+        }
+    }
+}
+
+/** A four-cover mosaic: the first four songs, one per album. */
+private const val MOSAIC = 4
+
+/** Songs' own pictures for a mosaic, one song per album (never one song's cover twice, nor an album's on a song without one). */
+internal fun mosaicCovers(tracks: List<Track>): List<Any> = tracks.distinctBy { it.albumId }.take(MOSAIC).map { it.songArtUri }
+
+/** Four covers in a square, each its song's own: a song without a picture shows none, never another's. */
+@Composable
+internal fun CoverMosaic(covers: List<Any>) = Column {
+    covers.take(4).chunked(2).forEachIndexed { r, pair -> Row(Modifier.weight(1f)) { pair.forEachIndexed { i, cover ->
+        Artwork(cover, Modifier.weight(1f).fillMaxSize(), androidx.compose.ui.graphics.RectangleShape)
+    } } }
+}
+
+/** A big square on the Favorites page: the picture (four covers for Favorites) and the name under it. */
+@Composable
+private fun FavoriteSquare(title: String, covers: List<Any>, round: Boolean, icon: ImageVector, onClick: () -> Unit) {
+    val c = Hive.colors
+    val shape = if (round) CircleShape else HiveShape.art
+    Column(Modifier.fillMaxWidth().pressable(onClick)) {
+        Box(Modifier.fillMaxWidth().aspectRatio(1f).softShadow(18.dp, shape).clip(shape).background(mix(c.accent, c.panelStrong, 0.12f)), contentAlignment = Alignment.Center) {
+            when {
+                covers.size >= 4 -> CoverMosaic(covers)
+                covers.isNotEmpty() -> Artwork(covers.first(), Modifier.fillMaxSize(), androidx.compose.ui.graphics.RectangleShape, icon)
+                else -> Icon(icon, null, tint = c.textDim, modifier = Modifier.size(40.dp))
+            }
+        }
+        Text(title, style = HiveText.cardTitle, color = c.text, maxLines = 1, overflow = TextOverflow.Ellipsis, modifier = Modifier.padding(top = 8.dp, start = 2.dp, end = 2.dp))
     }
 }
 

@@ -1,7 +1,6 @@
 const { app, BrowserWindow, protocol, net, ipcMain, dialog, clipboard, nativeImage, shell, nativeTheme, Tray, Menu, crashReporter, globalShortcut, screen } = require('electron');
 const path = require('path');
 const fs = require('fs');
-const { replaceFile } = require('./replace-file');
 // Windows has no `python3`. Hive's tag writer, library database worker and
 // MusicBee Wrapped import all run Python, and every one of them reads
 // BEEHIVE_PYTHON, so point it once at the embeddable Python bundled next to
@@ -27,8 +26,6 @@ const zlib = require('zlib');
 const http = require('http');
 const { pathToFileURL } = require('url');
 const { Readable } = require('stream');
-const util = require('util');
-const { fork, spawn, execFileSync } = require('child_process');
 const { readWavMusicBeeLove: readSharedWavMusicBeeLove, readWavMusicBeePopmRaw: readSharedWavMusicBeePopmRaw } = require('./wav-id3');
 const { readMp3MusicBeeLove: readSharedMp3MusicBeeLove } = require('./musicbee-love');
 const { analyzeLoveValues, isLoveFieldName, normalizeLoveValue, CANONICAL_LOVE_TAG } = require('./love-integrity');
@@ -146,6 +143,10 @@ function stableHiveDataRoot() {
 const STABLE_DATA_ROOT = () => stableHiveDataRoot();
 const LEGACY_BUILD_DATA_ROOT = () => path.join(PORTABLE_ROOT(), 'data');
 function hiveUserBackupRoot() {
+  // A copy of Hive given its own data folder (HIVE_DATA_ROOT) keeps its backup beside that folder, so
+  // copies never share one (a test copy restored another's play counts from the shared backup).
+  const explicitRoot = String(process.env.HIVE_DATA_ROOT || '').trim();
+  if (explicitRoot) return path.join(path.dirname(path.resolve(explicitRoot)), 'User Data Backup');
   const hiveRoot = findHiveContainerRoot(PORTABLE_ROOT());
   return hiveRoot ? path.join(hiveRoot, 'User Data Backup') : '';
 }
@@ -330,17 +331,6 @@ function resolveConfigFolders(config) {
   const source = Array.isArray(config?.folders) ? config.folders : [];
   return source.map(resolveConfiguredFolder).filter(Boolean);
 }
-function portableConfigFolders(config) {
-  const next = { ...(config || {}) };
-  next.folders = (Array.isArray(next.folders) ? next.folders : []).map(folder => serializePortableFolder(resolveConfiguredFolder(folder))).filter(Boolean);
-  return next;
-}
-async function normalizePortableLibraryConfig() {
-  const config = await readJsonSafe(CONFIG_PATH(), { folders: [] });
-  const normalized = portableConfigFolders(config);
-  if (JSON.stringify(normalized.folders) !== JSON.stringify(config.folders || [])) await writeJsonSafe(CONFIG_PATH(), normalized);
-  return normalized;
-}
 // Metadata writers replace complete media files. Never replace the inode that
 // the active audio transport is reading: an in-place Love/tag rewrite can race
 // the decoder and turn a metadata click into an unsafe audio event. Waiters are
@@ -373,10 +363,7 @@ const {
   sessionLogPath,
   writeSession,
   flushSessionLogSync,
-  pruneSessionLogs,
   startupDebug,
-  startupDebugAppMetrics,
-  startStartupProfiler,
   stopStartupProfiler,
   spawnTracked,
   forkTracked,
@@ -413,8 +400,6 @@ const gstreamerBridge = createGstreamerBridge({
   },
 });
 const {
-  ensureGstreamerHelper,
-  startGstreamerProcess,
   gstreamerStatus,
   restartGstreamerProcess,
   sendGstreamerCommand,
@@ -524,7 +509,6 @@ const { createHiveTray, updateHiveTrayState, hiveLogoPath } = createTrayControll
   quitApp: () => app.quit(),
   pairPhone: () => showHiveLinkPairing(),
 });
-let mprisTrackPath = '';
 let lastMprisArtworkLogAt = 0;
 const MPRIS_ARTWORK_LOG_INTERVAL_MS = 5000;
 
@@ -1222,7 +1206,9 @@ function createWindow({ preservePlayback = false } = {}) {
       if (next.protocol !== current.protocol || next.href !== current.href) event.preventDefault();
     } catch { event.preventDefault(); }
   });
-
+  // Hive makes no WebRTC calls; without this, a plugin's sandbox frame could reach the network
+  // over WebRTC's UDP, which the request filter below never sees.
+  try { mainWindow.webContents.setWebRTCIPHandlingPolicy('disable_non_proxied_udp'); } catch {}
   let rendererRecoveryTimes = [];
   mainWindow.webContents.on('render-process-gone', (_event, details) => {
     let metrics = null;
@@ -1248,7 +1234,16 @@ function createWindow({ preservePlayback = false } = {}) {
   // webContents.setFrameRate() only affects offscreen rendering, so it never
   // throttled this window.
 
-  mainWindow.webContents.on('console-message', (_event, level, message, line, sourceId) => {
+  mainWindow.webContents.on('console-message', (event, ...legacy) => {
+    // Newer Electron passes one event ({ level: 'warning', message, lineNumber, sourceId }); Electron 33
+    // passes (event, level, message, line, sourceId). Reading the event's own fields avoids the
+    // deprecated arguments where they're there.
+    const NAMED = { debug: 0, verbose: 0, info: 1, warning: 2, error: 3 };
+    const named = typeof event?.message === 'string';
+    const level = named ? (NAMED[event.level] ?? Number(event.level) ?? 1) : legacy[0];
+    const message = named ? event.message : legacy[1];
+    const line = named ? event.lineNumber : legacy[2];
+    const sourceId = named ? event.sourceId : legacy[3];
     const levelName = Number(level) >= 3 ? 'ERROR' : Number(level) === 2 ? 'WARN' : Number(level) === 1 ? 'INFO' : 'DEBUG';
     writeSession(levelName, 'RENDERER', String(message), { line, sourceId });
     if (Number(level) >= 2 && !CONSOLE_NOISE.some(re => re.test(String(message)))) {
@@ -1325,6 +1320,16 @@ app.whenReady().then(async () => {
   // Web Audio silences cross-origin media without CORS, and most stream
   // hosts send none, so media responses get a permissive header. Only
   // media requests are touched.
+  // Plugins' sandbox frames get no network (plugin-sandbox.js). Their CSP already says so; this
+  // also covers a frame that swapped its page for one without that CSP. Hive's windows have no
+  // other frames, so any network request from a frame is cancelled.
+  try {
+    require('electron').session.defaultSession.webRequest.onBeforeRequest({ urls: ['*://*/*', 'ws://*/*', 'wss://*/*'] }, (details, callback) => {
+      let fromFrame = details.resourceType === 'subFrame';
+      try { fromFrame = fromFrame || !!details.frame?.parent; } catch {}
+      callback(fromFrame ? { cancel: true } : {});
+    });
+  } catch (err) { console.warn('[Hive] plugin frame network block unavailable:', err?.message || err); }
   try {
     require('electron').session.defaultSession.webRequest.onHeadersReceived((details, callback) => {
       if (details.resourceType !== 'media') return callback({});
@@ -2502,7 +2507,6 @@ ipcMain.handle('mpris:update', async (_evt, payload = {}) => {
   ].map(v => String(v || '').trim()).filter(Boolean);
   let artworkPath = '';
   if (track?.path && !/^(?:https?:|spotify:)/i.test(String(track.path))) {
-    mprisTrackPath = String(track.path);
     for (const coverFile of coverCandidates) {
       // Only Beehive's own cached cover filename is accepted here. Remote/data/blob
       // URLs are handled separately through artworkUrl when there is no local art.
@@ -2530,7 +2534,6 @@ ipcMain.handle('mpris:update', async (_evt, payload = {}) => {
       });
     }
   } else {
-    mprisTrackPath = '';
   }
   const updatePayload = {
     track,
@@ -2824,27 +2827,14 @@ ipcMain.handle('plugins:setSettings', async (_evt, payload={}) => {
 ipcMain.handle('plugins:openFolder', async () => { const dir=PLUGINS_DIR(); await fsp.mkdir(dir,{recursive:true,mode:0o700}); await shell.openPath(dir); return {dir}; });
 
 
-ipcMain.handle('plugins:run', async (_evt, payload={}) => {
-  const source=String(payload?.source||''); const id=String(payload?.id||'plugin');
-  if(source.length>512*1024) throw new Error('Plugin script exceeds the 512 KB limit.');
-  if(!mainWindow || mainWindow.isDestroyed()) return false;
-  const encoded=JSON.stringify(source);
-  const encodedId=JSON.stringify(id.replace(/[^a-zA-Z0-9._-]/g,'_'));
-  await mainWindow.webContents.executeJavaScript(`(function(){try{const fn=new Function('Hive', ${encoded}); return Promise.resolve(fn(window.HivePlugin)).catch(()=>false);}catch(e){console.warn('[Hive Plugin]', ${encodedId}, e); return false;}})()`, true);
-  return true;
-});
-
 ipcMain.handle('plugins:installFolder', async () => {
   const res=await dialog.showOpenDialog(mainWindow,{properties:['openDirectory']}); if(res.canceled||!res.filePaths[0]) return {canceled:true};
   const source=path.resolve(res.filePaths[0]); const manifestPath=path.join(source,'manifest.json');
   const manifest=JSON.parse(await fsp.readFile(manifestPath,'utf8'));
   if(!/^[a-zA-Z0-9._-]{1,80}$/.test(String(manifest?.id||''))) throw new Error('Plugin manifest id must contain only letters, numbers, dots, underscores, and dashes.');
-  // Plugins are a trusted-local extension model, not a sandbox (see
-  // docs/PLUGIN_API.md): installed code runs with the same permissions as
-  // Hive itself. That must be disclosed at the moment of installing, not
-  // only in documentation the user may never read -- a native dialog here,
-  // naming the actual plugin and its declared permissions, so the user makes
-  // an informed decision before anything is copied into the plugins folder.
+  // Plugins run sandboxed (app/renderer/plugin-sandbox.js): no files, no network, nothing of Hive's
+  // beyond what their declared permissions allow. What those permissions are is shown here, naming
+  // the actual plugin, before anything is copied into the plugins folder.
   const permissions = Array.isArray(manifest.permissions) ? manifest.permissions.filter(Boolean) : [];
   const confirmChoice = await dialog.showMessageBox(mainWindow, {
     type: 'warning',
@@ -2854,7 +2844,7 @@ ipcMain.handle('plugins:installFolder', async () => {
     noLink: true,
     title: 'Install plugin?',
     message: `Install "${String(manifest.name || manifest.id)}"?`,
-    detail: `Plugins are trusted local code, not sandboxed: this plugin can run with the same permissions as Hive itself, including anything exposed by Hive's own plugin API. Only install plugins from sources you trust.\n\nAuthor: ${String(manifest.author || 'Unknown')}\nDeclared permissions: ${permissions.length ? permissions.join(', ') : 'none declared'}`,
+    detail: `Plugins run in a sandbox: this plugin can't open your files, use the network or reach the rest of Hive. It can only do what the permissions below allow. Only install plugins from sources you trust.\n\nAuthor: ${String(manifest.author || 'Unknown')}\nDeclared permissions: ${permissions.length ? permissions.join(', ') : 'none declared'}`,
   });
   if (confirmChoice.response !== 1) return { canceled: true };
   const target=path.join(PLUGINS_DIR(),String(manifest.id)); await fsp.mkdir(PLUGINS_DIR(),{recursive:true,mode:0o700});
@@ -3193,7 +3183,6 @@ async function extractAndCacheCovers(pictures) {
 }
 
 
-
 function tagHelperPath() { return runtimeResourcePath(path.join('resources','python','tag_helper.py')); }
 
 // Metadata writes are deliberately lower-priority than playback. Artwork edits
@@ -3316,7 +3305,7 @@ async function validateAudioForLibraryScan(trackPath, scanState = null) {
   const key = `${absolutePath}\t${stat.size}\t${stat.mtimeMs}`;
   const cached = audioIntegrityLibraryCache.get(key);
   if (cached) return cached;
-  let result = await runAudioPreflightDecode(absolutePath);
+  let result = await runAudioFullDecode(absolutePath, 0, scanState);
   // ffmpeg's MP4 demuxer can't skip a leading ID3v2 tag, so an MP4/FLAC stream
   // saved as ".mp3" with an ID3 tag in front was rejected as corrupt and
   // skipped, although GStreamer plays it fine. Before calling it corrupt,
@@ -3324,39 +3313,20 @@ async function validateAudioForLibraryScan(trackPath, scanState = null) {
   if (result.status === 'corrupt') {
     const containerOffset = leadingId3ContainerOffset(absolutePath);
     if (containerOffset > 0) {
-      const retry = await runAudioPreflightDecode(absolutePath, containerOffset);
+      const retry = await runAudioFullDecode(absolutePath, containerOffset, scanState);
       if (retry.status === 'ok') result = retry;
     }
   }
-  if (result.status === 'ok' || result.status === 'corrupt') audioIntegrityCache.set(key, result);
-  writeSession(result.status === 'corrupt' ? 'WARN' : 'DEBUG', 'AUDIO PREFLIGHT', result.status === 'corrupt' ? 'Corrupt audio detected before playback' : 'Audio preflight passed', { path:absolutePath, ...result });
+  if (result.status === 'ok' || result.status === 'corrupt') audioIntegrityLibraryCache.set(key, result);
+  writeSession(result.status === 'corrupt' ? 'WARN' : 'DEBUG', 'AUDIO PREFLIGHT', result.status === 'corrupt' ? 'Corrupt audio found by the full integrity check' : 'Audio full integrity check passed', { path:absolutePath, ...result });
   return result;
 }
 
-// Byte offset of a non-MPEG container (fLaC/OggS/RIFF/ftyp) hidden behind
-// leading ID3v2 tags, or 0 when there is none.
-function leadingId3ContainerOffset(filePath) {
-  let fd;
-  try {
-    fd = fs.openSync(filePath, 'r');
-    const head = Buffer.alloc(12);
-    let offset = 0;
-    for (let i = 0; i < 4; i++) {
-      if (fs.readSync(fd, head, 0, 12, offset) < 12) return 0;
-      if (head.toString('latin1', 0, 3) !== 'ID3') break;
-      offset += 10 + (((head[6] & 0x7f) << 21) | ((head[7] & 0x7f) << 14) | ((head[8] & 0x7f) << 7) | (head[9] & 0x7f)) + ((head[5] & 0x10) ? 10 : 0);
-    }
-    if (!offset) return 0;
-    const tag4 = head.toString('latin1', 0, 4);
-    return (tag4 === 'fLaC' || tag4 === 'OggS' || tag4 === 'RIFF' || head.toString('latin1', 4, 8) === 'ftyp') ? offset : 0;
-  } catch {
-    return 0;
-  } finally {
-    if (fd !== undefined) try { fs.closeSync(fd); } catch {}
-  }
-}
-
-function runAudioPreflightDecode(absolutePath, startOffset = 0) {
+// The whole file decoded (validateAudioForLibraryScan: the library integrity scan, and checking a
+// repaired file). A scan's ffmpeg processes are kept in scanState.children so cancelling it can
+// stop them. Until 2026-10-29 this shared its name with the 2-second playback preflight below,
+// which won, so "full" checks only ever decoded the first 2 seconds.
+function runAudioFullDecode(absolutePath, startOffset = 0, scanState = null) {
   return new Promise(resolve => {
     let settled = false;
     let stderr = '';
@@ -3374,13 +3344,19 @@ function runAudioPreflightDecode(absolutePath, startOffset = 0) {
     }, AUDIO_LIBRARY_SCAN_TIMEOUT_MS);
     try {
       child = spawnTracked('ffmpeg', [
-        '-hide_banner', '-nostdin', '-v', 'error', '-xerror',
-        '-i', absolutePath, '-map', '0:a:0', '-vn', '-sn', '-dn',
+        '-hide_banner', ...(startOffset ? [] : ['-nostdin']), '-v', 'error', '-xerror',
+        '-i', startOffset ? 'pipe:0' : absolutePath, '-map', '0:a:0', '-vn', '-sn', '-dn',
         '-f', 'null', '-'
       ], { windowsHide:true });
       scanState?.children?.add(child);
       child.once('close', () => scanState?.children?.delete(child));
       child.once('error', () => scanState?.children?.delete(child));
+      if (startOffset) {
+        const input = fs.createReadStream(absolutePath, { start: startOffset });
+        input.on('error', () => { try { child.stdin.destroy(); } catch {} });
+        child.stdin.on('error', () => {});
+        input.pipe(child.stdin);
+      }
       child.stderr.on('data', data => {
         stderr += data.toString();
         if (stderr.length > 16000) stderr = stderr.slice(-16000);
@@ -3392,11 +3368,10 @@ function runAudioPreflightDecode(absolutePath, startOffset = 0) {
         else finish({ status:'corrupt', error:detail || `Audio decoder rejected the file (ffmpeg exit ${code ?? 'unknown'}).` });
       });
     } catch (err) {
+      try { child?.kill('SIGKILL'); } catch {}
       finish({ status:'unavailable', error:err?.message || String(err) });
     }
   });
-  if (result.status === 'ok' || result.status === 'corrupt') audioIntegrityLibraryCache.set(key, result);
-  return result;
 }
 
 
@@ -3878,38 +3853,13 @@ function runFfmpeg(args) {
 }
 
 
-function runMetaflac(args) {
-  return new Promise((resolve, reject) => {
-    const child = spawnTracked('metaflac', args, { windowsHide: true });
-    let stderr = '';
-    child.stderr.on('data', d => { stderr += d.toString(); });
-    child.on('error', err => reject(err));
-    child.on('close', code => code === 0 ? resolve() : reject(new Error(stderr.trim() || `metaflac exited ${code}`)));
-  });
-}
-
 const {
-  id3Synchsafe,
   readId3Size,
-  musicBeePopmValue,
   musicBeePopmByte,
   musicBeePopmStars,
-  id3FrameSize,
-  parseId3Frames,
   txxxDescription,
-  makeId3Frame,
-  makeMusicBeeLoveFrame,
-  makeMusicBeePopmFrame,
-  makeFMPSRatingFrame,
 } = require('./id3-frames');
 
-
-async function writeAndSyncReplacement(temp, target, data) {
-  await fsp.writeFile(temp, data);
-  const fd = await fsp.open(temp, 'r+');
-  try { await fd.sync(); } finally { await fd.close(); }
-  await replaceFile(temp, target);
-}
 
 // withMusicBeeWriteLock, createMetadataTempPath, commitMetadataTemp,
 // embedRatingInFile, performWriteArtwork,
@@ -3924,56 +3874,6 @@ async function writeAndSyncReplacement(temp, target, data) {
 // legacy MusicBee MP3/WAV writers below and the play-count writer) resolves
 // to the same shared implementations/lock map at call time.
 
-async function readWavId3Tag(filePath) {
-  const input = await fsp.readFile(filePath);
-  if (input.length < 12 || input.toString('ascii', 0, 4) !== 'RIFF' || input.toString('ascii', 8, 12) !== 'WAVE') return null;
-  let pos = 12;
-  while (pos + 8 <= input.length) {
-    const id = input.toString('ascii', pos, pos + 4);
-    const size = input.readUInt32LE(pos + 4);
-    const dataStart = pos + 8;
-    const dataEnd = dataStart + size;
-    if (dataEnd > input.length) break;
-    if (id === 'id3 ' || id === 'ID3 ') {
-      const tag = input.subarray(dataStart, dataEnd);
-      if (tag.length >= 10 && tag.toString('ascii', 0, 3) === 'ID3') {
-        return { input, chunkPos: pos, chunkSize: size, dataStart, dataEnd, tag };
-      }
-    }
-    pos = dataEnd + (size & 1);
-  }
-  return null;
-}
-
-async function readWavId3TagLight(filePath) {
-  try {
-    const fd = await fsp.open(filePath, 'r');
-    try {
-      const header = Buffer.alloc(12);
-      const hr = await fd.read(header, 0, 12, 0);
-      if (hr.bytesRead < 12 || header.toString('ascii', 0, 4) !== 'RIFF' || header.toString('ascii', 8, 12) !== 'WAVE') return null;
-      const stat = await fd.stat();
-      let pos = 12;
-      while (pos + 8 <= stat.size) {
-        const ch = Buffer.alloc(8);
-        const r = await fd.read(ch, 0, 8, pos);
-        if (r.bytesRead < 8) break;
-        const id = ch.toString('ascii', 0, 4);
-        const size = ch.readUInt32LE(4);
-        const dataStart = pos + 8;
-        const dataEnd = dataStart + size;
-        if (dataEnd > stat.size || dataEnd < dataStart) break;
-        if ((id === 'id3 ' || id === 'ID3 ') && size >= 10 && size <= 32 * 1024 * 1024) {
-          const tag = Buffer.alloc(size);
-          await fd.read(tag, 0, size, dataStart);
-          if (tag.toString('ascii', 0, 3) === 'ID3') return tag;
-        }
-        pos = dataEnd + (size & 1);
-      }
-    } finally { await fd.close(); }
-  } catch {}
-  return null;
-}
 
 async function readWavMusicBeeLove(filePath) {
   return readSharedWavMusicBeeLove(filePath);
@@ -3983,182 +3883,6 @@ async function readWavMusicBeePopmRaw(filePath) {
   return readSharedWavMusicBeePopmRaw(filePath);
 }
 
-async function updateWavMusicBeeTags(trackPath, { stars = null, loved = null } = {}) {
-  return withMusicBeeWriteLock(trackPath, async () => {
-    const found = await readWavId3Tag(trackPath);
-    if (!found) throw new Error('WAV file does not contain an ID3 tag.');
-    const input = found.input;
-    const tag = found.tag;
-    const version = tag[3] >= 4 ? 4 : 3;
-    const tagSize = readId3Size(tag);
-    const payload = tag.subarray(10, Math.min(tag.length, 10 + tagSize));
-    const parsed = parseId3Frames(payload, version);
-    const frames = parsed.frames;
-    const trailing = parsed.trailing;
-    const isPadding = trailing.length === 0 || trailing.every(byte => byte === 0);
-    const outputFrames = [];
-    let counter = 0;
-
-    for (const frame of frames) {
-      let remove = false;
-      if (stars !== null && frame.id === 'POPM') {
-        const nul = frame.data.indexOf(0);
-        if (nul >= 0) {
-          const email = frame.data.subarray(0, nul).toString('latin1').trim().toLowerCase();
-          if (email === 'musicbee') {
-            if (nul + 6 <= frame.data.length) counter = frame.data.readUInt32BE(nul + 2);
-            remove = true;
-          }
-        }
-      }
-      if (stars !== null && frame.id === 'TXXX' && txxxDescription(frame.data).trim().toUpperCase() === 'FMPS_RATING') remove = true;
-      if (loved !== null && frame.id === 'TXXX') {
-        const desc = txxxDescription(frame.data).trim().toUpperCase();
-        if (isBeehiveLoveFieldName(desc)) remove = true;
-      }
-      if (!remove) outputFrames.push(frame.raw);
-    }
-
-    if (loved !== null) if (loved) outputFrames.push(makeMusicBeeLoveFrame(version, 'L'));
-    if (stars !== null) {
-      // Keep the MusicBee POPM source of truth for WAVs with ID3, matching MP3.
-      // FMPS_Rating is also synchronized for portability, but Beehive's reader
-      // intentionally ignores it on WAV so other applications cannot override
-      // the MusicBee value.
-      outputFrames.push(makeFMPSRatingFrame(stars, version));
-      outputFrames.push(makeMusicBeePopmFrame(stars, version, counter));
-    }
-
-    const keptTrailing = isPadding ? trailing : Buffer.alloc(0);
-    const newPayload = Buffer.concat([...outputFrames, keptTrailing]);
-    const newTag = Buffer.concat([
-      Buffer.from('ID3','ascii'),
-      Buffer.from([version,0,tag[5] & 0xF0]),
-      id3Synchsafe(newPayload.length),
-      newPayload
-    ]);
-
-    const oldChunkTotal = 8 + found.chunkSize + (found.chunkSize & 1);
-    const newChunkSize = newTag.length;
-    const newChunkTotal = 8 + newChunkSize + (newChunkSize & 1);
-    let output;
-    if (newChunkTotal <= oldChunkTotal) {
-      const chunk = Buffer.alloc(oldChunkTotal);
-      Buffer.from('id3 ','ascii').copy(chunk, 0);
-      chunk.writeUInt32LE(oldChunkTotal - 8 - ((oldChunkTotal - 8) & 1), 4);
-      // Keep the existing RIFF chunk size exactly stable; pad the ID3 payload.
-      newTag.copy(chunk, 8);
-      output = Buffer.concat([input.subarray(0, found.chunkPos), chunk, input.subarray(found.chunkPos + oldChunkTotal)]);
-    } else {
-      const chunk = Buffer.alloc(newChunkTotal);
-      Buffer.from('id3 ','ascii').copy(chunk, 0);
-      chunk.writeUInt32LE(newChunkSize, 4);
-      newTag.copy(chunk, 8);
-      output = Buffer.concat([input.subarray(0, found.chunkPos), chunk, input.subarray(found.chunkPos + oldChunkTotal)]);
-      const riffSize = output.length - 8;
-      output.writeUInt32LE(riffSize >>> 0, 4);
-    }
-
-    const temp = `${trackPath}.beehive-musicbee-${crypto.randomBytes(6).toString('hex')}.tmp`;
-    await writeAndSyncReplacement(temp, trackPath, output);
-  });
-}
-
-async function updateMp3MusicBeeTagsUnlocked(trackPath, { stars = null, loved = null } = {}) {
-  const input = await fsp.readFile(trackPath);
-  let version = 3;
-  let flags = 0;
-  let audioOffset = 0;
-  let payload = Buffer.alloc(0);
-
-  if (input.length >= 10 && input.toString('ascii', 0, 3) === 'ID3') {
-    version = input[3] >= 4 ? 4 : 3;
-    flags = input[5];
-    const size = readId3Size(input);
-    const end = Math.min(input.length, 10 + size);
-    payload = input.subarray(10, end);
-    audioOffset = end;
-  }
-
-  const parsed = parseId3Frames(payload, version);
-  const frames = parsed.frames;
-  const trailing = parsed.trailing;
-  const isPadding = trailing.length === 0 || trailing.every(byte => byte === 0);
-  const outputFrames = [];
-  let existingMusicBeeCounter = 0;
-
-  for (const frame of frames) {
-    let remove = false;
-    if (frame.id === 'POPM' && stars !== null) {
-      const nul = frame.data.indexOf(0);
-      if (nul >= 0) {
-        const email = frame.data.subarray(0, nul).toString('latin1').trim().toLowerCase();
-        // Only replace MusicBee's own POPM. Preserve its play counter when
-        // changing the rating, just as Strawberry changes only POPM.rating.
-        if (email === 'musicbee') {
-          if (nul + 6 <= frame.data.length) {
-            existingMusicBeeCounter = frame.data.readUInt32BE(nul + 2);
-          }
-          remove = true;
-        }
-      }
-    }
-    if (frame.id === 'TXXX' && stars !== null) {
-      // Strawberry stores its portable normalized rating as TXXX:FMPS_Rating.
-      // Keep this synchronized with the MusicBee POPM value.
-      const desc = txxxDescription(frame.data).trim().toUpperCase();
-      if (desc === 'FMPS_RATING') remove = true;
-    }
-    if (frame.id === 'TXXX' && loved !== null) {
-      const desc = txxxDescription(frame.data).toUpperCase();
-      // Replace the exact MusicBee Love field. Also remove Beehive's old
-      // incorrect TXXX:Love spelling if it exists from an earlier build.
-      if (isBeehiveLoveFieldName(desc)) remove = true;
-    }
-    if (!remove) outputFrames.push(frame.raw);
-  }
-
-  // Write only MusicBee's definitive LOVE RATING field; do not create the
-  // legacy TXXX:Love field.
-  if (loved !== null) {
-    // Keep one authoritative Love field. Unlove removes every Beehive Love field from the file.
-    // The absence of the field is the authoritative Unloved state.
-    if (loved) outputFrames.push(makeMusicBeeLoveFrame(version, 'L'));
-  }
-  if (stars !== null) {
-    // This deliberately mirrors Strawberry's SetRating(): FMPS_Rating is
-    // always replaced (including 0), and the MusicBee POPM frame remains in
-    // the tag with its rating byte changed to 0 when the user clears it.
-    // Keeping the frame is important: it gives us a deterministic, writable
-    // source-of-truth instead of relying on deletion through a hand-written
-    // ID3 parser.
-    outputFrames.push(makeFMPSRatingFrame(stars, version));
-    outputFrames.push(makeMusicBeePopmFrame(stars, version, existingMusicBeeCounter));
-  }
-
-  // Always keep ID3 padding at the very end. New/replaced frames must be
-  // placed before it; putting them after padding makes otherwise valid tags
-  // invisible to strict ID3 readers (and was the reason ratings appeared to
-  // save in Beehive but disappeared after restart).
-  const keptTrailing = isPadding ? trailing : Buffer.alloc(0);
-  payload = Buffer.concat([...outputFrames, keptTrailing]);
-  const header = Buffer.concat([
-    Buffer.from('ID3', 'ascii'),
-    Buffer.from([version, 0, flags & 0xF0]),
-    id3Synchsafe(payload.length)
-  ]);
-  const output = Buffer.concat([header, payload, input.subarray(audioOffset)]);
-  const temp = `${trackPath}.beehive-musicbee-${crypto.randomBytes(6).toString('hex')}.tmp`;
-  await writeAndSyncReplacement(temp, trackPath, output);
-}
-
-async function updateMp3MusicBeeTags(trackPath, options = {}) {
-  return withMusicBeeWriteLock(trackPath, () => updateMp3MusicBeeTagsUnlocked(trackPath, options));
-}
-
-async function writeMp3MusicBeeRating(trackPath, stars) {
-  await updateMp3MusicBeeTags(trackPath, { stars });
-}
 
 const LOVE_SCAN_VERSION = 4;
 // Bumped when the library record gains a broader native-tag inventory. A stale
@@ -4191,13 +3915,6 @@ function isBeehiveLoveFieldName(value) {
   return BEEHIVE_LOVE_FIELD_NAMES.has(String(value ?? '').trim().toUpperCase());
 }
 
-function splitId3LoveValues(value, encoding) {
-  const text = String(value ?? '').replace(/^\uFEFF/, '');
-  // ID3 TXXX is a text-list field. Some files therefore contain both an old
-  // `U` value and a later `L` value in one field. Love is true if ANY value is
-  // recognized as Loved, never based on only the first/last value.
-  return text.split('\0').map(v => v.trim()).filter(Boolean);
-}
 
 async function readMp3MusicBeeLove(filePath) { return readSharedMp3MusicBeeLove(filePath); }
 async function readMp3PopmRaw(filePath) {
@@ -4377,22 +4094,6 @@ async function readEmbeddedRating(filePath) {
   return readNativeEmbeddedRating(filePath, metadataLib);
 }
 
-function ffmpegMetadataArgs(tags) {
-  const map = {
-    title: 'title', artist: 'artist', album: 'album', albumArtist: 'album_artist',
-    genre: 'genre', year: 'date', track: 'track', disk: 'disc', comment: 'comment',
-    composer: 'composer', grouping: 'grouping', copyright: 'copyright', lyrics: 'lyrics',
-    compilation: 'COMPILATION', bpm: 'bpm', publisher: 'publisher', conductor: 'conductor'
-  };
-  const args = [];
-  const standard = new Set(Object.keys(map));
-  for (const [key, value] of Object.entries(tags || {})) {
-    if (value === undefined || value === null) continue;
-    const target = map[key] || key;
-    args.push('-metadata', `${target}=${String(value)}`);
-  }
-  return args;
-}
 
 // Library cache/scan operations are serialized. Tag edits can trigger both an
 // explicit incremental refresh and a filesystem-watcher refresh; allowing those
@@ -5871,8 +5572,26 @@ ipcMain.handle('track:recordPlay', async (_evt, trackPath, meta = {}) => withSta
 
 ipcMain.handle('yearly-wrap:getData', async (_evt, requestedYear) => yearlyWrapData(requestedYear));
 // One year's Wrap, for the Wrap window and for Hive Link (the phone shows the same).
+// A year's Wrap is kept until something it's built from changes (a new play, an import, the
+// library), so opening it again, here or on the phone, is instant.
+const yearlyWrapCache = new Map();
+async function yearlyWrapSignature() {
+  const stamp = async file => { try { const s = await fs.promises.stat(file); return `${s.size}:${s.mtimeMs}`; } catch { return '-'; } };
+  const parts = await Promise.all([LISTENING_EVENTS_PATH(), HISTORY_PATH(), MUSICBEE_WRAPPED_IMPORTS_PATH(), LIBRARY_CACHE_PATH()].map(stamp));
+  return parts.join('|');
+}
+
 async function yearlyWrapData(requestedYear) {
   const year = Number.isInteger(Number(requestedYear)) ? Number(requestedYear) : new Date().getFullYear();
+  const signature = await yearlyWrapSignature();
+  const kept = yearlyWrapCache.get(year);
+  if (kept && kept.signature === signature) return kept.data;
+  const data = await buildYearlyWrapData(year);
+  yearlyWrapCache.set(year, { signature, data });
+  return data;
+}
+
+async function buildYearlyWrapData(year) {
   const events = await readJsonSafe(LISTENING_EVENTS_PATH(), []);
   const history = await readJsonSafe(HISTORY_PATH(), []);
   let library = (await libraryCacheStore.get()) || { tracks: [] };
@@ -6786,7 +6505,8 @@ async function metadataJobAlreadySatisfied(job) {
     }
     if (job.kind === 'artwork:removeAll') { const r=await runTagHelper({op:'read_artwork_metadata',path:job.path}); return !(r?.pictures||[]).length; }
     if (job.kind === 'artwork:removeFront') { const r=await runTagHelper({op:'read_artwork_metadata',path:job.path}); return !(r?.pictures||[]).some(p=>normalizePictureType(p?.type||'Other')==='Cover (Front)'); }
-    if (job.kind === 'artwork:add' || job.kind === 'artwork:replaceSlot') {
+    if (job.kind === 'artwork:removeSlot') return false;
+    if (job.kind === 'artwork:add' || job.kind === 'artwork:replaceSlot' || job.kind === 'artwork:setSlot') {
       if (!job.imagePath || !fs.existsSync(job.imagePath)) return false;
       const wanted=crypto.createHash('sha256').update(await fsp.readFile(job.imagePath)).digest('hex');
       const r=await runTagHelper({op:'artwork_contains_hash',path:job.path,sha256:wanted});
@@ -6796,6 +6516,20 @@ async function metadataJobAlreadySatisfied(job) {
     scanLog('METADATA RECOVERY SATISFACTION CHECK FAILED', { path: job?.path, kind: job?.kind, error: err?.message || String(err) });
   }
   return false;
+}
+
+// The index of a picture slot ({type, occurrence}: the Nth picture of that
+// type, from 1) among a file's pictures, or -1 when the file has fewer.
+function artworkSlotIndex(pictures, slot) {
+  const list = Array.isArray(pictures) ? pictures : [];
+  const type = normalizePictureType(slot?.type || 'Other');
+  const occurrence = Math.max(1, Number(slot?.occurrence) || 1);
+  let seen = 0;
+  for (let i = 0; i < list.length; i++) {
+    if (normalizePictureType(list[i]?.type || 'Other') !== type) continue;
+    if (++seen === occurrence) return i;
+  }
+  return -1;
 }
 
 // Streamed tracks (YouTube Music, podcasts, radio, Apple previews, Spotify)
@@ -6848,6 +6582,7 @@ async function runMetadataBatch(normalizedJobs, sender, options = {}) {
             else if(job.kind==='artwork:removeFront') await performRemoveFrontArtwork(job.path,{background:true});
             else if(job.kind==='artwork:removeAll') await performRemoveArtwork(job.path,{background:true});
             else if(job.kind==='artwork:replaceSlot'){ const data=await runTagHelper({op:'read_artwork_metadata',path:job.path}); const pictures=Array.isArray(data?.pictures)?data.pictures:[]; const targetType=normalizePictureType(job.slot?.type||'Other'); const occurrence=Math.max(1,Number(job.slot?.occurrence)||1); let seen=0,targetIndex=-1; for(let i=0;i<pictures.length;i++){if(normalizePictureType(pictures[i]?.type||'Other')!==targetType)continue; if(++seen===occurrence){targetIndex=i;break;}} if(targetIndex<0)throw new Error(`The ${job.slotLabel||'artwork'} is not present in this file.`); await performModifyArtwork(job.path,{action:'replace',index:targetIndex,imagePath:job.imagePath,pictureType:job.pictureType,comment:job.comment},{background:true}); }
+            else if(job.kind==='artwork:setSlot'||job.kind==='artwork:removeSlot'){ const data=await runTagHelper({op:'read_artwork_metadata',path:job.path}); const index=artworkSlotIndex(data?.pictures,/\.(m4a|m4b|mp4|aac)$/i.test(job.path)?{...job.slot,type:'Other'}:job.slot); if(job.kind==='artwork:removeSlot'){ if(index>=0) await performModifyArtwork(job.path,{action:'delete',index},{background:true}); } else if(index>=0) await performModifyArtwork(job.path,{action:'replace',index,imagePath:job.imagePath,pictureType:job.pictureType},{background:true}); else await performWriteArtwork(job.path,job.imagePath,{pictureType:job.pictureType},{background:true}); }
             else if(job.kind==='artwork:add') await performWriteArtwork(job.path,job.imagePath,{pictureType:job.pictureType,comment:job.comment},{background:true});
             else throw new Error(`Unknown metadata job: ${job.kind}`);
             success=true;
@@ -7499,7 +7234,7 @@ ipcMain.handle('spotify:command', async (_evt, command) => {
 // ---------------------------------------------------------------------------
 // Podcasts — public directory discovery + RSS episode metadata
 // ---------------------------------------------------------------------------
-const { podcastRequest, xmlDecode, xmlTag, xmlAttr, parsePodcastFeed } = require('./podcast-feed');
+const { podcastRequest, parsePodcastFeed } = require('./podcast-feed');
 ipcMain.handle('podcast:search', async (_evt, query) => {
   const q=String(query||'').trim(); if (!q) return {results:[]};
   // Allow a pasted RSS feed URL to act as a direct search/open action. This is
@@ -7648,6 +7383,90 @@ async function ensureStarFavoritesPlaylistUnlocked() {
 }
 
 ipcMain.handle('playlists:get' , async () => ensureStarFavoritesPlaylist());
+
+// ---- playlists from the phone (Hive Link) ----
+// The phone's playlists and Hive's are one set. Before the phone first changes them each day,
+// the file is copied aside; a playlist the phone deletes is kept in deleted-playlists.json.
+let playlistsBackedUpOn = '';
+async function backUpPlaylistsForPhone() {
+  const day = new Date().toISOString().slice(0, 10);
+  if (playlistsBackedUpOn === day) return;
+  playlistsBackedUpOn = day;
+  try { await fs.promises.copyFile(PLAYLISTS_PATH(), path.join(USER_DATA(), `playlists.before-phone-${day}.json`), fs.constants.COPYFILE_EXCL); } catch {}
+}
+
+function playlistIdMatches(p, id) {
+  if (!p || !id) return false;
+  if (String(p.id || '') === id) return true;
+  // A playlist added outside Hive's editor has no id; the phone knows it by its name (see hive-link).
+  return !p.id && id.startsWith('name:') && crypto.createHash('sha256').update(String(p.name || '')).digest('hex').slice(0, 16) === id.slice(5);
+}
+
+function tellWindowPlaylistsChanged() {
+  try { if (mainWindow && !mainWindow.isDestroyed()) mainWindow.webContents.send('playlists:changed'); } catch {}
+}
+
+async function savePlaylistFromPhone(incoming) {
+  const saved = await withJsonFileLock(PLAYLISTS_PATH(), async () => {
+    await backUpPlaylistsForPhone();
+    const lists = await readJsonSafe(PLAYLISTS_PATH(), []);
+    const idx = incoming.id ? lists.findIndex(p => playlistIdMatches(p, incoming.id)) : -1;
+    const existing = idx >= 0 ? lists[idx] : null;
+    // Smart playlists and Favorites are made by their rules, not by the phone's list.
+    if (existing && (existing.smart || existing.systemKey)) return null;
+    const now = Date.now();
+    const previousAdded = existing?.trackAddedAt && typeof existing.trackAddedAt === 'object' ? existing.trackAddedAt : {};
+    const trackAddedAt = {};
+    for (const trackPath of incoming.tracks) trackAddedAt[trackPath] = Number(previousAdded[trackPath]) || now;
+    const item = {
+      ...(existing || { createdAt: now, smart: false, match: 'all', rules: [], limit: 0 }),
+      id: existing?.id || (incoming.id && !incoming.id.startsWith('name:') ? incoming.id : crypto.randomUUID()),
+      name: incoming.name,
+      label: incoming.name,
+      tracks: incoming.tracks,
+      trackAddedAt,
+      podcastEpisodes: { ...(existing?.podcastEpisodes || {}), ...incoming.podcastEpisodes },
+      updatedAt: incoming.updatedAt || now,
+    };
+    // A playlist that follows one on Spotify keeps Spotify's songs apart: the phone's order and removals
+    // apply to them there, and only other songs go into its own list.
+    if (Array.isArray(existing?.spotifyTracks) && existing.spotifyTracks.length) {
+      const spotifyId = t => String(t?.spotifyId || '').trim() || (/^spotify:track:(.+)$/.exec(String(t?.spotifyUri || t?.path || '')) || [])[1] || '';
+      const byId = new Map(existing.spotifyTracks.map(t => [spotifyId(t), t]));
+      const spotifyTracks = [];
+      const own = [];
+      for (const ref of incoming.tracks) {
+        const m = /^ytm:spotify:(.+)$/.exec(ref);
+        if (m && byId.has(m[1])) spotifyTracks.push(byId.get(m[1])); else own.push(ref);
+      }
+      item.spotifyTracks = spotifyTracks;
+      item.tracks = own;
+      item.trackAddedAt = Object.fromEntries(own.map(p => [p, trackAddedAt[p]]));
+    }
+    if (idx >= 0) lists[idx] = item; else lists.push(item);
+    await writeJsonSafe(PLAYLISTS_PATH(), lists);
+    return item;
+  });
+  if (saved) tellWindowPlaylistsChanged();
+  return saved;
+}
+
+async function deletePlaylistFromPhone(id) {
+  const gone = await withJsonFileLock(PLAYLISTS_PATH(), async () => {
+    await backUpPlaylistsForPhone();
+    const lists = await readJsonSafe(PLAYLISTS_PATH(), []);
+    const found = lists.find(p => playlistIdMatches(p, id));
+    if (!found || found.smart || found.systemKey) return null;
+    const keptPath = path.join(USER_DATA(), 'deleted-playlists.json');
+    const kept = await readJsonSafe(keptPath, []);
+    kept.push({ deletedAt: Date.now(), by: 'phone', playlist: found });
+    await writeJsonSafe(keptPath, kept);
+    await writeJsonSafe(PLAYLISTS_PATH(), lists.filter(p => p !== found));
+    return found;
+  });
+  if (gone) tellWindowPlaylistsChanged();
+  return !!gone;
+}
 ipcMain.handle('playlists:save', async (_evt, playlist) => withJsonFileLock(PLAYLISTS_PATH(), async () => {
   const lists = await readJsonSafe(PLAYLISTS_PATH(), []);
   const existing = lists.find(p => p.id === playlist.id);
@@ -7940,9 +7759,6 @@ ipcMain.handle('playlists:delete', async (_evt, id) => withJsonFileLock(PLAYLIST
   return true;
 }));
 
-async function writeMp3MusicBeeLove(trackPath, loved) {
-  await updateMp3MusicBeeTags(trackPath, { loved: !!loved });
-}
 
 const {
   mp4Atom,
@@ -7969,80 +7785,6 @@ function mp4LoveValuesFromBuffer(input) {
   return values;
 }
 
-async function verifyLoveTag(trackPath, expected) {
-  const ext = path.extname(trackPath).toLowerCase();
-
-  // Each container has its own native MusicBee Love representation.
-  // Verification deliberately checks the whole tag/container so an Unlove
-  // operation cannot succeed while a duplicate/legacy Love field remains.
-  if (ext === '.m4a' || ext === '.m4b' || ext === '.mp4') {
-    const values = mp4LoveValuesFromBuffer(await fsp.readFile(trackPath));
-    return expected ? (values.length === 1 && values[0] === 'L') : values.length === 0;
-  }
-  if (ext === '.flac') {
-    try {
-      const c = spawnTracked('metaflac', ['--export-tags-to=-', trackPath], { windowsHide: true });
-      let output = '';
-      c.stdout.on('data', d => { output += d.toString(); });
-      const code = await new Promise((resolve, reject) => {
-        c.on('error', reject);
-        c.on('close', resolve);
-      });
-      if (code !== 0) return false;
-      const lines = output.split(/\r?\n/).filter(Boolean);
-      const loveLines = lines.filter(line => isBeehiveLoveFieldName(line.split('=')[0]));
-      if (!expected) return loveLines.length === 0;
-      return loveLines.length === 1 && /^LOVE RATING=L$/i.test(loveLines[0].trim());
-    } catch {
-      return false;
-    }
-  }
-
-  let data = await fsp.readFile(trackPath);
-  if (ext === '.wav') {
-    let p = 12;
-    let found = null;
-    while (p + 8 <= data.length) {
-      const id = data.toString('ascii', p, p + 4);
-      const size = data.readUInt32LE(p + 4);
-      const dataStart = p + 8;
-      if (dataStart + size > data.length) break;
-      if (id === 'id3 ' || id === 'ID3 ') {
-        found = data.subarray(dataStart, dataStart + size);
-        break;
-      }
-      p = dataStart + size + (size & 1);
-    }
-    if (!found) return !expected;
-    data = found;
-  }
-
-  if (ext === '.mp3' || ext === '.wav') {
-    if (data.length < 10 || data.toString('ascii', 0, 3) !== 'ID3') return !expected;
-    const version = data[3] >= 4 ? 4 : 3;
-    const size = readId3Size(data);
-    const payload = data.subarray(10, Math.min(data.length, 10 + size));
-    let loveCount = 0;
-    let lovedValueCount = 0;
-    let loveValueIsUnloved = false;
-    for (const frame of parseId3Frames(payload, version).frames) {
-      if (frame.id !== 'TXXX') continue;
-      const desc = txxxDescription(frame.data).trim().toUpperCase();
-      if (!isBeehiveLoveFieldName(desc)) continue;
-      loveCount++;
-      const body = frame.data.subarray(1);
-      const nul = body.indexOf(0);
-      const value = body.subarray(nul >= 0 ? nul + 1 : 0)
-        .toString(frame.data[0] === 3 ? 'utf8' : 'latin1')
-        .trim().toUpperCase();
-      if (value === 'L') lovedValueCount++;
-      if (value === '0') loveValueIsUnloved = true;
-    }
-    return expected ? (loveCount === 1 && lovedValueCount === 1) : (loveCount === 0);
-  }
-
-  return false;
-}
 
 async function embedLoveInFile(trackPath, loved) {
   if (!trackPath || !fs.existsSync(trackPath)) throw new Error('Track file not found.');
@@ -8128,6 +7870,8 @@ function startHiveLink() {
     // discovery takes the next port.
     ...(Number(process.env.HIVE_LINK_PORT) > 0 ? { port: Number(process.env.HIVE_LINK_PORT), discoveryPort: Number(process.env.HIVE_LINK_PORT) + 1 } : {}),
     getTracks: async () => ((await libraryCacheStore.get()) || {}).tracks || [],
+    // Hive Mobile updates for the phone: mobile/HiveMobile.apk beside Hive, with HiveMobile.json.
+    mobileApp: () => path.join(app.getAppPath(), 'mobile', 'HiveMobile.apk'),
     // A phone Love goes through the heart button's own path, then the open
     // window is told, the same way the metadata job queue reports Love.
     setLove: async (trackPath, loved) => {
@@ -8136,6 +7880,9 @@ function startHiveLink() {
       try { sender?.send('library:scanTrack', [{ path: trackPath, loved: !!loved, loveHydrated: true }]); } catch {}
     },
     getPlaylists: async () => readJsonSafe(PLAYLISTS_PATH(), []),
+    // Playlists are the same on the phone: its new, changed and deleted playlists are made here too.
+    savePlaylist: savePlaylistFromPhone,
+    deletePlaylist: deletePlaylistFromPhone,
     // Song sync: where a song from the phone goes, by the same rules as a
     // YouTube Music download (first music folder, <Artist>/<Album>/), and the
     // library watcher's own path to pick it up.
@@ -8173,11 +7920,16 @@ function startHiveLink() {
     // Tags and covers edited on the phone go through the tag editor's own save
     // queue, so the files, the library and the open window all update as after
     // a Save in Hive. The queue is awaited so a cover's temp file outlives it.
-    editSongs: (songs, coverPath) => new Promise(resolve => {
+    // A back cover (`back.back`, its place among the back covers) replaces that
+    // one, is added past the last, or with `back.remove` is taken off.
+    editSongs: (songs, coverPath, _device, back = null) => new Promise(resolve => {
       const sender = mainWindow && !mainWindow.isDestroyed() ? mainWindow.webContents : null;
-      const jobs = songs.map(s => coverPath
-        ? { kind: 'artwork:add', operation: 'artwork', path: s.path, imagePath: coverPath, pictureType: 'Cover (Front)' }
-        : { kind: 'metadata', operation: 'metadata', path: s.path, tags: s.tags, artwork: null });
+      const slot = back ? { type: 'Cover (Back)', occurrence: back.back + 1 } : null;
+      const jobs = songs.map(s => back
+        ? { kind: back.remove ? 'artwork:removeSlot' : 'artwork:setSlot', operation: 'artwork', path: s.path, imagePath: coverPath, pictureType: 'Cover (Back)', slot, slotLabel: 'back cover' }
+        : coverPath
+          ? { kind: 'artwork:add', operation: 'artwork', path: s.path, imagePath: coverPath, pictureType: 'Cover (Front)' }
+          : { kind: 'metadata', operation: 'metadata', path: s.path, tags: s.tags, artwork: null });
       enqueueMetadataSave(sender ? { sender } : null, jobs).then(resolve, resolve);
     }),
     // Remote control from the phone (off until allowed in Settings): Hive's own
@@ -8422,27 +8174,6 @@ async function readMp4MusicBeeLove(filePath) {
   return false;
 }
 
-async function snapshotProtectedMetadata(trackPath) {
-  // Artwork operations are strictly artwork-only. Capture the two user-facing
-  // independent states before the native tag rewrite and verify them afterward.
-  // This prevents a buggy metadata backend from silently changing Love or Rating
-  // while removing/replacing pictures.
-  return {
-    loved: !!(await readLoveStateFromDisk(trackPath)),
-    rating: Number(await readEmbeddedRating(trackPath)) || 0
-  };
-}
-
-async function verifyProtectedMetadataUnchanged(trackPath, before) {
-  const after = await snapshotProtectedMetadata(trackPath);
-  if (!!after.loved !== !!before.loved) {
-    throw new Error('Artwork operation changed the Love state; the file was not accepted.');
-  }
-  if (Math.abs(after.rating - before.rating) > 0.01) {
-    throw new Error(`Artwork operation changed the Rating from ${before.rating} to ${after.rating}; the file was not accepted.`);
-  }
-  return after;
-}
 
 async function readLoveStateFromDisk(trackPath) {
   const filePath = path.resolve(String(trackPath || ''));

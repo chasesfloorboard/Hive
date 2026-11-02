@@ -326,6 +326,7 @@ class SoulseekWorker(context: Context, params: WorkerParameters) : CoroutineWork
         if (nm.getNotificationChannel(CHANNEL) == null) {
             nm.createNotificationChannel(NotificationChannel(CHANNEL, "Downloads", NotificationManager.IMPORTANCE_LOW).apply {
                 description = "Albums and songs downloading from Soulseek"
+                setShowBadge(false)
             })
         }
         return nm
@@ -373,7 +374,7 @@ class SoulseekWorker(context: Context, params: WorkerParameters) : CoroutineWork
 
     companion object {
         private const val KEY = "request"
-        private const val CHANNEL = "hive-downloads"
+        private const val CHANNEL = "hive-downloads-2"
         // Not 4712-4713: song sync's.
         private const val PROGRESS_ID = 4720
         /** How long a peer that hasn't sent anything yet may take to start: past this, the next folder is tried. */

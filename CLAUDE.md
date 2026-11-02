@@ -1,5 +1,27 @@
 # Hive - project briefing for Claude Code
 
+## Working from the cloud (claude.ai/code), with the user's PC off
+
+The user sometimes talks to Claude from their phone while their PC is off. A
+cloud session works on this public repo only; it has no access to the PC, the
+phone, or the user's music, and none of the user's personal details belong in
+this repo (no names of their machines, paths under their home, IP addresses,
+phone serials or song lists).
+
+- **Hive Mobile changes reach the phone by themselves.** Bump `versionCode`
+  (+1) and `versionName` in `mobile/android/app/build.gradle.kts`, commit to
+  `main` (or merge a PR into it). `.github/workflows/hive-mobile.yml` tests,
+  builds the signed APK and replaces `HiveMobile.apk`/`HiveMobile.json` in the
+  `hive-mobile` release; the phone offers it as "Update available". Check the
+  workflow run passed before telling the user it's on the way.
+- **Desktop Hive changes** wait for the PC: they're pulled into the user's
+  local copy and deployed the next time it's on. Say so.
+- You can't run the app on a device here. Build and run the unit tests
+  (`cd mobile/android && bash gradlew testDebugUnitTest assembleDebug`;
+  `node --test test/*.test.js` for the desktop) and say what wasn't tried on a
+  phone.
+- Explain changes to the user in plain words; they read on a phone.
+
 **Hive 2.0 (2026-10-14):** MusicBee's features and settings were added (equaliser, crossfade, column browser, organise/convert/tag tools, MusicBee import, layout and theme customisation...). Read `docs/HIVE-2.0.md` before touching any of it; it lists where each feature lives and the headless test recipe.
 
 Hive is a vibe-coded Electron/GStreamer music player at pre-release build 258.
@@ -158,17 +180,31 @@ test file. Repeat.
   goal of reaching non-English-speaking users at launch would be a large,
   low-value effort right now. Revisit if that goal is ever stated explicitly
   - at that point this decision should be replaced, not silently overridden.
-- **Plugins are a trusted-local extension model, not sandboxed**, disclosed
-  to the user at install time (see `app/main/main.js`'s `plugins:installFolder`
-  handler) rather than enforced technically. Real isolation (a sandboxed
-  webview/iframe with its own CSP, separate from the main window's) is a
-  known, tracked follow-up - see the CSP comment in `app/renderer/index.html`
-  - needed before opening plugin installation to a public marketplace, not
-  required for a small curated set of first-party plugins.
+- **Plugins run sandboxed (done 2026-10-29).** Each plugin runs in its own
+  `<iframe sandbox="allow-scripts">` (`app/renderer/plugin-frame.html`, no
+  origin, CSP with no network); `plugin-sandbox.js` is Hive's side (permission
+  checks, events, laying the frame over the plugin's page) and `plugin-frame.js`
+  the runtime inside (Hive sends its source to the frame's hash-allowed boot
+  script, because an opaque frame can't load scripts from disk). Main process:
+  `webRequest.onBeforeRequest` cancels any request from a frame, WebRTC UDP is
+  off, and a frame that loads a second page is removed. The main window's CSP
+  no longer has `'unsafe-eval'`, and `plugins:run` is gone. Plugin CSS should
+  size by `var(--hive-vh)`/`--hive-vw` (Hive's window). Known, accepted: a
+  plugin can fetch files inside the library via `mbfile:` (bypassCSP) but has
+  no way to send them anywhere. Verified with a probe plugin and a pixel
+  comparison of the Visualizer (identical). Tests: `test/plugin-sandbox.test.js`.
 - **Electron is pinned to an outdated, `npm audit`-flagged version** (see
   `package.json`). Upgrading is a dedicated, separately-scoped task (full
   re-test required across main-process APIs, `BrowserWindow` options, and IPC
   behavior) - do not bump it as a side effect of an unrelated change.
+  **The main reason it stays on 33 (the user's decision):** the themed window
+  bar. With Settings' themed bar on, the main window is frameless and Hive
+  draws its own title bar in the theme's colours, and on Linux the app runs
+  through X11/XWayland (`ozone-platform=x11` in `main.js`). An upgrade is only
+  acceptable if that bar looks and behaves exactly as now on the user's GNOME
+  desktop: drag, double-click to maximise, the min/max/close buttons, resize
+  edges, snapping, and the system frame when the setting is off. Check this on
+  a test copy, side by side with screenshots, before anything else.
 - **GitHub Releases/`electron-updater`** are wired up (`app/main/update-checker.js`).
   **Done, 2026-09-21:** the real GitHub repo now exists
   (github.com/chasesfloorboard/Hive, public; the account was previously
@@ -229,9 +265,8 @@ otherwise:
 
 ### Open tracked items (in rough priority order)
 
-- **#9 - Build real plugin isolation** (sandboxed iframe/webview with its
-  own CSP), the follow-up the CSP relaxation above is waiting on. Not
-  started.
+- **#9 - Plugin isolation: DONE 2026-10-29** (see "Plugins run sandboxed"
+  above; the `'unsafe-eval'` relaxation is gone).
 - **#10 / #11 - Split `main.js` and `renderer.js` into modules.** Same as
   item 3 in "What's next" above; still not started. Use the
   `metadata-writer.js`/`update-checker.js` dependency-injection extraction
@@ -291,14 +326,18 @@ otherwise:
      `aria-live="polite"`; `#notice-body` (`showAppNotice`'s modal content)
      is `aria-live="assertive"`. `#about-update-status`'s existing
      `aria-live="polite"` was the reference pattern for both.
-  5. **NOT STARTED.** `.album-card`, `.song-row`, `.queue-row`, and
+  5. **FIXED 2026-10-29** (`app/renderer/keyboard-access.js`): Tab reaches
+     album cards and the song/queue lists, arrows move, Enter = double-click,
+     Space = click, Menu/Shift+F10 opens the context menu, which has menu
+     roles and arrow keys. Originally: `.album-card`, `.song-row`, `.queue-row`, and
      interactive `.rating-star` are plain unlabeled `<div>`/`<span>`
      elements with only mouse click handlers - no `role`, `tabindex`,
      keydown-for-Enter/Space, or (for stars) per-star `aria-label`. The
      custom context menu's individual items are already real `<button>`s
      with good semantics (use as reference), but the menu container itself
      lacks `role="menu"` and arrow-key navigation.
-  6. **NOT STARTED, blocked on #5.** `:focus-visible` styling
+  6. **FIXED 2026-10-29** (focus-visible rules at the end of styles.css).
+     Originally: `:focus-visible` styling
      (`styles.css` ~3162-3165) only covers real
      `<button>`/`<input>`/`<select>`/`<textarea>` plus a few specific
      component classes - once #5's elements get `tabindex`, they'll need

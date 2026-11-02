@@ -152,51 +152,56 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
         if (stars <= 0f) dao.clearRating(trackId) else dao.upsertRatings(listOf(com.local.hive.mobile.data.Rating(trackId, stars, System.currentTimeMillis())))
     }
     suspend fun artistImage(name: String) = app.artistImages.lookup(name)
+    /** Artist photos from the internet (true), or the artist's album covers (false). */
+    val artistPhotos: StateFlow<Boolean> = app.artistImages.online
+    fun setArtistPhotos(on: Boolean) = app.artistImages.setOnline(on)
 
     // ---- Yearly Wrap: Hive's own when paired, so phone and PC show the same ----
 
     private val wrapCache get() = java.io.File(app.filesDir, "pc-wrap").apply { mkdirs() }
 
-    /** The paired Hive's Wrap for [year]: fresh (after sending this phone's plays) or as last fetched. */
-    private suspend fun pcWrapJson(year: Int): String? {
-        if (app.linkStore.pairing == null) return null
-        val cached = java.io.File(wrapCache, "$year.json")
-        val conn = app.sync.pcConnection()
-        if (conn != null) {
-            app.sync.syncNow() // this phone's newest plays first, so they're in the numbers
-            runCatching { linkClient.wrapJson(conn, year) }.getOrNull()?.let { fresh ->
-                runCatching { cached.writeText(fresh) }
-                return fresh
-            }
-        }
-        return cached.takeIf { it.exists() }?.readText()
+    private fun yearSpan(year: Int): Pair<Long, Long> {
+        val zone = java.time.ZoneId.systemDefault()
+        return java.time.LocalDate.of(year, 1, 1).atStartOfDay(zone).toInstant().toEpochMilli() to
+            java.time.LocalDate.of(year + 1, 1, 1).atStartOfDay(zone).toInstant().toEpochMilli()
     }
 
-    /** Years with a Wrap, newest first: Hive's when paired, else this phone's. */
-    suspend fun wrapYears(): List<Int> {
-        if (app.linkStore.pairing != null) {
-            val cached = java.io.File(wrapCache, "years.txt")
-            val pc = app.sync.pcConnection()?.let { conn -> runCatching { linkClient.wrapYears(conn) }.getOrNull() }
-                ?.also { runCatching { cached.writeText(it.joinToString(",")) } }
-                ?: cached.takeIf { it.exists() }?.readText()?.split(',')?.mapNotNull { it.trim().toIntOrNull() }
-            if (!pc.isNullOrEmpty()) return pc
-        }
-        val first = dao.firstPlay() ?: return listOf(java.time.Year.now().value)
-        val from = java.time.Instant.ofEpochMilli(first).atZone(java.time.ZoneId.systemDefault()).year
-        return (java.time.Year.now().value downTo from).toList()
+    private suspend fun pcWrap(text: String): Wrap? = runCatching { linkClient.parseWrap(text) }.getOrNull()?.let { pc ->
+        kotlinx.coroutines.withContext(kotlinx.coroutines.Dispatchers.Default) { Wrap.fromPc(pc, dao.albums().first()) { name -> pcLibrary.coverFor(name) } }
     }
-    suspend fun wrap(year: Int): Wrap {
-        pcWrapJson(year)?.let { text ->
-            runCatching { linkClient.parseWrap(text) }.getOrNull()?.let { pc ->
-                return kotlinx.coroutines.withContext(kotlinx.coroutines.Dispatchers.Default) {
-                    Wrap.fromPc(pc, dao.albums().first()) { name -> pcLibrary.coverFor(name) }
-                }
-            }
-        }
-        val zone = java.time.ZoneId.systemDefault()
-        val from = java.time.LocalDate.of(year, 1, 1).atStartOfDay(zone).toInstant().toEpochMilli()
-        val to = java.time.LocalDate.of(year + 1, 1, 1).atStartOfDay(zone).toInstant().toEpochMilli()
-        return kotlinx.coroutines.withContext(kotlinx.coroutines.Dispatchers.Default) { Wrap.from(year, dao.playsBetween(from, to)) }
+
+    /**
+     * A year's Wrap, at once and then up to date. Paired: Hive's Wrap as last fetched (kept on the
+     * phone) with this phone's plays Hive hasn't counted yet added on top; then, when the PC can be
+     * reached (at home or over Tailscale), only the new plays are sent and Hive's fresh Wrap, both
+     * devices together, replaces it. Not paired: this phone's plays.
+     */
+    fun wrap(year: Int): kotlinx.coroutines.flow.Flow<Wrap> = kotlinx.coroutines.flow.flow {
+        val (from, to) = yearSpan(year)
+        suspend fun phoneOnly() = kotlinx.coroutines.withContext(kotlinx.coroutines.Dispatchers.Default) { Wrap.from(year, dao.playsBetween(from, to)) }
+        if (app.linkStore.pairing == null) { emit(phoneOnly()); return@flow }
+        val cached = java.io.File(wrapCache, "$year.json")
+        suspend fun withUnsent(w: Wrap) = kotlinx.coroutines.withContext(kotlinx.coroutines.Dispatchers.Default) { w + dao.unsentPlaysBetween(from, to) }
+        val kept = cached.takeIf { it.exists() }?.let { runCatching { it.readText() }.getOrNull() }?.let { pcWrap(it) }
+        emit(kept?.let { withUnsent(it) } ?: phoneOnly())
+        if (!app.sync.syncPlaysNow()) return@flow
+        val conn = app.sync.pcConnection() ?: return@flow
+        val fresh = runCatching { linkClient.wrapJson(conn, year) }.getOrNull() ?: return@flow
+        runCatching { cached.writeText(fresh) }
+        pcWrap(fresh)?.let { emit(withUnsent(it)) }
+    }
+
+    /** Years with a Wrap, newest first: as last known at once, then Hive's when it can be reached. */
+    fun wrapYears(): kotlinx.coroutines.flow.Flow<List<Int>> = kotlinx.coroutines.flow.flow {
+        val first = dao.firstPlay()?.let { java.time.Instant.ofEpochMilli(it).atZone(java.time.ZoneId.systemDefault()).year }
+        val phone = (java.time.Year.now().value downTo (first ?: java.time.Year.now().value)).toList()
+        if (app.linkStore.pairing == null) { emit(phone); return@flow }
+        val cached = java.io.File(wrapCache, "years.txt")
+        val kept = cached.takeIf { it.exists() }?.readText()?.split(',')?.mapNotNull { it.trim().toIntOrNull() }
+        emit((kept.orEmpty() + phone).distinct().sortedDescending())
+        val pc = app.sync.pcConnection()?.let { conn -> runCatching { linkClient.wrapYears(conn) }.getOrNull() } ?: return@flow
+        runCatching { cached.writeText(pc.joinToString(",")) }
+        emit((pc + phone).distinct().sortedDescending())
     }
     suspend fun lyrics(now: com.local.hive.mobile.playback.NowPlaying) = app.lyrics.find(now.artist, now.title, now.album, now.durationMs)
     suspend fun tracksById(ids: List<Long>): List<Track> = dao.tracks(ids).associateBy { it.id }.let { map -> ids.mapNotNull { map[it] } }
@@ -223,9 +228,50 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
     fun toggleFavoriteAlbum(album: String, artist: String) = viewModelScope.launch {
         val key = FavoriteAlbum.keyOf(album, artist)
         // Taken out by hand, an album stays out even though it has liked songs.
-        if (key in favoriteAlbumKeys.value) { dao.deleteFavoriteAlbum(key); app.likedAlbums.setDismissed(key, true) }
-        else { dao.upsertFavoriteAlbum(FavoriteAlbum(key, album, artist, System.currentTimeMillis())); app.likedAlbums.setDismissed(key, false) }
+        if (key in favoriteAlbumKeys.value) dao.deleteFavoriteAlbum(key)
+        else dao.upsertFavoriteAlbum(FavoriteAlbum(key, album, artist, System.currentTimeMillis()))
     }
+
+    /** Liked artists and playlists, the most recently liked first (see the Favorites page). */
+    val favoriteItems: StateFlow<List<com.local.hive.mobile.data.FavoriteItem>> = dao.favoriteItems().state(emptyList())
+    val favoriteItemKeys: StateFlow<Set<String>> = dao.favoriteItems().map { list -> list.mapTo(HashSet()) { it.key } }.state(emptySet())
+    /** Likes [item] (an artist or a playlist), or takes the like back. */
+    fun toggleFavorite(item: com.local.hive.mobile.data.FavoriteItem) = viewModelScope.launch {
+        if (item.key in favoriteItemKeys.value) dao.deleteFavoriteItem(item.key) else dao.upsertFavoriteItem(item.copy(addedAt = System.currentTimeMillis()))
+    }
+
+    /**
+     * The Favorites page's squares after the Favorites one: liked playlists, artists and albums
+     * together, the most recently liked first. An album shows only while it's on this phone.
+     */
+    val favoriteTiles: StateFlow<List<FavoriteTile>> = combine(albums, dao.favoriteAlbums(), dao.favoriteItems(), dao.playlists(), app.pcLibrary.playlists) { all, favAlbums, items, mine, onPc ->
+        val byKey = all.associateBy { FavoriteAlbum.keyOf(it.album, it.artist) }
+        // An artist shows one of their own album covers: their newest album on the phone.
+        val coverOf = all.filter { it.artist.isNotBlank() }.groupBy { it.artist.trim().lowercase() }.mapValues { (_, list) -> list.maxByOrNull { it.added }!!.albumId }
+        val albumTiles = favAlbums.mapNotNull { f -> byKey[f.key]?.let { a ->
+            FavoriteTile("album:" + f.key, a.album, a.artist, android.net.Uri.parse("content://media/external/audio/albumart/${a.albumId}"), "album", "album/${a.albumId}", f.addedAt)
+        } }
+        // A liked PC playlist is the same playlist as its twin here (playlists sync both ways), so it
+        // opens that one; one the PC no longer has, with no twin here, is gone and leaves Favorites.
+        val pcIds = onPc.mapTo(HashSet()) { it.id }
+        val mineByName = mine.associateBy { it.name.trim().lowercase() }
+        val itemTiles = items.mapNotNull {
+            val art: Any? = if (it.kind == "artist") coverOf[it.title.trim().lowercase()]?.let { id -> android.net.Uri.parse("content://media/external/audio/albumart/$id") } else it.artwork
+            var route = it.route
+            if (it.key.startsWith("playlist:pc:")) {
+                val twin = mineByName[it.title.trim().lowercase()]
+                if (twin != null) route = "userplaylist/${twin.id}"
+                else if (onPc.isNotEmpty() && it.key.removePrefix("playlist:pc:") !in pcIds) return@mapNotNull null
+            }
+            FavoriteTile(it.key, it.title, it.subtitle, art, it.kind, route, it.addedAt)
+        }
+        (albumTiles + itemTiles).sortedByDescending { it.addedAt }.distinctBy { it.route }
+    }.flowOn(Dispatchers.Default).state(emptyList())
+
+    /** Pictures chosen for playlists (see PlaylistImages). */
+    val playlistImages: StateFlow<Map<String, String>> = app.playlistImages.images
+    fun setPlaylistImage(key: String, picture: android.net.Uri) = viewModelScope.launch { app.playlistImages.set(key, picture) }
+    fun removePlaylistImage(key: String) = viewModelScope.launch { app.playlistImages.remove(key) }
     // ---- playlists ----
 
     val playlists: StateFlow<List<PlaylistSummary>> = dao.playlists().state(emptyList())
@@ -287,6 +333,38 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
 
     val appleMusic get() = app.appleMusic
     val spotify get() = app.spotify
+
+    /**
+     * Where "Go to album" takes a streamed song: the album on the phone when it's here, the PC's
+     * album for a song from the PC, else the album's own Spotify or Apple Music page. Null when none is found.
+     */
+    suspend fun streamAlbumRoute(s: StreamTrack): String? {
+        fun norm(x: String) = x.lowercase().replace(Regex("""\s*[(\[].*?(deluxe|edition|remaster|version|expanded).*?[)\]]"""), "").trim()
+        if (s.album.isNotBlank()) {
+            val albums = dao.albums().first()
+            val here = albums.filter { norm(it.album) == norm(s.album) }
+            (here.firstOrNull { norm(it.artist) == norm(s.artist) || norm(s.artist).startsWith(norm(it.artist)) } ?: here.singleOrNull())
+                ?.let { return "album/${it.albumId}" }
+        }
+        fun enc(x: String): String = android.net.Uri.encode(x)
+        return when {
+            s.key.startsWith(com.local.hive.mobile.link.PcLibrary.MEDIA_PREFIX) -> {
+                val t = app.pcLibrary.tracks.value.firstOrNull { com.local.hive.mobile.link.PcLibrary.MEDIA_PREFIX + it.id == s.key } ?: return null
+                if (t.album.isBlank()) null else "pc/album?key=" + enc((t.albumArtist.ifBlank { t.artist }).lowercase() + "\u0000" + t.album.lowercase())
+            }
+            s.key.startsWith("sp:") -> app.spotify.albumOf(s.key.removePrefix("sp:"))?.let { "spotify/c?url=" + enc(it) }
+            "music.apple.com" in s.url && "/album/" in s.url -> "apple/c?url=" + enc(s.url.substringBefore('?'))
+            else -> null
+        }
+    }
+
+    /** Where "Go to artist" takes a streamed song: the artist's songs on the phone, or null when there are none. */
+    suspend fun streamArtistRoute(s: StreamTrack): String? {
+        val name = s.artist.split(", ", " & ", " feat. ", " ft. ").first().trim()
+        val artists = dao.artists().first()
+        val hit = artists.firstOrNull { it.artist.equals(s.artist, true) } ?: artists.firstOrNull { it.artist.equals(name, true) } ?: return null
+        return "artist/" + android.net.Uri.encode(hit.artist)
+    }
     val spotifyAccount get() = app.spotifyAccount
     val spotifyUser = app.spotifyAccount.user
 
@@ -402,6 +480,8 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
 
     // ---- Hive's playlists from the PC ----
     val pcPlaylists = app.pcLibrary.playlists
+    /** The phone's playlists and Hive's are one set (see [com.local.hive.mobile.link.PlaylistSync]). */
+    val playlistSyncActive = app.playlistSync.active
 
     /** A streamed song from a PC playlist, as the phone keeps such songs. */
     fun pcStream(s: com.local.hive.mobile.link.PcPlaylistSong) = StreamTrack(
@@ -409,14 +489,23 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
         durationMs = s.duration, artworkUrl = app.pcLibrary.coverFor(s.cover).orEmpty(), previewUrl = "", url = "",
     )
 
-    /** The phone's own copy of a PC playlist song, if it has one. */
-    suspend fun localFor(s: com.local.hive.mobile.link.PcPlaylistSong): Track? =
-        if (s.kind == "track") dao.trackForPc(s.id) else localMatch(s.title, s.artist, s.duration)
+    /** The phone's own copies of a PC playlist's songs, in its order: one lookup for the whole list. */
+    suspend fun localsFor(songs: List<com.local.hive.mobile.link.PcPlaylistSong>): List<Track?> {
+        val ids = songs.filter { it.kind == "track" }.map { it.id }.distinct()
+        val copies = HashMap<String, Track>()
+        // SQLite takes up to 999 values in one IN (...).
+        ids.chunked(900).forEach { chunk -> dao.tracksForPc(chunk).forEach { copies.putIfAbsent(it.pcId, it.track) } }
+        return songs.map { s -> if (s.kind == "track") copies[s.id] else localMatch(s.title, s.artist, s.duration) }
+    }
+
+    /** A PC playlist's rows as last shown, so opening it again shows them at once. */
+    val pcPlaylistRows = java.util.concurrent.ConcurrentHashMap<String, List<Pair<Track?, StreamTrack>>>()
 
     private suspend fun pcPlaylistMedia(songs: List<com.local.hive.mobile.link.PcPlaylistSong>): List<MediaItem?> {
         val byId = app.pcLibrary.tracks.value.associateBy { it.id }
-        return songs.map { s ->
-            localFor(s)?.toMediaItem() ?: if (s.kind == "track") byId[s.id]?.let { app.pcLibrary.mediaItem(it) }
+        val locals = localsFor(songs)
+        return songs.mapIndexed { i, s ->
+            locals[i]?.toMediaItem() ?: if (s.kind == "track") byId[s.id]?.let { app.pcLibrary.mediaItem(it) }
             else pcStream(s).let { st -> streamUri(st)?.let { st.toMediaItem(it) } }
         }
     }
@@ -429,8 +518,9 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
     fun copyPcPlaylist(p: com.local.hive.mobile.link.PcPlaylist, onDone: (Long, String) -> Unit) = viewModelScope.launch {
         val byId = app.pcLibrary.tracks.value.associateBy { it.id }
         val slots = mutableListOf<PlaylistEntry>(); val streams = mutableListOf<StreamTrack>(); var local = 0
-        for (s in p.songs) {
-            val mine = localFor(s)
+        val locals = localsFor(p.songs)
+        for ((i, s) in p.songs.withIndex()) {
+            val mine = locals[i]
             when {
                 mine != null -> { slots += PlaylistEntry(playlistId = 0, trackId = mine.id, position = 0); local++ }
                 s.kind == "stream" -> { val st = pcStream(s); streams += st; slots += PlaylistEntry(playlistId = 0, trackId = 0, position = 0, streamKey = st.key) }
@@ -491,11 +581,12 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
     // ---- editing tags and covers (the caller has Android's permission to change the files) ----
 
     /**
-     * Writes each song's edit (and [cover], for all of them) into its file, then
+     * Writes each song's edit (and [covers], for all of them) into its file, then
      * hands the same changes to Hive on the PC (see [com.local.hive.mobile.link.PcEdits]).
      * Reports a line for the toast.
      */
-    fun saveEdits(edits: Map<Track, com.local.hive.mobile.data.TagEdit>, cover: ByteArray? = null, onDone: (String) -> Unit) = viewModelScope.launch {
+    fun saveEdits(edits: Map<Track, com.local.hive.mobile.data.TagEdit>, covers: com.local.hive.mobile.data.CoverEdit? = null, onDone: (String) -> Unit) = viewModelScope.launch {
+        val cover = covers?.takeIf { !it.isEmpty }
         val wanted = edits.filter { !it.value.isEmpty || cover != null }
         if (wanted.isEmpty()) { onDone("Nothing changed"); return@launch }
         // The playing song is reloaded at its place once its file is rewritten.
@@ -511,12 +602,17 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
         if (saved.any { it.id == playing }) app.player.reloadCurrent()
         app.pcEdits.addTags(saved.associate { it.id to wanted.getValue(it) }.filterValues { !it.isEmpty })
         if (cover != null) {
-            app.pcEdits.addCover(saved.map { it.id }, cover)
-            // The old cover is cached (Hive's own copy, Coil's, Android's thumbnails); the new one is
-            // read afresh now, and again once Android has re-read the files and remade its thumbnails.
-            val albums = saved.map { it.albumId }.distinct()
-            refreshCovers(albums, cover)
-            viewModelScope.launch { kotlinx.coroutines.delay(4_000); refreshCovers(albums, cover) }
+            // Now Playing's turning covers are read from the files again.
+            saved.forEach { java.io.File(app.cacheDir, "pictures/${it.id}").deleteRecursively() }
+            cover.backs.forEach { (place, picture) -> app.pcEdits.addBackCover(saved.map { it.id }, place, picture) }
+            cover.front?.let { front ->
+                app.pcEdits.addCover(saved.map { it.id }, front)
+                // The old cover is cached (Hive's own copy, Coil's, Android's thumbnails); the new one is
+                // read afresh now, and again once Android has re-read the files and remade its thumbnails.
+                val albums = saved.map { it.albumId }.distinct()
+                refreshCovers(albums, front)
+                viewModelScope.launch { kotlinx.coroutines.delay(4_000); refreshCovers(albums, front) }
+            } ?: run { coil3.SingletonImageLoader.get(app).memoryCache?.clear(); forgetShownCovers() }
         }
         app.requestRescan(delayMs = 500)
         app.sync.matchAgainNextSync()
@@ -539,6 +635,9 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
 
     suspend fun track(id: Long) = dao.track(id)
     suspend fun saveOwnLyrics(artist: String, title: String, text: String) = app.lyrics.saveOwn(artist, title, text)
+
+    /** A song's pictures with their types (front and back covers), for the cover editor. */
+    suspend fun pictures(track: Track) = com.local.hive.mobile.data.TagWriter.pictures(app, track)
 
     /** A song's own cover at full size, for saving it to the phone. */
     suspend fun fullCover(track: Track): ByteArray? = com.local.hive.mobile.data.TagWriter.cover(app, track)
@@ -685,3 +784,6 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
         const val AUTO_PLAYLIST_SIZE = 100
     }
 }
+
+/** A square on the Favorites page: a liked album, artist or playlist, and the route that opens it. */
+data class FavoriteTile(val key: String, val title: String, val subtitle: String, val art: Any?, val kind: String, val route: String, val addedAt: Long)

@@ -158,7 +158,7 @@ fun PcAlbumScreen(vm: MainViewModel, key: String, bottomPadding: Dp, onBack: () 
 private fun PcTrackRow(vm: MainViewModel, t: PcTrack, playing: Boolean, isPlaying: Boolean, number: Int?, subtitle: String = listOf(t.artist, t.album).filter { it.isNotBlank() }.joinToString(" · "), onClick: () -> Unit) =
     SongRow(vm.pcLibrary.coverUrl(t), t.title.ifBlank { t.file }, subtitle, playing, isPlaying, onClick, number = number,
         trailing = if (number != null && t.duration > 0) formatDuration(t.duration) else null) { expanded, dismiss ->
-        HiveMenu(expanded, dismiss) {
+        HiveMenu(expanded, dismiss, settings = true) {
             HiveMenuItem("Play next", Icons.AutoMirrored.Rounded.PlaylistPlay) { dismiss(); vm.playNextPc(listOf(t)) }
             HiveMenuItem("Add to queue", Icons.AutoMirrored.Rounded.QueueMusic) { dismiss(); vm.addToQueuePc(listOf(t)) }
         }

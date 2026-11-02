@@ -195,6 +195,18 @@ class SyncEngine(
         }
     }
 
+    /**
+     * Only the plays, both ways, for Yearly Wrap: much quicker than a whole sync. False when Hive
+     * can't be reached. Waits for a sync already running (it sends them too).
+     */
+    suspend fun syncPlaysNow(): Boolean {
+        if (store.pairing == null) return false
+        return mutex.withLock {
+            val conn = connection() ?: return@withLock false
+            runCatchingNotCancelled { syncPlays(conn) }.isSuccess
+        }
+    }
+
     /** A heart on a streamed song: kept here, then sent to Hive. */
     fun setStreamLoved(title: String, artist: String, album: String, durationMs: Long, artworkUrl: String, mediaId: String, loved: Boolean) {
         val likes = streamLoves ?: return
@@ -310,7 +322,24 @@ class SyncEngine(
     private suspend fun syncPlays(conn: HiveLinkClient.Connection) {
         val info = runCatchingNotCancelled { client.info(conn) }.getOrNull() ?: return
         _status.update { it.copy(waitingOnPc = info.inbox.loves + info.inbox.plays) }
+        rememberAddresses(info)
         if (!info.plays) return
+        pushPlays(conn)
+        val trackFor = dao.allMatches().groupBy({ it.pcId }, { it.trackId })
+        val fetched = client.plays(conn, store.lastPcPlayAt)
+        val fresh = fetched.flatMap { p -> trackFor[p.id].orEmpty().take(1).map { Play(trackId = it, playedAt = p.playedAt, listenedMs = p.listenedMs, synced = true, fromPc = true) } }
+            .filter { dao.playCountAt(it.trackId, it.playedAt) == 0 }
+        if (fresh.isNotEmpty()) dao.insertPlays(fresh)
+        fetched.maxOfOrNull { it.playedAt }?.let { store.lastPcPlayAt = maxOf(store.lastPcPlayAt, it) }
+        // With this phone's plays now in it, Hive's listening history file comes here as a
+        // byte-for-byte copy, so phone and PC keep the same readable history.
+        if (info.listening) runCatchingNotCancelled {
+            client.listening(conn, store.listeningVersion)?.let { (version, bytes) -> saveListening(bytes); store.listeningVersion = version }
+        }.onFailure { android.util.Log.w("HiveSync", "listening history not saved", it) }
+        _status.update { it.copy(waitingOnPc = info.inbox.loves + info.inbox.plays) }
+    }
+
+    private suspend fun pushPlays(conn: HiveLinkClient.Connection) {
         // Hive counts them at once (or keeps them for review, older Hive). A play
         // Hive doesn't know the song of stays here and goes again later.
         while (true) {
@@ -325,18 +354,6 @@ class SyncEngine(
             }
             if (sent == 0 || batch.size < 2000) break
         }
-        val trackFor = dao.allMatches().groupBy({ it.pcId }, { it.trackId })
-        val fetched = client.plays(conn, store.lastPcPlayAt)
-        val fresh = fetched.flatMap { p -> trackFor[p.id].orEmpty().take(1).map { Play(trackId = it, playedAt = p.playedAt, listenedMs = p.listenedMs, synced = true, fromPc = true) } }
-            .filter { dao.playCountAt(it.trackId, it.playedAt) == 0 }
-        if (fresh.isNotEmpty()) dao.insertPlays(fresh)
-        fetched.maxOfOrNull { it.playedAt }?.let { store.lastPcPlayAt = maxOf(store.lastPcPlayAt, it) }
-        // With this phone's plays now in it, Hive's listening history file comes here as a
-        // byte-for-byte copy, so phone and PC keep the same readable history.
-        if (info.listening) runCatchingNotCancelled {
-            client.listening(conn, store.listeningVersion)?.let { (version, bytes) -> saveListening(bytes); store.listeningVersion = version }
-        }.onFailure { android.util.Log.w("HiveSync", "listening history not saved", it) }
-        _status.update { it.copy(waitingOnPc = info.inbox.loves + info.inbox.plays) }
     }
 
     private suspend fun pullChanges(conn: HiveLinkClient.Connection) {
@@ -386,10 +403,23 @@ class SyncEngine(
             for (trackId in tracksFor[event.id].orEmpty()) {
                 val mine = dao.love(trackId)
                 if (mine != null && mine.pending && mine.changedAt > event.at) continue
+                // Already so here: the song keeps the date it was favorited (a file write on the PC
+                // that left Love as it was is not a new favorite).
+                if (mine != null && !mine.pending && mine.loved == event.loved) continue
                 updates += LoveState(trackId, event.loved, event.at, pending = false)
             }
         }
         dao.upsertLove(updates)
+    }
+
+    /**
+     * Addresses the PC has gained since pairing (Tailscale, a new network) are kept to try when the
+     * usual one doesn't answer: that is how the phone reaches Hive away from home.
+     */
+    private fun rememberAddresses(info: InfoResponse) {
+        val p = store.pairing ?: return
+        val more = info.addresses.map { it.address }.filter { it !in p.hosts }
+        if (more.isNotEmpty()) store.pairing = p.copy(hosts = p.hosts + more)
     }
 
     // ---- live updates ----
@@ -402,7 +432,9 @@ class SyncEngine(
                 val conn = connection()
                 if (conn != null) {
                     _status.update { it.copy(live = true, host = conn.host) }
-                    val caps = runCatchingNotCancelled { client.info(conn).streams }.getOrNull()
+                    val info = runCatchingNotCancelled { client.info(conn) }.getOrNull()
+                    info?.let { rememberAddresses(it) }
+                    val caps = info?.streams
                     _streams.value = PcStreams(conn.host, conn.port, conn.token, songs = caps?.song == true)
                     runCatching {
                         client.events(conn, onStreamLoves = { scope.launch { syncNow() } }).collect { event ->

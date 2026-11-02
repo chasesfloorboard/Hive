@@ -93,4 +93,38 @@ class MirrorPlannerTest {
         val p = plan(mapOf("s.mp3" to f(100, 1_793_246_586_000)), mapOf("s.mp3" to f(100, 1_793_246_586_870)), was)
         assertTrue(p.toPhone.isEmpty() && p.toPc.isEmpty())
     }
+
+    @Test fun aFileAlreadyOnThePhoneInAnotherFolderIsMovedNotCopied() {
+        // Song sync filed the PC's song as Artist/Album/ before the mirror took over.
+        val p = plan(
+            phone = mapOf("Artist A/First Album/01 Opening.mp3" to f(500, 1), "Phone Song.mp3" to f(70, 1)),
+            pc = mapOf("Artist A - Albums/01 Opening.mp3" to f(500, 9), "Other.mp3" to f(70, 9)),
+        )
+        assertEquals("Artist A - Albums/01 Opening.mp3", p.moves["Artist A/First Album/01 Opening.mp3"])
+        assertTrue("Artist A - Albums/01 Opening.mp3" in p.agreed)
+        // Another name, but the only unmatched file of that type and size on each side: the same file.
+        assertEquals("Other.mp3", p.moves["Phone Song.mp3"])
+        // With two of that size on a side, nothing is guessed: copied, not moved.
+        val two = plan(mapOf("A.mp3" to f(70, 1), "B.mp3" to f(70, 1)), mapOf("C.mp3" to f(70, 9)))
+        assertTrue(two.moves.isEmpty())
+        assertEquals(listOf("C.mp3"), two.toPhone)
+        // Once on both sides (in the ledger), nothing is ever moved.
+        val was = mapOf("Artist A - Albums/01 Opening.mp3" to Agreed(f(500, 9), f(500, 9)))
+        assertTrue(plan(mapOf("Elsewhere/01 Opening.mp3" to f(500, 1)), mapOf("Artist A - Albums/01 Opening.mp3" to f(500, 9)), was).moves.isEmpty())
+    }
+
+    @Test fun aHalfFileLeftByAStoppedCopyGoesButOneStillBeingWrittenStays() {
+        val root = kotlin.io.path.createTempDirectory("mirror").toFile()
+        try {
+            java.io.File(root, "A").mkdirs()
+            val song = java.io.File(root, "A/song.mp3").apply { writeBytes(ByteArray(10)) }
+            val stale = java.io.File(root, "A/.old.mp3.hive-mirror-part").apply { writeBytes(ByteArray(5)); setLastModified(System.currentTimeMillis() - 10 * 60_000L) }
+            val fresh = java.io.File(root, "A/.new.mp3.hive-mirror-part").apply { writeBytes(ByteArray(5)) }
+            val files = FileMirror.phoneFiles(root)
+            assertEquals(setOf("A/song.mp3"), files.keys)
+            assertTrue("a song stays", song.exists())
+            assertTrue("a half file from a stopped copy goes", !stale.exists())
+            assertTrue("a half file being written stays", fresh.exists())
+        } finally { root.deleteRecursively() }
+    }
 }

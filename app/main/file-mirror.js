@@ -7,6 +7,7 @@
 // Nothing is ever destroyed here: a file the phone replaces or deletes is moved
 // into the keep folder (Hive's Deleted songs) under the same relative path.
 
+const crypto = require('crypto');
 const fs = require('fs');
 const path = require('path');
 const { replaceFile } = require('./replace-file');
@@ -14,11 +15,17 @@ const { replaceFile } = require('./replace-file');
 // Hive's own half-written files (tag writes, song uploads, mirror copies): never mirrored.
 const HIVE_TEMP = /(\.beehive-[a-z-]+-[0-9a-f]{6,}(\.[a-z0-9]+)?|\.hivelink-part|\.hive-mirror-part)$/i;
 
-/** The absolute path of [rel] inside [root], or null for anything that would leave it. */
-function safeRel(root, rel) {
+// Names Windows can't hold: it would save "Song ." as "Song", the two sides would never match,
+// and the file would be sent again on every sync.
+const WINDOWS_RESERVED = /^(con|prn|aux|nul|com[1-9]|lpt[1-9])(\..*)?$/i;
+function windowsCantHold(segment) { return /[<>:"|?*\x00-\x1f]/.test(segment) || /[. ]$/.test(segment) || WINDOWS_RESERVED.test(segment); }
+
+/** The absolute path of [rel] inside [root], or null for anything that would leave it (or that this system can't name). */
+function safeRel(root, rel, platform = process.platform) {
   const r = String(rel || '').replace(/\\/g, '/');
   if (!r || r.includes('\0') || r.startsWith('/') || /^[a-z]:/i.test(r)) return null;
   if (r.split('/').some(s => s === '' || s === '.' || s === '..')) return null;
+  if (platform === 'win32' && r.split('/').some(windowsCantHold)) return null;
   const base = path.resolve(root);
   const abs = path.resolve(base, ...r.split('/'));
   return abs.startsWith(base + path.sep) ? abs : null;
@@ -78,7 +85,8 @@ async function archive(root, keepDir, rel) {
 async function write(root, keepDir, rel, stream, size, mtimeMs) {
   const target = safeRel(root, rel);
   if (!target) throw new Error('Not a path inside the library.');
-  const part = path.join(path.dirname(target), `.${path.basename(target)}.hive-mirror-part`);
+  // Each transfer its own part file: a retry can arrive while the first try is still coming in.
+  const part = path.join(path.dirname(target), `.${path.basename(target)}.${crypto.randomBytes(4).toString('hex')}.hive-mirror-part`);
   await fs.promises.mkdir(path.dirname(target), { recursive: true });
   let received = 0;
   try {

@@ -1,0 +1,71 @@
+name: Hive Mobile
+
+# Builds Hive Mobile when its code changes on main, and when its version (versionCode in
+# mobile/android/app/build.gradle.kts) is newer than the one in the "hive-mobile" release,
+# replaces that release's HiveMobile.apk and HiveMobile.json. Installed copies update from there
+# when Hive on the PC can't be reached.
+#
+# The APK is signed with the HIVE_MOBILE_KEYSTORE secret (a base64 Android keystore whose key is
+# "androiddebugkey", passwords "android", as Android's debug keystore). Without the secret it
+# still builds and tests, but publishes nothing: a phone only accepts updates signed by its key.
+
+on:
+  push:
+    branches: [main]
+    paths: ['mobile/android/**', '.github/workflows/hive-mobile.yml']
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+concurrency:
+  group: hive-mobile
+  cancel-in-progress: false
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: 21
+
+      - uses: android-actions/setup-android@v3
+
+      - name: Signing key
+        env:
+          KEY: ${{ secrets.HIVE_MOBILE_KEYSTORE }}
+        run: |
+          if [ -n "$KEY" ]; then
+            mkdir -p ~/.android
+            printf '%s' "$KEY" | base64 -d > ~/.android/debug.keystore
+            echo "SIGNED=1" >> "$GITHUB_ENV"
+          else
+            echo "::notice::No HIVE_MOBILE_KEYSTORE secret: building and testing only."
+          fi
+
+      - name: Test and build
+        working-directory: mobile/android
+        run: bash gradlew --no-daemon testDebugUnitTest assembleRelease
+
+      - name: Publish when newer
+        if: env.SIGNED == '1'
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          gradle=mobile/android/app/build.gradle.kts
+          code=$(grep -oP 'versionCode = \K[0-9]+' "$gradle")
+          name=$(grep -oP 'versionName = "\K[^"]+' "$gradle")
+          published=$(curl -sfL "https://github.com/${GITHUB_REPOSITORY}/releases/download/hive-mobile/HiveMobile.json" | jq -r '.versionCode // 0' || echo 0)
+          if [ "$code" -le "${published:-0}" ]; then
+            echo "Hive Mobile $name ($code) is not newer than the release ($published); nothing to publish."
+            exit 0
+          fi
+          cp mobile/android/app/build/outputs/apk/release/app-release.apk HiveMobile.apk
+          jq -n --argjson code "$code" --arg name "$name" --argjson size "$(stat -c %s HiveMobile.apk)" --arg sha "$(sha256sum HiveMobile.apk | cut -d' ' -f1)" \
+            '{versionCode:$code, versionName:$name, size:$size, sha256:$sha}' > HiveMobile.json
+          cat HiveMobile.json
+          gh release upload hive-mobile --clobber -R "$GITHUB_REPOSITORY" HiveMobile.apk HiveMobile.json

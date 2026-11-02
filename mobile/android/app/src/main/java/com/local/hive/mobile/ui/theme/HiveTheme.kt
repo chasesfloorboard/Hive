@@ -245,7 +245,58 @@ class ThemeStore(private val context: Context) {
      */
     @Suppress("UNUSED_PARAMETER")
     private fun packsFrom(pc: List<com.local.hive.mobile.link.PcTheme>): List<ThemePack> =
-        listOf(ThemePack(YOUR_THEME, yourHiveCss())) + ThemeMaker.SUITE.map(ThemeMaker::pack) + customPack()
+        listOf(ThemePack(YOUR_THEME, yourHiveCss())) + ThemeMaker.SUITE.map(ThemeMaker::pack) + _saved.value + customPack()
+
+    // ---- Saved themes: the user's own, kept by name (from Custom's colours, or imported) ----
+
+    private val savedFile = java.io.File(context.filesDir, "saved-themes.json")
+    private val _saved = MutableStateFlow(loadSaved())
+    /** The themes the user saved, oldest first; they sit before Custom in the list. */
+    val saved: StateFlow<List<ThemePack>> = _saved.asStateFlow()
+
+    private fun loadSaved(): List<ThemePack> = runCatching {
+        themeJson.decodeFromString(kotlinx.serialization.builtins.ListSerializer(com.local.hive.mobile.link.PcTheme.serializer()), savedFile.readText())
+            .filter { it.name.isNotBlank() && it.css.contains("--") }.map { ThemePack(it.name, it.css) }
+    }.getOrDefault(emptyList())
+
+    private fun storeSaved(list: List<ThemePack>) {
+        runCatching { savedFile.writeText(themeJson.encodeToString(kotlinx.serialization.builtins.ListSerializer(com.local.hive.mobile.link.PcTheme.serializer()), list.map { com.local.hive.mobile.link.PcTheme(it.name, it.css) })) }
+        _saved.value = list
+        _packs.value = packsFrom(emptyList())
+    }
+
+    /** A name no built-in theme has: "Sunflower" is Hive's, so the user's becomes "Sunflower 2". */
+    private fun reserved(name: String) = name.equals(YOUR_THEME, true) || name.equals(CUSTOM, true) || ThemeMaker.SUITE.any { ThemeMaker.pack(it).name.equals(name, true) }
+
+    /**
+     * Keeps [css] as a theme called [name] and shows it. Saving under a name already saved replaces
+     * that theme (changing its colours); a built-in theme's name gets a number.
+     */
+    fun saveTheme(name: String, css: String): ThemePack {
+        var n = name.trim().ifBlank { "My theme" }.take(40)
+        if (reserved(n)) { var i = 2; while (reserved("$n $i") || _saved.value.any { it.name.equals("$n $i", true) }) i++; n = "$n $i" }
+        val pack = ThemePack(n, css)
+        val list = _saved.value
+        val at = list.indexOfFirst { it.name.equals(n, true) }
+        storeSaved(if (at >= 0) list.toMutableList().also { it[at] = pack } else list + pack)
+        apply(pack.css, pack.name)
+        return pack
+    }
+
+    fun renameTheme(old: String, new: String) {
+        val n = new.trim().take(40)
+        if (n.isBlank() || reserved(n) || _saved.value.any { it.name.equals(n, true) && !it.name.equals(old, true) }) return
+        storeSaved(_saved.value.map { if (it.name == old) it.copy(name = n) else it })
+        if (_name.value == old) { _name.value = n; prefs.edit { putString("name", n) } }
+    }
+
+    /** Deletes a saved theme; when it was showing, Hive goes back to your Hive theme. */
+    fun deleteTheme(name: String) {
+        storeSaved(_saved.value.filterNot { it.name == name })
+        if (_name.value == name) reset()
+    }
+
+    fun isSaved(name: String) = _saved.value.any { it.name == name }
 
     // ---- Custom: a background and an accent of the user's own (phone only) ----
 
@@ -292,6 +343,13 @@ class ThemeStore(private val context: Context) {
 
     fun reset() = show(null, YOUR_THEME)
 
+    /** What shows now, to come back to (a theme previewed from the logo and let go). */
+    fun restorer(): () -> Unit { val css = prefs.getString("css", null); val name = _name.value; return { show(css, name) } }
+
+    /** The themes the logo shuffles through: the phone's own (as in Settings → Theme), never the one showing. */
+    fun shufflePool(): List<ThemePack> =
+        packs.value.filter { it.name != _name.value && it.css != css }.distinctBy { it.css }
+
     /** Shows a theme (null css: Your Hive theme) without touching the Accent choice. */
     private fun show(css: String?, name: String) {
         prefs.edit { if (css == null) { remove("css"); remove("name") } else { putString("css", css); putString("name", name) } }
@@ -327,9 +385,13 @@ class ThemeStore(private val context: Context) {
         val key = "$period@${s.lastSwitch(now)}"
         if (prefs.getString("sched.applied", null) == key) return
         val pack = s.themeFor(period, packs.value, _name.value) ?: return
-        if (pack.name == YOUR_THEME) show(null, YOUR_THEME) else show(pack.css, pack.name)
+        val switch = { if (pack.name == YOUR_THEME) show(null, YOUR_THEME) else show(pack.css, pack.name) }
+        presenter?.invoke(switch) ?: switch()
         prefs.edit { putString("sched.applied", key) }
     }
+
+    /** While Hive is on screen: shows a theme switching by itself (the schedule) opening out of the logo. */
+    @Volatile var presenter: ((() -> Unit) -> Unit)? = null
 
     /** Checks the schedule every half minute while Hive runs. */
     fun runSchedule(scope: kotlinx.coroutines.CoroutineScope) = scope.launch {

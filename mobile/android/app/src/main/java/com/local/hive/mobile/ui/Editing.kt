@@ -29,11 +29,15 @@ import androidx.compose.foundation.lazy.grid.items
 import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.foundation.verticalScroll
+import androidx.compose.foundation.horizontalScroll
 import androidx.compose.material.icons.Icons
+import androidx.compose.material.icons.rounded.Add
 import androidx.compose.material.icons.rounded.Album
+import androidx.compose.material.icons.rounded.HideImage
 import androidx.compose.material.icons.rounded.Image
 import androidx.compose.material.icons.rounded.LibraryMusic
 import androidx.compose.material3.ExperimentalMaterial3Api
+import androidx.compose.material3.Icon
 import androidx.compose.material3.ModalBottomSheet
 import androidx.compose.material3.Text
 import androidx.compose.material3.rememberModalBottomSheetState
@@ -48,6 +52,7 @@ import androidx.compose.runtime.staticCompositionLocalOf
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
+import androidx.compose.ui.graphics.graphicsLayer
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.text.input.KeyboardCapitalization
@@ -241,7 +246,23 @@ private suspend fun coverJpeg(bytes: ByteArray): ByteArray? = withContext(Dispat
 /** Apple's covers come as any size asked for: the largest Hive keeps. */
 private fun bigCover(url: String) = url.replace(Regex("""/\d+x\d+bb\.jpg$"""), "/1400x1400bb.jpg")
 
-/** Change cover: a photo from the phone, or a cover found online, written into every song. */
+/**
+ * One picture place in the cover editor: the front cover ([back] -1) or a back
+ * cover, by its place among the back covers. [now] is what the file holds.
+ */
+private class CoverSlot(val back: Int, val now: Any?)
+
+/** A slot's change: a new picture (a phone photo's Uri or an online cover's address), or [Removed]. */
+private object Removed
+
+/**
+ * Covers: the front cover and the back covers, as Hive's artwork editor on the
+ * PC has them. Tap a cover, then pick a photo from the phone or a cover found
+ * online for it. For one song, every back cover shows and more can be added
+ * (a single's own art beside the album's, say); for an album's songs, the
+ * front and back cover go into every song, each song keeping any other
+ * pictures of its own.
+ */
 @Composable
 fun CoverSheet(vm: MainViewModel, tracks: List<Track>, onDismiss: () -> Unit, onToast: (String) -> Unit) {
     val c = Hive.colors
@@ -249,35 +270,99 @@ fun CoverSheet(vm: MainViewModel, tracks: List<Track>, onDismiss: () -> Unit, on
     val scope = rememberCoroutineScope()
     val write = rememberWriteAccess(onToast)
     val first = tracks.first()
+    val oneSong = tracks.size == 1
     var query by remember { mutableStateOf("${first.displayAlbumArtist} ${first.album}".trim()) }
     var results by remember { mutableStateOf<List<AmCard>?>(null) }
-    var picked by remember { mutableStateOf<Any?>(null) }
+    var slots by remember { mutableStateOf(listOf(CoverSlot(-1, first.artworkUri))) }
+    val changes = remember { androidx.compose.runtime.mutableStateMapOf<Int, Any>() }
+    var selected by remember { mutableStateOf(-1) }
     var busy by remember { mutableStateOf(false) }
     LaunchedEffect(Unit) { results = vm.findAlbums(query) }
-    val photo = rememberLauncherForActivityResult(ActivityResultContracts.PickVisualMedia()) { uri -> if (uri != null) picked = uri }
+    LaunchedEffect(Unit) {
+        // The back covers now: a song's own, or for an album, the first back cover its songs have.
+        val backs = if (oneSong) vm.pictures(first).filter { it.back }.map { it.data }
+        else tracks.take(30).firstNotNullOfOrNull { t -> vm.pictures(t).firstOrNull { it.back }?.data }?.let(::listOf) ?: listOf(null)
+        slots = listOf(slots.first()) + backs.mapIndexed { i, b -> CoverSlot(i, b) }
+    }
+    fun pick(choice: Any) { changes[selected] = choice }
+    val photo = rememberLauncherForActivityResult(ActivityResultContracts.PickVisualMedia()) { uri -> if (uri != null) pick(uri) }
 
     fun save() {
-        val choice = picked ?: return
+        if (changes.isEmpty()) return
         busy = true
         scope.launch {
-            val raw = when (choice) {
-                is android.net.Uri -> withContext(Dispatchers.IO) { runCatching { context.contentResolver.openInputStream(choice)?.use { it.readBytes() } }.getOrNull() }
-                is String -> vm.download(choice)
-                else -> null
+            suspend fun jpeg(choice: Any): ByteArray? {
+                val raw = when (choice) {
+                    is android.net.Uri -> withContext(Dispatchers.IO) { runCatching { context.contentResolver.openInputStream(choice)?.use { it.readBytes() } }.getOrNull() }
+                    is String -> vm.download(choice)
+                    else -> null
+                }
+                return raw?.let { coverJpeg(it) }
             }
-            val jpeg = raw?.let { coverJpeg(it) }
-            if (jpeg == null) { busy = false; onToast("Couldn't read that picture"); return@launch }
-            write(tracks) { allowed -> vm.saveEdits(allowed.associateWith { TagEdit() }, jpeg) { onToast(if (it.startsWith("Saved")) "Cover changed" else it); onDismiss() } }
+            val pictures = changes.filterValues { it !== Removed }.mapValues { (_, v) -> jpeg(v) }
+            if (pictures.values.any { it == null }) { busy = false; onToast("Couldn't read that picture"); return@launch }
+            val edit = com.local.hive.mobile.data.CoverEdit(
+                front = pictures[-1],
+                // A back cover added and taken off again before saving changes nothing.
+                backs = changes.keys.filter { it >= 0 && (changes[it] !== Removed || slots.any { s -> s.back == it && s.now != null }) }.associateWith { pictures[it] },
+            )
+            write(tracks) { allowed -> vm.saveEdits(allowed.associateWith { TagEdit() }, edit) { onToast(if (it.startsWith("Saved")) "Covers changed" else it); onDismiss() } }
         }
     }
 
     EditSheet(onDismiss) {
-        EditHeader("Change cover", tracks)
-        Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(14.dp)) {
-            Artwork(picked ?: first.artworkUri, Modifier.size(120.dp), HiveShape.art, Icons.Rounded.Album, elevation = 12.dp)
-            Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
-                Text(if (picked == null) "The cover now. Pick a new one below, or a photo from your phone." else "The new cover. Save writes it into ${if (tracks.size == 1) "the song" else countOf(tracks.size, "song")}.", style = HiveText.small, color = c.textDim)
-                HiveButton("Choose a photo") { photo.launch(PickVisualMediaRequest(ActivityResultContracts.PickVisualMedia.ImageOnly)) }
+        EditHeader("Covers", tracks)
+        Row(Modifier.fillMaxWidth().horizontalScroll(rememberScrollState()), horizontalArrangement = Arrangement.spacedBy(12.dp)) {
+            slots.forEach { slot ->
+                val change = changes[slot.back]
+                val label = when {
+                    slot.back < 0 -> "Front"
+                    oneSong && slots.count { it.back >= 0 } > 1 -> "Back ${slot.back + 1}"
+                    else -> "Back"
+                }
+                Column(Modifier.width(104.dp), horizontalAlignment = Alignment.CenterHorizontally) {
+                    Box(
+                        Modifier.size(104.dp).clip(HiveShape.art).clickable { selected = slot.back }
+                            .then(if (selected == slot.back) Modifier.border(2.dp, c.accent, HiveShape.art) else Modifier),
+                        contentAlignment = Alignment.Center,
+                    ) {
+                        val shown = if (change === Removed) null else change ?: slot.now
+                        if (shown != null) Artwork(shown, Modifier.size(104.dp).graphicsLayer { alpha = if (change === Removed) 0.3f else 1f }, HiveShape.art, Icons.Rounded.Album)
+                        else Box(Modifier.size(104.dp).background(c.text.copy(alpha = 0.06f)), contentAlignment = Alignment.Center) {
+                            Icon(if (change === Removed) Icons.Rounded.HideImage else Icons.Rounded.Add, null, tint = c.textDim, modifier = Modifier.size(26.dp))
+                        }
+                    }
+                    Text(
+                        when { change === Removed -> "$label · off"; change != null -> "$label · new"; else -> label },
+                        style = HiveText.small, color = if (selected == slot.back) c.accent else c.textDim, maxLines = 1, modifier = Modifier.padding(top = 6.dp),
+                    )
+                }
+            }
+            // One song can carry more back covers than its album: a single's own art, say.
+            if (oneSong) Column(Modifier.width(104.dp), horizontalAlignment = Alignment.CenterHorizontally) {
+                Box(
+                    Modifier.size(104.dp).clip(HiveShape.art).border(1.dp, c.text.copy(alpha = 0.18f), HiveShape.art).clickable {
+                        val place = (slots.maxOf { it.back } + 1).coerceAtLeast(0)
+                        slots = slots + CoverSlot(place, null); selected = place
+                    },
+                    contentAlignment = Alignment.Center,
+                ) { Icon(Icons.Rounded.Add, null, tint = c.text, modifier = Modifier.size(28.dp)) }
+                Text("Add a back cover", style = HiveText.small, color = c.textDim, maxLines = 1, overflow = TextOverflow.Ellipsis, modifier = Modifier.padding(top = 6.dp))
+            }
+        }
+        val slot = slots.firstOrNull { it.back == selected }
+        val what = if (selected < 0) "front cover" else "back cover"
+        Text(
+            if (oneSong) "Pick a new $what below, or a photo from your phone."
+            else "Pick a new $what below, or a photo from your phone. It goes into all ${countOf(tracks.size, "song")}; any other pictures a song has stay.",
+            style = HiveText.small, color = c.textDim,
+        )
+        Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+            HiveButton("Choose a photo") { photo.launch(PickVisualMediaRequest(ActivityResultContracts.PickVisualMedia.ImageOnly)) }
+            if (selected >= 0 && slot != null) when {
+                changes[selected] === Removed -> HiveButton("Keep it") { changes.remove(selected) }
+                slot.now != null -> HiveButton("Remove") { changes[selected] = Removed }
+                changes[selected] != null -> HiveButton("Remove") { changes.remove(selected); if (oneSong) { slots = slots - slot; selected = -1 } }
             }
         }
         Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(8.dp)) {
@@ -291,8 +376,8 @@ fun CoverSheet(vm: MainViewModel, tracks: List<Track>, onDismiss: () -> Unit, on
             else -> LazyVerticalGrid(GridCells.Fixed(3), Modifier.heightIn(max = 380.dp), horizontalArrangement = Arrangement.spacedBy(8.dp), verticalArrangement = Arrangement.spacedBy(8.dp)) {
                 items(found.filter { it.artwork.isNotBlank() }, key = { it.id }) { a ->
                     val big = bigCover(a.artwork)
-                    Column(Modifier.clip(RoundedCornerShape(10.dp)).clickable { picked = big }) {
-                        Box(Modifier.fillMaxWidth().aspectRatio(1f).then(if (picked == big) Modifier.border(2.dp, c.accent, HiveShape.art) else Modifier)) {
+                    Column(Modifier.clip(RoundedCornerShape(10.dp)).clickable { pick(big) }) {
+                        Box(Modifier.fillMaxWidth().aspectRatio(1f).then(if (changes[selected] == big) Modifier.border(2.dp, c.accent, HiveShape.art) else Modifier)) {
                             Artwork(a.artwork, Modifier.fillMaxWidth().aspectRatio(1f), HiveShape.art, Icons.Rounded.Image)
                         }
                         Text(a.name, style = HiveText.small, color = c.text, maxLines = 1, overflow = TextOverflow.Ellipsis, modifier = Modifier.padding(top = 4.dp))
@@ -303,7 +388,7 @@ fun CoverSheet(vm: MainViewModel, tracks: List<Track>, onDismiss: () -> Unit, on
         }
         Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(10.dp, Alignment.End)) {
             HiveButton("Cancel") { onDismiss() }
-            HiveButton(if (busy) "Saving…" else "Save cover", primary = true, enabled = picked != null && !busy) { save() }
+            HiveButton(if (busy) "Saving…" else "Save", primary = true, enabled = changes.isNotEmpty() && !busy) { save() }
         }
     }
 }
@@ -409,7 +494,7 @@ fun AutoTagSheet(vm: MainViewModel, tracks: List<Track>, onDismiss: () -> Unit, 
                             val s = r.songs[i]
                             t to TagEdit(title = s.title, artist = s.artist.ifBlank { r.curator }, album = r.name, albumArtist = r.curator, year = year, genre = genre, track = "${i + 1}")
                         }
-                        write(edits.keys.toList()) { allowed -> vm.saveEdits(edits.filterKeys { it in allowed }, cover) { onToast(it); onDismiss() } }
+                        write(edits.keys.toList()) { allowed -> vm.saveEdits(edits.filterKeys { it in allowed }, cover?.let { com.local.hive.mobile.data.CoverEdit(front = it) }) { onToast(it); onDismiss() } }
                         busy = false
                     }
                 }

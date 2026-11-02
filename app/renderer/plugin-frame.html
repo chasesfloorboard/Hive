@@ -1,0 +1,19 @@
+<!doctype html>
+<html>
+<head>
+<meta charset="utf-8">
+<!-- One plugin runs in here, in a sandboxed frame with no origin of its own (see plugin-sandbox.js).
+     It can't reach Hive's window or its preload API, can't load anything from the network, and
+     talks to Hive only by messages, which Hive answers according to the plugin's permissions.
+     The script below is allowed by its hash; it waits for Hive to send the runtime (plugin-frame.js). -->
+<meta http-equiv="Content-Security-Policy" content="default-src 'none'; script-src 'sha256-wSQy6rTIK4NAN+nbhc2Vw/zydpnp0mi0GaiTjbNzXss=' 'unsafe-eval'; style-src 'unsafe-inline'; img-src mbcover: data: blob:; font-src data:; media-src 'none'; connect-src 'none'; frame-src 'none'; form-action 'none'; base-uri 'none'">
+<style>
+  html, body { margin: 0; height: 100%; background: transparent; overflow: hidden; }
+  body > .hive-plugin-surface { position: absolute; inset: 0; }
+  body > .hive-plugin-surface[hidden] { display: none; }
+</style>
+</head>
+<body>
+<script>addEventListener('message',function boot(e){var m=e.data;if(e.source!==parent||!m||m.hive!==true||m.type!=='runtime')return;removeEventListener('message',boot);(0,eval)('('+m.source+')()');});parent.postMessage({hive:true,type:'boot'},'*');</script>
+</body>
+</html>

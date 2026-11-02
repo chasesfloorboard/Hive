@@ -25,7 +25,7 @@ Example manifest:
 }
 ```
 
-The extension loader makes `window.HivePlugin` available to `plugin.js` with:
+The extension loader hands `plugin.js` a `Hive` object (see `PLUGIN_API.md` for all of it) with:
 
 - `Hive.version`
 - `Hive.id` / `Hive.name`
@@ -36,7 +36,8 @@ The extension loader makes `window.HivePlugin` available to `plugin.js` with:
 - `Hive.ui.toast(message, title)`
 - `Hive.ui.addStyle(css)`
 
-Extensions run as trusted local renderer code. Only install extensions you trust.
+Extensions run sandboxed, each in its own frame with no network and no access to Hive's window
+(see "The sandbox" in `PLUGIN_API.md`). Only install extensions you trust all the same.
 The extension API does not grant Node.js or filesystem access. Do not use an extension to replace or bypass GStreamer, the Spotify bridge, or podcast transport ownership.
 
 ## Themes

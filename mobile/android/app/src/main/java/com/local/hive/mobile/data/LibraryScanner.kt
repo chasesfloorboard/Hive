@@ -105,9 +105,13 @@ class LibraryScanner(private val resolver: ContentResolver) {
     private fun withEmoji(t: Track): Track {
         if (!t.fileName.endsWith(".mp3", ignoreCase = true)) return t
         val untagged = t.artist.isBlank()
-        if (!untagged && listOf(t.title, t.artist, t.album, t.albumArtist).none { BROKEN.containsMatchIn(it) }) return t
+        if (!untagged && listOf(t.title, t.artist, t.album, t.albumArtist).none { BROKEN.containsMatchIn(it) || EAST_ASIAN.containsMatchIn(it) }) return t
         val info = runCatching { resolver.openInputStream(t.uri)?.use(WavTags::readId3) }.getOrNull() ?: return t
-        fun fixed(now: String, tagged: String) = if ((untagged || BROKEN.containsMatchIn(now)) && tagged.isNotBlank()) tagged else now
+        // Android guesses the character set of an old-style (Latin-1) tag and can guess wrong: "Björk"
+        // became "Bj鍵k". When the tag itself reads differently, without such characters, it wins;
+        // a real Japanese or Chinese title reads the same both ways and stays.
+        fun misread(now: String, tagged: String) = EAST_ASIAN.containsMatchIn(now) && tagged.isNotBlank() && tagged != now && !EAST_ASIAN.containsMatchIn(tagged)
+        fun fixed(now: String, tagged: String) = if (((untagged || BROKEN.containsMatchIn(now)) && tagged.isNotBlank()) || misread(now, tagged)) tagged else now
         return t.copy(
             title = fixed(t.title, info.title), artist = fixed(t.artist, info.artist), album = fixed(t.album, info.album), albumArtist = fixed(t.albumArtist, info.albumArtist),
             year = t.year.takeIf { it > 0 } ?: info.year, genre = t.genre.ifBlank { info.genre },
@@ -144,6 +148,8 @@ class LibraryScanner(private val resolver: ContentResolver) {
         const val WAV_ALBUM = Long.MIN_VALUE
         /** What the media scanner leaves of an emoji. */
         val BROKEN = Regex("\\?\\?|\uFFFD")
+        /** Characters of the East Asian scripts, as a misread Latin-1 tag turns accented letters into. */
+        val EAST_ASIAN = Regex("[\u3040-\u30FF\u3400-\u4DBF\u4E00-\u9FFF\uAC00-\uD7AF]")
     }
 
     private fun cleanUnknown(value: String) = if (value == "<unknown>") "" else value

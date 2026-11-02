@@ -36,6 +36,11 @@ data class Track(
 ) {
     val uri: Uri get() = Uri.parse("content://media/external/audio/media/$id")
     val artworkUri: Uri get() = Uri.parse("content://media/external/audio/albumart/$albumId")
+    /**
+     * This song's own picture (see [SongArtFetcher]), for song rows: Android files songs with no album, or a
+     * shared one like "(Multiple values) - Single", as one album, and its picture is one song's.
+     */
+    val songArtUri: Uri get() = Uri.parse("content://media/external/audio/media/$id/albumart")
     val displayAlbumArtist: String get() = albumArtist.ifBlank { artist }
 }
 
@@ -65,6 +70,26 @@ data class FavoriteAlbum(
 ) {
     companion object {
         fun keyOf(album: String, artist: String) = "${artist.trim().lowercase()}\u0000${album.trim().lowercase()}"
+    }
+}
+
+/**
+ * A liked artist or playlist (any playlist: the phone's, a smart one, the PC's, Apple Music's or
+ * Spotify's), shown on the Favorites page. [route] opens it; [artwork] is its picture when it has one.
+ */
+@Entity(tableName = "favorite_items")
+data class FavoriteItem(
+    @PrimaryKey val key: String,
+    /** "artist" or "playlist". */
+    val kind: String,
+    val title: String,
+    val subtitle: String = "",
+    val artwork: String? = null,
+    val route: String,
+    val addedAt: Long,
+) {
+    companion object {
+        fun artistKey(name: String) = "artist:" + name.trim().lowercase()
     }
 }
 
@@ -164,6 +189,9 @@ data class SyncedSong(
     @PrimaryKey val key: String,
     val since: Long,
 )
+
+/** A phone song and the Hive (PC) song it is a copy of. */
+data class PcCopy(val pcId: String, @androidx.room.Embedded val track: Track)
 
 /** Which Hive (PC) track a phone track is the same song as. */
 @Entity(tableName = "pc_match", indices = [Index("pcId")])
@@ -455,6 +483,20 @@ interface LibraryDao {
     @Query("DELETE FROM favorite_albums WHERE `key` = :key")
     suspend fun deleteFavoriteAlbum(key: String)
 
+    @Query("DELETE FROM favorite_albums")
+    suspend fun clearFavoriteAlbums()
+
+    // ---- liked artists and playlists ----
+
+    @Query("SELECT * FROM favorite_items ORDER BY addedAt DESC")
+    fun favoriteItems(): Flow<List<FavoriteItem>>
+
+    @Upsert
+    suspend fun upsertFavoriteItem(item: FavoriteItem)
+
+    @Query("DELETE FROM favorite_items WHERE `key` = :key")
+    suspend fun deleteFavoriteItem(key: String)
+
     // ---- PC matching ----
 
     @Query("SELECT * FROM pc_match")
@@ -463,6 +505,16 @@ interface LibraryDao {
     /** The phone's copy of a Hive (PC) song, if it has one. */
     @Query("SELECT t.* FROM pc_match m JOIN tracks t ON t.id = m.trackId WHERE m.pcId = :pcId LIMIT 1")
     suspend fun trackForPc(pcId: String): Track?
+
+    @Query("SELECT * FROM playlists")
+    suspend fun allPlaylistsOnce(): List<Playlist>
+
+    @Query("SELECT * FROM playlist_entries WHERE playlistId = :id ORDER BY position")
+    suspend fun entriesOnce(id: Long): List<PlaylistEntry>
+
+    /** The phone's copies of many Hive songs at once (a whole PC playlist), with the PC id each is for. */
+    @Query("SELECT m.pcId AS pcId, t.* FROM pc_match m JOIN tracks t ON t.id = m.trackId WHERE m.pcId IN (:pcIds)")
+    suspend fun tracksForPc(pcIds: List<String>): List<PcCopy>
 
     @Query("DELETE FROM pc_match")
     suspend fun clearMatches()
@@ -517,6 +569,13 @@ interface LibraryDao {
     )
     suspend fun playsBetween(from: Long, to: Long): List<PlayRow>
 
+    /** This phone's plays Hive on the PC hasn't counted yet (not sent, or of songs it doesn't have). */
+    @Query(
+        "SELECT p.trackId, p.playedAt, p.listenedMs, t.title, t.artist, t.album, t.albumArtist, t.albumId, t.genre " +
+            "FROM plays p JOIN tracks t ON t.id = p.trackId WHERE p.synced = 0 AND p.fromPc = 0 AND p.playedAt >= :from AND p.playedAt < :to"
+    )
+    suspend fun unsentPlaysBetween(from: Long, to: Long): List<PlayRow>
+
     @Query("SELECT MIN(playedAt) FROM plays")
     suspend fun firstPlay(): Long?
 
@@ -553,10 +612,10 @@ interface LibraryDao {
 }
 
 @Database(
-    entities = [Track::class, LoveState::class, PcMatch::class, Play::class, FavoriteAlbum::class, Playlist::class, PlaylistEntry::class, StreamTrack::class, Rating::class, SyncedSong::class, HistoryEntry::class],
-    version = 8,
+    entities = [Track::class, LoveState::class, PcMatch::class, Play::class, FavoriteAlbum::class, Playlist::class, PlaylistEntry::class, StreamTrack::class, Rating::class, SyncedSong::class, HistoryEntry::class, FavoriteItem::class],
+    version = 9,
     exportSchema = true,
-    autoMigrations = [AutoMigration(from = 1, to = 2), AutoMigration(from = 2, to = 3), AutoMigration(from = 3, to = 4), AutoMigration(from = 4, to = 5), AutoMigration(from = 5, to = 6), AutoMigration(from = 6, to = 7), AutoMigration(from = 7, to = 8, spec = LibraryDatabase.SeedHistory::class)],
+    autoMigrations = [AutoMigration(from = 1, to = 2), AutoMigration(from = 2, to = 3), AutoMigration(from = 3, to = 4), AutoMigration(from = 4, to = 5), AutoMigration(from = 5, to = 6), AutoMigration(from = 6, to = 7), AutoMigration(from = 7, to = 8, spec = LibraryDatabase.SeedHistory::class), AutoMigration(from = 8, to = 9)],
 )
 abstract class LibraryDatabase : RoomDatabase() {
     abstract fun dao(): LibraryDao

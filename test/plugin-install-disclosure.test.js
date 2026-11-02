@@ -1,11 +1,7 @@
 'use strict';
-// Plugins are trusted local code, not sandboxed (see docs/PLUGIN_API.md) --
-// an installed plugin runs with the same permissions as Hive itself. That
-// was only disclosed in documentation the user may never read; installing
-// via Settings > Extensions copied the plugin folder immediately with no
-// confirmation at all. This must be disclosed at the moment of installing,
-// naming the actual plugin and its declared permissions, before anything is
-// copied into the plugins folder.
+// Installing a plugin (Settings > Extensions) must say what it will be able to do -- it runs
+// sandboxed, limited to its declared permissions (docs/PLUGIN_API.md) -- naming the actual plugin
+// and those permissions, before anything is copied into the plugins folder.
 const test = require('node:test');
 const assert = require('node:assert/strict');
 const fs = require('fs');
@@ -26,8 +22,8 @@ test('installing a plugin shows a native confirmation naming the plugin and its 
   assert.ok(manifestReadIndex >= 0 && confirmIndex > manifestReadIndex, 'the confirmation must read the real manifest first, so it can name the actual plugin');
   assert.ok(copyIndex > confirmIndex, 'the confirmation must happen before the plugin folder is copied');
 
-  assert.match(block, /trusted local code, not sandboxed/i);
-  assert.match(block, /same permissions as Hive itself/i);
+  assert.match(block, /Plugins run in a sandbox/);
+  assert.match(block, /can only do what the permissions below allow/);
   assert.match(block, /Declared permissions: \$\{permissions\.length \? permissions\.join\(', '\) : 'none declared'\}/);
   assert.match(block, /message: `Install "\$\{String\(manifest\.name \|\| manifest\.id\)\}"\?`/);
 

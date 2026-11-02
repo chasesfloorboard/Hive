@@ -1,5 +1,9 @@
 package com.local.hive.mobile.ui
 
+import androidx.compose.ui.unit.sp
+import androidx.compose.material.icons.automirrored.rounded.KeyboardArrowLeft
+import androidx.compose.material.icons.automirrored.rounded.KeyboardArrowRight
+import androidx.compose.material.icons.rounded.MoreHoriz
 import androidx.compose.material.icons.rounded.Radio
 import androidx.compose.material.icons.rounded.Download
 import com.local.hive.mobile.ui.theme.HiveIcons
@@ -53,8 +57,10 @@ import androidx.compose.material.icons.rounded.Delete
 import androidx.compose.material.icons.rounded.Favorite
 import androidx.compose.material.icons.rounded.FavoriteBorder
 import androidx.compose.material.icons.rounded.Edit
+import androidx.compose.material.icons.rounded.Image
 import androidx.compose.material.icons.rounded.Info
 import androidx.compose.material.icons.rounded.MoreVert
+import androidx.compose.material.icons.rounded.Settings
 import androidx.compose.material.icons.rounded.Share
 import androidx.compose.material.icons.rounded.MusicNote
 import androidx.compose.material.icons.rounded.Pause
@@ -65,6 +71,7 @@ import androidx.compose.material3.Text
 import androidx.compose.material3.minimumInteractiveComponentSize
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.getValue
+import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import androidx.compose.runtime.rememberCoroutineScope
 import androidx.compose.foundation.gestures.scrollBy
 import kotlinx.coroutines.launch
@@ -114,6 +121,10 @@ import com.local.hive.mobile.ui.theme.Hive
 import com.local.hive.mobile.ui.theme.HiveShape
 import com.local.hive.mobile.ui.theme.HiveText
 import com.local.hive.mobile.ui.theme.mix
+import androidx.compose.ui.graphics.addOutline
+import androidx.compose.ui.graphics.asAndroidPath
+import androidx.compose.ui.graphics.nativeCanvas
+import androidx.compose.ui.graphics.toArgb
 
 // ---- primitives ----
 
@@ -148,7 +159,7 @@ fun Artwork(
     var failed by remember(model, generation) { mutableStateOf(false) }
     if (failed && orElse != null) return Artwork(orElse, modifier, shape, fallback, glow, elevation)
     val c = Hive.colors
-    val shadowed = if (elevation > 0.dp) modifier.shadow(elevation, shape, ambientColor = glow ?: Color.Black, spotColor = glow ?: Color.Black) else modifier
+    val shadowed = if (elevation > 0.dp) modifier.softShadow(elevation, shape, glow ?: Color.Black) else modifier
     val context = androidx.compose.ui.platform.LocalContext.current
     // A cover already on screen at another size stands in while this size loads, so it never blinks;
     // the sharpest copy drawn so far, never a list row's thumbnail once a bigger one was shown.
@@ -188,6 +199,26 @@ fun Artwork(
             onError = { if (orElse != null) failed = true else { shown = false; covered = false } },
         )
     }
+}
+
+/**
+ * A soft drop shadow under [shape], blurred out to nothing: Hive's `0 12px 28px -16px rgba(0,0,0,.62)`
+ * scaled to [elevation]. Android's own elevation shadow (Modifier.shadow) drew hard edges around
+ * rounded covers, worst with a coloured glow or on a cover that's tilted or fading.
+ */
+fun Modifier.softShadow(elevation: Dp, shape: Shape, color: Color = Color.Black): Modifier = drawBehind {
+    val e = elevation.toPx()
+    if (e <= 0f) return@drawBehind
+    val blur = e * 0.8f
+    val inset = e * 0.4f
+    val dy = e * 0.35f
+    val outline = shape.createOutline(androidx.compose.ui.geometry.Size((size.width - 2 * inset).coerceAtLeast(1f), (size.height - 2 * inset).coerceAtLeast(1f)), layoutDirection, this)
+    val path = androidx.compose.ui.graphics.Path().apply { addOutline(outline); translate(androidx.compose.ui.geometry.Offset(inset, inset + dy)) }
+    val paint = android.graphics.Paint(android.graphics.Paint.ANTI_ALIAS_FLAG).apply {
+        this.color = color.copy(alpha = if (color == Color.Black) 0.62f else 0.5f).toArgb()
+        maskFilter = android.graphics.BlurMaskFilter(blur, android.graphics.BlurMaskFilter.Blur.NORMAL)
+    }
+    drawContext.canvas.nativeCanvas.drawPath(path.asAndroidPath(), paint)
 }
 
 /** A cover carousel's frame: what to draw now, and the frame it replaces (to fade from). */
@@ -681,7 +712,7 @@ fun TrackRow(
 ) {
     val selection = LocalSelection.current
     SongRow(
-        track.artworkUri, track.title, subtitle, playing, isPlaying, onClick, number = number, loved = loved,
+        track.songArtUri, track.title, subtitle, playing, isPlaying, onClick, number = number, loved = loved,
         trailing = if (number != null) formatDuration(track.durationMs) else null,
         picked = selection != null && track in selection, picking = selection?.active == true,
         onPick = selection?.let { s -> { s.toggle(track) } },
@@ -853,34 +884,132 @@ fun replaceFromSoulseek(context: android.content.Context, track: Track, onToast:
 fun TrackMenu(expanded: Boolean, loved: Boolean, onDismiss: () -> Unit, track: Track, actions: TrackActions) {
     val context = androidx.compose.ui.platform.LocalContext.current
     val toast = LocalToast.current
-    HiveMenu(expanded, onDismiss) {
-        HiveMenuItem("Play next", Icons.AutoMirrored.Rounded.PlaylistPlay) { onDismiss(); actions.onPlayNext(track) }
-        HiveMenuItem("Add to queue", Icons.AutoMirrored.Rounded.QueueMusic) { onDismiss(); actions.onAddToQueue(track) }
-        HiveMenuItem("Add to playlist", Icons.AutoMirrored.Rounded.PlaylistAdd) { onDismiss(); actions.onAddToPlaylist(listOf(track)) }
-        HiveMenuItem("Auto DJ", Icons.Rounded.Radio) { onDismiss(); actions.onAutoDj(listOf(track)) }
-        HiveMenuItem(if (loved) "Remove from Favorites" else "Add to Favorites", if (loved) Icons.Rounded.Favorite else Icons.Rounded.FavoriteBorder) { onDismiss(); actions.onToggleLove(track) }
-        HiveMenuItem("Share", Icons.Rounded.Share) { onDismiss(); Share.tracks(context, listOf(track)) }
-        if (track.replaceableFromSoulseek(context)) HiveMenuItem("Replace with Soulseek copy", Icons.Rounded.Download) { onDismiss(); replaceFromSoulseek(context, track, toast) }
-        HiveMenuDivider()
-        HiveMenuItem("Go to album", Icons.Rounded.Album) { onDismiss(); actions.onGoToAlbum(track) }
-        HiveMenuItem("Go to artist", Icons.Rounded.Person) { onDismiss(); actions.onGoToArtist(track) }
-        HiveMenuItem("Track details", Icons.Rounded.Info) { onDismiss(); actions.onInfo(track) }
-        val editor = LocalEditor.current
-        HiveMenuItem("Edit tags", Icons.Rounded.Edit) { onDismiss(); editor.editTags(listOf(track)) }
-        HiveMenuDivider()
-        actions.onRemoveFromPlaylist?.let { remove ->
-            HiveMenuItem("Remove from playlist", Icons.Rounded.RemoveCircleOutline, destructive = true) { onDismiss(); remove(track) }
+    val editor = LocalEditor.current
+    // Two pages: the everyday actions, and "More" for the rest (Samsung Music keeps its song menu this short).
+    var more by remember { mutableStateOf(false) }
+    androidx.compose.runtime.LaunchedEffect(expanded) { if (expanded) more = false }
+    HiveMenu(expanded, onDismiss, settings = !more) {
+        SongMenuPages(more) { showMore ->
+            if (!showMore) {
+                SongMenuHeader(track.songArtUri, track.title, listOf(track.artist, track.album).filter { it.isNotBlank() }.joinToString(" · "))
+                SongMenuQuickRow {
+                    SongMenuQuick("Next", Icons.AutoMirrored.Rounded.PlaylistPlay) { onDismiss(); actions.onPlayNext(track) }
+                    SongMenuQuick("Queue", Icons.AutoMirrored.Rounded.QueueMusic) { onDismiss(); actions.onAddToQueue(track) }
+                    SongMenuQuick(if (loved) "Loved" else "Love", if (loved) Icons.Rounded.Favorite else Icons.Rounded.FavoriteBorder, active = loved) { onDismiss(); actions.onToggleLove(track) }
+                    SongMenuQuick("Share", Icons.Rounded.Share) { onDismiss(); Share.tracks(context, listOf(track)) }
+                }
+                HiveMenuItem("Add to playlist", Icons.AutoMirrored.Rounded.PlaylistAdd) { onDismiss(); actions.onAddToPlaylist(listOf(track)) }
+                HiveMenuItem("Go to album", Icons.Rounded.Album) { onDismiss(); actions.onGoToAlbum(track) }
+                HiveMenuItem("Go to artist", Icons.Rounded.Person) { onDismiss(); actions.onGoToArtist(track) }
+                HiveSubmenuItem("More", Icons.Rounded.MoreHoriz) { more = true }
+                HiveMenuDivider()
+                actions.onRemoveFromPlaylist?.let { remove ->
+                    HiveMenuItem("Remove from playlist", Icons.Rounded.RemoveCircleOutline, destructive = true) { onDismiss(); remove(track) }
+                }
+                HiveMenuItem("Delete from phone", Icons.Rounded.Delete, destructive = true) { onDismiss(); actions.onDelete(listOf(track)) }
+            } else {
+                HiveSubmenuBack("More") { more = false }
+                HiveMenuItem("Track details", Icons.Rounded.Info) { onDismiss(); actions.onInfo(track) }
+                HiveMenuItem("Auto DJ from this song", Icons.Rounded.Radio) { onDismiss(); actions.onAutoDj(listOf(track)) }
+                HiveMenuItem("Edit tags", Icons.Rounded.Edit) { onDismiss(); editor.editTags(listOf(track)) }
+                HiveMenuItem("Edit cover", Icons.Rounded.Image) { onDismiss(); editor.changeCover(listOf(track)) }
+                if (track.replaceableFromSoulseek(context)) HiveMenuItem("Replace with Soulseek copy", Icons.Rounded.Download) { onDismiss(); replaceFromSoulseek(context, track, toast) }
+            }
         }
-        HiveMenuItem("Delete from phone", Icons.Rounded.Delete, destructive = true) { onDismiss(); actions.onDelete(listOf(track)) }
     }
 }
+
+/** A song menu's pages: the first, and [more] sliding in from the right (and back out to it). */
+@Composable
+fun SongMenuPages(more: Boolean, content: @Composable (Boolean) -> Unit) {
+    androidx.compose.animation.AnimatedContent(
+        more,
+        transitionSpec = {
+            val dir = if (targetState) 1 else -1
+            (fadeIn(tween(150)) + androidx.compose.animation.slideInHorizontally(tween(190)) { dir * it / 6 }) togetherWith
+                (fadeOut(tween(110)) + androidx.compose.animation.slideOutHorizontally(tween(190)) { -dir * it / 6 }) using
+                androidx.compose.animation.SizeTransform(clip = false) { _, _ -> tween(190) }
+        },
+        label = "songMenu",
+    ) { page -> Column { content(page) } }
+}
+
+/** The song a menu is for: its cover, title and artist, so a long press never acts on the wrong song. */
+@Composable
+fun SongMenuHeader(art: Any?, title: String, subtitle: String) {
+    val c = Hive.colors
+    Row(Modifier.fillMaxWidth().widthIn(max = 280.dp).padding(start = 8.dp, end = 8.dp, top = 6.dp, bottom = 8.dp), verticalAlignment = Alignment.CenterVertically) {
+        Artwork(art, Modifier.size(44.dp), HiveShape.thumb, Icons.Rounded.MusicNote)
+        Spacer(Modifier.width(12.dp))
+        Column(Modifier.weight(1f)) {
+            Text(title, style = HiveText.rowStrong, color = c.text, maxLines = 1, overflow = androidx.compose.ui.text.style.TextOverflow.Ellipsis)
+            if (subtitle.isNotBlank()) Text(subtitle, style = HiveText.small, color = c.textDim, maxLines = 1, overflow = androidx.compose.ui.text.style.TextOverflow.Ellipsis)
+        }
+    }
+}
+
+/** A row of the menu's most used actions as icon buttons, under its header. */
+@Composable
+fun SongMenuQuickRow(content: @Composable androidx.compose.foundation.layout.RowScope.() -> Unit) {
+    Row(Modifier.fillMaxWidth().padding(bottom = 4.dp), horizontalArrangement = Arrangement.spacedBy(4.dp), content = content)
+}
+
+@Composable
+fun androidx.compose.foundation.layout.RowScope.SongMenuQuick(label: String, icon: ImageVector, active: Boolean = false, onClick: () -> Unit) {
+    val c = Hive.colors
+    Column(
+        Modifier.weight(1f).height(58.dp).clip(RoundedCorner10).background(c.text.copy(alpha = 0.06f)).clickable(onClick = onClick).padding(vertical = 8.dp),
+        horizontalAlignment = Alignment.CenterHorizontally, verticalArrangement = Arrangement.Center,
+    ) {
+        Icon(icon, null, tint = if (active) c.accent else c.text, modifier = Modifier.size(20.dp))
+        Spacer(Modifier.height(4.dp))
+        Text(label, style = HiveText.small.copy(fontSize = 11.sp), color = c.textDim, maxLines = 1)
+    }
+}
+
+/** A menu item that opens another page of the menu (›). */
+@Composable
+fun HiveSubmenuItem(label: String, icon: ImageVector?, onClick: () -> Unit) {
+    val c = Hive.colors
+    Row(
+        Modifier.fillMaxWidth().height(46.dp).clip(RoundedCorner10).clickable(onClick = onClick).padding(horizontal = 12.dp),
+        verticalAlignment = Alignment.CenterVertically,
+    ) {
+        if (icon != null) { Icon(icon, null, tint = c.textDim, modifier = Modifier.size(18.dp)); Spacer(Modifier.width(12.dp)) }
+        Text(label, style = HiveText.body, color = c.text, modifier = Modifier.weight(1f))
+        Icon(Icons.AutoMirrored.Rounded.KeyboardArrowRight, null, tint = c.textDimmer, modifier = Modifier.size(18.dp))
+    }
+}
+
+/** The top of a menu's second page: back to the first. */
+@Composable
+fun HiveSubmenuBack(label: String, onClick: () -> Unit) {
+    val c = Hive.colors
+    Row(
+        Modifier.fillMaxWidth().height(46.dp).clip(RoundedCorner10).clickable(onClick = onClick).padding(horizontal = 8.dp),
+        verticalAlignment = Alignment.CenterVertically,
+    ) {
+        Icon(Icons.AutoMirrored.Rounded.KeyboardArrowLeft, "Back", tint = c.textDim, modifier = Modifier.size(22.dp))
+        Spacer(Modifier.width(8.dp))
+        Text(label, style = HiveText.rowStrong, color = c.text)
+    }
+    HiveMenuDivider()
+}
+
+/** Opens a streamed song's album or artist page from anywhere (HiveRoot); no-ops outside it. */
+class StreamNav(val album: (com.local.hive.mobile.data.StreamTrack) -> Unit, val artist: (com.local.hive.mobile.data.StreamTrack) -> Unit)
+val LocalStreamNav = androidx.compose.runtime.staticCompositionLocalOf { StreamNav({}, {}) }
+
+/** Opens Settings from anywhere, closing the player first (HiveRoot); a no-op outside it. */
+val LocalOpenSettings = androidx.compose.runtime.staticCompositionLocalOf<() -> Unit> { {} }
 
 /**
  * Hive's context menu: glass tinted 7% by the accent, a soft accent glow, and
  * the `inlineDropIn` entrance (fade, a 5 px rise, scale .985 → 1).
+ * A ⋮/⋯ button's menu passes [settings], so Settings is always its last item.
  */
 @Composable
-fun HiveMenu(expanded: Boolean, onDismiss: () -> Unit, above: Dp? = null, content: @Composable () -> Unit) {
+fun HiveMenu(expanded: Boolean, onDismiss: () -> Unit, above: Dp? = null, settings: Boolean = false, content: @Composable () -> Unit) {
     val state = remember { MutableTransitionState(false) }
     state.targetState = expanded
     if (!state.currentState && !state.targetState) return
@@ -902,7 +1031,14 @@ fun HiveMenu(expanded: Boolean, onDismiss: () -> Unit, above: Dp? = null, conten
                     .background(mix(c.accent, c.panelStrong.copy(alpha = 0.97f), 0.07f))
                     .border(1.dp, c.border, HiveShape.menu)
                     .padding(6.dp),
-            ) { content() }
+            ) {
+                content()
+                if (settings) {
+                    val openSettings = LocalOpenSettings.current
+                    HiveMenuDivider()
+                    HiveMenuItem("Settings", Icons.Rounded.Settings) { onDismiss(); openSettings() }
+                }
+            }
         }
     }
 }
@@ -1165,6 +1301,16 @@ fun <T : Enum<T>> rememberSetting(key: String, default: T): androidx.compose.run
     return state
 }
 
+/** A number that stays chosen (a menu's pick), as [rememberSetting]. */
+@Composable
+fun rememberIntSetting(key: String, default: Int): androidx.compose.runtime.MutableState<Int> {
+    val context = androidx.compose.ui.platform.LocalContext.current
+    val prefs = remember { context.getSharedPreferences("ui", android.content.Context.MODE_PRIVATE) }
+    val state = remember(key) { mutableStateOf(prefs.getInt(key, default)) }
+    androidx.compose.runtime.LaunchedEffect(state.value) { prefs.edit().putInt(key, state.value).apply() }
+    return state
+}
+
 /** A yes/no choice that stays chosen, as [rememberSetting]. */
 @Composable
 fun rememberSetting(key: String, default: Boolean): androidx.compose.runtime.MutableState<Boolean> {
@@ -1183,4 +1329,11 @@ fun rememberSetting(key: String, default: Int): androidx.compose.runtime.Mutable
     val state = remember(key) { mutableStateOf(prefs.getInt(key, default)) }
     androidx.compose.runtime.LaunchedEffect(state.value) { prefs.edit().putInt(key, state.value).apply() }
     return state
+}
+
+/** An artist's photo when Settings › Appearance › Artist pictures is on Photos; null shows their album cover. */
+@Composable
+fun rememberArtistPhoto(vm: MainViewModel, name: String): String? {
+    val online by vm.artistPhotos.collectAsStateWithLifecycle()
+    return androidx.compose.runtime.produceState<String?>(null, name, online) { value = if (online) vm.artistImage(name) else null }.value
 }

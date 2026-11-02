@@ -63,8 +63,20 @@ object EmbeddedPictures {
     /** Average hashes this close (of 256 bits) are the same picture. */
     private const val LOOK_ALIKE_BITS = 40
 
+    /** A picture in a song's tags and its ID3 picture type (3 the front cover, 4 the back). */
+    class Picture(val data: ByteArray, val type: Int) { val back get() = type == BACK }
+
+    const val FRONT = 3
+    const val BACK = 4
+
     /** The pictures in a song file's tags, in order. */
-    fun read(input: InputStream): List<ByteArray> {
+    fun read(input: InputStream): List<ByteArray> = readTyped(input).map { it.data }
+
+    /**
+     * The pictures with their types. MP4 keeps no types, so as Hive on the PC
+     * reads it, its first picture is the front cover and the rest back covers.
+     */
+    fun readTyped(input: InputStream): List<Picture> {
         val stream = java.io.BufferedInputStream(input, 64 * 1024)
         stream.mark(16)
         val head = ByteArray(4).also { if (stream.read(it) < 4) return emptyList() }
@@ -89,7 +101,7 @@ object EmbeddedPictures {
 
     // ---- ID3v2 ----
 
-    fun id3(input: DataInputStream): List<ByteArray> =
+    fun id3(input: DataInputStream): List<Picture> =
         id3Frames(input).mapNotNull { (id, body) -> if (id == "APIC" || id == "PIC") picture(body, 0, body.size, id == "PIC") else null }
 
     /** An ID3v2 tag's frames, as (id, body), in order. */
@@ -123,26 +135,28 @@ object EmbeddedPictures {
     }
 
     /** An APIC (or v2.2 PIC) body: encoding, MIME (or 3-letter format), type, description, data. */
-    private fun picture(b: ByteArray, from: Int, size: Int, v22: Boolean): ByteArray? {
+    private fun picture(b: ByteArray, from: Int, size: Int, v22: Boolean): Picture? {
         val end = from + size
         val encoding = b[from].toInt()
         var p = from + 1
         p = if (v22) p + 3 else (indexOf(b, p, end, 1) ?: return null) + 1
-        p += 1 // picture type
+        if (p >= end) return null
+        val type = b[p].toInt() and 0xff
+        p += 1
         // The description ends with one zero byte, or two for UTF-16.
         p = if (encoding == 1 || encoding == 2) {
             var q = p
             while (q + 1 < end && !(b[q].toInt() == 0 && b[q + 1].toInt() == 0)) q += 2
             q + 2
         } else (indexOf(b, p, end, 1) ?: return null) + 1
-        return if (p < end) b.copyOfRange(p, end) else null
+        return if (p < end) Picture(b.copyOfRange(p, end), type) else null
     }
 
     // ---- FLAC ----
 
-    fun flac(input: DataInputStream): List<ByteArray> {
+    fun flac(input: DataInputStream): List<Picture> {
         input.readFully(ByteArray(4))
-        val out = mutableListOf<ByteArray>()
+        val out = mutableListOf<Picture>()
         while (true) {
             val h = input.readUnsignedByte()
             val len = (input.readUnsignedByte() shl 16) or (input.readUnsignedByte() shl 8) or input.readUnsignedByte()
@@ -153,18 +167,19 @@ object EmbeddedPictures {
         return out
     }
 
-    private fun flacPicture(b: ByteArray): ByteArray? {
+    private fun flacPicture(b: ByteArray): Picture? {
+        if (b.size < 32) return null
         var p = 4
         p += 4 + int(b, p)            // MIME
         p += 4 + int(b, p)            // description
         p += 16                       // width, height, depth, colours
         val len = int(b, p); p += 4
-        return if (len > 0 && p + len <= b.size) b.copyOfRange(p, p + len) else null
+        return if (len > 0 && p + len <= b.size) Picture(b.copyOfRange(p, p + len), int(b, 0)) else null
     }
 
     // ---- MP4 ----
 
-    fun mp4(b: ByteArray): List<ByteArray> {
+    fun mp4(b: ByteArray): List<Picture> {
         fun boxes(from: Int, to: Int): List<Triple<String, Int, Int>> {
             val list = mutableListOf<Triple<String, Int, Int>>()
             var p = from
@@ -187,7 +202,7 @@ object EmbeddedPictures {
         // meta is a full box: four bytes of version and flags before its children.
         val ilst = child(meta.second + 4, meta.third, "ilst") ?: return emptyList()
         val covr = child(ilst.second, ilst.third, "covr") ?: return emptyList()
-        return boxes(covr.second, covr.third).filter { it.first == "data" && it.third - it.second > 8 }.map { b.copyOfRange(it.second + 8, it.third) }
+        return boxes(covr.second, covr.third).filter { it.first == "data" && it.third - it.second > 8 }.mapIndexed { i, d -> Picture(b.copyOfRange(d.second + 8, d.third), if (i == 0) FRONT else BACK) }
     }
 
     // ---- helpers ----

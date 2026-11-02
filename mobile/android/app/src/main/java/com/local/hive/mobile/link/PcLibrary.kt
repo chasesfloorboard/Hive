@@ -29,7 +29,8 @@ class PcLibrary(context: Context, private val client: HiveLinkClient, private va
     private val _lovedIds = MutableStateFlow<Set<String>>(emptySet())
     /** Ids of the songs loved in Hive, for the heart on a PC song played on the phone. */
     val lovedIds: StateFlow<Set<String>> = _lovedIds.asStateFlow()
-    private fun setTracks(tracks: List<PcTrack>) { _tracks.value = tracks; _lovedIds.value = tracks.filter { it.loved }.mapTo(HashSet()) { it.id } }
+    private var byId: Map<String, PcTrack> = emptyMap()
+    private fun setTracks(tracks: List<PcTrack>) { _tracks.value = tracks; byId = tracks.associateBy { it.id }; _lovedIds.value = tracks.filter { it.loved }.mapTo(HashSet()) { it.id } }
     private var loaded = false
 
     /** The kept copy, read once. */
@@ -38,6 +39,16 @@ class PcLibrary(context: Context, private val client: HiveLinkClient, private va
         loaded = true
         if (file.exists()) runCatching { setTracks(json.decodeFromString(LibraryResponse.serializer(), file.readText()).tracks) }
         if (playlistsFile.exists()) runCatching { _playlists.value = json.decodeFromString(PlaylistsResponse.serializer(), playlistsFile.readText()).playlists }
+    }
+
+    /** Hive's playlists again (a playlist made or changed on the PC shows up); true when Hive was reached. */
+    suspend fun refreshPlaylists(): Boolean = withContext(Dispatchers.IO) {
+        load()
+        val conn = sync.pcConnection() ?: return@withContext false
+        runCatching { client.playlists(conn) }.onSuccess { lists ->
+            _playlists.value = lists
+            playlistsFile.writeText(json.encodeToString(PlaylistsResponse.serializer(), PlaylistsResponse(lists)))
+        }.isSuccess
     }
 
     /** Asks Hive for its library if it changed; true when Hive was reached. */
@@ -61,6 +72,10 @@ class PcLibrary(context: Context, private val client: HiveLinkClient, private va
     }
 
     fun coverUrl(t: PcTrack): String? = coverFor(t.cover)
+
+    /** A PC playlist's picture: its own if it has one, else the cover of its first song that has one. */
+    fun playlistCover(p: PcPlaylist): String? = coverFor(p.cover) ?: p.artworkUrl.ifBlank { null }
+        ?: p.songs.firstNotNullOfOrNull { s -> if (s.kind == "track") byId[s.id]?.let { coverUrl(it) } else coverFor(s.cover) }
 
     /** A cover from Hive's covers folder, by its file name. */
     fun coverFor(name: String): String? {

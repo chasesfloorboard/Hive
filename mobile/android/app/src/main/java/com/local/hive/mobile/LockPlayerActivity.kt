@@ -35,6 +35,43 @@ class LockPlayerActivity : ComponentActivity() {
     /** When the player last came to the front, and whether the user then sent it away with Home. */
     private var resumedAt = 0L
     private var wentHome = false
+    /** When the player was last touched (or came up): left alone, the screen should go off. */
+    private var touchedAt = 0L
+    private val idleWatch = object : Runnable {
+        override fun run() {
+            val awake = (getSystemService(POWER_SERVICE) as android.os.PowerManager).isInteractive
+            val locked = (getSystemService(KEYGUARD_SERVICE) as KeyguardManager).isKeyguardLocked
+            // Still on well past the lock screen's timeout: the phone didn't take the player's (Samsung's
+            // may not). The phone's own lock screen takes over and goes off by itself; the player is
+            // back when the phone next wakes.
+            if (awake && locked && !leaving && System.currentTimeMillis() - touchedAt > SLEEP_AFTER_MS + IDLE_GRACE_MS) {
+                CarLog.lockPlayer(this@LockPlayerActivity, "left idle, the lock screen takes over so the screen can go off")
+                wentHome = true
+                moveTaskToBack(true)
+                return
+            }
+            window.decorView.postDelayed(this, 1_000)
+        }
+    }
+
+    override fun dispatchTouchEvent(ev: android.view.MotionEvent): Boolean {
+        touchedAt = System.currentTimeMillis()
+        return super.dispatchTouchEvent(ev)
+    }
+
+    /** A call rings or is on: the player steps aside for the phone's call screen and comes back after. */
+    private var steppedAside = false
+    private val callWatch: Any? = if (android.os.Build.VERSION.SDK_INT >= 31) android.media.AudioManager.OnModeChangedListener { callChanged() } else null
+
+    private fun callChanged() {
+        if (inCall(this)) {
+            if (!steppedAside) { steppedAside = true; CarLog.lockPlayer(this, "steps aside for a call"); moveTaskToBack(true) }
+        } else if (steppedAside) {
+            steppedAside = false
+            val locked = (getSystemService(KEYGUARD_SERVICE) as KeyguardManager).isKeyguardLocked
+            if (locked && !leaving && !isFinishing) { CarLog.lockPlayer(this, "call over, comes back"); showIfWanted(this) }
+        }
+    }
 
     override fun onCreate(savedInstanceState: Bundle?) {
         setShowWhenLocked(true)
@@ -56,6 +93,8 @@ class LockPlayerActivity : ComponentActivity() {
         // Back on a locked phone stays here; the phone's own unlock is the way out.
         onBackPressedDispatcher.addCallback(this, object : OnBackPressedCallback(true) { override fun handleOnBackPressed() = unlock() })
         setContent { HiveThemed(vm) { LockPlayer(vm, onUnlock = ::unlock) } }
+        if (android.os.Build.VERSION.SDK_INT >= 31) getSystemService(android.media.AudioManager::class.java)
+            .addOnModeChangedListener(ContextCompat.getMainExecutor(this), callWatch as android.media.AudioManager.OnModeChangedListener)
         CarLog.lockPlayer(this, "opens")
     }
 
@@ -67,19 +106,28 @@ class LockPlayerActivity : ComponentActivity() {
 
     /**
      * Home on the locked phone: the lock screen and its notifications show, and
-     * the player waits behind them until the phone next locks or wakes. Android
-     * Auto taking over as the phone wakes looks the same to Hive, so only a
-     * Home pressed once the player has been up a moment counts.
+     * the player waits behind them until the phone next locks or wakes: music
+     * starting again (a new song, a crossfade) doesn't bring it back. In the
+     * car, Android Auto taking over as the phone wakes looks the same to Hive,
+     * so there only a Home pressed once the player has been up a moment counts.
      */
     override fun onUserLeaveHint() {
         super.onUserLeaveHint()
-        if (System.currentTimeMillis() - resumedAt > HOME_AFTER_MS) { wentHome = true; CarLog.lockPlayer(this, "home pressed") }
+        if (!CarLog.inCar(this) || System.currentTimeMillis() - resumedAt > HOME_AFTER_MS) {
+            wentHome = true; sentAway = true; CarLog.lockPlayer(this, "home pressed")
+        }
     }
 
     override fun onResume() {
         super.onResume()
         resumedAt = System.currentTimeMillis()
+        touchedAt = resumedAt
         wentHome = false
+        sentAway = false
+        window.decorView.removeCallbacks(idleWatch)
+        window.decorView.postDelayed(idleWatch, 1_000)
+        // Never over a call: the phone's call screen comes first.
+        if (inCall(this)) { steppedAside = true; moveTaskToBack(true); return }
         // Opened with the phone already unlocked (or the lock turned off): nothing to cover.
         if (!(getSystemService(KEYGUARD_SERVICE) as KeyguardManager).isKeyguardLocked) { leaving("phone not locked"); finish() }
     }
@@ -93,6 +141,7 @@ class LockPlayerActivity : ComponentActivity() {
      */
     override fun onStop() {
         super.onStop()
+        window.decorView.removeCallbacks(idleWatch)
         if (leaving || wentHome || isFinishing || isChangingConfigurations) return
         val locked = (getSystemService(KEYGUARD_SERVICE) as KeyguardManager).isKeyguardLocked
         val awake = (getSystemService(POWER_SERVICE) as android.os.PowerManager).isInteractive
@@ -113,16 +162,26 @@ class LockPlayerActivity : ComponentActivity() {
 
     override fun onDestroy() {
         runCatching { unregisterReceiver(unlocked) }
+        if (android.os.Build.VERSION.SDK_INT >= 31) runCatching {
+            getSystemService(android.media.AudioManager::class.java).removeOnModeChangedListener(callWatch as android.media.AudioManager.OnModeChangedListener)
+        }
         super.onDestroy()
     }
 
     companion object {
         /** When the player was last brought back after being pushed away (see onStop). */
         private val broughtBack = mutableListOf<Long>()
+        /** Home pressed on the player: it stays away until the phone next goes to sleep or wakes (see [screenChanged]). */
+        @Volatile private var sentAway = false
+
+        /** The screen went off or came on: a player sent away with Home may show again. */
+        fun screenChanged() { sentAway = false }
         private const val PREF = "lock-player"
         private const val HOME_AFTER_MS = 2_000L
         /** The lock screen's own screen timeout. */
         private const val SLEEP_AFTER_MS = 10_000L
+        /** How long past [SLEEP_AFTER_MS] the screen may stay on before the player steps aside for the lock screen. */
+        private const val IDLE_GRACE_MS = 5_000L
 
         /** Whether Hive shows itself over the lock screen while music plays. */
         fun enabled(context: Context) = context.getSharedPreferences("ui", Context.MODE_PRIVATE).getBoolean(PREF, false)
@@ -131,9 +190,12 @@ class LockPlayerActivity : ComponentActivity() {
         /** Android lets an app open a screen from the background only with "Display over other apps". */
         fun permitted(context: Context) = Settings.canDrawOverlays(context)
 
+        /** A call ringing or on (phone, or a call app like WhatsApp): the phone's sound is set for calls then. */
+        fun inCall(context: Context) = (context.getSystemService(Context.AUDIO_SERVICE) as android.media.AudioManager).mode != android.media.AudioManager.MODE_NORMAL
+
         /** Called while Hive is in use as the screen goes off or comes on locked, or as music starts on a locked phone. */
         fun showIfWanted(context: Context) {
-            if (!enabled(context) || !permitted(context)) return
+            if (!enabled(context) || !permitted(context) || inCall(context) || sentAway) return
             val open = Intent(context, LockPlayerActivity::class.java)
                 .addFlags(Intent.FLAG_ACTIVITY_NEW_TASK or Intent.FLAG_ACTIVITY_NO_ANIMATION or Intent.FLAG_ACTIVITY_EXCLUDE_FROM_RECENTS)
             runCatching { context.startActivity(open) }

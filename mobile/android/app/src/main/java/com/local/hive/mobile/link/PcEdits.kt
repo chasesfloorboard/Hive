@@ -16,9 +16,14 @@ import java.io.File
  * editor. Songs the PC doesn't have are left out: song sync takes the edited
  * file over instead.
  */
-class PcEdits(context: Context, private val dao: LibraryDao, private val store: LinkStore, private val client: HiveLinkClient = HiveLinkClient()) {
+class PcEdits(
+    context: Context, private val dao: LibraryDao, private val store: LinkStore, private val client: HiveLinkClient = HiveLinkClient(),
+    /** The PC's songs as last fetched: finds the PC copy of a song that hasn't been matched yet. */
+    private val pcTracks: () -> List<PcTrack> = { emptyList() },
+) {
     @Serializable private data class Tags(val pcId: String, val tags: Map<String, String>)
-    @Serializable private data class Cover(val pcIds: List<String>, val file: String)
+    /** A front cover, or with [back] (its place among the back covers, from 0) a back cover; no [file] takes that back cover off. */
+    @Serializable private data class Cover(val pcIds: List<String>, val file: String, val back: Int = -1)
     @Serializable private data class Pending(val tags: List<Tags> = emptyList(), val covers: List<Cover> = emptyList())
 
     private val file = File(context.filesDir, "pc-edits.json")
@@ -33,7 +38,20 @@ class PcEdits(context: Context, private val dao: LibraryDao, private val store: 
     private suspend fun pcIds(trackIds: Collection<Long>): Map<Long, String> {
         if (store.pairing == null) return emptyMap()
         val wanted = trackIds.toHashSet()
-        return dao.allMatches().filter { it.trackId in wanted }.associate { it.trackId to it.pcId }
+        val found = dao.allMatches().filter { it.trackId in wanted }.associate { it.trackId to it.pcId }.toMutableMap()
+        // A song the last sync didn't match (new on the phone, or tagged differently) is looked up in
+        // the PC's library now, by the tags it had before this edit, so the edit isn't lost.
+        val missing = wanted - found.keys
+        if (missing.isNotEmpty()) {
+            val index = TrackMatcher.Index(pcTracks().map { TrackMatcher.Candidate(it.id, it.title, it.artist, it.albumArtist, it.duration) })
+            for (t in dao.tracks(missing.toList())) {
+                (index.match(t.title, t.artist, t.albumArtist, t.durationMs)
+                    ?: index.match(t.fileName.substringBeforeLast('.').replace(Regex("""^\d+[\s.-]+"""), ""), t.artist, t.albumArtist, t.durationMs))
+                    ?.let { found[t.id] = it.key }
+            }
+        }
+        if (found.size < wanted.size) android.util.Log.w("PcEdits", "no PC copy for ${wanted.size - found.size} edited song(s); the edit stays on the phone")
+        return found
     }
 
     /** Remembers tag edits for the PC; a newer edit of a field replaces an older one. */
@@ -54,6 +72,14 @@ class PcEdits(context: Context, private val dao: LibraryDao, private val store: 
         save(p.copy(covers = p.covers + Cover(ids, f.name)))
     }
 
+    suspend fun addBackCover(trackIds: List<Long>, place: Int, image: ByteArray?) = mutex.withLock {
+        val ids = pcIds(trackIds).values.distinct()
+        if (ids.isEmpty()) return@withLock
+        val name = image?.let { File(coverDir, "${System.currentTimeMillis()}-${ids.hashCode()}-back$place.img").apply { writeBytes(it) }.name }.orEmpty()
+        val p = load()
+        save(p.copy(covers = p.covers + Cover(ids, name, back = place)))
+    }
+
     /**
      * Sends what waits. An older Hive, or one that doesn't trust this phone yet,
      * keeps them waiting; anything else that fails is tried at the next sync.
@@ -70,12 +96,17 @@ class PcEdits(context: Context, private val dao: LibraryDao, private val store: 
         for (c in p.covers) {
             val f = File(coverDir, c.file)
             try {
-                if (f.exists()) client.sendCover(conn, c.pcIds, f.readBytes())
+                when {
+                    c.back < 0 -> if (f.exists()) client.sendCover(conn, c.pcIds, f.readBytes())
+                    c.file.isEmpty() -> client.sendBackCover(conn, c.pcIds, c.back, null)
+                    f.exists() -> client.sendBackCover(conn, c.pcIds, c.back, f.readBytes())
+                }
             } catch (e: HiveLinkException) {
-                // Hive no longer has those songs: nothing to send. Anything else waits.
-                if (e.status != 404) return@withLock
+                // Hive no longer has those songs: nothing to send. Anything else (a Hive too old
+                // for back covers among it) waits.
+                if (e.status != 404 || e.message?.contains("none of those") != true) return@withLock
             } catch (e: java.io.IOException) { return@withLock }
-            f.delete()
+            if (c.file.isNotEmpty()) f.delete()
             p = p.copy(covers = p.covers - c); save(p)
         }
     }

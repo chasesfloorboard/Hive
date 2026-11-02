@@ -1609,7 +1609,7 @@ input[type="range"]::-webkit-slider-thumb {
 .context-arrow { color:var(--text-dimmer); font-size:16px; line-height:1; }
 .context-submenu { position:absolute; left:100%; top:-6px; min-width:150px; padding:6px; border:1px solid var(--border); border-radius:10px; background:color-mix(in srgb, var(--accent) 10%, var(--panel-strong)); backdrop-filter:blur(var(--blur)) saturate(140%); box-shadow:0 22px 48px -22px rgba(0,0,0,.62); display:none; }
 .context-menu-left .context-submenu { left:auto; right:100%; }
-.context-submenu-wrap:hover > .context-submenu { display:block; }
+.context-submenu-wrap:hover > .context-submenu, .context-submenu-wrap.keyboard-open > .context-submenu { display:block; }
 .context-item { display:block;width:100%;padding:8px 10px;text-align:left;border:0;border-radius:7px;background:transparent;color:var(--text);font-size:12px; }
 .context-item:hover { background:rgba(255,255,255,.08); }
 .context-item.danger:hover { color:#ff8f8f; }
@@ -5360,6 +5360,8 @@ html[data-hive-theme="light"] .modal-overlay .modal :is(.modal-action.danger, .s
    ellipsis) and all artist names line up, with room to breathe. */
 .inline-track-list { display:grid; grid-template-columns: 24px 25px fit-content(60%) minmax(0,1fr) 48px; align-content:start; row-gap:1px; column-gap:0; }
 .inline-track-list > .inline-track-row { grid-column: 1 / -1; grid-template-columns: subgrid; }
+.inline-disc-heading { grid-column: 1 / -1; display:grid; grid-template-columns: auto minmax(0,1fr); align-items:center; gap:10px; margin:10px 0 4px; padding:0 6px; color:var(--text); font-size:11.5px; font-weight:650; letter-spacing:.2px; }
+.inline-disc-heading:first-child { margin-top:2px; }
 .inline-track-artist { min-width:0; overflow:hidden; text-overflow:ellipsis; white-space:nowrap; padding-left:32px; color:var(--text-dim); font-size:10.5px; }
 .inline-track-row.selected .inline-track-artist { color: var(--text); }
 html[data-hive-theme="light"] .inline-track-row.selected .inline-track-artist { color:#252a31 !important; }
@@ -5625,7 +5627,9 @@ html.hb-hide-pb-eq #btn-eq, html.hb-hide-pb-mini #btn-mini, html.hb-hide-pb-thea
 .streaming-page .radio-search button, .streaming-page .sidebar-add { flex:0 0 auto; width:auto; }
 .hive-download-status{position:fixed;left:50%;bottom:104px;transform:translateX(-50%);z-index:300;padding:7px 14px;border-radius:999px;background:color-mix(in srgb,var(--bg) 82%,transparent);border:1px solid var(--border);color:var(--text);font-size:12.5px;backdrop-filter:blur(10px);max-width:70vw;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;pointer-events:none}
 .hive-download-status.hidden{display:none}
-.sidebar-nav-cover{width:18px;height:18px;border-radius:4px;object-fit:cover;margin-right:8px;flex:0 0 18px}
+.sidebar-nav-cover{width:18px;height:18px;border-radius:4px;object-fit:cover;margin-right:8px;flex:0 0 18px;vertical-align:middle}
+/* A picture beside a label (Favorites, a playlist with its own image): both on the row's centre line, not the text baseline. */
+.sidebar-nav-cover + .sidebar-nav-label{vertical-align:middle}
 .apple-shelf{display:grid;grid-auto-flow:column;grid-auto-columns:150px;gap:10px;overflow-x:auto;padding-bottom:8px;margin-bottom:6px;scrollbar-width:thin}
 .apple-song-shelf .apple-track{grid-template-columns:36px minmax(0,1fr) 48px 32px 32px}
 .apple-track-art{width:36px;height:36px;border-radius:5px;object-fit:cover}
@@ -5796,3 +5800,13 @@ span.apple-track-art{display:block;background:rgba(255,255,255,.06)}
 .soulseek-song-downloading{color:var(--text)}
 .soulseek-song-missing .soulseek-song-title{text-decoration:line-through;text-decoration-color:color-mix(in srgb,var(--text-dim) 60%,transparent)}
 .soulseek-panel-head .sidebar-add{flex:none;width:auto}
+
+/* Keyboard focus for the library (accessibility #6): cards, song and queue rows, menu items. */
+.album-card:focus-visible { outline:2px solid var(--accent); outline-offset:3px; border-radius:12px; }
+.song-row:focus-visible, .queue-row:focus-visible { outline:2px solid color-mix(in srgb, var(--accent) 80%, transparent); outline-offset:-2px; }
+#context-menu .context-item:focus-visible, #context-menu .context-submenu-trigger:focus-visible { outline:2px solid color-mix(in srgb, var(--accent) 80%, transparent); outline-offset:-2px; }
+#songs-table:focus-visible, #queue-list:focus-visible { outline:none; }
+
+/* Sandboxed plugin frames (plugin-sandbox.js), laid over the page they draw. */
+#hive-plugin-frames .hive-plugin-frame { position:fixed; border:0; margin:0; padding:0; z-index:2; background:transparent; color-scheme:normal; }
+#hive-plugin-frames .hive-plugin-frame[hidden] { display:none; }

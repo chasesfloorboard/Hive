@@ -118,7 +118,6 @@ contextBridge.exposeInMainWorld('beehive', {
   installPluginFolder: () => ipcRenderer.invoke('plugins:installFolder'),
   getPluginSettings: (id) => ipcRenderer.invoke('plugins:getSettings', { id }),
   setPluginSettings: (id, settings) => ipcRenderer.invoke('plugins:setSettings', { id, settings }),
-  runPlugin: (source, id) => ipcRenderer.invoke('plugins:run', { source, id }),
   scrobbleStatus: () => ipcRenderer.invoke('scrobble:status'),
   scrobbleConfig: () => ipcRenderer.invoke('scrobble:config'),
   saveScrobbleSettings: (patch) => ipcRenderer.invoke('scrobble:save', patch || {}),
@@ -162,6 +161,12 @@ contextBridge.exposeInMainWorld('beehive', {
     const listener = (_evt, payload) => cb(payload);
     ipcRenderer.on('library:scanProgress', listener);
     return () => ipcRenderer.removeListener('library:scanProgress', listener);
+  },
+  // The phone made, changed or deleted a playlist (Hive Link): Hive's list reloads.
+  onPlaylistsChanged: (cb) => {
+    const listener = () => cb();
+    ipcRenderer.on('playlists:changed', listener);
+    return () => ipcRenderer.removeListener('playlists:changed', listener);
   },
   onScanTrack: (cb) => {
     const listener = (_evt, track) => cb(track);

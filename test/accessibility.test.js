@@ -71,3 +71,48 @@ test('the now-playing title/artist and the app notice body are live regions', ()
   assert.match(html, /<div class="pb-meta" aria-live="polite">/);
   assert.match(html, /<div id="notice-body" class="notice-body" aria-live="assertive"><\/div>/);
 });
+
+// Findings #5/#6: album cards, song rows, queue rows and the right-click menu work from the
+// keyboard (app/renderer/keyboard-access.js), and show where focus is.
+const keys = require('../app/renderer/keyboard-access.js');
+
+test('the arrow keys move through a list and stop at its ends', () => {
+  assert.equal(keys.stepIndex(-1, 'ArrowDown', 5), 0);
+  assert.equal(keys.stepIndex(2, 'ArrowDown', 5), 3);
+  assert.equal(keys.stepIndex(4, 'ArrowDown', 5), 4);
+  assert.equal(keys.stepIndex(0, 'ArrowUp', 5), 0);
+  assert.equal(keys.stepIndex(3, 'Home', 5), 0);
+  assert.equal(keys.stepIndex(1, 'End', 5), 4);
+  assert.equal(keys.stepIndex(1, 'PageDown', 30, 10), 11);
+  assert.equal(keys.stepIndex(4, 'PageUp', 30, 10), 0);
+  assert.equal(keys.stepIndex(1, 'x', 5), -1);
+  assert.equal(keys.stepIndex(0, 'ArrowDown', 0), -1);
+});
+
+test('menu items wrap around like a native menu', () => {
+  assert.equal(keys.stepMenu(-1, 'ArrowDown', 4), 0);
+  assert.equal(keys.stepMenu(3, 'ArrowDown', 4), 0);
+  assert.equal(keys.stepMenu(0, 'ArrowUp', 4), 3);
+  assert.equal(keys.stepMenu(-1, 'ArrowUp', 4), 3);
+  assert.equal(keys.stepMenu(2, 'End', 4), 3);
+  assert.equal(keys.stepMenu(2, 'Enter', 4), -1);
+});
+
+test('cards and stars have spoken names', () => {
+  assert.equal(keys.albumLabel({ title: 'Illmatic', artist: 'Nas' }), 'Illmatic by Nas');
+  assert.equal(keys.albumLabel({ title: '', artist: '' }), 'Unknown album');
+  assert.equal(keys.starLabel(1), 'Rate 1 star');
+  assert.equal(keys.starLabel(4), 'Rate 4 stars');
+});
+
+test('the library and the menu are wired to the keyboard module', () => {
+  assert.ok(html.indexOf('keyboard-access.js') > 0 && html.indexOf('keyboard-access.js') < html.indexOf('src="renderer.js"'));
+  assert.match(html, /id="songs-table"[^>]*tabindex="0"[^>]*data-row-list/);
+  assert.match(html, /id="queue-list"[^>]*tabindex="0"[^>]*data-row-list/);
+  assert.match(renderer, /class="song-row"[^`]*tabindex="-1"/);
+  assert.match(renderer, /HiveKeyboardAccess\?\.install\(document\)/);
+  assert.match(renderer, /HiveKeyboardAccess\?\.prepareMenu\(m\)/);
+  assert.match(renderer, /HiveKeyboardAccess\?\.menuClosed\(/);
+  const css = fs.readFileSync(path.join(root, 'app/renderer/styles.css'), 'utf8');
+  for (const sel of ['.album-card:focus-visible', '.song-row:focus-visible', '.queue-row:focus-visible', '.context-submenu-wrap.keyboard-open > .context-submenu']) assert.ok(css.includes(sel), sel);
+});

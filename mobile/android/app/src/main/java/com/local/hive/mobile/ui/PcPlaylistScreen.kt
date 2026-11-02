@@ -28,6 +28,7 @@ import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.produceState
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.setValue
+import androidx.compose.runtime.saveable.rememberSaveable
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.text.style.TextAlign
@@ -48,7 +49,7 @@ import com.local.hive.mobile.ui.theme.HiveText
  * to this phone" makes it a phone playlist.
  */
 @Composable
-fun PcPlaylistScreen(vm: MainViewModel, id: String, bottomPadding: Dp, onBack: () -> Unit, onOpenPlaylist: (Long) -> Unit, onToast: (String) -> Unit) {
+fun PcPlaylistScreen(vm: MainViewModel, id: String, actions: TrackActions, bottomPadding: Dp, onBack: () -> Unit, onOpenPlaylist: (Long) -> Unit, onToast: (String) -> Unit) {
     val c = Hive.colors
     val lists by vm.pcPlaylists.collectAsStateWithLifecycle()
     val pcTracks by vm.pcTracks.collectAsStateWithLifecycle()
@@ -57,14 +58,25 @@ fun PcPlaylistScreen(vm: MainViewModel, id: String, bottomPadding: Dp, onBack: (
     val p = lists.firstOrNull { it.id == id }
     val byId = remember(pcTracks) { pcTracks.associateBy { it.id } }
     // Each song as the phone shows it: its own copy, or Hive's details.
-    val rows by produceState<List<Pair<Track?, StreamTrack>>>(emptyList(), p, byId) {
-        value = p?.songs.orEmpty().map { s ->
-            val shown = if (s.kind == "track") byId[s.id]?.let { t -> StreamTrack("pc:${t.id}", "Hive", t.title, t.artist, t.album, t.duration, vm.pcLibrary.coverUrl(t).orEmpty(), "", "") } ?: vm.pcStream(s).copy(title = "Song on your PC")
-            else vm.pcStream(s)
-            vm.localFor(s) to shown
+    // Shown at once from the last visit; the phone's copies are found in one lookup, off the main thread.
+    val rows by produceState(vm.pcPlaylistRows[id].orEmpty(), p, byId) {
+        val songs = p?.songs ?: return@produceState
+        value = kotlinx.coroutines.withContext(kotlinx.coroutines.Dispatchers.Default) {
+            val locals = vm.localsFor(songs)
+            songs.mapIndexed { i, s ->
+                val shown = if (s.kind == "track") byId[s.id]?.let { t -> StreamTrack("pc:${t.id}", "Hive", t.title, t.artist, t.album, t.duration, vm.pcLibrary.coverUrl(t).orEmpty(), "", "") } ?: vm.pcStream(s).copy(title = "Song on your PC")
+                else vm.pcStream(s)
+                locals[i] to shown
+            }
         }
+        vm.pcPlaylistRows[id] = value
     }
     var copying by remember { mutableStateOf(false) }
+    // Its songs, or the albums and artists of the ones on this phone.
+    var view by rememberSaveable(id) { mutableStateOf(SongsView.Tracks) }
+    var groupSort by rememberSaveable(id) { mutableStateOf(GroupSort.Most) }
+    val onPhone = remember(rows) { rows.mapNotNull { it.first } }
+    val counts = remember(onPhone, rows.size) { songsCounts(onPhone, rows.size) }
     PickableList(tracks = rows.mapNotNull { it.first })
     val list = rememberLazyListState()
     val titleAlpha by animateFloatAsState(if (list.firstVisibleItemIndex > 0) 1f else 0f, tween(180), label = "title")
@@ -76,7 +88,7 @@ fun PcPlaylistScreen(vm: MainViewModel, id: String, bottomPadding: Dp, onBack: (
             else {
                 item {
                     Column(Modifier.fillMaxWidth().statusBarsPadding().padding(top = 64.dp, start = 24.dp, end = 24.dp, bottom = 18.dp), horizontalAlignment = Alignment.CenterHorizontally) {
-                        Artwork(vm.pcLibrary.coverFor(p.cover) ?: p.artworkUrl.ifBlank { null }, Modifier.size(200.dp), HiveShape.art, Icons.AutoMirrored.Rounded.QueueMusic, elevation = 30.dp)
+                        Artwork(vm.pcLibrary.playlistCover(p), Modifier.size(200.dp), HiveShape.art, Icons.AutoMirrored.Rounded.QueueMusic, elevation = 30.dp)
                         HiveLabel("On your PC", Modifier.padding(top = 20.dp))
                         Text(p.name, style = HiveText.heroTitle, color = c.text, textAlign = TextAlign.Center, maxLines = 2, overflow = TextOverflow.Ellipsis, modifier = Modifier.padding(top = 4.dp))
                         Text(listOf(countOf(p.songs.size, "song"), "${rows.count { it.first != null }} on this phone").joinToString(" · "), style = HiveText.small, color = c.textDim, modifier = Modifier.padding(top = 6.dp))
@@ -89,16 +101,24 @@ fun PcPlaylistScreen(vm: MainViewModel, id: String, bottomPadding: Dp, onBack: (
                         }
                     }
                 }
+                if (view != SongsView.Tracks) {
+                    item { SongsHeader(view, counts, { view = it }, GroupSort.entries.map { it.label }, groupSort.ordinal, { groupSort = GroupSort.entries[it] }, groupDetail(view, counts, groupSort) + " on this phone") }
+                    songGroups(vm, view, onPhone, actions, groupSort)
+                } else {
+                if (rows.isNotEmpty()) item { SongsHeader(view, counts, { view = it }, emptyList(), 0, {}, "${countOf(rows.size, "track")} · ${formatLength(p.songs.sumOf { it.duration })}") }
                 item { PanelTop() }
                 itemsIndexed(rows) { i, (local, shown) ->
                     PanelSlice {
                         val loved by vm.lovedIds.collectAsStateWithLifecycle()
-                        if (local != null) TrackRow(local, local.id in loved, now.trackId == local.id, now.isPlaying, TrackActions({}, {}, {}, {}, {}), onClick = { vm.playPcPlaylist(p.songs, i) })
+                        if (local != null) TrackRow(local, local.id in loved, now.trackId == local.id, now.isPlaying, actions, onClick = { vm.playPcPlaylist(p.songs, i) })
                         else StreamRow(shown, now.mediaId == shown.key || now.mediaId == "pc:${shown.key.removePrefix("pc:")}", now.isPlaying, full = true, onClick = { vm.playPcPlaylist(p.songs, i) }, vm = vm)
                     }
                 }
                 item { PanelBottom() }
+                }
             }
         }
-    }, overlay = { PageBar(p?.name.orEmpty(), titleAlpha, onBack, veil) })
+    }, overlay = { PageBar(p?.name.orEmpty(), titleAlpha, onBack, veil) {
+        FavoriteBarActions(vm, p?.let { favoritePlaylist("pc:$id", it.name, "pcplaylist?id=" + android.net.Uri.encode(id), vm.pcLibrary.playlistCover(it), "On your PC") }, com.local.hive.mobile.data.PlaylistImages.pc(id), imageButton = true)
+    } })
 }

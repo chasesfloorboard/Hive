@@ -49,6 +49,11 @@ import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.automirrored.rounded.QueueMusic
 import androidx.compose.material.icons.rounded.Close
 import androidx.compose.material.icons.rounded.Favorite
+import androidx.compose.material.icons.rounded.CheckCircle
+import androidx.compose.material.icons.rounded.RadioButtonUnchecked
+import androidx.compose.material.icons.rounded.KeyboardArrowUp
+import androidx.compose.material.icons.automirrored.rounded.PlaylistPlay
+import com.local.hive.mobile.ui.theme.hiveGlass
 import androidx.compose.material.icons.rounded.FavoriteBorder
 import androidx.compose.material.icons.rounded.KeyboardArrowDown
 import androidx.compose.material.icons.rounded.MoreVert
@@ -126,6 +131,7 @@ import com.local.hive.mobile.playback.SleepTimer
 import androidx.compose.material.icons.rounded.MusicNote
 import androidx.compose.material.icons.rounded.Timer
 import androidx.compose.material.icons.rounded.Bedtime
+import androidx.compose.material.icons.rounded.Settings
 import androidx.compose.material.icons.rounded.Person
 import androidx.compose.material.icons.rounded.Album
 import dev.chrisbanes.haze.HazeTint
@@ -137,6 +143,9 @@ import kotlinx.coroutines.launch
 import kotlin.math.abs
 import kotlin.math.roundToInt
 import androidx.compose.ui.unit.lerp as lerpDp
+import androidx.compose.ui.semantics.onClick
+import androidx.compose.ui.semantics.role
+import androidx.compose.ui.semantics.semantics
 
 private val MiniHeight = 68.dp
 private val MiniMargin = 8.dp
@@ -161,6 +170,7 @@ fun PlayerSheet(
     onAddToPlaylist: (Track) -> Unit,
     onOpenLyrics: () -> Unit,
     onOpenEqualiser: () -> Unit,
+    onOpenSettings: () -> Unit = {},
     onToast: (String) -> Unit = {},
 ) {
     val c = Hive.colors
@@ -180,14 +190,44 @@ fun PlayerSheet(
     val screenPx = with(density) { androidx.compose.ui.platform.LocalConfiguration.current.screenWidthDp.dp.toPx() }
     var lastIndex by remember { mutableIntStateOf(now.queueIndex) }
     var lastId by remember { mutableStateOf(now.mediaId) }
+    // The slide runs in its own job, not in the effect: a second change while it runs (quick skips,
+    // or a skip during a crossfade, which moves on twice at once) used to cancel it halfway, and the
+    // next change took the cover left off to the side for a swipe and left it there.
+    val slideScope = rememberCoroutineScope()
+    var slide by remember { mutableStateOf<kotlinx.coroutines.Job?>(null) }
+    // A crossfade's song comes in as its cover (below): it peeks in at the right edge while the
+    // songs fade, and pops into place when the fade is done. cardPos: 2 off the screen, 1 peeking, 0 in place.
+    var card by remember { mutableStateOf<com.local.hive.mobile.playback.Incoming?>(null) }
+    val carded = remember { ArrayDeque<String>() }
+    val cardPos = remember { Animatable(2f) }
+    LaunchedEffect(now.incoming?.mediaId, now.incoming?.startedAt) {
+        val inc = now.incoming ?: return@LaunchedEffect
+        card = inc
+        carded.addLast(inc.mediaId); while (carded.size > 4) carded.removeFirst()
+        cardPos.snapTo(2f)
+        cardPos.animateTo(1f, spring(dampingRatio = 0.78f, stiffness = 700f))
+    }
+    LaunchedEffect(now.incoming == null, now.mediaId) {
+        val c0 = card ?: return@LaunchedEffect
+        if (now.incoming != null) return@LaunchedEffect
+        if (now.mediaId == c0.mediaId) cardPos.animateTo(0f, spring(dampingRatio = 0.6f, stiffness = 520f))
+        card = null
+    }
     LaunchedEffect(now.mediaId) {
         val from = lastIndex
         val changed = lastId != null && lastId != now.mediaId
         lastIndex = now.queueIndex; lastId = now.mediaId
-        if (!changed || swipe.isRunning || abs(swipe.value) > 1f) return@LaunchedEffect
-        val dir = if (now.queueIndex >= from) 1 else -1
-        swipe.snapTo(dir * screenPx * 0.3f)
-        swipe.animateTo(0f, spring(dampingRatio = 0.82f, stiffness = 420f))
+        if (!changed || now.mediaId in carded) return@LaunchedEffect
+        val ownSlide = slide?.isActive == true
+        if (!ownSlide && (swipe.isRunning || abs(swipe.value) > 1f)) return@LaunchedEffect
+        slide?.cancel()
+        // Forward comes in from the right, back from the left: by the button pressed, since in
+        // shuffle the queue's order isn't the order songs play in.
+        val dir = if (vm.player.wentBack()) -1 else 1
+        slide = slideScope.launch {
+            swipe.snapTo(dir * screenPx * 0.3f)
+            swipe.animateTo(0f, spring(dampingRatio = 0.82f, stiffness = 420f))
+        }
     }
     val navBottom = WindowInsets.navigationBars.asPaddingValues().calculateBottomPadding()
     val glass by animateColorAsState(mix(c.accent, c.panelStrong.copy(alpha = 0.78f), 0.09f), tween(900), label = "barGlass")
@@ -280,6 +320,7 @@ fun PlayerSheet(
                         onAddToPlaylist = onAddToPlaylist,
                         onOpenLyrics = onOpenLyrics,
                         onOpenEqualiser = onOpenEqualiser,
+                        onOpenSettings = onOpenSettings,
                         onOpenArtist = onOpenArtist,
                         onToast = onToast,
                         onArtPlaced = { artTarget = it },
@@ -328,6 +369,7 @@ fun PlayerSheet(
                 elevation = lerpDp(0.dp, 36.dp, eased),
                 replacing = frame.previous,
             )
+            card?.let { inc -> CrossfadeCard(inc, cardPos.value, r, eased, p, fullW.toFloat()) }
         }
     }
 }
@@ -417,9 +459,9 @@ private fun Playbar(vm: MainViewModel, now: NowPlaying, showArt: Boolean, modifi
                     }
                 }
             }
-            BarIcon(HiveIcons.Previous, "Previous", { vm.player.previous() })
+            SkipButton(HiveIcons.Previous, "Previous", forward = false, vm = vm, size = 44.dp, iconSize = 22.dp)
             AccentPlayButton(now.isPlaying, { vm.player.togglePlay() }, size = 42.dp)
-            BarIcon(HiveIcons.Next, "Next", { vm.player.next() })
+            SkipButton(HiveIcons.Next, "Next", forward = true, vm = vm, size = 44.dp, iconSize = 22.dp)
             BarIcon(Icons.AutoMirrored.Rounded.QueueMusic, "Queue", onOpenQueue, tint = c.textDim)
         }
     }
@@ -488,6 +530,7 @@ private fun FullPlayerContent(
     onAddToPlaylist: (Track) -> Unit,
     onOpenLyrics: () -> Unit,
     onOpenEqualiser: () -> Unit,
+    onOpenSettings: () -> Unit = {},
     onToast: (String) -> Unit,
     onArtPlaced: (Rect) -> Unit,
 ) {
@@ -540,6 +583,12 @@ private fun FullPlayerContent(
                             }
                             // A song from Apple Music or Spotify that isn't on the phone can be saved to it.
                             val streamed = now.trackId == null && (now.mediaId?.startsWith("am:") == true || now.mediaId?.startsWith("sp:") == true)
+                            val fromPc = now.trackId == null && now.mediaId?.startsWith(com.local.hive.mobile.link.PcLibrary.MEDIA_PREFIX) == true
+                            if (streamed || fromPc) {
+                                val go = LocalStreamNav.current
+                                HiveMenuItem("Go to album", Icons.Rounded.Album) { menu = false; go.album(nowStream(now)) }
+                                HiveMenuItem("Go to artist", Icons.Rounded.Person) { menu = false; go.artist(nowStream(now)) }
+                            }
                             if (streamed) {
                                 // Downloaded with Soulseek, as the album pages' button does (YouTube Music only streams it).
                                 HiveMenuItem("Download", Icons.Rounded.Download) {
@@ -551,6 +600,8 @@ private fun FullPlayerContent(
                             if (now.mediaId?.startsWith("pod:") == true) HiveMenuItem("Speed · ${"%.2g".format(now.speed)}×", Icons.Rounded.Speed) { menu = false; speedMenu = true }
                             HiveMenuItem("Equaliser", Icons.Rounded.GraphicEq) { menu = false; onOpenEqualiser() }
                             HiveMenuItem(sleepLabel(sleep), Icons.Rounded.Bedtime) { menu = false; sleepMenu = true }
+                            HiveMenuDivider()
+                            HiveMenuItem("Settings", Icons.Rounded.Settings) { menu = false; onOpenSettings() }
                         }
                         HiveMenu(speedMenu, { speedMenu = false }) {
                             listOf(0.8f, 1f, 1.2f, 1.5f, 1.75f, 2f).forEach { x -> HiveMenuItem("${"%.2g".format(x)}×", if (now.speed == x) Icons.Rounded.Check else null) { speedMenu = false; vm.player.setSpeed(x) } }
@@ -636,9 +687,9 @@ private fun FullPlayerContent(
                 Row(Modifier.fillMaxWidth().height(if (compact) 80.dp else 92.dp).padding(horizontal = 18.dp), horizontalArrangement = Arrangement.SpaceBetween, verticalAlignment = Alignment.CenterVertically) {
                     // Shuffle and repeat mean nothing to a live station; their places stay so the row doesn't jump.
                     if (now.isLive) Spacer(Modifier.size(48.dp)) else ShuffleButton(now.shuffle) { vm.player.toggleShuffle() }
-                    TransportButton(HiveIcons.Previous, "Previous", 36.dp) { vm.player.previous() }
+                    SkipButton(HiveIcons.Previous, "Previous", forward = false, vm = vm, iconSize = 36.dp)
                     AccentPlayButton(now.isPlaying, { vm.player.togglePlay() }, size = 72.dp)
-                    TransportButton(HiveIcons.Next, "Next", 36.dp) { vm.player.next() }
+                    SkipButton(HiveIcons.Next, "Next", forward = true, vm = vm, iconSize = 36.dp)
                     if (now.isLive) Spacer(Modifier.size(48.dp)) else RepeatButton(now.repeatMode) { vm.player.cycleRepeat() }
                 }
 
@@ -691,6 +742,47 @@ internal fun TransportButton(icon: ImageVector, label: String, iconSize: Dp, act
         Icon(icon, label, tint = shown, modifier = Modifier.size(iconSize))
         if (active == true) Box(Modifier.align(Alignment.BottomCenter).padding(bottom = 6.dp).size(4.dp).clip(CircleShape).background(c.accent))
     }
+}
+
+/**
+ * Previous or Next: a tap skips; held, it scrubs through the song playing, faster the longer it's
+ * held (2 s steps, growing to 15 s).
+ */
+@Composable
+internal fun SkipButton(icon: ImageVector, label: String, forward: Boolean, vm: MainViewModel, size: Dp = 56.dp, iconSize: Dp) {
+    val c = Hive.colors
+    val scope = rememberCoroutineScope()
+    val haptics = androidx.compose.ui.platform.LocalHapticFeedback.current
+    var held by remember { mutableStateOf(false) }
+    val scale by androidx.compose.animation.core.animateFloatAsState(if (held) 0.86f else 1f, spring(stiffness = 900f, dampingRatio = 0.7f), label = "skipPress")
+    val skip = { if (forward) vm.player.next() else vm.player.previous() }
+    Box(
+        Modifier.size(size).graphicsLayer { scaleX = scale; scaleY = scale }.clip(CircleShape)
+            .semantics { role = androidx.compose.ui.semantics.Role.Button; onClick { skip(); true } }
+            .pointerInput(forward) {
+                detectTapGestures(onPress = {
+                    held = true
+                    var scrubbing = false
+                    val job = scope.launch {
+                        kotlinx.coroutines.delay(380)
+                        scrubbing = true
+                        haptics.performHapticFeedback(androidx.compose.ui.hapticfeedback.HapticFeedbackType.LongPress)
+                        var step = 2_000L
+                        var n = 0
+                        while (true) {
+                            vm.player.seekBy(if (forward) step else -step)
+                            kotlinx.coroutines.delay(110)
+                            if (++n % 8 == 0) step = (step * 1.6f).toLong().coerceAtMost(15_000L)
+                        }
+                    }
+                    val released = tryAwaitRelease()
+                    job.cancel()
+                    held = false
+                    if (released && !scrubbing) skip()
+                })
+            },
+        contentAlignment = Alignment.Center,
+    ) { Icon(icon, label, tint = c.text, modifier = Modifier.size(iconSize)) }
 }
 
 /** Hive's shuffle button, as on the PC: straight arrows when off, crossed (and lit) when on. */
@@ -751,6 +843,50 @@ internal fun SeekBar(now: NowPlaying, position: kotlinx.coroutines.flow.StateFlo
 }
 
 /** The queue inside Now Playing: tap to jump, ✕ to remove, drag the handle to move. */
+/** The queue's picking bar: Select all (then Deselect all), how many are picked, Actions and ✕. */
+@Composable
+private fun QueuePickBar(vm: MainViewModel, n: Int, all: Boolean, onToggleAll: () -> Unit, onPlayNext: () -> Unit, lovable: () -> List<Long>, onRemove: () -> Unit, onDone: () -> Unit) {
+    val c = Hive.colors
+    var open by remember { mutableStateOf(false) }
+    val library by vm.tracks.collectAsStateWithLifecycle()
+    Row(
+        Modifier.fillMaxWidth().padding(horizontal = 12.dp, vertical = 8.dp).height(52.dp)
+            .shadow(22.dp, HiveShape.pill, ambientColor = c.accentGlow).hiveGlass(HiveShape.pill, strength = 0.3f).padding(start = 6.dp, end = 4.dp),
+        verticalAlignment = Alignment.CenterVertically,
+    ) {
+        Row(Modifier.height(44.dp).clip(HiveShape.pill).clickable(onClick = onToggleAll).padding(horizontal = 10.dp), verticalAlignment = Alignment.CenterVertically) {
+            Icon(if (all) Icons.Rounded.CheckCircle else Icons.Rounded.RadioButtonUnchecked, null, tint = c.accent, modifier = Modifier.size(20.dp))
+            Spacer(Modifier.width(8.dp))
+            Text(if (all) "Deselect all" else "Select all", style = HiveText.rowStrong, color = c.text)
+        }
+        Text(countOf(n, "song"), style = HiveText.rowSub, color = c.textDim, maxLines = 1, modifier = Modifier.weight(1f).padding(start = 4.dp))
+        Box {
+            Row(
+                Modifier.height(40.dp).clip(HiveShape.pill).background(c.accent).clickable { open = true }.padding(horizontal = 14.dp),
+                verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(6.dp),
+            ) {
+                Text("Actions", style = HiveText.pill, color = readableOn(c.accent))
+                Icon(Icons.Rounded.KeyboardArrowUp, null, tint = readableOn(c.accent), modifier = Modifier.size(18.dp))
+            }
+            HiveMenu(open, { open = false }, above = 40.dp) {
+                HiveMenuItem("Play next", Icons.AutoMirrored.Rounded.PlaylistPlay) { open = false; onPlayNext() }
+                val ids = lovable()
+                if (ids.isNotEmpty()) HiveMenuItem("Add to Favorites", Icons.Rounded.Favorite) {
+                    open = false
+                    val wanted = ids.toSet()
+                    vm.setLoved(library.filter { it.id in wanted }, true)
+                    onDone()
+                }
+                HiveMenuDivider()
+                HiveMenuItem("Remove from queue", Icons.Rounded.Close, destructive = true) { open = false; onRemove() }
+            }
+        }
+        Box(Modifier.size(44.dp).clip(CircleShape).clickable(onClick = onDone), contentAlignment = Alignment.Center) {
+            Icon(Icons.Rounded.Close, "Stop picking", tint = c.textDim, modifier = Modifier.size(20.dp))
+        }
+    }
+}
+
 @Composable
 private fun QueueList(vm: MainViewModel, modifier: Modifier) {
     val c = Hive.colors
@@ -793,17 +929,6 @@ private fun QueueList(vm: MainViewModel, modifier: Modifier) {
     }
 
     Column(modifier) {
-        androidx.compose.animation.AnimatedVisibility(picking, enter = androidx.compose.animation.expandVertically() + androidx.compose.animation.fadeIn(), exit = androidx.compose.animation.shrinkVertically() + androidx.compose.animation.fadeOut()) {
-            val n = picked.size
-            Row(Modifier.fillMaxWidth().padding(horizontal = 12.dp, vertical = 4.dp).clip(HiveShape.pill).background(c.accentSoft.copy(alpha = 0.35f)).padding(start = 14.dp), verticalAlignment = Alignment.CenterVertically) {
-                Text(if (n == 1) "1 song picked" else "$n songs picked", style = HiveText.rowStrong, color = c.text, modifier = Modifier.weight(1f))
-                Text("Play next", style = HiveText.rowStrong, color = c.accent, modifier = Modifier.clip(HiveShape.pill).clickable { vm.player.playNextFromQueue(indicesOf(picked)); picked = emptySet() }.padding(horizontal = 10.dp, vertical = 10.dp))
-                Text("Remove", style = HiveText.rowStrong, color = Color(0xFFFF8A8A), modifier = Modifier.clip(HiveShape.pill).clickable { vm.player.removeFromQueue(indicesOf(picked)); picked = emptySet() }.padding(horizontal = 10.dp, vertical = 10.dp))
-                Box(Modifier.size(40.dp).clip(CircleShape).clickable { picked = emptySet() }, contentAlignment = Alignment.Center) {
-                    Icon(Icons.Rounded.Close, "Stop picking", tint = c.textDim, modifier = Modifier.size(18.dp))
-                }
-            }
-        }
         LazyColumn(
             state = listState, contentPadding = PaddingValues(bottom = 20.dp),
             modifier = Modifier.weight(1f).pointerInput(Unit) {
@@ -904,6 +1029,18 @@ private fun QueueList(vm: MainViewModel, modifier: Modifier) {
                     }
                 }
         }
+        // While picking: the actions at the bottom, as in the library: Select all, how many, Actions and ✕.
+        androidx.compose.animation.AnimatedVisibility(picking, enter = androidx.compose.animation.slideInVertically { it } + androidx.compose.animation.fadeIn(), exit = androidx.compose.animation.slideOutVertically { it } + androidx.compose.animation.fadeOut()) {
+            QueuePickBar(
+                vm, picked.size, all = picked.size == keys.size,
+                onToggleAll = { picked = if (picked.size == keys.size) emptySet() else keys.toSet() },
+                onPlayNext = { vm.player.playNextFromQueue(indicesOf(picked)); picked = emptySet() },
+                lovable = { indicesOf(picked).mapNotNull { tracks[it].trackId } },
+                // The playing song stays (Select all, then Remove, clears the rest of the queue).
+                onRemove = { vm.player.removeFromQueue(indicesOf(picked) - now.queueIndex); picked = emptySet() },
+                onDone = { picked = emptySet() },
+            )
+        }
         // Taking songs out can be undone for a few seconds, as in a desktop app's Ctrl+Z.
         val undoable by vm.player.undoable.collectAsStateWithLifecycle()
         LaunchedEffect(undoable) { if (undoable > 0) { kotlinx.coroutines.delay(6_000); vm.player.forgetUndo() } }
@@ -950,3 +1087,24 @@ private fun LiveBar(now: NowPlaying) {
 private fun nowStream(now: com.local.hive.mobile.playback.NowPlaying) =
     StreamTrack(now.mediaId.orEmpty(), if (now.mediaId?.startsWith("sp:") == true) "Spotify" else "Apple Music", now.title, now.artist, now.album, now.durationMs, now.artworkUri.orEmpty(), "", "")
 
+
+/**
+ * The song a crossfade brings in, as its cover: [pos] 2 is off the screen to the right, 1 peeking in
+ * at the right edge (while the songs fade), 0 in place over the cover (it pops there when done).
+ */
+@Composable
+private fun CrossfadeCard(inc: com.local.hive.mobile.playback.Incoming, pos: Float, r: Rect, eased: Float, p: Float, screenW: Float) {
+    val density = LocalDensity.current
+    val peekLeft = screenW - r.width * 0.2f
+    val x = if (pos <= 1f) r.left + (peekLeft - r.left) * pos else peekLeft + (screenW + 8f - peekLeft) * (pos - 1f)
+    Artwork(
+        inc.artworkUri,
+        Modifier
+            .offset { IntOffset(x.roundToInt(), r.top.roundToInt()) }
+            .requiredSize(with(density) { r.width.toDp() }, with(density) { r.height.toDp() })
+            .graphicsLayer { rotationZ = pos.coerceIn(0f, 1f) * 3f; alpha = p },
+        RoundedCornerShape(lerpDp(8.dp, 18.dp, eased)),
+        Icons.Rounded.MusicNote,
+        elevation = 28.dp,
+    )
+}

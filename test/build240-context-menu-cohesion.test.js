@@ -86,23 +86,16 @@ test('Build 240 applies frosted glass to the root and nested context menus', () 
   assert.match(rating, /backdrop-filter:blur\(var\(--blur\)\) saturate\(140%\)/);
 });
 
-test('album and track context menus never await Android device discovery', () => {
-  // refreshAndroidDevices() round-trips to the main process, which shells out
-  // to `gio mount -li` with up to a 5s timeout. Awaiting it before opening the
-  // menu made every right-click feel unresponsive whenever no Android device
-  // was already known (the common case). It must be fired-and-forgotten, the
-  // same way the Settings > Devices tab already refreshes in the background.
+test('album and track context menus never go looking for Android devices', () => {
+  // Looking (refreshAndroidDevices -> devices:list) mounts and reads the phone's MTP storage; a
+  // stalled MTP session could freeze Hive's main process, so a right-click never does it. "Send to"
+  // lists the devices Settings > Devices last found.
   const albumStart = renderer.indexOf('async function showAlbumContextMenu');
   const albumEnd = renderer.indexOf('\n  }', albumStart);
-  const albumBlock = renderer.slice(albumStart, albumEnd);
-  assert.doesNotMatch(albumBlock, /await refreshAndroidDevices\(\)/);
-  assert.match(albumBlock, /void refreshAndroidDevices\(\)/);
-
+  assert.doesNotMatch(renderer.slice(albumStart, albumEnd), /refreshAndroidDevices\(\)/);
   const trackStart = renderer.indexOf('async function showTrackContextMenu');
   const trackEnd = renderer.indexOf('function parseTimeValue', trackStart);
-  const trackBlock = renderer.slice(trackStart, trackEnd);
-  assert.doesNotMatch(trackBlock, /await refreshAndroidDevices\(\)/);
-  assert.match(trackBlock, /void refreshAndroidDevices\(\)/);
+  assert.doesNotMatch(renderer.slice(trackStart, trackEnd), /refreshAndroidDevices\(\)/);
 });
 
 // Real gap, reported by the user: "Turn on Auto-DJ" gave no indication of

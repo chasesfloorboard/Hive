@@ -6,6 +6,7 @@ import android.graphics.BitmapFactory
 import android.media.MediaMetadataRetriever
 import android.provider.MediaStore
 import coil3.ImageLoader
+import coil3.asImage
 import coil3.decode.DataSource
 import coil3.decode.ImageSource
 import coil3.fetch.FetchResult
@@ -135,6 +136,7 @@ class AlbumArtFetcher(private val context: Context, private val albumId: Long, p
     class Factory(private val context: Context) : Fetcher.Factory<coil3.Uri> {
         override fun create(data: coil3.Uri, options: Options, imageLoader: ImageLoader): Fetcher? {
             if (data.scheme != "content" || data.authority != "media") return null
+            SongArtFetcher.songId(data.path)?.let { return SongArtFetcher(context, it, options) }
             // Hive's own album ids (for WAV songs) are negative.
             val id = data.path?.removePrefix("/external/audio/albumart/")?.takeIf { it != data.path }?.toLongOrNull() ?: return null
             return AlbumArtFetcher(context, id, options)
@@ -179,5 +181,30 @@ class AlbumArtFetcher(private val context: Context, private val albumId: Long, p
             .replace(Regex("""[(\[](deluxe|expanded|remaster(ed)?|special|anniversary)[^)\]]*[)\]]""", RegexOption.IGNORE_CASE), ""))
 
         private fun JsonObject.str(key: String): String? = (this[key] as? JsonPrimitive)?.contentOrNull
+    }
+}
+
+/**
+ * One song's own picture, never its album's: a song without one shows none. Android's own thumbnail of
+ * the song (kept and renewed by Android when the file changes) for rows; the embedded picture when bigger.
+ */
+class SongArtFetcher(private val context: Context, private val songId: Long, private val options: Options) : Fetcher {
+    override suspend fun fetch(): FetchResult? = withContext(Dispatchers.IO) {
+        val uri = ContentUris.withAppendedId(MediaStore.Audio.Media.EXTERNAL_CONTENT_URI, songId)
+        fun px(d: coil3.size.Dimension) = (d as? coil3.size.Dimension.Pixels)?.px ?: Int.MAX_VALUE
+        val side = maxOf(px(options.size.width), px(options.size.height))
+        if (side <= 512) {
+            val thumb = runCatching { context.contentResolver.loadThumbnail(uri, android.util.Size(side, side), null) }.getOrNull()
+            if (thumb != null) return@withContext coil3.fetch.ImageFetchResult(thumb.asImage(), true, DataSource.DISK)
+        }
+        val bytes = runCatching { MediaMetadataRetriever().use { r -> r.setDataSource(context, uri); r.embeddedPicture } }.getOrNull()?.let(AlbumArtFetcher::fitted)
+            ?: runCatching { context.contentResolver.openInputStream(uri)?.use { EmbeddedPictures.read(it) } }.getOrNull().orEmpty().firstNotNullOfOrNull(AlbumArtFetcher::fitted)
+            ?: throw IllegalStateException("This song has no picture")
+        SourceFetchResult(ImageSource(Buffer().write(bytes), options.fileSystem), null, DataSource.DISK)
+    }
+
+    companion object {
+        private val path = Regex("""^/external/audio/media/(\d+)/albumart$""")
+        fun songId(p: String?): Long? = p?.let { path.matchEntire(it) }?.groupValues?.get(1)?.toLongOrNull()
     }
 }

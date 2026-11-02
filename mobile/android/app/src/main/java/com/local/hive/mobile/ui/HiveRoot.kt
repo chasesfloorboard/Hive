@@ -62,7 +62,7 @@ import kotlinx.coroutines.launch
  * the accent and ambient colours taken from the playing cover, as Hive does.
  */
 @Composable
-fun HiveRoot(vm: MainViewModel, openPlayerInitially: Boolean) = HiveThemed(vm) { HiveContent(vm, openPlayerInitially) }
+fun HiveRoot(vm: MainViewModel, openPlayerInitially: Boolean) = HiveThemed(vm) { ThemeRevealHost(vm.themes) { HiveContent(vm, openPlayerInitially) } }
 
 /** Hive's colours for [content]: the theme, with the accent following the playing cover. */
 @Composable
@@ -141,6 +141,8 @@ private fun HiveContent(vm: MainViewModel, openPlayerInitially: Boolean) {
     // An Apple Music link opens the artist page for an artist, the collection page otherwise.
     fun appleRoute(url: String) = if ("/artist/" in url) "apple/a?url=${enc(url)}" else "apple/c?url=${enc(url)}"
     fun go(path: String) { nav.navigate(path) { launchSingleTop = true } }
+    // Every ⋮/⋯ menu ends with Settings (HiveMenu's `settings`); from the player too, so it closes first.
+    val openSettings = remember(nav) { { playerOpen = false; queueOpen = false; lyricsOpen = false; go("settings") } }
     var toast by remember { mutableStateOf<String?>(null) }
     var addTarget by remember { mutableStateOf<List<Track>?>(null) }
     val context = androidx.compose.ui.platform.LocalContext.current
@@ -191,7 +193,23 @@ private fun HiveContent(vm: MainViewModel, openPlayerInitially: Boolean) {
         collection = { collection = it },
     )
 
-    Box(Modifier.fillMaxSize()) {
+    val scope = androidx.compose.runtime.rememberCoroutineScope()
+    val streamNav = remember(nav) {
+        fun open(find: suspend () -> String?, missing: String) {
+            scope.launch {
+                val route = find()
+                if (route == null) { toast = missing; return@launch }
+                playerOpen = false; queueOpen = false; lyricsOpen = false
+                nav.navigate(route)
+            }
+        }
+        StreamNav(
+            album = { s -> open({ vm.streamAlbumRoute(s) }, "Couldn't find ${s.album.ifBlank { "this song's album" }}") },
+            artist = { s -> open({ vm.streamArtistRoute(s) }, "No songs by ${s.artist} on this phone") },
+        )
+    }
+
+    CompositionLocalProvider(LocalOpenSettings provides openSettings, LocalStreamNav provides streamNav) { Box(Modifier.fillMaxSize()) {
         Box(Modifier.fillMaxSize().background(c.bg)) {
             HiveAmbient(aura?.primary?.copy(alpha = 0.32f) ?: c.ambientA, aura?.secondary?.copy(alpha = 0.26f) ?: c.ambientB, Modifier.fillMaxSize())
             HiveGlassLayers(
@@ -264,12 +282,12 @@ private fun HiveContent(vm: MainViewModel, openPlayerInitially: Boolean) {
                             )
                         }
                         page("pcplaylist?id={id}") { entry ->
-                            PcPlaylistScreen(vm, entry.arguments?.getString("id").orEmpty(), bottomPadding, onBack = { nav.popBackStack() }, onOpenPlaylist = homeNav.openUserPlaylist, onToast = { toast = it })
+                            PcPlaylistScreen(vm, entry.arguments?.getString("id").orEmpty(), actions, bottomPadding, onBack = { nav.popBackStack() }, onOpenPlaylist = homeNav.openUserPlaylist, onToast = { toast = it })
                         }
                         page("remote") { RemoteScreen(vm, bottomPadding, onBack = { nav.popBackStack() }, onToast = { toast = it }) }
                         page("pc") { PcLibraryScreen(vm, bottomPadding, onBack = { nav.popBackStack() }) { key -> nav.navigate("pc/album?key=${enc(key)}") } }
                         page("pc/album?key={key}") { entry -> PcAlbumScreen(vm, entry.arguments?.getString("key").orEmpty(), bottomPadding) { nav.popBackStack() } }
-                        page("wrap") { YearlyWrapScreen(vm, bottomPadding) { nav.popBackStack() } }
+                        page("wrap") { YearlyWrapScreen(vm, 0.dp) { nav.popBackStack() } }
                         page("podcasts") { PodcastsScreen(vm, bottomPadding, onBack = { nav.popBackStack() }) { url -> nav.navigate("podcast?feed=${enc(url)}") } }
                         page("podcast?feed={feed}") { entry -> PodcastShowScreen(vm, entry.arguments?.getString("feed").orEmpty(), bottomPadding) { nav.popBackStack() } }
                         page("radio") { RadioScreen(vm, bottomPadding, onBack = { nav.popBackStack() }, onToast = { toast = it }) }
@@ -295,13 +313,19 @@ private fun HiveContent(vm: MainViewModel, openPlayerInitially: Boolean) {
                                 AutoPlaylist.RecentlyPlayed -> vm.recentlyAdded // shown by HistoryScreen above
                                 AutoPlaylist.TopRated -> vm.topRated
                             }
-                            SongsScreen(vm, kind.title, flow, actions, bottomPadding) { nav.popBackStack() }
+                            SongsScreen(vm, kind.title, flow, actions, bottomPadding, barActions = {
+                                // Favorites is the Favorites page's own first square, so it isn't liked; it can have a picture.
+                                FavoriteBarActions(vm, if (kind == AutoPlaylist.Favorites) null else favoritePlaylist("auto:${kind.name}", kind.title, "playlist/${kind.name}"),
+                                    if (kind == AutoPlaylist.Favorites) com.local.hive.mobile.data.PlaylistImages.FAVORITES else "auto:${kind.name}")
+                            }, imageKey = if (kind == AutoPlaylist.Favorites) com.local.hive.mobile.data.PlaylistImages.FAVORITES else "auto:${kind.name}",
+                                ownOrder = when (kind) { AutoPlaylist.Favorites -> "Date favorited"; AutoPlaylist.RecentlyAdded -> "Date added"; AutoPlaylist.MostPlayed -> "Most played"; AutoPlaylist.TopRated -> "Top rated"; else -> "Default order" }) { nav.popBackStack() }
                         }
                     }
                     }
                 },
                 overlay = {
-                    if (hasMedia) {
+                    // The Yearly Wrap is a full-screen story: the mini player steps away while it's open.
+                    if (hasMedia && route?.destination?.route != "wrap") {
                         PlayerSheet(
                             vm,
                             open = playerOpen,
@@ -314,6 +338,7 @@ private fun HiveContent(vm: MainViewModel, openPlayerInitially: Boolean) {
                             onAddToPlaylist = { addTarget = listOf(it) },
                             onOpenLyrics = { lyricsOpen = true },
                             onOpenEqualiser = { playerOpen = false; nav.navigate("equaliser") { launchSingleTop = true } },
+                            onOpenSettings = { playerOpen = false; nav.navigate("settings") { launchSingleTop = true } },
                             onToast = { toast = it },
                         )
                     }
@@ -344,7 +369,7 @@ private fun HiveContent(vm: MainViewModel, openPlayerInitially: Boolean) {
                 else -> playerOpen = false
             }
         }
-    }
+    } }
 }
 
 /** A brief Hive note above the playbar, e.g. "Added to Road trip". */

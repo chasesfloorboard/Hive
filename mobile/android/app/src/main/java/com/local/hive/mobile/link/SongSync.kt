@@ -255,6 +255,7 @@ class SongSync(
         val nm = context.getSystemService(NotificationManager::class.java)
         if (nm.getNotificationChannel(DELETIONS_CHANNEL) == null) {
             nm.createNotificationChannel(NotificationChannel(DELETIONS_CHANNEL, "Deleted songs", NotificationManager.IMPORTANCE_DEFAULT).apply {
+                setShowBadge(false)
                 description = "Songs deleted on this phone or on your PC, asking whether to delete them on the other side too"
             })
         }
@@ -356,11 +357,11 @@ class SongSync(
     /** Whether this sync keeps the music folders one to one, file for file (see FileMirror). */
     private fun mirrors(info: InfoResponse) = info.files && FileMirror.available(context) && mirror.root() != null
 
-    private suspend fun mirrorPlan(conn: HiveLinkClient.Connection, info: InfoResponse): MirrorPlan {
+    private suspend fun mirrorPlan(conn: HiveLinkClient.Connection, info: InfoResponse, note: Boolean = true): MirrorPlan {
         val plan = mirror.check(client, conn, leftFiles())
-        android.util.Log.i("HiveSongSync", "file mirror: ${plan.toPhone.size} to the phone, ${plan.toPc.size} to the PC, ${plan.goneFromPc.size} gone from the PC, ${plan.goneFromPhone.size} gone from the phone, ${plan.agreed.size} the same" +
+        android.util.Log.i("HiveSongSync", "file mirror: ${plan.toPhone.size} to the phone, ${plan.toPc.size} to the PC, ${plan.goneFromPc.size} gone from the PC, ${plan.goneFromPhone.size} gone from the phone, ${plan.moves.size} moved, ${plan.agreed.size} the same" +
             (plan.toPc + plan.toPhone + plan.goneFromPc + plan.goneFromPhone).take(10).joinToString("") { "\n  $it" })
-        noteFileDeletions(plan)
+        if (note) noteFileDeletions(plan)
         _state.update { it.copy(plan = PlanSummary(plan.toPhone.size, plan.bytesToPhone, plan.toPc.size, plan.bytesToPc, true)) }
         return plan
     }
@@ -416,7 +417,7 @@ class SongSync(
 
     /** The file mirror's run: everything changed on one side copied to the other. */
     private suspend fun runMirror(conn: HiveLinkClient.Connection, info: InfoResponse, onProgress: suspend (SongSyncState) -> Unit): Boolean {
-        val plan = mirrorPlan(conn, info)
+        val plan = mirrorPlan(conn, info, note = false)
         _state.update { it.copy(total = plan.toPhone.size + plan.toPc.size) }
         val free = MusicHome.freeBytes(context, (MusicHome.find(context) ?: MusicHome.Place(MediaStore.VOLUME_EXTERNAL_PRIMARY, "Hive")).volume)
         val budget = if (free == null) Long.MAX_VALUE else free - 2L * 1024 * 1024 * 1024
@@ -425,7 +426,34 @@ class SongSync(
         // New files on the PC are new songs there: matching again (once Hive has scanned them)
         // lets their Love and plays line up.
         if (result.plan.toPc.isNotEmpty()) sync.matchAgainNextSync()
+        applyDeletions(conn, plan)
         return true
+    }
+
+    /**
+     * Files deleted on one side are deleted on the other too: the user allowed this phone to keep its
+     * music one to one with the PC, so a deletion syncs like any other change. On the phone the file
+     * goes; on the PC it goes to Hive's Deleted songs (recoverable). Each is announced. Unusually many
+     * at once (a drive that didn't mount looks the same) are asked about instead.
+     */
+    private suspend fun applyDeletions(conn: HiveLinkClient.Connection, plan: MirrorPlan) {
+        val left = leftFiles().mapTo(HashSet()) { it.lowercase() }
+        val fromPc = plan.goneFromPc.filter { it.lowercase() !in left }
+        val fromPhone = plan.goneFromPhone.filter { it.lowercase() !in left }
+        if (fromPc.isEmpty() && fromPhone.isEmpty()) { noteFileDeletions(plan); return }
+        if (fromPc.size + fromPhone.size > UNUSUAL_DELETIONS) { noteFileDeletions(plan); return }
+        fun gone(path: String) = GoneSong(FILE_KEY + path, path.substringAfterLast('/').substringBeforeLast('.'), path.substringBeforeLast('/', ""), "", canDelete = true, file = path)
+        if (fromPc.isNotEmpty()) {
+            val deleted = mirror.deleteOnPhone(fromPc).toSet()
+            announceDeleted(fromPc.filter { it in deleted }.map(::gone), "from this phone (deleted on your PC)")
+        }
+        if (fromPhone.isNotEmpty()) {
+            val deleted = runCatching { client.deleteFiles(conn, fromPhone) }.getOrDefault(emptyList()).toSet()
+            mirror.forget(deleted)
+            announceDeleted(fromPhone.filter { it in deleted }.map(::gone), "on your PC, in Hive's Deleted songs (deleted on this phone)")
+        }
+        _deletions.value = Deletions()
+        runCatching { context.getSystemService(NotificationManager::class.java).cancel(DELETIONS_NOTIFICATION_ID) }
     }
 
     /**
@@ -532,7 +560,7 @@ class SongSync(
 
     companion object {
         private const val WORK = "hive-song-sync"
-        private const val DELETIONS_CHANNEL = "hive-song-deletions"
+        private const val DELETIONS_CHANNEL = "hive-song-deletions-2"
         private const val DELETIONS_NOTIFICATION_ID = 4712
         private const val UNUSUAL_DELETIONS = 40
         private const val DELETED_NOTIFICATION_ID = 4713
@@ -574,6 +602,7 @@ class SongSyncWorker(context: Context, params: WorkerParameters) : CoroutineWork
         val nm = applicationContext.getSystemService(NotificationManager::class.java)
         if (nm.getNotificationChannel(CHANNEL) == null) {
             nm.createNotificationChannel(NotificationChannel(CHANNEL, "Song sync", NotificationManager.IMPORTANCE_LOW).apply {
+                setShowBadge(false)
                 description = "Copying songs between this phone and Hive on your PC"
             })
         }
@@ -590,7 +619,7 @@ class SongSyncWorker(context: Context, params: WorkerParameters) : CoroutineWork
     }
 
     private companion object {
-        const val CHANNEL = "hive-song-sync"
+        const val CHANNEL = "hive-song-sync-2"
         const val NOTIFICATION_ID = 4711
     }
 }

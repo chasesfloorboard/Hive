@@ -38,6 +38,12 @@ data class MirrorPlan(
     val goneFromPhone: List<String>,
     /** Files the same on both sides now, to remember as agreed. */
     val agreed: Map<String, Agreed>,
+    /**
+     * Phone files (by the phone's own path) that are a PC file in another folder: the same name and
+     * size, met for the first time (song sync before the mirror filed them as Artist/Album). They're
+     * moved to the PC's path on the phone instead of being copied both ways.
+     */
+    val moves: Map<String, String> = emptyMap(),
     val bytesToPhone: Long = 0,
     val bytesToPc: Long = 0,
 )
@@ -77,7 +83,34 @@ object MirrorPlanner {
     /** [phone] by the phone's own paths, [pc] by the PC's; [left]: paths the user chose to leave on one side. */
     fun plan(phoneFiles: Map<String, FileStat>, pc: Map<String, FileStat>, ledger: Map<String, Agreed>, left: Set<String>): MirrorPlan {
         val pcKeys = pc.keys.mapTo(HashSet()) { it.lowercase() }
-        val phone = phoneFiles.mapKeys { pcPath(it.key, pcKeys) }
+        val ledgerKeys = ledger.keys.mapTo(HashSet()) { it.lowercase() }
+        val leftKeys = left.mapTo(HashSet()) { it.lowercase() }
+        val phoneRaw = phoneFiles.keys.associateBy { pcPath(it, pcKeys).lowercase() }
+        var phone = phoneFiles.mapKeys { pcPath(it.key, pcKeys) }
+        // The same file in another folder, met for the first time: same name, same size.
+        val moves = HashMap<String, String>()
+        run {
+            val phoneKeys = phone.keys.mapTo(HashSet()) { it.lowercase() }
+            fun loose(k: String) = k !in ledgerKeys && k !in leftKeys
+            // Song sync stripped a leading dot (".Dot Song.flac" came as "Dot Song.flac"); the phone spells it "_".
+            fun name(p: String) = p.substringAfterLast('/').lowercase().trimStart('.', '_')
+            val pcOnly = pc.entries.filter { it.key.lowercase().let { k -> k !in phoneKeys && loose(k) } }
+                .groupBy { name(it.key) to it.value.size }.mapValues { it.value.toMutableList() }
+            // Hive may file a phone's song under another name ("Phone Artist/Album/Song.mp3"): then the
+            // only unmatched file of that type and exact size on each side is the same file.
+            fun ext(p: String) = p.substringAfterLast('.', "").lowercase()
+            val phoneOnly = phone.entries.filter { it.key.lowercase().let { k -> k !in pcKeys && loose(k) } }
+            val phoneBySize = phoneOnly.groupBy { ext(it.key) to it.value.size }
+            val pcBySize = pcOnly.values.flatten().groupBy { ext(it.key) to it.value.size }
+            for ((path, stat) in phoneOnly) {
+                val twin = pcOnly[name(path) to stat.size]?.removeFirstOrNull()
+                    ?: (ext(path) to stat.size).let { key -> pcBySize[key]?.singleOrNull()?.takeIf { phoneBySize[key]?.size == 1 && it.key !in moves.values } }
+                    ?: continue
+                pcOnly[name(twin.key) to twin.value.size]?.remove(twin)
+                moves[phoneRaw.getValue(path.lowercase())] = twin.key
+            }
+            if (moves.isNotEmpty()) phone = phone.entries.associate { (p, st) -> (moves[phoneRaw[p.lowercase()]] ?: p) to st }
+        }
         val toPhone = ArrayList<String>(); val toPc = ArrayList<String>(); val keepFirst = HashSet<String>()
         val goneFromPc = ArrayList<String>(); val goneFromPhone = ArrayList<String>()
         val agreed = HashMap<String, Agreed>()
@@ -85,7 +118,6 @@ object MirrorPlanner {
         val phoneByKey = phone.entries.associateBy { it.key.lowercase() }
         val pcByKey = pc.entries.associateBy { it.key.lowercase() }
         val ledgerByKey = ledger.entries.associateBy { it.key.lowercase() }
-        val leftKeys = left.mapTo(HashSet()) { it.lowercase() }
         for (key in (phoneByKey.keys + pcByKey.keys).sorted()) {
             if (key in leftKeys) continue
             val ph = phoneByKey[key]; val c = pcByKey[key]; val was = ledgerByKey[key]?.value
@@ -109,7 +141,7 @@ object MirrorPlanner {
                 else -> if (was != null) goneFromPc += path else toPc += path
             }
         }
-        return MirrorPlan(toPhone, toPc, keepFirst, goneFromPc, goneFromPhone, agreed,
+        return MirrorPlan(toPhone, toPc, keepFirst, goneFromPc, goneFromPhone, agreed, moves,
             bytesToPhone = toPhone.sumOf { pcByKey[it.lowercase()]?.value?.size ?: 0 }, bytesToPc = toPc.sumOf { phoneByKey[it.lowercase()]?.value?.size ?: 0 })
     }
 }
@@ -121,8 +153,24 @@ class FileMirror(private val context: Context) {
     private val ledgerSerializer = MapSerializer(String.serializer(), Agreed.serializer())
 
     /** The phone's music folder: MusicHome's place, as a folder Hive may write in (All files access). */
+    private val prefs = context.getSharedPreferences("file-mirror", Context.MODE_PRIVATE)
+
+    /**
+     * The folder mirrored, chosen once (the first time it's needed) and kept: worked out afresh it could
+     * change as songs come and go (Music/My Music one day, Music the next), and every file would look new.
+     */
     fun root(): File? {
         if (!available(context)) return null
+        val kept = prefs.getString("root", null)
+        kept?.let { File(it) }?.takeIf { it.isDirectory }?.let { return it }
+        val chosen = chooseRoot() ?: return null
+        prefs.edit().putString("root", chosen.path).apply()
+        // A different folder from before (the old one is gone): what was agreed about it doesn't apply.
+        if (kept != null && kept != chosen.path) ledgerFile.delete()
+        return chosen
+    }
+
+    private fun chooseRoot(): File? {
         val home = MusicHome.find(context) ?: return null
         val volume = runCatching {
             if (android.os.Build.VERSION.SDK_INT >= 30)
@@ -143,16 +191,6 @@ class FileMirror(private val context: Context) {
     /** Forgets that these were on both sides, so the next run copies them across again. */
     fun forget(paths: Collection<String>) { val keys = paths.mapTo(HashSet()) { it.lowercase() }; saveLedger(ledger().filterKeys { it.lowercase() !in keys }) }
 
-    /** Every file in the phone's music folder, by its own paths. Unfinished downloads and Android's own files are left out. */
-    fun phoneFiles(root: File): Map<String, FileStat> {
-        val out = HashMap<String, FileStat>()
-        val base = root.path.length + 1
-        root.walkTopDown()
-            .onEnter { dir -> dir == root || dir.name !in SKIPPED_FOLDERS }
-            .filter { it.isFile && !SKIPPED_FILE.containsMatchIn(it.name) }
-            .forEach { f -> out[f.path.substring(base)] = FileStat(f.length(), f.lastModified()) }
-        return out
-    }
 
     data class Result(val plan: MirrorPlan, val copied: Int, val failed: Int)
 
@@ -175,6 +213,11 @@ class FileMirror(private val context: Context) {
         val pcList = client.files(conn)
         val pc = pcList.associate { it.p to FileStat(it.s, it.m) }
         val plan = MirrorPlanner.plan(phoneFiles(root), pc, ledger(), left)
+        // Far more to copy than a day's changes, after the two sides have agreed before: more likely a
+        // folder read wrong than real changes. Nothing is copied; the user is told.
+        val copies = plan.toPc.size + plan.toPhone.size
+        if (ledger().isNotEmpty() && copies > maxOf(UNUSUAL_COPIES, pc.size / 4))
+            throw IOException("Song sync stopped: it would copy $copies files at once, which looks wrong. Nothing was copied. Check that the phone's music folder is the one you expect.")
         val ledger = HashMap(ledger()).apply {
             // Files gone from both sides are forgotten; those agreed on now are remembered.
             val live = (pc.keys + phoneFiles(root).keys).mapTo(HashSet()) { it.lowercase() }
@@ -185,6 +228,16 @@ class FileMirror(private val context: Context) {
         val scan = ArrayList<String>()
         var copied = 0; var failed = 0; var room = budget
         fun phoneFile(path: String) = File(root, MirrorPlanner.phonePath(path))
+        // Files already here in another folder are moved to the PC's path, not copied.
+        for ((from, to) in plan.moves) {
+            val source = File(root, from); val target = phoneFile(to)
+            target.parentFile?.mkdirs()
+            if (!target.exists() && source.renameTo(target)) {
+                ledger[to] = Agreed(FileStat(target.length(), target.lastModified()), pc.getValue(to))
+                scan += source.path; scan += target.path
+                source.parentFile?.takeIf { it != root && it.list()?.isEmpty() == true }?.let { it.delete(); it.parentFile?.takeIf { p -> p != root && p.list()?.isEmpty() == true }?.delete() }
+            }
+        }
         for (path in plan.toPhone) {
             val size = pc[path]?.size ?: continue
             if (size > room) break
@@ -233,9 +286,30 @@ class FileMirror(private val context: Context) {
     }
 
     companion object {
+        /** Every file in the phone's music folder, by its own paths. Unfinished downloads and Android's own files are left out. */
+        fun phoneFiles(root: File): Map<String, FileStat> {
+            val out = HashMap<String, FileStat>()
+            val base = root.path.length + 1
+            root.walkTopDown()
+                .onEnter { dir -> dir == root || dir.name !in SKIPPED_FOLDERS }
+                .filter { it.isFile && !SKIPPED_FILE.containsMatchIn(it.name).also { skipped -> if (skipped) dropStalePart(it) } }
+                .forEach { f -> out[f.path.substring(base)] = FileStat(f.length(), f.lastModified()) }
+            return out
+        }
+
+        /** More copies than this in one run (and over a quarter of the library), once agreed before, is taken for a mistake. */
+        private const val UNUSUAL_COPIES = 300
         /** Android's own folders and files, Soulseek downloads still coming in, and half-copied files. */
         private val SKIPPED_FOLDERS = setOf("Soulseek Incomplete", ".thumbnails", ".Trash", "LOST.DIR")
         // Hive's own half-written files (as file-mirror.js on the PC leaves out) aren't mirrored either.
+        /**
+         * A half-copied file left by a copy that never finished (the app stopped mid-copy): gone once
+         * it's had no writes for a minute (a live copy gives up after 30 s without data).
+         */
+        private fun dropStalePart(f: java.io.File) {
+            if (f.name.endsWith(".hive-mirror-part", ignoreCase = true) && System.currentTimeMillis() - f.lastModified() > 60_000L) f.delete()
+        }
+
         private val SKIPPED_FILE = Regex("""^\.(pending|trashed)-|\.hive-mirror-part$|\.hivelink-part$|\.beehive-[a-z-]+-[0-9a-f]{6,}(\.[a-z0-9]+)?$""", RegexOption.IGNORE_CASE)
 
         /** Whether Hive may write anywhere in the phone's storage (All files access): the mirror needs it. */
