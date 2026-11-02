@@ -122,7 +122,7 @@ class PlaybackService : MediaLibraryService() {
         fun quickStart() = androidx.media3.exoplayer.DefaultLoadControl.Builder()
             .setBufferDurationsMs(15_000, 50_000, 1_000, 2_000).build()
         val player = ExoPlayer.Builder(this, renderers(equaliser))
-            .setMediaSourceFactory(DefaultMediaSourceFactory(dataSources))
+            .setMediaSourceFactory(DefaultMediaSourceFactory(dataSources, HiveExtractorsFactory()))
             .setLoadControl(quickStart())
             .setAudioAttributes(musicAttributes, /* handleAudioFocus = */ true)
             .setHandleAudioBecomingNoisy(true)
@@ -131,7 +131,7 @@ class PlaybackService : MediaLibraryService() {
         // The crossfade's second player takes every other song, under the main player's audio focus.
         crossfader = Crossfader(scope, player, equaliser, app.equaliser.state, newCompanion = { processor ->
             ExoPlayer.Builder(this, renderers(processor))
-                .setMediaSourceFactory(DefaultMediaSourceFactory(dataSources))
+                .setMediaSourceFactory(DefaultMediaSourceFactory(dataSources, HiveExtractorsFactory()))
                 .setLoadControl(quickStart())
                 .setAudioAttributes(musicAttributes, /* handleAudioFocus = */ false)
                 .build()

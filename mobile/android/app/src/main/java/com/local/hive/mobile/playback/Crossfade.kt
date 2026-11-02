@@ -109,8 +109,18 @@ class Crossfader(
     /** The player sounding the current song. */
     private fun sounding(): Player = voice?.takeIf { voiceLeads } ?: main
 
+    /**
+     * The sounding song's length: the player's, unless the library knows the song is longer. An MP3
+     * whose VBR header counts too few frames reads as shorter than it plays, and the fade used to
+     * start minutes early (a 15-minute song cut at 13).
+     */
+    private fun lengthOf(p: Player): Long {
+        val known = p.currentMediaItem?.mediaMetadata?.durationMs ?: 0L
+        return if (p.duration > 0 && known > p.duration + LENGTH_SLACK_MS) known else p.duration
+    }
+
     private fun nearEnd(): Boolean {
-        val p = sounding(); val d = p.duration
+        val p = sounding(); val d = lengthOf(p)
         return d > 0 && fadeMs() > 0 && p.currentPosition >= d - fitted(d) - 1_500
     }
 
@@ -125,7 +135,7 @@ class Crossfader(
             if (v.playbackState == Player.STATE_ENDED) { stopLeading(); release(v); main.pause(); return }
         }
         val p = sounding()
-        val duration = p.duration
+        val duration = lengthOf(p)
         if (!p.isPlaying || duration <= 0) return
         val ms = fitted(duration)
         if (ms == 0) return
@@ -142,7 +152,8 @@ class Crossfader(
         if (!settings.value.crossfadeOnSkip || !sounding().isPlaying) return false
         // A skip fades over the chosen length, or what's left of the song, if that's less.
         val p = sounding()
-        val ms = minOf(fitted(p.duration.coerceAtLeast(0)).toLong(), (p.duration - p.currentPosition).coerceAtLeast(0)).toInt()
+        val length = lengthOf(p)
+        val ms = minOf(fitted(length.coerceAtLeast(0)).toLong(), (length - p.currentPosition).coerceAtLeast(0)).toInt()
         return ms >= MIN_MS && crossfade(ms)
     }
 
@@ -299,6 +310,8 @@ class Crossfader(
             if (nextMs > 0) fits = minOf(fits, nextMs / 2)
             return if (fits >= MIN_MS) fits.toInt() else 0
         }
+        /** A library length this much past the player's means the player's is wrong. */
+        const val LENGTH_SLACK_MS = 5_000L
         /** The silent main player is brought back in step with the voice when it drifts this far. */
         const val RESYNC_MS = 400L
     }
