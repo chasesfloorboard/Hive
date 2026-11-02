@@ -52,6 +52,10 @@ data class NowPlaying(
     val station: String = "",
     val speed: Float = 1f,
     val queueIndex: Int = -1,
+    /** The queue place a skip forward plays (shuffle and repeat included), or -1 at the end. */
+    val nextIndex: Int = -1,
+    /** The queue place a skip back plays, or -1. */
+    val previousIndex: Int = -1,
     /** The covers of the songs a skip either way plays next (shuffle and repeat included), to load ahead. */
     val nextArtworkUri: String? = null,
     val previousArtworkUri: String? = null,
@@ -342,6 +346,8 @@ class PlayerConnection(private val context: Context, private val scope: Coroutin
             repeatMode = c.repeatMode,
             queue = queue,
             queueIndex = c.currentMediaItemIndex,
+            nextIndex = c.nextMediaItemIndex,
+            previousIndex = c.previousMediaItemIndex,
             nextArtworkUri = c.nextMediaItemIndex.takeIf { it >= 0 }?.let { c.getMediaItemAt(it).mediaMetadata.artworkUri?.toString() },
             previousArtworkUri = c.previousMediaItemIndex.takeIf { it >= 0 }?.let { c.getMediaItemAt(it).mediaMetadata.artworkUri?.toString() },
             incoming = if (fromItem != null && toItem != null) toItem.mediaMetadata.let { m ->

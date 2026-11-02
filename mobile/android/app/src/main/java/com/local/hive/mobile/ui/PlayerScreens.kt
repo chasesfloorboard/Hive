@@ -536,7 +536,8 @@ private fun FullPlayerContent(
 ) {
     val c = Hive.colors
     var current by remember { mutableStateOf<Track?>(null) }
-    val upNext = now.queue.getOrNull(now.queueIndex + 1)
+    // What plays next, as the player will play it: with shuffle on, not the next song down the queue.
+    val upNext = now.queue.getOrNull(now.nextIndex)
     var menu by remember { mutableStateOf(false) }
     var sleepMenu by remember { mutableStateOf(false) }
     var speedMenu by remember { mutableStateOf(false) }
@@ -829,14 +830,14 @@ internal fun SeekBar(now: NowPlaying, position: kotlinx.coroutines.flow.StateFlo
         }
         Row(Modifier.fillMaxWidth()) {
             Text(formatDuration((fraction * now.durationMs).toLong()), style = HiveText.numbers, color = c.textDim, modifier = Modifier.weight(1f))
-            // The end time: tap to switch between the song's length and the time left; the choice is kept.
+            // The end time: the song's length, or tap for the time left (with a minus); the choice is kept.
             val context = androidx.compose.ui.platform.LocalContext.current
             val prefs = remember { context.getSharedPreferences("ui", android.content.Context.MODE_PRIVATE) }
-            var showLeft by remember { mutableStateOf(prefs.getBoolean("player.timeLeft", true)) }
+            var showLeft by remember { mutableStateOf(prefs.getBoolean("player.showTimeLeft", false)) }
             Text(
                 when { now.durationMs <= 0 -> "--:--"; showLeft -> "-" + formatDuration(now.durationMs - (fraction * now.durationMs).toLong()); else -> formatDuration(now.durationMs) },
                 style = HiveText.numbers, color = c.textDim,
-                modifier = Modifier.clip(HiveShape.pill).clickable { showLeft = !showLeft; prefs.edit().putBoolean("player.timeLeft", showLeft).apply() }.padding(horizontal = 6.dp, vertical = 4.dp),
+                modifier = Modifier.clip(HiveShape.pill).clickable { showLeft = !showLeft; prefs.edit().putBoolean("player.showTimeLeft", showLeft).apply() }.padding(horizontal = 6.dp, vertical = 4.dp),
             )
         }
     }

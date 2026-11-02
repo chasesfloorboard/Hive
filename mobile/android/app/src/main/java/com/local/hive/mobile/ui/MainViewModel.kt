@@ -110,7 +110,7 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
         val loader = coil3.SingletonImageLoader.get(app)
         val px = app.resources.displayMetrics.widthPixels.coerceIn(480, 1440)
         viewModelScope.launch {
-            nowPlaying.map { s -> listOf(s.queueIndex, s.queueIndex + 1, s.queueIndex - 1).mapNotNull { i -> if (i == s.queueIndex) s.artworkUri else s.queue.getOrNull(i)?.artworkUri } }
+            nowPlaying.map { s -> listOf(s.queueIndex, s.nextIndex, s.previousIndex).mapNotNull { i -> if (i == s.queueIndex) s.artworkUri else s.queue.getOrNull(i)?.artworkUri } }
                 .distinctUntilChanged()
                 .collect { uris -> uris.forEach { loader.enqueue(coil3.request.ImageRequest.Builder(app).data(it).size(px, px).listener(onSuccess = { r, ok -> noteLoadedCover(r.data, ok.memoryCacheKey, ok.image.width.toLong() * ok.image.height) }).build()) } }
         }
