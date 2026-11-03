@@ -95,6 +95,8 @@ The build is not code-signed yet, so Windows SmartScreen may warn the first time
 
 Hive Mobile is a music player for Android 10 or newer. It plays the music on your phone and, if you like, keeps it in step with Hive on your computer.
 
+![Hive Mobile on a phone: the album grid, an album page, the player and synced lyrics.](resources/screenshots/hive-mobile.png)
+
 **Install:** download `HiveMobile.apk` from the [`hive-mobile` release](https://github.com/chasesfloorboard/Hive/releases/tag/hive-mobile) on your phone and open it (Android asks once to allow installing apps from your browser or file manager). After that, updates come to the app itself: Settings › Connections › App updates shows **Update available**, from Hive on your computer or from this release when the computer is off. Your library, favorites and settings stay through every update.
 
 **On the phone:**
