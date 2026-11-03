@@ -899,6 +899,8 @@ test('the file mirror survives cut-off and overlapping transfers, and big files 
     setTimeout(() => { req.destroy(); setTimeout(resolve, 300); }, 100);
   });
   assert.equal(fs.readFileSync(path.join(root, 'Song.mp3'), 'utf8'), 'the original');
+  // The half-written copy is cleared away once Hive notices the cut-off (slower on a busy machine).
+  for (let i = 0; i < 30 && leftovers().length; i++) await new Promise(r => setTimeout(r, 100));
   assert.deepEqual(leftovers(), []);
 
   // Two copies of the same file at once (a retry while the first is still coming): one whole file.
