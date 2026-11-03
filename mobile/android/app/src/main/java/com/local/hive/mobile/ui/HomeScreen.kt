@@ -93,11 +93,38 @@ import kotlinx.coroutines.launch
 import androidx.compose.material.icons.rounded.LibraryMusic
 import androidx.compose.foundation.layout.aspectRatio
 import androidx.compose.foundation.lazy.grid.items as gridItems
+import androidx.compose.ui.layout.layout
 
 /** The library's tabs, in Samsung Music's order, with Hive's Browse for everything beyond the phone. */
 enum class HomeTab(val label: String) {
     Favorites("Favorites"), Playlists("Playlists"), Albums("Albums"), Tracks("Tracks"), Artists("Artists"),
     Browse("Browse"), Genres("Genres"), Folders("Folders"),
+}
+
+/**
+ * The order of the home tabs, as the user arranged them (hold a tab, or Settings › Library › Tabs).
+ * Kept in the "ui" settings (so a restored backup keeps it); a tab added in a later version joins
+ * at the end. One shared state, so Home follows a change made in Settings at once.
+ */
+object HomeTabOrder {
+    private const val KEY = "tabs.order"
+    private var state: androidx.compose.runtime.MutableState<List<HomeTab>>? = null
+
+    fun parse(saved: String?): List<HomeTab> {
+        val named = saved.orEmpty().split(',').mapNotNull { n -> HomeTab.entries.firstOrNull { it.name == n.trim() } }.distinct()
+        return named + HomeTab.entries.filter { it !in named }
+    }
+
+    private fun state(context: android.content.Context) = state ?: mutableStateOf(parse(prefs(context).getString(KEY, null))).also { state = it }
+    private fun prefs(context: android.content.Context) = context.getSharedPreferences("ui", android.content.Context.MODE_PRIVATE)
+
+    fun get(context: android.content.Context): List<HomeTab> = state(context).value
+
+    fun set(context: android.content.Context, order: List<HomeTab>) {
+        val full = parse(order.joinToString(",") { it.name })
+        state(context).value = full
+        prefs(context).edit().putString(KEY, full.joinToString(",") { it.name }).apply()
+    }
 }
 
 /** Auto playlists, shown in the Playlists tab. */
@@ -139,24 +166,35 @@ internal enum class TrackSort(val label: String) { Title("Name"), Artist("Artist
  */
 @Composable
 fun HomeScreen(vm: MainViewModel, nav: HomeNavigation, actions: TrackActions, bottomPadding: Dp) {
-    val tabs = HomeTab.entries
     val context = androidx.compose.ui.platform.LocalContext.current
+    val tabs = HomeTabOrder.get(context)
     val prefs = remember { context.getSharedPreferences("ui", android.content.Context.MODE_PRIVATE) }
-    // Opens on the tab used last, as Samsung Music does.
-    val pager = rememberPagerState(initialPage = prefs.getInt("tab", HomeTab.Albums.ordinal).coerceIn(tabs.indices)) { tabs.size }
+    // Opens on the tab used last, as Samsung Music does (kept by name, so arranging the tabs doesn't change it;
+    // older versions kept its place in the original order).
+    val lastTab = remember {
+        prefs.getString("tab.name", null)?.let { n -> HomeTab.entries.firstOrNull { it.name == n } }
+            ?: HomeTab.entries.getOrNull(prefs.getInt("tab", HomeTab.Albums.ordinal)) ?: HomeTab.Albums
+    }
+    val pager = rememberPagerState(initialPage = tabs.indexOf(lastTab).coerceAtLeast(0)) { tabs.size }
+    var current by remember { mutableStateOf(lastTab) }
     val tabRow = rememberLazyListState()
     val scope = rememberCoroutineScope()
     var naming by remember { mutableStateOf(false) }
-    LaunchedEffect(pager.currentPage) {
-        prefs.edit().putInt("tab", pager.currentPage).apply()
+    var arranging by remember { mutableStateOf(false) }
+    LaunchedEffect(pager.currentPage, tabs) {
+        tabs.getOrNull(pager.currentPage)?.let { current = it; prefs.edit().putString("tab.name", it.name).apply() }
         // The chosen tab slides into view, with its neighbour showing there's more.
         tabRow.animateScrollToItem((pager.currentPage - 1).coerceAtLeast(0))
     }
+    // Arranged anew: the tab open stays open, wherever it now is.
+    LaunchedEffect(tabs) { tabs.indexOf(current).takeIf { it >= 0 && it != pager.currentPage }?.let { pager.scrollToPage(it) } }
 
     Column(Modifier.fillMaxSize().statusBarsPadding()) {
         HomeBar(vm, nav, onCreatePlaylist = { naming = true })
         LazyRow(Modifier.fillMaxWidth(), state = tabRow, contentPadding = PaddingValues(horizontal = 10.dp), horizontalArrangement = Arrangement.spacedBy(2.dp)) {
-            itemsIndexed(tabs) { i, tab -> HiveTab(tab.label, pager.currentPage == i, { scope.launch { pager.animateScrollToPage(i, animationSpec = Motion.move()) } }) }
+            itemsIndexed(tabs, key = { _, t -> t.name }) { i, tab ->
+                HiveTab(tab.label, pager.currentPage == i, { scope.launch { pager.animateScrollToPage(i, animationSpec = Motion.move()) } }, Modifier.animateItem(), onLongClick = { arranging = true })
+            }
         }
         Spacer(Modifier.height(4.dp))
         HorizontalPager(pager, Modifier.fillMaxSize(), beyondViewportPageCount = 0, key = { tabs[it] }) { page ->
@@ -167,11 +205,12 @@ fun HomeScreen(vm: MainViewModel, nav: HomeNavigation, actions: TrackActions, bo
                 HomeTab.Tracks -> TracksTab(vm, actions, bottomPadding)
                 HomeTab.Artists -> ArtistsTab(vm, nav, bottomPadding)
                 HomeTab.Browse -> BrowseTab(vm, nav, bottomPadding)
-                HomeTab.Genres -> NamedTab(vm.genres, Icons.Rounded.Category, "No genres yet", bottomPadding, nav.openGenre)
+                HomeTab.Genres -> GenresTab(vm, bottomPadding, nav.openGenre)
                 HomeTab.Folders -> NamedTab(vm.folders, Icons.Rounded.Folder, "No folders yet", bottomPadding, nav.openFolder)
             }
         }
     }
+    if (arranging) ArrangeTabsDialog(onDismiss = { arranging = false })
     if (naming) NameDialog("New playlist", "", "Create", onDismiss = { naming = false }) { name ->
         naming = false
         vm.createPlaylist(name, onCreated = nav.openUserPlaylist)
@@ -395,22 +434,42 @@ fun TrackList(
 @Composable
 private fun ArtistsTab(vm: MainViewModel, nav: HomeNavigation, bottom: Dp) {
     val all by vm.artists.collectAsStateWithLifecycle()
+    val covers by vm.artistCovers.collectAsStateWithLifecycle()
     var sort by rememberSetting("sort.artists", ArtistSort.Name)
     val artists = remember(all, sort) { if (sort == ArtistSort.Songs) all.sortedByDescending { it.trackCount } else all }
-    LazyColumn(Modifier.fillMaxSize(), contentPadding = PaddingValues(bottom = bottom + 12.dp)) {
-        item { ListHeader(ArtistSort.entries, sort, { it.label }, { sort = it }, countOf(artists.size, "artist")) }
-        if (artists.isEmpty()) item { EmptyState("No artists yet", "") }
-        items(artists, key = { it.artist }) { a ->
-            ArtistRow(vm, a, onLongClick = { nav.collection(AutoDjRequest(a.artist) { vm.artistTracks(a.artist).first() }) }) { nav.openArtist(a.artist) }
+    androidx.compose.foundation.lazy.grid.LazyVerticalGrid(
+        androidx.compose.foundation.lazy.grid.GridCells.Fixed(2),
+        Modifier.fillMaxSize(),
+        contentPadding = PaddingValues(start = 16.dp, end = 16.dp, bottom = bottom + 12.dp),
+        horizontalArrangement = Arrangement.spacedBy(14.dp),
+        verticalArrangement = Arrangement.spacedBy(16.dp),
+    ) {
+        item(span = { androidx.compose.foundation.lazy.grid.GridItemSpan(2) }) {
+            // The header lines up with the other tabs' (it keeps its own side padding), so it's laid out past the grid's.
+            Box(Modifier.layout { m, c ->
+                val extra = 32.dp.roundToPx()
+                val p = m.measure(c.copy(minWidth = c.maxWidth + extra, maxWidth = c.maxWidth + extra))
+                layout(c.maxWidth, p.height) { p.place(-extra / 2, 0) }
+            }) { ListHeader(ArtistSort.entries, sort, { it.label }, { sort = it }, countOf(artists.size, "artist")) }
+        }
+        if (artists.isEmpty()) item(span = { androidx.compose.foundation.lazy.grid.GridItemSpan(2) }) { EmptyState("No artists yet", "") }
+        gridItems(artists, key = { it.artist }) { a ->
+            ArtistSquare(vm, a, covers[a.artist].orEmpty(), onLongClick = { nav.collection(AutoDjRequest(a.artist) { vm.artistTracks(a.artist).first() }) }) { nav.openArtist(a.artist) }
         }
     }
 }
 
+/** An artist as a square: Hive's photo of them when artist photos are on, else four of their most played albums' covers (or their one). */
 @Composable
-private fun ArtistRow(vm: MainViewModel, a: ArtistSummary, onLongClick: (() -> Unit)? = null, onClick: () -> Unit) {
-    // Hive's artist photo once found, the artist's album cover until then.
+private fun ArtistSquare(vm: MainViewModel, a: ArtistSummary, covers: List<Any>, onLongClick: (() -> Unit)? = null, onClick: () -> Unit) {
     val photo = rememberArtistPhoto(vm, a.artist)
-    LibraryRow(photo ?: Uri.parse("content://media/external/audio/albumart/${a.albumId}"), Icons.Rounded.Person, a.artist, "${countOf(a.albumCount, "album")} · ${countOf(a.trackCount, "track")}", round = true, onLongClick = onLongClick, onClick = onClick)
+    val pictures = when {
+        photo != null -> listOf<Any>(photo)
+        covers.size >= 4 -> covers
+        covers.isNotEmpty() -> covers.take(1)
+        else -> listOf<Any>(Uri.parse("content://media/external/audio/albumart/${a.albumId}"))
+    }
+    FavoriteSquare(a.artist, pictures, round = false, icon = Icons.Rounded.Person, subtitle = "${countOf(a.albumCount, "album")} · ${countOf(a.trackCount, "track")}", onLongClick = onLongClick, onClick = onClick)
 }
 
 /** A row for things that aren't songs: art, name, detail line. */
@@ -720,10 +779,10 @@ internal fun CoverMosaic(covers: List<Any>) = Column {
 
 /** A big square on the Favorites page: the picture (four covers for Favorites) and the name under it. */
 @Composable
-private fun FavoriteSquare(title: String, covers: List<Any>, round: Boolean, icon: ImageVector, onClick: () -> Unit) {
+private fun FavoriteSquare(title: String, covers: List<Any>, round: Boolean, icon: ImageVector, subtitle: String? = null, onLongClick: (() -> Unit)? = null, onClick: () -> Unit) {
     val c = Hive.colors
     val shape = if (round) CircleShape else HiveShape.art
-    Column(Modifier.fillMaxWidth().pressable(onClick)) {
+    Column(Modifier.fillMaxWidth().pressable(onClick, onLongClick = onLongClick)) {
         Box(Modifier.fillMaxWidth().aspectRatio(1f).softShadow(18.dp, shape).clip(shape).background(mix(c.accent, c.panelStrong, 0.12f)), contentAlignment = Alignment.Center) {
             when {
                 covers.size >= 4 -> CoverMosaic(covers)
@@ -732,6 +791,7 @@ private fun FavoriteSquare(title: String, covers: List<Any>, round: Boolean, ico
             }
         }
         Text(title, style = HiveText.cardTitle, color = c.text, maxLines = 1, overflow = TextOverflow.Ellipsis, modifier = Modifier.padding(top = 8.dp, start = 2.dp, end = 2.dp))
+        if (subtitle != null) Text(subtitle, style = HiveText.small, color = c.textDim, maxLines = 1, modifier = Modifier.padding(start = 2.dp, end = 2.dp))
     }
 }
 
@@ -786,6 +846,31 @@ private fun NamedTab(source: kotlinx.coroutines.flow.StateFlow<List<NamedCount>>
         items(items, key = { it.name }) { g ->
             val name = g.name.trimEnd('/').substringAfterLast('/').ifBlank { g.name.ifBlank { "Music" } }
             LibraryRow(null, icon, name, if (g.name.contains('/')) "${countOf(g.trackCount, "track")} · /${g.name}" else countOf(g.trackCount, "track")) { open(g.name) }
+        }
+    }
+}
+
+/** Genres as squares of their own album covers: four of the genre's most played albums, or its one cover. */
+@Composable
+private fun GenresTab(vm: MainViewModel, bottom: Dp, open: (String) -> Unit) {
+    val c = Hive.colors
+    val genres by vm.genres.collectAsStateWithLifecycle()
+    val covers by vm.genreCovers.collectAsStateWithLifecycle()
+    androidx.compose.foundation.lazy.grid.LazyVerticalGrid(
+        androidx.compose.foundation.lazy.grid.GridCells.Fixed(2),
+        Modifier.fillMaxSize(),
+        contentPadding = PaddingValues(start = 16.dp, end = 16.dp, top = 6.dp, bottom = bottom + 12.dp),
+        horizontalArrangement = Arrangement.spacedBy(14.dp),
+        verticalArrangement = Arrangement.spacedBy(16.dp),
+    ) {
+        item(span = { androidx.compose.foundation.lazy.grid.GridItemSpan(2) }) {
+            Text(countOf(genres.size, "genre"), style = HiveText.small, color = c.textDim, modifier = Modifier.padding(start = 4.dp, top = 6.dp))
+        }
+        if (genres.isEmpty()) item(span = { androidx.compose.foundation.lazy.grid.GridItemSpan(2) }) { EmptyState("No genres yet", "") }
+        gridItems(genres, key = { it.name.lowercase() }) { g ->
+            val pictures = covers[g.name.lowercase()].orEmpty()
+            // A mosaic needs four; with fewer albums, the genre's top album fills the square.
+            FavoriteSquare(g.name, if (pictures.size >= 4) pictures else pictures.take(1), round = false, icon = Icons.Rounded.Category, subtitle = countOf(g.trackCount, "track")) { open(g.name) }
         }
     }
 }

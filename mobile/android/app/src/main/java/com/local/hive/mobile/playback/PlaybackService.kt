@@ -551,14 +551,24 @@ private class PlayCounter(
     }
 
     override fun onPlaybackStateChanged(playbackState: Int) {
-        // Gapless transitions never pause, so the length is taken once loaded.
-        if (playbackState == Player.STATE_READY) player.duration.takeIf { it > 0 }?.let { durationMs = it }
+        if (playbackState == Player.STATE_READY) takeLength()
+    }
+
+    // A song that follows straight on (gapless) never pauses or reloads, so its length is taken
+    // as soon as the player knows it, or the play would never count.
+    override fun onTracksChanged(tracks: androidx.media3.common.Tracks) = takeLength()
+    override fun onTimelineChanged(timeline: androidx.media3.common.Timeline, reason: Int) = takeLength()
+
+    private fun takeLength() {
+        if (player.currentMediaItem?.mediaId != currentItem?.mediaId) return
+        player.duration.takeIf { it > 0 }?.let { durationMs = it }
     }
 
     override fun onMediaItemTransition(mediaItem: androidx.media3.common.MediaItem?, reason: Int) {
         accumulate()
         check()
-        currentKey = mediaItem?.mediaId
+        // Android Auto lists songs as "<list>|<id>": the song is the id.
+        currentKey = mediaItem?.mediaId?.substringAfterLast('|')
         currentItem = mediaItem
         historyDone = false
         val m = mediaItem?.mediaMetadata
@@ -571,9 +581,11 @@ private class PlayCounter(
         )
         listen?.let { l -> scope.launch { scrobbler.nowPlaying(l) } }
         listenedMs = 0
-        durationMs = 0
+        // Its length from the library straight away; the player's own replaces it once known.
+        durationMs = mediaItem?.mediaMetadata?.durationMs?.takeIf { it > 0 } ?: 0
         counted = false
         resumedAt = if (player.isPlaying) System.currentTimeMillis() else 0
+        takeLength()
         armHistory()
     }
 

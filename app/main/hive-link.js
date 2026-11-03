@@ -184,7 +184,7 @@ function lanAddresses() {
   return out;
 }
 
-function createHiveLink({ dataDir, getTracks, setLove, onPaired, streamSong = null, coversDir = null, remote = null, getPlaylists = null, savePlaylist = null, deletePlaylist = null, getPlays = null, recordPlays = null, spotifySearch = null, songTarget = null, onSongAdded = () => {}, acceptPhonePlays = false, getWrap = null, getWrapYears = null, getListening = null, files = null, onFileChanged = () => {}, getThemes = null, getCurrentTheme = null, onPairRequest = null, deleteSongs = null, editSongs = null, getStreamLoves = null, applyStreamLoves = null, mobileApp = null, onInbox = () => {}, log = () => {}, port = DEFAULT_PORT, discoveryPort = DISCOVERY_PORT, acceptPhoneChanges = false }) {
+function createHiveLink({ dataDir, getTracks, setLove, onPaired, streamSong = null, coversDir = null, remote = null, getPlaylists = null, savePlaylist = null, deletePlaylist = null, getPlays = null, recordPlays = null, spotifySearch = null, songTarget = null, onSongAdded = () => {}, acceptPhonePlays = false, getWrap = null, getWrapYears = null, getListening = null, files = null, onFileChanged = () => {}, getThemes = null, getCurrentTheme = null, onPairRequest = null, deleteSongs = null, editSongs = null, setRating = null, getStreamLoves = null, applyStreamLoves = null, mobileApp = null, onInbox = () => {}, log = () => {}, port = DEFAULT_PORT, discoveryPort = DISCOVERY_PORT, acceptPhoneChanges = false }) {
   const statePath = path.join(dataDir, 'hive-link.json');
   let state = loadState();
   let server = null;
@@ -248,6 +248,8 @@ function createHiveLink({ dataDir, getTracks, setLove, onPaired, streamSong = nu
       // Raised when Hive starts sharing plays it didn't before (2: the phone's own, and imported
       // MusicBee history): the phone then fetches them all again from the start.
       playsVersion: 3,
+      // Star ratings made on the phone come here (a trusted phone's, applied at once).
+      ratings: !!setRating,
       spotifySearch: !!spotifySearch,
       // Song sync: whether Hive takes song files from the phone.
       songs: { receive: !!songTarget && state.receiveSongs },
@@ -770,6 +772,28 @@ function createHiveLink({ dataDir, getTracks, setLove, onPaired, streamSong = nu
         const changes = (await readJson(req))?.changes;
         if (!trusted(device)) return send(res, 200, { loves: await getStreamLoves(), applied: false });
         return send(res, 200, { loves: await applyStreamLoves(Array.isArray(changes) ? changes : []), applied: true });
+      }
+      case 'POST /api/ratings': {
+        // A rating made on the phone (0 clears it), for a song Hive has. Only a trusted phone's; an
+        // untrusted one's waits on the phone ("waiting") until it is trusted.
+        if (!setRating) return send(res, 404, { error: "This Hive doesn't take ratings from the phone." });
+        const changes = (await readJson(req))?.changes;
+        const list = Array.isArray(changes) ? changes.slice(0, 500) : [];
+        if (!trusted(device)) return send(res, 200, { results: list.map(c => ({ id: String(c?.id || ''), status: 'waiting' })) });
+        const byId = new Map((await getTracks()).filter(t => t?.path && !/^[a-z]+:/i.test(String(t.path))).map(t => [trackIdFor(t), t]));
+        const results = [];
+        for (const c of list) {
+          const id = String(c?.id || '');
+          const t = byId.get(id);
+          if (!t) { results.push({ id, status: 'not-found' }); continue; }
+          const stars = Math.max(0, Math.min(5, Math.round((Number(c?.stars) || 0) * 2) / 2));
+          if (Math.abs((Number(t.rating) || 0) - stars) < 0.01) { results.push({ id, status: 'unchanged' }); continue; }
+          try { await setRating(path.resolve(String(t.path)), stars); results.push({ id, status: 'applied' }); }
+          catch (err) { results.push({ id, status: 'failed', error: err?.message || String(err) }); }
+        }
+        const applied = results.filter(r => r.status === 'applied').length;
+        if (applied) log('Hive Link: phone rated songs', device.name, applied);
+        return send(res, 200, { results });
       }
       case 'POST /api/plays': {
         const plays = (await readJson(req))?.plays;

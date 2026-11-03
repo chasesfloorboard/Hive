@@ -113,10 +113,19 @@ fun SettingsScreen(vm: MainViewModel, bottomPadding: Dp, onOpenEqualiser: () -> 
                 }
             }
             item {
+                Section("Backup", "Your plays and Yearly Wrap, favorites, favorite albums and playlists, ratings and settings, kept outside Hive so uninstalling it, or moving to a new phone, loses nothing. Hive keeps the copies up to date as you use it.") { BackupRows(vm) }
+            }
+            item {
                 Section("Scrobbling", "Report what you play to ListenBrainz or Last.fm, as Hive on your PC does. Listens made offline go once you're back.") { ScrobbleRows(vm) }
             }
             item {
                 Section("Library", "The music stored on this phone, kept up to date as files change.") {
+                    var arranging by remember { mutableStateOf(false) }
+                    val context = androidx.compose.ui.platform.LocalContext.current
+                    SettingRow("Tabs", HomeTabOrder.get(context).joinToString(" · ") { it.label }) {
+                        HiveButton("Arrange") { arranging = true }
+                    }
+                    if (arranging) ArrangeTabsDialog(onDismiss = { arranging = false })
                     SettingRow(countOf(tracks.size, "track"), "Read from this phone's music.") {
                         HiveButton(if (scanning) "Scanning…" else "Rescan", enabled = !scanning) { vm.rescan() }
                     }
@@ -661,4 +670,72 @@ private fun HslSlider(label: String, value: Float, onChange: (Float) -> Unit) {
             colors = androidx.compose.material3.SliderDefaults.colors(thumbColor = c.accent, activeTrackColor = c.accent, inactiveTrackColor = c.border),
         )
     }
+}
+
+
+/** Opens a document with lasting read and write access, so a restored backup file can be kept up to date. */
+private class OpenBackupFile : androidx.activity.result.contract.ActivityResultContracts.OpenDocument() {
+    override fun createIntent(context: android.content.Context, input: Array<String>) = super.createIntent(context, input)
+        .addFlags(android.content.Intent.FLAG_GRANT_READ_URI_PERMISSION or android.content.Intent.FLAG_GRANT_WRITE_URI_PERMISSION or android.content.Intent.FLAG_GRANT_PERSISTABLE_URI_PERMISSION)
+}
+
+private fun whenSaved(at: Long): String {
+    val ago = System.currentTimeMillis() - at
+    return when {
+        ago < 60_000 -> "just now"
+        ago < 3_600_000 -> "${ago / 60_000} min ago"
+        ago < 86_400_000 -> "${ago / 3_600_000} h ago"
+        else -> java.text.DateFormat.getDateInstance(java.text.DateFormat.MEDIUM).format(java.util.Date(at))
+    }
+}
+
+@Composable
+private fun BackupRows(vm: MainViewModel) {
+    val context = androidx.compose.ui.platform.LocalContext.current
+    val b by vm.backupStatus.collectAsStateWithLifecycle()
+    val link by vm.link.collectAsStateWithLifecycle()
+    var error by remember { mutableStateOf<String?>(null) }
+    // All files access may have just been given in Android's settings.
+    androidx.lifecycle.compose.LifecycleResumeEffect(Unit) { vm.refreshBackupStatus(); onPauseOrDispose {} }
+    val create = androidx.activity.compose.rememberLauncherForActivityResult(androidx.activity.result.contract.ActivityResultContracts.CreateDocument("application/zip")) { uri ->
+        uri?.let(vm::backUpToCloud)
+    }
+    val open = androidx.activity.compose.rememberLauncherForActivityResult(OpenBackupFile()) { uri ->
+        uri?.let { vm.offerBackupFile(it) { e -> error = e } }
+    }
+    SettingRow(
+        "On this phone",
+        when {
+            !b.canUsePhone -> "Allow “All files access” and the copy is kept in Documents › Hive Mobile, where uninstalling Hive can't reach it."
+            b.phoneAt > 0 -> "Saved ${whenSaved(b.phoneAt)} in Documents › Hive Mobile. Reinstall Hive and it offers to bring everything back."
+            else -> "Kept in Documents › Hive Mobile, saved as you use Hive."
+        },
+    ) {
+        if (!b.canUsePhone && android.os.Build.VERSION.SDK_INT >= 30) HiveButton("Allow") {
+            runCatching { context.startActivity(android.content.Intent(android.provider.Settings.ACTION_MANAGE_APP_ALL_FILES_ACCESS_PERMISSION, android.net.Uri.parse("package:${context.packageName}"))) }
+        }
+    }
+    SettingRow(
+        "On your PC",
+        when {
+            !link.paired -> "Pair with Hive on your PC (above) and it keeps a copy too, even if this phone is lost or wiped."
+            b.pcAt > 0 -> "Sent ${whenSaved(b.pcAt)}. A new phone paired with your PC offers to restore it."
+            else -> "Sent the next time Hive on your PC can be reached."
+        },
+    ) {}
+    SettingRow(
+        "In the cloud",
+        b.cloudError ?: when {
+            b.cloudName == null -> "Keep a copy in Google Drive, OneDrive, Dropbox or any storage app on this phone. On a new phone, install Hive and use Restore from a file."
+            b.cloudAt > 0 -> "Saved ${whenSaved(b.cloudAt)} to ${b.cloudName}. Updated at most every 15 minutes."
+            else -> "Saving to ${b.cloudName}…"
+        },
+    ) {
+        if (b.cloudName == null) HiveButton("Choose") { runCatching { create.launch("Hive Mobile backup.zip") } }
+        else HiveButton("Stop") { vm.stopCloudBackup() }
+    }
+    SettingRow("Restore from a file", "A backup from the cloud, another phone or a download. Everything Hive has on this phone now is replaced by it.") {
+        HiveButton("Restore") { error = null; runCatching { open.launch(arrayOf("application/zip", "application/octet-stream", "*/*")) } }
+    }
+    error?.let { Text(it, style = HiveText.small, color = Color(0xFFFF8A8A), modifier = Modifier.padding(horizontal = 18.dp, vertical = 4.dp)) }
 }

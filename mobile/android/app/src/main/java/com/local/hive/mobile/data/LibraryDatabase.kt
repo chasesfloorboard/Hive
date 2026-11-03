@@ -178,6 +178,8 @@ data class Rating(
     val stars: Float,
     val changedAt: Long,
     val fromPc: Boolean = false,
+    /** Made on the phone and not yet in Hive on the PC; 0 [stars] is a rating taken off, to send. */
+    @androidx.room.ColumnInfo(defaultValue = "0") val pending: Boolean = false,
 )
 
 /**
@@ -216,6 +218,36 @@ data class Play(
     val pcId: String? = null,
 )
 
+data class TrackLength(val id: Long, val durationMs: Long)
+
+data class RatingToSend(val trackId: Long, val stars: Float, val changedAt: Long, val pcId: String)
+
+/** See [LibraryDao.relink]: above any number Android gives a song. */
+const val RELINK_STAGE = 1L shl 42
+
+/**
+ * A song that has things kept for it (plays, Love, a rating, playlist places, Recently played) but
+ * isn't on the phone now: a restored backup before the music is copied over, or a song deleted. When
+ * a song with its file or tags turns up, its things go to it (see [TrackRelink]). A negative [id] is
+ * one whose number now belongs to another song: its things wait under that negative number.
+ */
+@Entity(tableName = "lost_tracks")
+data class LostTrack(
+    @PrimaryKey val id: Long,
+    val title: String,
+    val artist: String,
+    val album: String,
+    val durationMs: Long,
+    val folder: String,
+    val fileName: String,
+    val lostAt: Long,
+) {
+    fun asTrack() = Track(id, title, artist, album, "", 0, durationMs, 0, 0, 0, "", folder, fileName, 0, 0)
+    companion object {
+        fun of(t: Track, id: Long = t.id, at: Long = System.currentTimeMillis()) = LostTrack(id, t.title, t.artist, t.album, t.durationMs, t.folder, t.fileName, at)
+    }
+}
+
 /** A play ready to go to Hive on the PC, with the song's id there. */
 data class PlayToSend(val rowId: Long, val playedAt: Long, val listenedMs: Long, val pcId: String)
 
@@ -238,6 +270,9 @@ data class ArtistSummary(
 )
 
 data class NamedCount(val name: String, val trackCount: Int)
+
+/** An album in a genre (or by an artist: [genre] is then the artist), with how often its songs were played and how many it has. */
+data class GenreAlbum(val genre: String, val albumId: Long, val plays: Int, val tracks: Int)
 
 data class PlayStats(val plays: Int, val lastPlayed: Long?)
 
@@ -296,6 +331,14 @@ interface LibraryDao {
     @Query("SELECT (SELECT g.genre FROM tracks g WHERE g.genre = t.genre COLLATE NOCASE GROUP BY g.genre ORDER BY COUNT(*) DESC LIMIT 1) AS name, COUNT(*) AS trackCount FROM tracks t WHERE t.genre != '' GROUP BY t.genre COLLATE NOCASE ORDER BY t.genre COLLATE NOCASE")
     fun genres(): Flow<List<NamedCount>>
 
+    /** Each genre's albums, the most played first (then the biggest), for the genre's picture. */
+    @Query("SELECT t.genre AS genre, t.albumId AS albumId, COUNT(p.trackId) AS plays, COUNT(DISTINCT t.id) AS tracks FROM tracks t LEFT JOIN plays p ON p.trackId = t.id WHERE t.genre != '' AND t.albumId > 0 GROUP BY t.genre COLLATE NOCASE, t.albumId ORDER BY plays DESC, tracks DESC")
+    fun genreAlbums(): Flow<List<GenreAlbum>>
+
+    /** Each artist's albums, the most played first (then the biggest), for the artist's picture. */
+    @Query("SELECT t.artist AS genre, t.albumId AS albumId, COUNT(p.trackId) AS plays, COUNT(DISTINCT t.id) AS tracks FROM tracks t LEFT JOIN plays p ON p.trackId = t.id WHERE t.artist != '' AND t.albumId > 0 GROUP BY t.artist, t.albumId ORDER BY plays DESC, tracks DESC")
+    fun artistAlbums(): Flow<List<GenreAlbum>>
+
     @Query("SELECT folder AS name, COUNT(*) AS trackCount FROM tracks GROUP BY folder ORDER BY folder COLLATE NOCASE")
     fun folders(): Flow<List<NamedCount>>
 
@@ -319,6 +362,17 @@ interface LibraryDao {
     @Transaction
     suspend fun replaceLibrary(tracks: List<Track>): Int {
         val existing = allTracks().associateBy { it.id }
+        // Songs under new numbers (a new phone, a restore, a rebuilt music index) keep their things,
+        // and so do songs gone for now, until their files come back.
+        val lost = allLostTracks()
+        val r = TrackRelink.find(existing.values + lost.filter { it.id !in existing }.map { it.asTrack() }, tracks)
+        relink(r)
+        val scanned = tracks.mapTo(HashSet()) { it.id }
+        val lostById = lost.associateBy { it.id }
+        r.moved.keys.chunked(500).forEach { deleteLostTracks(it) }
+        r.aside.forEach { id -> (existing[id]?.let { LostTrack.of(it) } ?: lostById[id])?.let { upsertLostTrack(it.copy(id = -id)) }; deleteLostTracks(listOf(id)) }
+        upsertLostTracks(existing.values.filter { it.id !in scanned && it.id !in r.moved && it.id !in r.aside }.map { LostTrack.of(it) })
+        forgetLostWithoutThings()
         if (tracks.isEmpty()) { deleteAllTracks(); return existing.size }
         // SQLite caps bound parameters, so writes and deletes go in chunks.
         val changed = tracks.filter { existing[it.id] != it }
@@ -328,6 +382,72 @@ interface LibraryDao {
         gone.chunked(500).forEach { deleteTracks(it) }
         return changed.size + gone.size
     }
+
+    /**
+     * Moves what is kept for each song in [r] to its new number. Every row goes through a negative
+     * number first, so numbers that trade places never clash: moved ones end up at their new number,
+     * those set aside stay negative (no song has a negative number).
+     */
+    @Transaction
+    suspend fun relink(r: TrackRelink.Result) {
+        if (r.isEmpty) return
+        suspend fun move(from: Long, to: Long) { relinkLove(from, to); relinkRatings(from, to); relinkPlays(from, to); relinkPlaylistEntries(from, to); relinkPcMatch(from, to) }
+        for ((old, new) in r.moved) move(old, -new - RELINK_STAGE)
+        for (old in r.aside) move(old, -old)
+        relinkSettleLove(); relinkSettleRatings(); relinkSettlePlays(); relinkSettlePlaylistEntries(); relinkSettlePcMatch()
+        // A PC match is worked out again at the next sync; a song set aside has none.
+        deleteAsideMatches()
+        // Recently played is kept by text.
+        for ((old, new) in r.moved) relinkHistory(old.toString(), "~$new")
+        for (old in r.aside) deleteHistory(old.toString())
+        relinkSettleHistory()
+    }
+
+    @Query("UPDATE OR REPLACE love SET trackId = :to WHERE trackId = :from")
+    suspend fun relinkLove(from: Long, to: Long)
+    @Query("UPDATE OR REPLACE love SET trackId = -trackId - 4398046511104 WHERE trackId <= -4398046511104")
+    suspend fun relinkSettleLove()
+    @Query("UPDATE OR REPLACE ratings SET trackId = :to WHERE trackId = :from")
+    suspend fun relinkRatings(from: Long, to: Long)
+    @Query("UPDATE OR REPLACE ratings SET trackId = -trackId - 4398046511104 WHERE trackId <= -4398046511104")
+    suspend fun relinkSettleRatings()
+    @Query("UPDATE OR REPLACE plays SET trackId = :to WHERE trackId = :from")
+    suspend fun relinkPlays(from: Long, to: Long)
+    @Query("UPDATE OR REPLACE plays SET trackId = -trackId - 4398046511104 WHERE trackId <= -4398046511104")
+    suspend fun relinkSettlePlays()
+    @Query("UPDATE OR REPLACE playlist_entries SET trackId = :to WHERE trackId = :from")
+    suspend fun relinkPlaylistEntries(from: Long, to: Long)
+    @Query("UPDATE OR REPLACE playlist_entries SET trackId = -trackId - 4398046511104 WHERE trackId <= -4398046511104")
+    suspend fun relinkSettlePlaylistEntries()
+    @Query("UPDATE OR REPLACE pc_match SET trackId = :to WHERE trackId = :from")
+    suspend fun relinkPcMatch(from: Long, to: Long)
+    @Query("UPDATE OR REPLACE pc_match SET trackId = -trackId - 4398046511104 WHERE trackId <= -4398046511104")
+    suspend fun relinkSettlePcMatch()
+    @Query("DELETE FROM pc_match WHERE trackId < 0")
+    suspend fun deleteAsideMatches()
+    @Query("UPDATE OR REPLACE history SET `key` = :to WHERE `key` = :from")
+    suspend fun relinkHistory(from: String, to: String)
+    @Query("DELETE FROM history WHERE `key` = :key")
+    suspend fun deleteHistory(key: String)
+    @Query("UPDATE OR REPLACE history SET `key` = substr(`key`, 2) WHERE `key` LIKE '~%'")
+    suspend fun relinkSettleHistory()
+
+    @Query("UPDATE tracks SET year = :year WHERE id = :id")
+    suspend fun setYear(id: Long, year: Int)
+    @Transaction
+    suspend fun setYears(years: Map<Long, Int>) { for ((id, y) in years) setYear(id, y) }
+
+    @Query("SELECT * FROM lost_tracks")
+    suspend fun allLostTracks(): List<LostTrack>
+    @Upsert
+    suspend fun upsertLostTrack(t: LostTrack)
+    @Upsert
+    suspend fun upsertLostTracks(t: List<LostTrack>)
+    @Query("DELETE FROM lost_tracks WHERE id IN (:ids)")
+    suspend fun deleteLostTracks(ids: List<Long>)
+    /** A lost song with nothing kept for it is nothing to wait for. */
+    @Query("DELETE FROM lost_tracks WHERE id NOT IN (SELECT trackId FROM love UNION SELECT trackId FROM ratings UNION SELECT trackId FROM plays UNION SELECT trackId FROM playlist_entries) AND CAST(id AS TEXT) NOT IN (SELECT `key` FROM history)")
+    suspend fun forgetLostWithoutThings()
 
     @Query("DELETE FROM tracks WHERE id IN (:ids)")
     suspend fun deleteTracks(ids: List<Long>)
@@ -459,8 +579,18 @@ interface LibraryDao {
 
     // ---- ratings ----
 
-    @Query("SELECT * FROM ratings")
+    @Query("SELECT * FROM ratings WHERE stars > 0")
     fun ratings(): Flow<List<Rating>>
+
+    /** Ratings made here for Hive on the PC, with the song's id there. */
+    @Query("SELECT r.trackId, r.stars, r.changedAt, m.pcId FROM ratings r JOIN pc_match m ON m.trackId = r.trackId WHERE r.pending = 1")
+    suspend fun ratingsToSend(): List<RatingToSend>
+
+    /** Sent: in step with the PC (which may change it from now on); one taken off is gone. */
+    @Query("UPDATE ratings SET pending = 0, fromPc = 1 WHERE trackId = :trackId AND changedAt = :changedAt")
+    suspend fun ratingSent(trackId: Long, changedAt: Long)
+    @Query("DELETE FROM ratings WHERE stars <= 0 AND pending = 0")
+    suspend fun forgetClearedRatings()
 
     @Query("SELECT * FROM ratings")
     suspend fun allRatings(): List<Rating>
@@ -531,6 +661,17 @@ interface LibraryDao {
     }
 
     // ---- plays ----
+
+    /** Recently played, oldest first (for [PlayRepair]). */
+    @Query("SELECT * FROM history ORDER BY playedAt")
+    suspend fun allHistory(): List<HistoryEntry>
+
+    /** The phone's own plays since [since] (for [PlayRepair]). */
+    @Query("SELECT * FROM plays WHERE fromPc = 0 AND playedAt >= :since")
+    suspend fun phonePlaysSince(since: Long): List<Play>
+
+    @Query("SELECT id, durationMs FROM tracks")
+    suspend fun trackLengths(): List<TrackLength>
 
     @Upsert
     suspend fun insertPlay(play: Play)
@@ -628,13 +769,20 @@ interface LibraryDao {
 }
 
 @Database(
-    entities = [Track::class, LoveState::class, PcMatch::class, Play::class, FavoriteAlbum::class, Playlist::class, PlaylistEntry::class, StreamTrack::class, Rating::class, SyncedSong::class, HistoryEntry::class, FavoriteItem::class],
-    version = 9,
+    entities = [Track::class, LoveState::class, PcMatch::class, Play::class, FavoriteAlbum::class, Playlist::class, PlaylistEntry::class, StreamTrack::class, Rating::class, SyncedSong::class, HistoryEntry::class, FavoriteItem::class, LostTrack::class],
+    version = 11,
     exportSchema = true,
-    autoMigrations = [AutoMigration(from = 1, to = 2), AutoMigration(from = 2, to = 3), AutoMigration(from = 3, to = 4), AutoMigration(from = 4, to = 5), AutoMigration(from = 5, to = 6), AutoMigration(from = 6, to = 7), AutoMigration(from = 7, to = 8, spec = LibraryDatabase.SeedHistory::class), AutoMigration(from = 8, to = 9)],
+    autoMigrations = [AutoMigration(from = 1, to = 2), AutoMigration(from = 2, to = 3), AutoMigration(from = 3, to = 4), AutoMigration(from = 4, to = 5), AutoMigration(from = 5, to = 6), AutoMigration(from = 6, to = 7), AutoMigration(from = 7, to = 8, spec = LibraryDatabase.SeedHistory::class), AutoMigration(from = 8, to = 9), AutoMigration(from = 9, to = 10), AutoMigration(from = 10, to = 11, spec = LibraryDatabase.SendOwnRatings::class)],
 )
 abstract class LibraryDatabase : RoomDatabase() {
     abstract fun dao(): LibraryDao
+
+    /** Ratings made on the phone before they went to the PC go there once. */
+    class SendOwnRatings : androidx.room.migration.AutoMigrationSpec {
+        override fun onPostMigrate(db: androidx.sqlite.db.SupportSQLiteDatabase) {
+            db.execSQL("UPDATE ratings SET pending = 1 WHERE fromPc = 0")
+        }
+    }
 
     /** History starts from the library songs already played on this phone. */
     class SeedHistory : androidx.room.migration.AutoMigrationSpec {

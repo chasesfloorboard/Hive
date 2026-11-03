@@ -6,6 +6,8 @@ import android.provider.MediaStore
 
 /** Reads the phone's music from MediaStore, the same index Samsung Music uses. */
 class LibraryScanner(private val resolver: ContentResolver) {
+    /** When each song's file last changed (seconds), from the last [scan]: see [TagYears]. */
+    var modified: Map<Long, Long> = emptyMap(); private set
 
     fun scan(): List<Track> {
         val columns = buildList {
@@ -21,6 +23,7 @@ class LibraryScanner(private val resolver: ContentResolver) {
             add(MediaStore.Audio.Media.RELATIVE_PATH)
             add(MediaStore.Audio.Media.DATE_ADDED)
             add(MediaStore.Audio.Media.SIZE)
+            add(MediaStore.Audio.Media.DATE_MODIFIED)
             add(MediaStore.Audio.Media.ALBUM_ARTIST)
             if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.R) {
                 add(MediaStore.Audio.Media.GENRE)
@@ -30,6 +33,7 @@ class LibraryScanner(private val resolver: ContentResolver) {
 
         var scanned = false
         val out = ArrayList<Track>()
+        val changedAt = HashMap<Long, Long>()
         resolver.query(
             MediaStore.Audio.Media.EXTERNAL_CONTENT_URI,
             columns,
@@ -51,6 +55,7 @@ class LibraryScanner(private val resolver: ContentResolver) {
             val iPath = idx(MediaStore.Audio.Media.RELATIVE_PATH)
             val iAdded = idx(MediaStore.Audio.Media.DATE_ADDED)
             val iSize = idx(MediaStore.Audio.Media.SIZE)
+            val iModified = idx(MediaStore.Audio.Media.DATE_MODIFIED)
             val iAlbumArtist = idx(MediaStore.Audio.Media.ALBUM_ARTIST)
             val iGenre = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.R) idx(MediaStore.Audio.Media.GENRE) else -1
             val iDisc = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.R) idx(MediaStore.Audio.Media.DISC_NUMBER) else -1
@@ -62,6 +67,7 @@ class LibraryScanner(private val resolver: ContentResolver) {
             while (c.moveToNext()) {
                 val rawTrack = long(iTrack).toInt()
                 val fileName = str(iName)
+                changedAt[long(iId)] = long(iModified)
                 out += Track(
                     id = long(iId),
                     title = str(iTitle).ifBlank { fileName.substringBeforeLast('.') },
@@ -85,6 +91,7 @@ class LibraryScanner(private val resolver: ContentResolver) {
         // No answer at all is "MediaStore can't be asked right now", never "no music":
         // returning nothing would empty the library.
         if (!scanned) throw java.io.IOException("MediaStore didn't answer")
+        modified = changedAt
         return AlbumMerge.apply(withWavTags(out.map(::repaired).map(::withEmoji)))
     }
 

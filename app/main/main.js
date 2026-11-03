@@ -5888,7 +5888,8 @@ ipcMain.handle('tracks:setRatings', async (evt, trackPaths = [], rating) => with
   }
 }));
 
-ipcMain.handle('track:setRating', async (_evt, trackPath, rating) => withStatsMutation(async () => {
+/** A song's star rating, into its file and Hive's stats (call inside withStatsMutation). */
+async function setTrackRating(trackPath, rating) {
   const stats = await readJsonSafe(STATS_PATH(), {});
   const value = Math.max(0, Math.min(5, Number(rating) || 0));
   const entry = stats[trackPath] || { playCount: 0, lastPlayedAt: 0 };
@@ -5906,7 +5907,10 @@ ipcMain.handle('track:setRating', async (_evt, trackPath, rating) => withStatsMu
   stats[trackPath] = entry;
   await writeJsonSafe(STATS_PATH(), stats);
   return value;
-}));
+}
+
+ipcMain.handle('track:setRating', async (_evt, trackPath, rating) => withStatsMutation(() => setTrackRating(trackPath, rating)));
+
 
 ipcMain.handle('track:readLove', async (_evt, trackPath) => {
   try { return await readLoveStateFromDisk(trackPath); }
@@ -7880,6 +7884,17 @@ function startHiveLink() {
     mobileApp: () => path.join(app.getAppPath(), 'mobile', 'HiveMobile.apk'),
     // A phone Love goes through the heart button's own path, then the open
     // window is told, the same way the metadata job queue reports Love.
+    // A rating made on the phone: into the file and stats as a rating made here, then the
+    // library cache and the open window.
+    setRating: async (trackPath, stars) => {
+      markLibraryInternalWrite(trackPath);
+      const value = await withStatsMutation(() => setTrackRating(trackPath, stars));
+      const cache = (await libraryCacheStore.get()) || { tracks: [] };
+      const t = (cache.tracks || []).find(x => x?.path === trackPath);
+      if (t) { t.rating = value; t.ratingRaw = value >= 5 ? 255 : 0; t.ratingHydrated = true; libraryCacheStore.set(cache); }
+      const sender = mainWindow && !mainWindow.isDestroyed() ? mainWindow.webContents : null;
+      try { sender?.send('library:scanTrack', [{ path: trackPath, rating: value, ratingHydrated: true }]); } catch {}
+    },
     setLove: async (trackPath, loved) => {
       const sender = mainWindow && !mainWindow.isDestroyed() ? mainWindow.webContents : null;
       await setLoveForSingleTrack(sender ? { sender } : null, trackPath, loved);

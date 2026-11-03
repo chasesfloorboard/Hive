@@ -16010,6 +16010,8 @@
       libraryTrackByPath.set(filePath, libraryTrackByPath.get(filePath) || existing || track);
       applied++;
       if (specialView === 'playlist' && activePlaylistId && wasLoved !== !!track.loved) needsViewRefresh = true;
+      // A rating from the phone shows in the open view at once.
+      if (existing && 'rating' in track && !('title' in track)) needsViewRefresh = true;
     }
     if (!applied) return;
     if (needsViewRefresh) scanTrackRenderNeeded = true;

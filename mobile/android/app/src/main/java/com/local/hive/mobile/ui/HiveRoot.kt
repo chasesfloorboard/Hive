@@ -264,7 +264,8 @@ private fun HiveContent(vm: MainViewModel, openPlayerInitially: Boolean) {
                         }
                         page("genre/{name}") { entry ->
                             val name = entry.arguments?.getString("name").orEmpty()
-                            SongsScreen(vm, name, vm.genreTracks(name), actions, bottomPadding) { nav.popBackStack() }
+                            val genrePictures by vm.genreCovers.collectAsStateWithLifecycle()
+                            SongsScreen(vm, name, vm.genreTracks(name), actions, bottomPadding, pictures = genrePictures[name.lowercase()]) { nav.popBackStack() }
                         }
                         page("folder/{name}") { entry ->
                             val name = entry.arguments?.getString("name").orEmpty()

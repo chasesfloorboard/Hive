@@ -63,7 +63,7 @@ import java.util.concurrent.TimeUnit
 /** Song sync on the PC: whether Hive takes song files from the phone. */
 @Serializable data class SongCaps(val receive: Boolean = false)
 @Serializable data class AppUpdate(val versionCode: Long, val versionName: String, val size: Long, val sha256: String)
-@Serializable data class InfoResponse(val serverId: String, val name: String, val port: Int, val seq: Long, val addresses: List<HiveAddress> = emptyList(), val streams: StreamCaps = StreamCaps(), val remote: Boolean = false, val plays: Boolean = false, val playsVersion: Int = 0, val inbox: InboxSummary = InboxSummary(), val songs: SongCaps = SongCaps(), val wrap: Boolean = false, val listening: Boolean = false, val files: Boolean = false, val themes: Boolean = false, val playlistSync: Boolean = false)
+@Serializable data class InfoResponse(val serverId: String, val name: String, val port: Int, val seq: Long, val addresses: List<HiveAddress> = emptyList(), val streams: StreamCaps = StreamCaps(), val remote: Boolean = false, val plays: Boolean = false, val playsVersion: Int = 0, val inbox: InboxSummary = InboxSummary(), val songs: SongCaps = SongCaps(), val wrap: Boolean = false, val listening: Boolean = false, val files: Boolean = false, val themes: Boolean = false, val playlistSync: Boolean = false, val ratings: Boolean = false)
 /** One year's Yearly Wrap as Hive on the PC counts it (its plays, imports and this phone's). */
 @Serializable data class PcWrap(
     val year: Int,
@@ -129,6 +129,10 @@ import java.util.concurrent.TimeUnit
 @Serializable private data class PairRequest(val code: String, val deviceName: String)
 @Serializable private data class ConnectRequest(val deviceName: String)
 @Serializable private data class DeleteSongs(val ids: List<String>)
+@Serializable data class RatingOut(val id: String, val stars: Float, val at: Long)
+@Serializable private data class RatingsOut(val changes: List<RatingOut>)
+@Serializable private data class RatingResult(val id: String = "", val status: String = "")
+@Serializable private data class RatingsIn(val results: List<RatingResult> = emptyList())
 @Serializable data class SongTagEdit(val id: String, val tags: Map<String, String>)
 @Serializable private data class SongTagEdits(val edits: List<SongTagEdit>)
 @Serializable private data class EditedSongs(val edited: List<String> = emptyList())
@@ -350,6 +354,12 @@ class HiveLinkClient(private val http: OkHttpClient = defaultHttp()) {
     suspend fun deleteSongs(conn: Connection, ids: List<String>): List<String> = withContext(Dispatchers.IO) {
         val body = json.encodeToString(DeleteSongs.serializer(), DeleteSongs(ids)).toRequestBody(jsonType)
         http.newCall(authed(conn, "/api/songs/delete").post(body).build()).execute().use { json.decodeFromString(DeletedSongs.serializer(), read(it)).deleted }
+    }
+
+    /** Star ratings made on the phone (0 takes one off). Each answer: applied, unchanged, not-found, waiting (not trusted yet) or failed. */
+    suspend fun sendRatings(conn: Connection, changes: List<RatingOut>): Map<String, String> = withContext(Dispatchers.IO) {
+        val body = json.encodeToString(RatingsOut.serializer(), RatingsOut(changes)).toRequestBody(jsonType)
+        http.newCall(authed(conn, "/api/ratings").post(body).build()).execute().use { r -> json.decodeFromString(RatingsIn.serializer(), read(r)).results.associate { it.id to it.status } }
     }
 
     /** Tags edited on the phone, written into Hive's own files (trusted phones only). Returns the ids edited. */

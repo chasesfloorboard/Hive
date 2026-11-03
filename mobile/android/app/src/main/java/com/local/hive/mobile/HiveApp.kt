@@ -170,6 +170,8 @@ class HiveApp : Application(), coil3.SingletonImageLoader.Factory {
         super.onCreate()
         // A restore asked for puts Hive's files back before anything opens them.
         com.local.hive.mobile.data.PhoneBackup.applyPending(this)
+        // Plays missed between songs before 2.19.4 go back in from Recently played, once.
+        scope.launch { runCatching { if (com.local.hive.mobile.data.PlayRepair.runOnce(this@HiveApp, database.dao()) > 0) backupSoon(30_000) } }
         // A playlist made, changed or deleted here reaches Hive a few seconds later, not at the next sync.
         scope.launch {
             database.dao().playlists().map { l -> l.map { it.id to it.updatedAt } }.distinctUntilChanged().drop(1).debounce(3_000)
@@ -245,6 +247,9 @@ class HiveApp : Application(), coil3.SingletonImageLoader.Factory {
     private var scanStarted = false
     private var rescanAgain = false
 
+    private val tagYears by lazy { com.local.hive.mobile.data.TagYears(this) }
+    private var yearJob: Job? = null
+
     /** Re-reads MediaStore, then re-matches against Hive so new files sync too. */
     suspend fun rescanLibrary() {
         if (!canReadMusic) { Log.i(TAG, "Library scan skipped: no permission to read music"); return }
@@ -257,8 +262,9 @@ class HiveApp : Application(), coil3.SingletonImageLoader.Factory {
                 val started = System.currentTimeMillis()
                 // The music volume can be away for a moment (while the phone starts,
                 // during an update, a remount): keep the library as it is and look again.
+                val scanner = LibraryScanner(contentResolver)
                 val tracks = try {
-                    withContext(Dispatchers.IO) { LibraryScanner(contentResolver).scan() }
+                    withContext(Dispatchers.IO) { tagYears.apply(scanner.scan(), scanner.modified) }
                 } catch (e: kotlinx.coroutines.CancellationException) { throw e } catch (e: Exception) {
                     Log.w(TAG, "Library scan failed, trying again soon: ${e.message}")
                     scope.launch { delay(30_000); requestRescan(delayMs = 0) }
@@ -266,6 +272,12 @@ class HiveApp : Application(), coil3.SingletonImageLoader.Factory {
                 }
                 changed = database.dao().replaceLibrary(tracks)
                 Log.i(TAG, "Library scan: ${tracks.size} tracks, $changed changed, in ${System.currentTimeMillis() - started} ms")
+                // Years Android didn't read, from the songs' own tags, without holding the scan up.
+                yearJob?.cancel()
+                yearJob = scope.launch(Dispatchers.IO) {
+                    val found = runCatching { tagYears.fill(contentResolver, tracks, scanner.modified) { database.dao().setYears(it) } }.getOrDefault(0)
+                    if (found > 0) Log.i(TAG, "Years read from tags: $found")
+                }
             } finally {
                 _scanning.value = false
             }

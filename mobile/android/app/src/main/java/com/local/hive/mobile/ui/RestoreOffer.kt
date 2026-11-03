@@ -29,16 +29,18 @@ fun RestoreOfferDialog(vm: MainViewModel) {
     var error by remember { mutableStateOf<String?>(null) }
     val date = remember(o.savedAt) { java.text.DateFormat.getDateTimeInstance(java.text.DateFormat.MEDIUM, java.text.DateFormat.SHORT).format(java.util.Date(o.savedAt)) }
     HiveDialog(onDismiss = {}) {
-        Text("Welcome back", style = HiveText.small, color = c.accent)
+        Text(if (o.replaces) "Restore" else "Welcome back", style = HiveText.small, color = c.accent)
         Text("Restore Hive Mobile as it was?", style = HiveText.year, color = c.text)
         Text(
-            "Hive found its backup from $date" + (if (o.pcDevice != null) ", kept on your PC" else ", on this phone") +
-                ". Your favorites, playlists, plays and Yearly Wrap, settings and the PC connection all come back, and Hive starts again.",
+            (if (o.picked != null) "This backup is from $date, made on ${o.deviceName.ifBlank { "a phone" }}" else "Hive found its backup from $date" + (if (o.pcDevice != null) ", kept on your PC" else ", on this phone")) +
+                ". Your favorites, favorite albums and playlists, plays and Yearly Wrap, ratings, settings and the PC connection all come back, and Hive starts again." +
+                (if (o.replaces) " What Hive has on this phone now is replaced." else "") +
+                (if (o.picked != null) " Hive keeps that file up to date from then on." else ""),
             style = HiveText.row, color = c.textDim,
         )
         error?.let { Text(it, style = HiveText.rowSub, color = c.accent) }
         Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(8.dp, Alignment.End), verticalAlignment = Alignment.CenterVertically) {
-            HiveButton("Start fresh", enabled = !busy) { vm.declineRestore() }
+            HiveButton(if (o.replaces) "Cancel" else "Start fresh", enabled = !busy) { vm.declineRestore() }
             HiveButton(if (busy) "Restoring…" else "Restore", primary = true, enabled = !busy) {
                 busy = true; error = null
                 vm.restoreBackup(o) { busy = false; error = "Couldn't restore: $it" }

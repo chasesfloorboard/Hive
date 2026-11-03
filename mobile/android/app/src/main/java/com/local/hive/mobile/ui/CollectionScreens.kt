@@ -316,7 +316,10 @@ fun ArtistScreen(
             item {
                 Column(Modifier.fillMaxWidth().statusBarsPadding().padding(top = 64.dp, bottom = 18.dp), horizontalAlignment = Alignment.CenterHorizontally) {
                     val photo = rememberArtistPhoto(vm, name)
-                    Artwork(photo ?: firstAlbum?.let { Uri.parse("content://media/external/audio/albumart/$it") }, Modifier.size(168.dp), CircleShape, Icons.Rounded.Person, glow = colors?.primary, elevation = 24.dp)
+                    // The same picture as the artist's square: their photo, else four of their most played albums' covers.
+                    val covers = vm.artistCovers.collectAsStateWithLifecycle().value[name].orEmpty()
+                    if (photo == null && covers.size >= 4) Box(Modifier.size(168.dp).softShadow(24.dp, CircleShape, colors?.primary ?: Color.Black).clip(CircleShape)) { CoverMosaic(covers) }
+                    else Artwork(photo ?: covers.firstOrNull() ?: firstAlbum?.let { Uri.parse("content://media/external/audio/albumart/$it") }, Modifier.size(168.dp), CircleShape, Icons.Rounded.Person, glow = colors?.primary, elevation = 24.dp)
                     Text(name.ifBlank { "Unknown artist" }, style = HiveText.heroTitle, color = c.text, textAlign = TextAlign.Center, modifier = Modifier.padding(top = 18.dp, start = 24.dp, end = 24.dp))
                     Text("${countOf(albums.size, "album")} · ${countOf(tracks.size, "track")}", style = HiveText.small, color = c.textDim, modifier = Modifier.padding(top = 4.dp))
                     Row(Modifier.fillMaxWidth().padding(top = 18.dp, start = 24.dp, end = 24.dp), horizontalArrangement = Arrangement.spacedBy(10.dp)) {
@@ -407,6 +410,8 @@ fun SongsScreen(
     imageKey: String? = null,
     /** What the list's own order is called in the sort menu (Favorites: "Date favorited"). */
     ownOrder: String = "Default order",
+    /** The page's own covers for its picture (a genre's, the same as its square), instead of its first songs'. */
+    pictures: List<Any>? = null,
     onBack: () -> Unit,
 ) {
     val all by tracksFlow.collectAsStateWithLifecycle(emptyList())
@@ -429,7 +434,7 @@ fun SongsScreen(
     val images by vm.playlistImages.collectAsStateWithLifecycle()
     val chosen = imageKey?.let { images[it] }
     val pickImage = rememberPlaylistImagePicker(vm, imageKey)
-    val covers = remember(all) { mosaicCovers(all) }
+    val covers = remember(all, pictures) { pictures?.takeIf { it.isNotEmpty() }?.let { if (it.size >= 4) it else it.take(1) } ?: mosaicCovers(all) }
     val firstAlbum = all.firstOrNull()?.albumId
     val colors by produceState<AuraColors?>(null, firstAlbum) { value = firstAlbum?.let { vm.albumColors(it) } }
     val list = rememberLazyListState()

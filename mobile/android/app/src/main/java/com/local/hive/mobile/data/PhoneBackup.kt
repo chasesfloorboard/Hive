@@ -28,11 +28,14 @@ import java.util.zip.ZipOutputStream
  * playlists), every setting, and the app's own files (the PC pairing, the file
  * mirror's memory, playlist pictures...).
  *
- * The copy is a zip, kept in two places:
+ * The copy is a zip, kept in up to three places:
  * - `Documents/Hive Mobile/Hive Mobile backup.zip` on the phone (needs All
  *   files access, as a new install has to read a file an old one made);
  * - Hive on the PC, through Hive Link: one per phone, even if the phone's
- *   storage is wiped.
+ *   storage is wiped;
+ * - a file the user picks in a cloud (Google Drive, OneDrive, Dropbox... any
+ *   storage app on the phone), for a new phone or a lost one. A fresh install
+ *   restores from it with "Restore from a file", and keeps that file up to date.
  *
  * A fresh install that finds one (on the phone, or on the PC once paired)
  * offers to restore it ([offer]); restoring puts every file back as it was and
@@ -59,7 +62,18 @@ class PhoneBackup(
     @Serializable data class Meta(val format: Int = 1, val savedAt: Long, val versionCode: Long = 0, val versionName: String = "", val device: String = "")
 
     /** A copy a fresh install may restore. [pcDevice] is set for one kept on the PC. */
-    data class Offer(val savedAt: Long, val versionName: String, val deviceName: String, val pcDevice: String? = null, val local: File? = null)
+    data class Offer(val savedAt: Long, val versionName: String, val deviceName: String, val pcDevice: String? = null, val local: File? = null, val picked: android.net.Uri? = null, val replaces: Boolean = false)
+
+    /** Where the copies are, for Settings › Backup. Times are 0 when there's none yet. */
+    data class Status(val phoneAt: Long, val canUsePhone: Boolean, val pcAt: Long, val cloudName: String?, val cloudAt: Long, val cloudError: String?)
+    private val _status = MutableStateFlow(readStatus())
+    val status: StateFlow<Status> = _status.asStateFlow()
+    private fun readStatus() = Status(
+        phoneAt = if (canUseFile && file.isFile) file.lastModified() else 0, canUsePhone = canUseFile,
+        pcAt = prefs.getLong("pcSentAt", 0), cloudName = prefs.getString("cloudName", null),
+        cloudAt = prefs.getLong("cloudAt", 0), cloudError = prefs.getString("cloudError", null),
+    )
+    fun refreshStatus() { _status.value = readStatus() }
 
     private val _offer = MutableStateFlow<Offer?>(null)
     /** A backup this fresh install could restore, shown to the user until they answer. */
@@ -95,7 +109,8 @@ class PhoneBackup(
 
     /** Starts this install as it is, keeping the copy where it was. */
     fun decline() {
-        prefs.edit().putBoolean("answered", true).apply()
+        // A file picked by hand and then not wanted leaves this install's answer as it was.
+        if (_offer.value?.picked == null) prefs.edit().putBoolean("answered", true).apply()
         _offer.value = null
     }
 
@@ -108,10 +123,13 @@ class PhoneBackup(
         val part = File(pending.path + ".part")
         when {
             offer.local != null -> offer.local.copyTo(part, overwrite = true)
+            offer.picked != null -> context.contentResolver.openInputStream(offer.picked)!!.use { input -> part.outputStream().use { input.copyTo(it) } }
             offer.pcDevice != null -> part.outputStream().use { out -> client.downloadPhoneBackup(conn ?: throw java.io.IOException("Hive on the PC can't be reached"), offer.pcDevice, out) }
         }
         if (readMeta(part) == null) { part.delete(); throw java.io.IOException("That backup can't be read") }
         part.renameTo(pending)
+        // The file restored from is the cloud copy from now on (these settings outlive the restore).
+        offer.picked?.let { keepCloud(it) }
         prefs.edit().putBoolean("answered", true).putLong("restoredFrom", offer.savedAt).commit()
         Log.i(TAG, "Restoring the backup of ${offer.savedAt}: starting again")
         val start = context.packageManager.getLaunchIntentForPackage(context.packageName)?.addFlags(Intent.FLAG_ACTIVITY_NEW_TASK or Intent.FLAG_ACTIVITY_CLEAR_TASK)
@@ -137,7 +155,7 @@ class PhoneBackup(
             runCatching {
                 val made = File(context.cacheDir, "backup.zip.part")
                 val hash = write(made)
-                if (hash == prefs.getString("hash", null) && latest.isFile && (!canUseFile || !mayWriteLocal() || file.isFile)) { made.delete(); return@runCatching }
+                if (hash == prefs.getString("hash", null) && latest.isFile && (!canUseFile || !mayWriteLocal() || file.isFile)) { made.delete(); writeCloud(); return@runCatching }
                 made.copyTo(latest, overwrite = true)
                 if (canUseFile && mayWriteLocal()) {
                     val dir = file.parentFile!!.apply { mkdirs() }
@@ -148,10 +166,73 @@ class PhoneBackup(
                     prefs.edit().putBoolean("ownsLocal", true).apply()
                 }
                 made.delete()
-                prefs.edit().putString("hash", hash).putBoolean("pcBehind", true).apply()
+                prefs.edit().putString("hash", hash).putBoolean("pcBehind", true).putBoolean("cloudBehind", true).apply()
                 Log.i(TAG, "Backup saved (${latest.length() / 1024} KB)")
+                writeCloud()
             }.onFailure { Log.w(TAG, "Backup not saved: ${it.message}") }
         }
+        refreshStatus()
+    }
+
+    // ---- the cloud copy ----
+
+    /** A file picked to keep the copy in (made with "Back up to the cloud", or restored from). */
+    private fun keepCloud(uri: android.net.Uri) {
+        runCatching { context.contentResolver.takePersistableUriPermission(uri, Intent.FLAG_GRANT_READ_URI_PERMISSION or Intent.FLAG_GRANT_WRITE_URI_PERMISSION) }
+        val name = runCatching {
+            val app = context.packageManager.resolveContentProvider(uri.authority.orEmpty(), 0)?.loadLabel(context.packageManager)?.toString()
+            val file = context.contentResolver.query(uri, arrayOf(android.provider.OpenableColumns.DISPLAY_NAME), null, null, null)?.use { if (it.moveToFirst()) it.getString(0) else null }
+            listOfNotNull(app, file).joinToString(" › ")
+        }.getOrNull()?.ifBlank { null } ?: "the file you picked"
+        // A file picked before stays the user's; Hive just stops writing to it.
+        prefs.getString("cloudUri", null)?.takeIf { it != uri.toString() }?.let { old ->
+            runCatching { context.contentResolver.releasePersistableUriPermission(android.net.Uri.parse(old), Intent.FLAG_GRANT_READ_URI_PERMISSION or Intent.FLAG_GRANT_WRITE_URI_PERMISSION) }
+        }
+        prefs.edit().putString("cloudUri", uri.toString()).putString("cloudName", name).putBoolean("cloudBehind", true).putLong("cloudAt", 0).remove("cloudError").commit()
+    }
+
+    /** Starts keeping the copy in [uri] and writes it there now. */
+    suspend fun setCloud(uri: android.net.Uri) {
+        keepCloud(uri)
+        save()
+        lock.withLock { withContext(Dispatchers.IO) { writeCloud(force = true) } }
+        refreshStatus()
+    }
+
+    fun stopCloud() {
+        prefs.getString("cloudUri", null)?.let { runCatching { context.contentResolver.releasePersistableUriPermission(android.net.Uri.parse(it), Intent.FLAG_GRANT_READ_URI_PERMISSION or Intent.FLAG_GRANT_WRITE_URI_PERMISSION) } }
+        prefs.edit().remove("cloudUri").remove("cloudName").remove("cloudAt").remove("cloudError").apply()
+        refreshStatus()
+    }
+
+    /**
+     * The latest copy into the cloud file when it has changed, at most every [CLOUD_EVERY_MS] (a
+     * cloud app uploads the whole file each time). Called with the lock held.
+     */
+    private fun writeCloud(force: Boolean = false) {
+        val uri = prefs.getString("cloudUri", null)?.let(android.net.Uri::parse) ?: return
+        if (!latest.isFile || !maySave) return
+        if (!force && (!prefs.getBoolean("cloudBehind", false) || System.currentTimeMillis() - prefs.getLong("cloudAt", 0) < CLOUD_EVERY_MS)) return
+        runCatching {
+            (context.contentResolver.openOutputStream(uri, "wt") ?: throw java.io.IOException("can't open it")).use { out -> latest.inputStream().use { it.copyTo(out) } }
+            prefs.edit().putBoolean("cloudBehind", false).putLong("cloudAt", System.currentTimeMillis()).remove("cloudError").apply()
+            Log.i(TAG, "Backup saved to the cloud file")
+        }.onFailure {
+            Log.w(TAG, "Backup not saved to the cloud file: ${it.message}")
+            prefs.edit().putString("cloudError", "Hive couldn't save to ${prefs.getString("cloudName", "the cloud file")}: ${it.message ?: "it can't be reached"}. Pick it again if it keeps failing.").apply()
+        }
+    }
+
+    /**
+     * A backup file the user picked (from a cloud, another phone, a download): checked and shown as
+     * the restore offer. Throws when it isn't a Hive Mobile backup.
+     */
+    suspend fun offerFile(uri: android.net.Uri) = withContext(Dispatchers.IO) {
+        val copy = File(context.cacheDir, "picked-backup.zip")
+        context.contentResolver.openInputStream(uri)!!.use { input -> copy.outputStream().use { input.copyTo(it) } }
+        val meta = readMeta(copy) ?: run { copy.delete(); throw java.io.IOException("That isn't a Hive Mobile backup") }
+        copy.delete()
+        _offer.value = Offer(meta.savedAt, meta.versionName, meta.device, picked = uri, replaces = !(fresh && !answered))
     }
 
     /** Sends the latest copy to the PC when it has changed, at most every [everyMs]. */
@@ -162,6 +243,7 @@ class PhoneBackup(
             val meta = readMeta(latest) ?: return@runCatching
             client.sendPhoneBackup(conn, latest, meta.savedAt, meta.versionName)
             prefs.edit().putBoolean("pcBehind", false).putLong("pcSentAt", System.currentTimeMillis()).apply()
+            refreshStatus()
         }.onFailure { Log.w(TAG, "Backup not sent to the PC: ${it.message}") }
     }
 
@@ -220,6 +302,7 @@ class PhoneBackup(
         private const val META = "meta.json"
         private const val DB = "hive-library.db"
         private const val MAX_FILE = 200L * 1024 * 1024
+        private const val CLOUD_EVERY_MS = 15 * 60_000L
         /** This install's own answers, and what Android's job scheduler keeps, stay this install's. */
         private val SKIP_PREFS = setOf("$PREFS.xml", "androidx.work.util.preferences.xml", "WebViewChromiumPrefs.xml")
 

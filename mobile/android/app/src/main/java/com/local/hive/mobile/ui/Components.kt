@@ -300,7 +300,7 @@ fun NowPlayingBars(playing: Boolean, color: Color, modifier: Modifier = Modifier
  * (`0 0 18px -6px accent-glow`).
  */
 @Composable
-fun HiveTab(label: String, active: Boolean, onClick: () -> Unit, modifier: Modifier = Modifier, leading: (@Composable () -> Unit)? = null) {
+fun HiveTab(label: String, active: Boolean, onClick: () -> Unit, modifier: Modifier = Modifier, leading: (@Composable () -> Unit)? = null, onLongClick: (() -> Unit)? = null) {
     val c = Hive.colors
     val text by animateColorAsState(if (active) c.text else c.textDim, tween(150), label = "tabText")
     val fill by animateFloatAsState(if (active) 1f else 0f, tween(150), label = "tabFill")
@@ -317,7 +317,7 @@ fun HiveTab(label: String, active: Boolean, onClick: () -> Unit, modifier: Modif
                 }
             }
             .clip(HiveShape.tab)
-            .clickable(onClick = onClick)
+            .combinedClickable(onClick = onClick, onLongClick = onLongClick)
             .padding(horizontal = 16.dp),
         verticalAlignment = Alignment.CenterVertically,
         horizontalArrangement = Arrangement.spacedBy(8.dp),

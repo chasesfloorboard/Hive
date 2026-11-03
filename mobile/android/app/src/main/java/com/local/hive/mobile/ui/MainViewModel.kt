@@ -85,6 +85,18 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
     }.state(emptyList())
     val artists: StateFlow<List<ArtistSummary>> = dao.artists().map { list -> LibrarySort.sorted(list) { it.artist } }.flowOn(Dispatchers.Default).state(emptyList())
     val genres: StateFlow<List<NamedCount>> = dao.genres().state(emptyList())
+    /** Each genre's picture: up to four of its albums' covers, the most played first (keyed by the genre in lowercase). */
+    val genreCovers: StateFlow<Map<String, List<Any>>> = dao.genreAlbums().map { rows ->
+        rows.groupBy { it.genre.lowercase() }.mapValues { (_, albums) ->
+            albums.map { it.albumId }.distinct().take(4).map { android.net.Uri.parse("content://media/external/audio/albumart/$it") as Any }
+        }
+    }.flowOn(Dispatchers.Default).state(emptyMap())
+    /** Each artist's picture without a photo: up to four of their albums' covers, the most played first (keyed by the artist's name). */
+    val artistCovers: StateFlow<Map<String, List<Any>>> = dao.artistAlbums().map { rows ->
+        rows.groupBy { it.genre }.mapValues { (_, albums) ->
+            albums.map { it.albumId }.distinct().take(4).map { android.net.Uri.parse("content://media/external/audio/albumart/$it") as Any }
+        }
+    }.flowOn(Dispatchers.Default).state(emptyMap())
     val folders: StateFlow<List<NamedCount>> = dao.folders().state(emptyList())
     val recentlyAdded = dao.recentlyAdded(AUTO_PLAYLIST_SIZE).state(emptyList())
     val mostPlayed = dao.mostPlayed(AUTO_PLAYLIST_SIZE).state(emptyList())
@@ -149,7 +161,9 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
     val topRated = dao.ratedAtLeast(4f).state(emptyList())
     /** Sets a song's stars; 0 clears it. */
     fun rate(trackId: Long, stars: Float) = viewModelScope.launch {
-        if (stars <= 0f) dao.clearRating(trackId) else dao.upsertRatings(listOf(com.local.hive.mobile.data.Rating(trackId, stars, System.currentTimeMillis())))
+        // Kept to send to Hive on the PC (a cleared one too, as 0 stars), then synced at once.
+        dao.upsertRatings(listOf(com.local.hive.mobile.data.Rating(trackId, stars.coerceAtLeast(0f), System.currentTimeMillis(), pending = true)))
+        if (app.linkStore.pairing != null) app.sync.syncNow()
     }
     suspend fun artistImage(name: String) = app.artistImages.lookup(name)
     /** Artist photos from the internet (true), or the artist's album covers (false). */
@@ -234,6 +248,15 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
     /** A backup a fresh install could restore (see PhoneBackup). */
     val restoreOffer = app.phoneBackup.offer
     fun declineRestore() = app.phoneBackup.decline()
+    /** Where the backup copies are (Settings › Backup). */
+    val backupStatus = app.phoneBackup.status
+    fun refreshBackupStatus() = app.phoneBackup.refreshStatus()
+    fun backUpToCloud(uri: android.net.Uri) = viewModelScope.launch { app.phoneBackup.setCloud(uri) }
+    fun stopCloudBackup() = app.phoneBackup.stopCloud()
+    /** A backup file picked to restore from: shown as the restore offer once checked. */
+    fun offerBackupFile(uri: android.net.Uri, onError: (String) -> Unit) = viewModelScope.launch {
+        runCatching { app.phoneBackup.offerFile(uri) }.onFailure { onError(it.message ?: it.javaClass.simpleName) }
+    }
     fun restoreBackup(offer: com.local.hive.mobile.data.PhoneBackup.Offer, onError: (String) -> Unit) = viewModelScope.launch {
         runCatching { app.phoneBackup.restore(offer, if (offer.pcDevice != null) app.sync.pcConnection() else null) }
             .onFailure { onError(it.message ?: it.javaClass.simpleName) }

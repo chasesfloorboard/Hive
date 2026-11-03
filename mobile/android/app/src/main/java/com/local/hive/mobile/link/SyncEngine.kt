@@ -325,6 +325,7 @@ class SyncEngine(
         rememberAddresses(info)
         if (!info.plays) return
         pushPlays(conn)
+        if (info.ratings) runCatchingNotCancelled { pushRatings(conn) }.onFailure { android.util.Log.w("HiveSync", "ratings: ${it.message}") }
         // Hive shares plays it didn't before (this phone's own, imported MusicBee history): all of them
         // again from the start; any already here is skipped below.
         if (info.playsVersion > store.pcPlaysVersion) { store.lastPcPlayAt = 0; store.pcPlaysVersion = info.playsVersion }
@@ -365,6 +366,20 @@ class SyncEngine(
             }
             if (sent == 0 || batch.size < 2000) break
         }
+    }
+
+    /**
+     * Ratings made here go to Hive on the PC. A song Hive has, rated there as here, or not in Hive at
+     * all is settled; one waiting for the user to trust this phone, or that failed, goes again next time.
+     */
+    private suspend fun pushRatings(conn: HiveLinkClient.Connection) {
+        val pending = dao.ratingsToSend()
+        if (pending.isEmpty()) return
+        for (chunk in pending.chunked(500)) {
+            val answer = client.sendRatings(conn, chunk.map { com.local.hive.mobile.link.RatingOut(it.pcId, it.stars, it.changedAt) })
+            for (r in chunk) if (answer[r.pcId] in setOf("applied", "unchanged", "not-found")) dao.ratingSent(r.trackId, r.changedAt)
+        }
+        dao.forgetClearedRatings()
     }
 
     private suspend fun pullChanges(conn: HiveLinkClient.Connection) {

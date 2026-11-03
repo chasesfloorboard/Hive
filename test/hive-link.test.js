@@ -20,7 +20,7 @@ const { createHiveLink, trackIdFor } = require('../app/main/hive-link');
 // Below Linux's ephemeral range (32768+), where other programs' outgoing connections take ports at random.
 let nextPort = 20000 + Math.floor(Math.random() * 6000) * 2;
 
-function setup({ acceptPhoneChanges = true, streamSong = null, coversDir = null, remote = null, getPlaylists = null, savePlaylist = null, deletePlaylist = null, getPlays = null, spotifySearch = null, songTarget = null, onSongAdded = undefined, acceptPhonePlays = false, getWrap = null, getWrapYears = null, getListening = null, files = null, getThemes = null, getCurrentTheme = null, onPairRequest = null, deleteSongs = null, editSongs = null, getStreamLoves = null, applyStreamLoves = null, mobileApp = null } = {}) {
+function setup({ acceptPhoneChanges = true, streamSong = null, coversDir = null, remote = null, getPlaylists = null, savePlaylist = null, deletePlaylist = null, getPlays = null, spotifySearch = null, songTarget = null, onSongAdded = undefined, acceptPhonePlays = false, getWrap = null, getWrapYears = null, getListening = null, files = null, getThemes = null, getCurrentTheme = null, onPairRequest = null, deleteSongs = null, editSongs = null, setRating = null, getStreamLoves = null, applyStreamLoves = null, mobileApp = null } = {}) {
   const dataDir = fs.mkdtempSync(path.join(os.tmpdir(), 'hive-link-'));
   const tracks = [
     { id: 'a1', path: '/music/Pearl Jam - Black.mp3', title: 'Black', artist: 'Pearl Jam', album: 'Ten', duration: '343.2', loved: false },
@@ -47,6 +47,7 @@ function setup({ acceptPhoneChanges = true, streamSong = null, coversDir = null,
     onPairRequest,
     deleteSongs,
     editSongs,
+    setRating,
     getStreamLoves,
     applyStreamLoves,
     spotifySearch,
@@ -1125,4 +1126,24 @@ test('a phone keeps a copy of Hive Mobile here, and a reinstalled phone (paired 
   assert.ok(got.body.equals(zip));
   assert.equal((await rawGet(ctx.port, '/api/phone-backup?device=../hive-link', newPhone)).status, 404);
   assert.equal((await rawGet(ctx.port, `/api/phone-backup?device=${b.device}`, null)).status, 401);
+});
+
+test('a trusted phone\'s star ratings are written in Hive; an untrusted one\'s wait on the phone', async t => {
+  const rated = [];
+  const ctx = setup({ acceptPhoneChanges: false, setRating: async (p, stars) => { rated.push([p, stars]); } });
+  t.after(() => ctx.link.stop());
+  await waitListening(ctx.port);
+  const token = await pair(ctx);
+  assert.equal((await request(ctx.port, 'GET', '/api/info', { token })).body.ratings, true);
+  const body = { changes: [{ id: 'a1', stars: 4.5, at: 1 }, { id: 'nope', stars: 3, at: 1 }] };
+
+  const waiting = await request(ctx.port, 'POST', '/api/ratings', { token, body });
+  assert.deepEqual(waiting.body.results.map(r => r.status), ['waiting', 'waiting']);
+  assert.equal(rated.length, 0);
+
+  ctx.link.setTrusted(ctx.link.devices()[0].id, true);
+  const res = await request(ctx.port, 'POST', '/api/ratings', { token, body: { changes: [...body.changes, { id: 'b2', stars: 7 }] } });
+  assert.deepEqual(res.body.results.map(r => r.status), ['applied', 'not-found', 'applied']);
+  // Kept to Hive's 0-5 scale in half stars.
+  assert.deepEqual(rated, [[path.resolve('/music/Pearl Jam - Black.mp3'), 4.5], [rated[1][0], 5]]);
 });
