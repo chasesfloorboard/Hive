@@ -9,6 +9,10 @@ import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.heightIn
+import androidx.compose.foundation.layout.Spacer
+import androidx.compose.material3.Icon
+import androidx.compose.material.icons.automirrored.rounded.KeyboardArrowRight
+import androidx.compose.animation.togetherWith
 import androidx.compose.foundation.layout.PaddingValues
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.fillMaxSize
@@ -49,105 +53,245 @@ import kotlinx.coroutines.launch
 /** Settings laid out as in Hive: titled sections with a description, label-and-hint rows with the control on the right. */
 @Composable
 fun SettingsScreen(vm: MainViewModel, bottomPadding: Dp, onOpenEqualiser: () -> Unit, onBack: () -> Unit) {
-    val link by vm.link.collectAsStateWithLifecycle()
-    val tracks by vm.tracks.collectAsStateWithLifecycle()
-    val scanning by vm.scanning.collectAsStateWithLifecycle()
-
-    Column(Modifier.fillMaxSize()) {
-        PageBar("", 0f, onBack)
-        LazyColumn(Modifier.fillMaxSize(), contentPadding = PaddingValues(start = 8.dp, end = 8.dp, bottom = bottomPadding + 24.dp), verticalArrangement = Arrangement.spacedBy(10.dp)) {
-            item { Text("Settings", style = HiveText.viewTitle, color = Hive.colors.text, modifier = Modifier.padding(start = 12.dp, top = 4.dp, bottom = 6.dp)) }
-            item {
-                Section("Hive on your PC", "Over Wi-Fi, or by USB cable with USB debugging on. Your PC's Favorites and plays come here; what you do here waits in Hive on the PC until you apply it there (Settings › Connections).") {
-                    if (link.paired) PairedRows(vm) else PairRows(vm)
+    // Everyday settings on the first page; the rest a tap away, each on its own page.
+    var page by androidx.compose.runtime.saveable.rememberSaveable { mutableStateOf(SettingsPage.Main) }
+    androidx.activity.compose.BackHandler(enabled = page != SettingsPage.Main) { page = SettingsPage.Main }
+    // The first page keeps its place while a page opened from it is shown.
+    val mainList = androidx.compose.foundation.lazy.rememberLazyListState()
+    androidx.compose.animation.AnimatedContent(
+        page,
+        transitionSpec = {
+            // A page comes in from the right and goes back the way it came.
+            val forward = targetState != SettingsPage.Main
+            val spec = androidx.compose.animation.core.tween<androidx.compose.ui.unit.IntOffset>(320, easing = androidx.compose.animation.core.FastOutSlowInEasing)
+            (androidx.compose.animation.slideInHorizontally(spec) { w -> if (forward) w / 3 else -w / 3 } + androidx.compose.animation.fadeIn(androidx.compose.animation.core.tween(220, 60))) togetherWith
+                (androidx.compose.animation.slideOutHorizontally(spec) { w -> if (forward) -w / 4 else w / 3 } + androidx.compose.animation.fadeOut(androidx.compose.animation.core.tween(160)))
+        },
+        label = "settingsPage",
+    ) { shown ->
+        SettingsPageFrame(if (shown == SettingsPage.Main) "Settings" else shown.title, bottomPadding, if (shown == SettingsPage.Main) mainList else androidx.compose.foundation.lazy.rememberLazyListState(), onBack = { if (shown == SettingsPage.Main) onBack() else page = SettingsPage.Main }) {
+            when (shown) {
+                SettingsPage.Main -> mainSettings(vm, onOpenEqualiser) { page = it }
+                SettingsPage.Pc -> item { Section("", "") { val link by vm.link.collectAsStateWithLifecycle(); if (link.paired) PairedRows(vm) else PairRows(vm) } }
+                SettingsPage.Backup -> item { Section("", "Your plays, favorites, playlists, ratings and settings, kept where uninstalling Hive can't reach them. Restoring replaces what's on this phone.") { BackupRows(vm) } }
+                SettingsPage.Accounts -> {
+                    item { Section("Spotify", "Your playlists and Liked Songs, and Spotify search.") { SpotifyRows(vm) } }
+                    item { Section("Scrobbling", "Send what you play to ListenBrainz or Last.fm.") { ScrobbleRows(vm) } }
+                    item { Section("Soulseek", "Download albums from Apple Music and Spotify pages. Hive shares nothing.") { SoulseekRows() } }
                 }
-            }
-            item {
-                Section("Spotify", "Sign in to see your playlists and Liked Songs, and to search Spotify. Shared links work without signing in.") { SpotifyRows(vm) }
-            }
-            item {
-                Section("Soulseek", "Download albums and songs from Apple Music and Spotify pages (the download button). Hive shares nothing and saves where your music is (below); song sync takes them to your PC on Wi-Fi.") { SoulseekRows() }
-            }
-            item {
-                Section("Sound", "Hive's equaliser runs inside the player, so it works on speakers, headphones and Bluetooth alike.") {
-                    val eq by vm.equaliser.state.collectAsStateWithLifecycle()
-                    SettingRow("Equaliser", if (eq.enabled) eq.preset else "Off") { HiveButton("Open") { onOpenEqualiser() } }
-                    // One switch on the phone: on, it levels as Hive's "Smart" does (album gain while an
-                    // album plays in order) and never past a song's peak. The PC keeps the finer choices.
-                    val levelling = eq.replayGain != "off"
-                    SettingRow("Even out loudness", "Songs play at a similar volume, from their ReplayGain tags. Albums keep their own quiet and loud parts.") {
-                        HiveToggle(listOf("Off", "On"), if (levelling) 1 else 0, { i -> vm.equaliser.update { it.copy(replayGain = if (i == 1) "smart" else "off", clippingGuard = true) } })
-                    }
-                    // Hive's crossfade: the end of one song fades into the next, as on the PC.
-                    val fades = listOf(0, 2_000, 4_000, 6_000, 8_000, 12_000)
-                    SettingRow("Crossfade", if (eq.crossfadeMs == 0) "Off: songs follow each other without a gap." else "The last ${eq.crossfadeMs / 1000} seconds of a song fade into the next.") {}
-                    HiveToggle(listOf("Off", "2 s", "4 s", "6 s", "8 s", "12 s"), fades.indexOf(fades.lastOrNull { it <= eq.crossfadeMs } ?: 0), { i -> vm.equaliser.update { it.copy(crossfadeMs = fades[i]) } }, Modifier.padding(horizontal = 16.dp))
-                    if (eq.crossfadeMs > 0) {
-                        SettingRow("Not within an album", "Songs of the same album play straight on, gapless.") {
-                            HiveToggle(listOf("Off", "On"), if (eq.crossfadeExcludeAlbums) 1 else 0, { i -> vm.equaliser.update { it.copy(crossfadeExcludeAlbums = i == 1) } })
-                        }
-                        SettingRow("Crossfade when skipping", "Skipping to the next song fades too.") {
-                            HiveToggle(listOf("Off", "On"), if (eq.crossfadeOnSkip) 1 else 0, { i -> vm.equaliser.update { it.copy(crossfadeOnSkip = i == 1) } })
-                        }
-                    }
-                }
-            }
-            item {
-                Section("Lock screen", "Hive's player over the lock screen while music plays, as Samsung Music has it. Swipe up to unlock.") {
-                    val context = androidx.compose.ui.platform.LocalContext.current
-                    var on by remember { mutableStateOf(com.local.hive.mobile.LockPlayerActivity.enabled(context)) }
-                    // Coming back from Android's permission page, the switch reflects what was allowed.
-                    val lifecycle = androidx.lifecycle.compose.LocalLifecycleOwner.current
-                    var permitted by remember { mutableStateOf(com.local.hive.mobile.LockPlayerActivity.permitted(context)) }
-                    androidx.compose.runtime.DisposableEffect(lifecycle) {
-                        val o = androidx.lifecycle.LifecycleEventObserver { _, e -> if (e == androidx.lifecycle.Lifecycle.Event.ON_RESUME) permitted = com.local.hive.mobile.LockPlayerActivity.permitted(context) }
-                        lifecycle.lifecycle.addObserver(o); onDispose { lifecycle.lifecycle.removeObserver(o) }
-                    }
-                    SettingRow("Show on lock screen", if (on && !permitted) "Allow “Display over other apps” for Hive so Android lets it appear." else "Opens when the screen turns off with music playing.") {
-                        HiveToggle(listOf("Off", "On"), if (on && permitted) 1 else 0, { i ->
-                            on = i == 1
-                            com.local.hive.mobile.LockPlayerActivity.setEnabled(context, on)
-                            if (on && !permitted) context.startActivity(android.content.Intent(android.provider.Settings.ACTION_MANAGE_OVERLAY_PERMISSION, android.net.Uri.parse("package:${context.packageName}")))
-                        })
-                    }
-                }
-            }
-            item {
-                Section("Backup", "Your plays and Yearly Wrap, favorites, favorite albums and playlists, ratings and settings, kept outside Hive so uninstalling it, or moving to a new phone, loses nothing. Hive keeps the copies up to date as you use it.") { BackupRows(vm) }
-            }
-            item {
-                Section("Scrobbling", "Report what you play to ListenBrainz or Last.fm, as Hive on your PC does. Listens made offline go once you're back.") { ScrobbleRows(vm) }
-            }
-            item {
-                Section("Library", "The music stored on this phone, kept up to date as files change.") {
-                    var arranging by remember { mutableStateOf(false) }
-                    val context = androidx.compose.ui.platform.LocalContext.current
-                    SettingRow("Tabs", HomeTabOrder.get(context).joinToString(" · ") { it.label }) {
-                        HiveButton("Arrange") { arranging = true }
-                    }
-                    if (arranging) ArrangeTabsDialog(onDismiss = { arranging = false })
-                    SettingRow(countOf(tracks.size, "track"), "Read from this phone's music.") {
-                        HiveButton(if (scanning) "Scanning…" else "Rescan", enabled = !scanning) { vm.rescan() }
-                    }
-                    LibraryInfoRows(vm)
-                }
-            }
-            item {
-                Section("Appearance", "Your Hive theme from the PC, Hive Mobile's own colours, or Custom with a background and an accent you pick. The backdrop follows the playing cover; the accent is the theme's own, or the cover's (Accent).") {
-                    ThemeRows(vm)
-                    val photos by vm.artistPhotos.collectAsStateWithLifecycle()
-                    SettingRow("Artist pictures", if (photos) "Photos looked up online by the artist's name." else "One of the artist's album covers. Nothing is looked up online.") {
-                        HiveToggle(listOf("Covers", "Photos"), if (photos) 1 else 0, { vm.setArtistPhotos(it == 1) })
-                    }
-                }
-            }
-            item {
-                val context = androidx.compose.ui.platform.LocalContext.current
-                val version = remember { runCatching { context.packageManager.getPackageInfo(context.packageName, 0).versionName }.getOrNull() ?: "" }
-                Section("About", "") { SettingRow("Hive Mobile", "Version $version · Inter is licensed under the SIL Open Font License.") {} }
+                SettingsPage.Advanced -> advancedSettings(vm)
             }
         }
     }
+}
+
+private enum class SettingsPage(val title: String) { Main("Settings"), Pc("Hive on your PC"), Backup("Backup"), Accounts("Accounts"), Advanced("Advanced") }
+
+@Composable
+private fun SettingsPageFrame(title: String, bottomPadding: Dp, state: androidx.compose.foundation.lazy.LazyListState, onBack: () -> Unit, content: androidx.compose.foundation.lazy.LazyListScope.() -> Unit) {
+    Column(Modifier.fillMaxSize()) {
+        PageBar("", 0f, onBack)
+        LazyColumn(Modifier.fillMaxSize(), state = state, contentPadding = PaddingValues(start = 8.dp, end = 8.dp, bottom = bottomPadding + 24.dp), verticalArrangement = Arrangement.spacedBy(10.dp)) {
+            item { Text(title, style = HiveText.viewTitle, color = Hive.colors.text, modifier = Modifier.padding(start = 12.dp, top = 4.dp, bottom = 6.dp)) }
+            content()
+        }
+    }
+}
+
+private fun androidx.compose.foundation.lazy.LazyListScope.mainSettings(vm: MainViewModel, onOpenEqualiser: () -> Unit, open: (SettingsPage) -> Unit) {
+    item {
+        Section("Your PC", "") {
+            val link by vm.link.collectAsStateWithLifecycle()
+            if (link.paired) PcSummaryRow(vm)
+            NavRow(if (link.paired) "Connection and song sync" else "Connect to Hive on your PC", if (link.paired) "Pairing, copying songs, keeping folders the same" else "Sync favorites, plays and playlists with your computer") { open(SettingsPage.Pc) }
+        }
+    }
+    item {
+        Section("Look", "") {
+            ThemePicker(vm)
+            val photos by vm.artistPhotos.collectAsStateWithLifecycle()
+            SettingRow("Artist pictures", if (photos) "Photos from the internet" else "Their album covers") {
+                HiveToggle(listOf("Covers", "Photos"), if (photos) 1 else 0, { vm.setArtistPhotos(it == 1) })
+            }
+        }
+    }
+    item {
+        Section("Playback", "") {
+            val eq by vm.equaliser.state.collectAsStateWithLifecycle()
+            SettingRow("Equaliser", if (eq.enabled) eq.preset else "Off") { HiveButton("Open") { onOpenEqualiser() } }
+            // One switch on the phone: on, it levels as Hive's "Smart" does (album gain while an
+            // album plays in order) and never past a song's peak. The PC keeps the finer choices.
+            SettingRow("Even out loudness", "Songs play at a similar volume") {
+                HiveToggle(listOf("Off", "On"), if (eq.replayGain != "off") 1 else 0, { i -> vm.equaliser.update { it.copy(replayGain = if (i == 1) "smart" else "off", clippingGuard = true) } })
+            }
+            // Hive's crossfade: the end of one song fades into the next, as on the PC.
+            val fades = listOf(0, 2_000, 4_000, 6_000, 8_000, 12_000)
+            SettingRow("Crossfade", if (eq.crossfadeMs == 0) "Off" else "Songs blend for ${eq.crossfadeMs / 1000} seconds") {}
+            HiveToggle(listOf("Off", "2 s", "4 s", "6 s", "8 s", "12 s"), fades.indexOf(fades.lastOrNull { it <= eq.crossfadeMs } ?: 0), { i -> vm.equaliser.update { it.copy(crossfadeMs = fades[i]) } }, Modifier.padding(start = 16.dp, end = 16.dp, bottom = 6.dp))
+            LockScreenRow()
+        }
+    }
+    item {
+        Section("Library", "") {
+            val tracks by vm.tracks.collectAsStateWithLifecycle()
+            val scanning by vm.scanning.collectAsStateWithLifecycle()
+            var arranging by remember { mutableStateOf(false) }
+            val context = androidx.compose.ui.platform.LocalContext.current
+            SettingRow("Tabs", HomeTabOrder.get(context).joinToString(" · ") { it.label }) { HiveButton("Arrange") { arranging = true } }
+            if (arranging) ArrangeTabsDialog(onDismiss = { arranging = false })
+            SettingRow(countOf(tracks.size, "song"), "On this phone") {
+                HiveButton(if (scanning) "Scanning…" else "Rescan", enabled = !scanning) { vm.rescan() }
+            }
+        }
+    }
+    item {
+        Section("Your data", "") {
+            val b by vm.backupStatus.collectAsStateWithLifecycle()
+            val link by vm.link.collectAsStateWithLifecycle()
+            NavRow("Backup", backupSummary(b, link.paired), warn = !b.canUsePhone && b.cloudName == null && !link.paired) { open(SettingsPage.Backup) }
+            AppUpdateRow()
+        }
+    }
+    item {
+        Section("", "") {
+            NavRow("Accounts", "Spotify, Last.fm, ListenBrainz, Soulseek") { open(SettingsPage.Accounts) }
+            NavRow("Advanced", "Crossfade details, theme schedule, library details") { open(SettingsPage.Advanced) }
+        }
+    }
+    item { VersionLine() }
+}
+
+private fun androidx.compose.foundation.lazy.LazyListScope.advancedSettings(vm: MainViewModel) {
+    item {
+        Section("Crossfade", "") {
+            val eq by vm.equaliser.state.collectAsStateWithLifecycle()
+            SettingRow("Not within an album", "Songs of one album play gapless") {
+                HiveToggle(listOf("Off", "On"), if (eq.crossfadeExcludeAlbums) 1 else 0, { i -> vm.equaliser.update { it.copy(crossfadeExcludeAlbums = i == 1) } })
+            }
+            SettingRow("When skipping", "Skipping to the next song fades too") {
+                HiveToggle(listOf("Off", "On"), if (eq.crossfadeOnSkip) 1 else 0, { i -> vm.equaliser.update { it.copy(crossfadeOnSkip = i == 1) } })
+            }
+            if (eq.crossfadeMs == 0) Text("Crossfade is off (Settings › Playback).", style = HiveText.small, color = Hive.colors.textDim, modifier = Modifier.padding(horizontal = 18.dp, vertical = 4.dp))
+        }
+    }
+    item { Section("Themes", "") { ThemeMoreRows(vm) } }
+    item { Section("Library details", "") { LibraryInfoRows(vm) } }
+    item { Section("Hive on your PC", "") { DeletedSongsRow(vm, always = true) } }
+    item {
+        Section("About", "") {
+            val context = androidx.compose.ui.platform.LocalContext.current
+            val version = remember { runCatching { context.packageManager.getPackageInfo(context.packageName, 0).versionName }.getOrNull() ?: "" }
+            SettingRow("Hive Mobile $version", "Inter is licensed under the SIL Open Font License.") {}
+        }
+    }
+}
+
+/** Where the backups are, in a few words. */
+private fun backupSummary(b: com.local.hive.mobile.data.PhoneBackup.Status, paired: Boolean): String {
+    val places = listOfNotNull(
+        "this phone".takeIf { b.canUsePhone },
+        "your PC".takeIf { paired },
+        b.cloudName?.substringBefore(" › ")?.takeIf { b.cloudError == null },
+    )
+    if (places.isEmpty()) return "Not backed up yet. Tap to set it up."
+    val latest = listOf(b.phoneAt, b.pcAt, b.cloudAt).maxOrNull() ?: 0
+    val where = when (places.size) { 1 -> places[0]; 2 -> places.joinToString(" and "); else -> places.dropLast(1).joinToString(", ") + " and " + places.last() }
+    return (if (latest > 0) "Saved ${whenSaved(latest)} to " else "Kept on ") + where
+}
+
+/** A row that opens a page: what it holds, a word on where things stand, and a chevron. */
+@Composable
+private fun NavRow(label: String, summary: String, warn: Boolean = false, onClick: () -> Unit) {
+    val c = Hive.colors
+    Row(
+        Modifier.fillMaxWidth().heightIn(min = 60.dp).pressable(onClick = onClick, pressedScale = 0.985f).padding(horizontal = 18.dp, vertical = 10.dp),
+        verticalAlignment = Alignment.CenterVertically,
+    ) {
+        Column(Modifier.weight(1f), verticalArrangement = Arrangement.spacedBy(2.dp)) {
+            Text(label, style = HiveText.rowStrong, color = c.text)
+            if (summary.isNotBlank()) Text(summary, style = HiveText.small, color = if (warn) Color(0xFFFFB27A) else c.textDim)
+        }
+        Icon(androidx.compose.material.icons.Icons.AutoMirrored.Rounded.KeyboardArrowRight, null, tint = c.textDim, modifier = Modifier.size(24.dp))
+    }
+}
+
+/** The PC at a glance: connected or not, when it last synced, and Sync now. */
+@Composable
+private fun PcSummaryRow(vm: MainViewModel) {
+    val c = Hive.colors
+    val link by vm.link.collectAsStateWithLifecycle()
+    val state = when {
+        link.syncing -> "Syncing…"
+        link.error != null && !link.live -> "Not connected right now"
+        link.lastSyncAt > 0 -> (if (link.live) "Connected · " else "") + "synced ${DateUtils.getRelativeTimeSpanString(link.lastSyncAt)}"
+        link.live -> "Connected"
+        else -> "Not connected right now"
+    }
+    Row(Modifier.fillMaxWidth().padding(horizontal = 18.dp, vertical = 10.dp), verticalAlignment = Alignment.CenterVertically) {
+        Box(Modifier.size(10.dp).clip(CircleShape).background(if (link.live) Color(0xFF7BE0A0) else c.textDimmer))
+        Spacer(Modifier.width(12.dp))
+        Column(Modifier.weight(1f), verticalArrangement = Arrangement.spacedBy(2.dp)) {
+            Text(link.serverName.ifBlank { "Hive" }, style = HiveText.rowStrong, color = c.text)
+            Text(state, style = HiveText.small, color = c.textDim)
+        }
+        HiveButton(if (link.syncing) "Syncing…" else "Sync now", enabled = !link.syncing, primary = true) { vm.syncNow() }
+    }
+}
+
+@Composable
+private fun LockScreenRow() {
+    val context = androidx.compose.ui.platform.LocalContext.current
+    var on by remember { mutableStateOf(com.local.hive.mobile.LockPlayerActivity.enabled(context)) }
+    // Coming back from Android's permission page, the switch reflects what was allowed.
+    val lifecycle = androidx.lifecycle.compose.LocalLifecycleOwner.current
+    var permitted by remember { mutableStateOf(com.local.hive.mobile.LockPlayerActivity.permitted(context)) }
+    androidx.compose.runtime.DisposableEffect(lifecycle) {
+        val o = androidx.lifecycle.LifecycleEventObserver { _, e -> if (e == androidx.lifecycle.Lifecycle.Event.ON_RESUME) permitted = com.local.hive.mobile.LockPlayerActivity.permitted(context) }
+        lifecycle.lifecycle.addObserver(o); onDispose { lifecycle.lifecycle.removeObserver(o) }
+    }
+    SettingRow("Player on the lock screen", if (on && !permitted) "Allow “Display over other apps” for Hive" else "While music plays") {
+        HiveToggle(listOf("Off", "On"), if (on && permitted) 1 else 0, { i ->
+            on = i == 1
+            com.local.hive.mobile.LockPlayerActivity.setEnabled(context, on)
+            if (on && !permitted) context.startActivity(android.content.Intent(android.provider.Settings.ACTION_MANAGE_OVERLAY_PERMISSION, android.net.Uri.parse("package:${context.packageName}")))
+        })
+    }
+}
+
+/** Hive Mobile updates come from Hive on the PC (at home or over Tailscale), or GitHub when it's off. */
+@Composable
+private fun AppUpdateRow() {
+    val context = androidx.compose.ui.platform.LocalContext.current
+    val updater = (context.applicationContext as com.local.hive.mobile.HiveApp).appUpdater
+    val update by updater.state.collectAsStateWithLifecycle()
+    SettingRow("App updates", when (val u = update) {
+        is com.local.hive.mobile.link.AppUpdater.State.Ready -> "${u.versionName} is ready"
+        is com.local.hive.mobile.link.AppUpdater.State.Downloading -> "Getting ${u.versionName}…"
+        is com.local.hive.mobile.link.AppUpdater.State.Failed -> u.message
+        else -> "Version ${updater.installedName}"
+    }) {
+        if (update is com.local.hive.mobile.link.AppUpdater.State.Ready) HiveButton("Install", primary = true) { updater.install(context) }
+        else HiveButton("Check now") { updater.checkAnywhere(force = true) }
+    }
+}
+
+/** Songs deleted on one side since they were on both: the user decides what happens on the other. */
+@Composable
+private fun DeletedSongsRow(vm: MainViewModel, always: Boolean = false) {
+    val gone by vm.deletions.collectAsStateWithLifecycle()
+    fun songs(n: Int) = if (n == 1) "1 song" else "%,d songs".format(n)
+    if (gone.count > 0) SettingRow("Deleted songs", listOfNotNull(
+        gone.fromPc.size.takeIf { it > 0 }?.let { "${songs(it)} deleted on your PC" },
+        gone.fromPhone.size.takeIf { it > 0 }?.let { "${songs(it)} deleted on this phone" },
+    ).joinToString(" · ")) { HiveButton("Review", primary = true) { vm.openDeletions.value = true } }
+    else if (always) SettingRow("Deleted songs", "Nothing waiting for you") {}
+}
+
+@Composable
+private fun VersionLine() {
+    val context = androidx.compose.ui.platform.LocalContext.current
+    val version = remember { runCatching { context.packageManager.getPackageInfo(context.packageName, 0).versionName }.getOrNull() ?: "" }
+    Text("Hive Mobile $version", style = HiveText.small, color = Hive.colors.textDimmer, modifier = Modifier.fillMaxWidth().padding(top = 6.dp), textAlign = androidx.compose.ui.text.style.TextAlign.Center)
 }
 
 @Composable
@@ -155,7 +299,7 @@ private fun Section(title: String, description: String, content: @Composable () 
     val c = Hive.colors
     Column(Modifier.fillMaxWidth().hiveGlass(HiveShape.panel).padding(vertical = 14.dp)) {
         Column(Modifier.padding(horizontal = 18.dp).padding(bottom = 6.dp), verticalArrangement = Arrangement.spacedBy(3.dp)) {
-            Text(title, style = HiveText.year, color = c.text)
+            if (title.isNotBlank()) Text(title, style = HiveText.year, color = c.text)
             if (description.isNotBlank()) Text(description, style = HiveText.small, color = c.textDim)
         }
         content()
@@ -258,32 +402,14 @@ private fun SongSyncRows(vm: MainViewModel) {
             runCatching { context.startActivity(android.content.Intent(android.provider.Settings.ACTION_MANAGE_APP_ALL_FILES_ACCESS_PERMISSION, android.net.Uri.parse("package:${context.packageName}"))) }
         }
     }
-    // Hive Mobile updates come from Hive on the PC (at home or over Tailscale), or GitHub when it's off.
-    val updater = (context.applicationContext as com.local.hive.mobile.HiveApp).appUpdater
-    val update by updater.state.collectAsStateWithLifecycle()
-    val updateScope = androidx.compose.runtime.rememberCoroutineScope()
-    SettingRow("App updates", when (val u = update) {
-        is com.local.hive.mobile.link.AppUpdater.State.Ready -> "Hive Mobile ${u.versionName} is ready (you have ${updater.installedName})."
-        is com.local.hive.mobile.link.AppUpdater.State.Downloading -> "Getting Hive Mobile ${u.versionName}…"
-        is com.local.hive.mobile.link.AppUpdater.State.Failed -> u.message
-        else -> "Hive Mobile ${updater.installedName}. New versions come from Hive on your PC, or from GitHub when the PC is off."
-    }) {
-        if (update is com.local.hive.mobile.link.AppUpdater.State.Ready) HiveButton("Install") { updater.install(context) }
-        else HiveButton("Check now") { updater.checkAnywhere(force = true) }
-    }
-    // Songs deleted on one side since they were on both: the user decides what happens on the other.
-    val gone by vm.deletions.collectAsStateWithLifecycle()
-    if (gone.count > 0) SettingRow("Deleted songs", listOfNotNull(
-        gone.fromPc.size.takeIf { it > 0 }?.let { "${songs(it)} deleted on your PC" },
-        gone.fromPhone.size.takeIf { it > 0 }?.let { "${songs(it)} deleted on this phone" },
-    ).joinToString(" · ")) { HiveButton("Review", primary = true) { vm.openDeletions.value = true } }
+    DeletedSongsRow(vm)
 }
 
 /** "Connect automatically": Hive opening on the PC's Wi-Fi finds it and connects; the PC allows this phone once. */
 @Composable
 private fun AutoConnectRow(vm: MainViewModel) {
     val on by vm.autoConnect.collectAsStateWithLifecycle()
-    SettingRow("Connect automatically", "When Hive opens on the same Wi-Fi as your PC, it finds Hive there and connects. The first time, Hive on the PC asks you to allow this phone.") {
+    SettingRow("Connect automatically", "Finds Hive on your Wi-Fi and connects. The first time, you allow this phone on the PC.") {
         HiveToggle(listOf("Off", "On"), if (on) 1 else 0, { i -> vm.setAutoConnect(i == 1) })
     }
 }
@@ -302,7 +428,7 @@ private fun PairRows(vm: MainViewModel) {
 
     AutoConnectRow(vm)
     linkError.connecting?.let { Text(it, style = HiveText.small, color = c.accent, modifier = Modifier.padding(horizontal = 18.dp, vertical = 4.dp)) }
-    SettingRow("Or pair with a code", "On the PC: Settings › Connections › Hive Mobile › Pair phone.") {}
+    SettingRow("Or pair with a code", "On the PC: Settings › Connections › Pair phone") {}
     SettingRow("Find Hive on this Wi-Fi", "") {
         if (discovering) CircularProgressIndicator(Modifier.size(18.dp), strokeWidth = 2.dp, color = c.accent)
         else HiveButton("Search") { vm.discover() }
@@ -393,18 +519,11 @@ private fun SpotifyRows(vm: MainViewModel) {
 }
 
 @Composable
-private fun ThemeRows(vm: MainViewModel) {
+private fun ThemePicker(vm: MainViewModel) {
     val c = Hive.colors
     val context = androidx.compose.ui.platform.LocalContext.current
     val current by vm.themeName.collectAsStateWithLifecycle()
-    var note by remember { mutableStateOf<String?>(null) }
     val packs by vm.themePacks.collectAsStateWithLifecycle()
-    val importer = androidx.activity.compose.rememberLauncherForActivityResult(androidx.activity.result.contract.ActivityResultContracts.OpenDocument()) { uri ->
-        if (uri == null) return@rememberLauncherForActivityResult
-        val name = uri.lastPathSegment?.substringAfterLast('/')?.substringBeforeLast('.') ?: "Imported theme"
-        val pack = runCatching { context.contentResolver.openInputStream(uri)?.bufferedReader()?.readText() }.getOrNull()?.let { com.local.hive.mobile.ui.theme.ThemePack.parse(it, name) }
-        if (pack == null) note = "That file isn't a Hive theme." else { vm.themes.saveTheme(pack.name, pack.css); note = null }
-    }
     // Two rows of themes, side-scrolling; Custom opens its colour picker.
     var customizing by remember { mutableStateOf(false) }
     var holding by remember { mutableStateOf<String?>(null) }
@@ -436,11 +555,25 @@ private fun ThemeRows(vm: MainViewModel) {
         } else NameDialog("Rename theme", name, "Rename", onDismiss = { holding = null }, hint = "Theme name") { vm.themes.renameTheme(name, it); holding = null }
     }
     val fromCover by vm.themes.accentFromCover.collectAsStateWithLifecycle()
-    SettingRow("Accent", if (fromCover) "Taken from the playing song's cover." else "The theme's own colour.") {
+    SettingRow("Accent colour", if (fromCover) "From the playing cover" else "The theme's own") {
         HiveToggle(listOf("Theme", "Cover"), if (fromCover) 1 else 0, { i -> vm.themes.setAccentFromCover(i == 1) })
     }
+}
+
+/** Themes beyond picking one: a day and a night theme, and importing one. */
+@Composable
+private fun ThemeMoreRows(vm: MainViewModel) {
+    val context = androidx.compose.ui.platform.LocalContext.current
+    val packs by vm.themePacks.collectAsStateWithLifecycle()
+    var note by remember { mutableStateOf<String?>(null) }
+    val importer = androidx.activity.compose.rememberLauncherForActivityResult(androidx.activity.result.contract.ActivityResultContracts.OpenDocument()) { uri ->
+        if (uri == null) return@rememberLauncherForActivityResult
+        val name = uri.lastPathSegment?.substringAfterLast('/')?.substringBeforeLast('.') ?: "Imported theme"
+        val pack = runCatching { context.contentResolver.openInputStream(uri)?.bufferedReader()?.readText() }.getOrNull()?.let { com.local.hive.mobile.ui.theme.ThemePack.parse(it, name) }
+        if (pack == null) note = "That file isn't a Hive theme." else { vm.themes.saveTheme(pack.name, pack.css); note = null }
+    }
     ScheduleRows(vm, packs.map { it.name })
-    SettingRow("Import a theme", "A .hive-theme from Hive on your PC, or a CSS file of Hive's variables.") {
+    SettingRow("Import a theme", "A .hive-theme file from Hive on your PC") {
         HiveButton("Import") { importer.launch(arrayOf("*/*")) }
     }
     note?.let { Text(it, style = HiveText.small, color = Color(0xFFFF8A8A), modifier = Modifier.padding(horizontal = 18.dp)) }
@@ -706,9 +839,9 @@ private fun BackupRows(vm: MainViewModel) {
     SettingRow(
         "On this phone",
         when {
-            !b.canUsePhone -> "Allow “All files access” and the copy is kept in Documents › Hive Mobile, where uninstalling Hive can't reach it."
-            b.phoneAt > 0 -> "Saved ${whenSaved(b.phoneAt)} in Documents › Hive Mobile. Reinstall Hive and it offers to bring everything back."
-            else -> "Kept in Documents › Hive Mobile, saved as you use Hive."
+            !b.canUsePhone -> "Allow “All files access” to keep a copy in Documents"
+            b.phoneAt > 0 -> "Saved ${whenSaved(b.phoneAt)} in Documents › Hive Mobile"
+            else -> "Kept in Documents › Hive Mobile"
         },
     ) {
         if (!b.canUsePhone && android.os.Build.VERSION.SDK_INT >= 30) HiveButton("Allow") {
@@ -718,23 +851,26 @@ private fun BackupRows(vm: MainViewModel) {
     SettingRow(
         "On your PC",
         when {
-            !link.paired -> "Pair with Hive on your PC (above) and it keeps a copy too, even if this phone is lost or wiped."
-            b.pcAt > 0 -> "Sent ${whenSaved(b.pcAt)}. A new phone paired with your PC offers to restore it."
-            else -> "Sent the next time Hive on your PC can be reached."
+            !link.paired -> "Connect to Hive on your PC to keep a copy there too"
+            b.pcAt > 0 -> "Saved ${whenSaved(b.pcAt)}"
+            else -> "Saved the next time your PC can be reached"
         },
     ) {}
     SettingRow(
         "In the cloud",
         b.cloudError ?: when {
-            b.cloudName == null -> "Keep a copy in Google Drive, OneDrive, Dropbox or any storage app on this phone. On a new phone, install Hive and use Restore from a file."
-            b.cloudAt > 0 -> "Saved ${whenSaved(b.cloudAt)} to ${b.cloudName}. Updated at most every 15 minutes."
+            b.cloudName == null -> "Keep a copy in Google Drive or another storage app"
+            b.cloudAt > 0 -> "Saved ${whenSaved(b.cloudAt)} to ${b.cloudName}"
             else -> "Saving to ${b.cloudName}…"
         },
     ) {
         if (b.cloudName == null) HiveButton("Choose") { runCatching { create.launch("Hive Mobile backup.zip") } }
         else HiveButton("Stop") { vm.stopCloudBackup() }
     }
-    SettingRow("Restore from a file", "A backup from the cloud, another phone or a download. Everything Hive has on this phone now is replaced by it.") {
+    if (link.paired) SettingRow("Restore from your PC", "This phone's backup from before, kept on your PC") {
+        HiveButton("Restore") { error = null; vm.offerPcBackup { error = it } }
+    }
+    SettingRow("Restore from a file", "From the cloud or another phone") {
         HiveButton("Restore") { error = null; runCatching { open.launch(arrayOf("application/zip", "application/octet-stream", "*/*")) } }
     }
     error?.let { Text(it, style = HiveText.small, color = Color(0xFFFF8A8A), modifier = Modifier.padding(horizontal = 18.dp, vertical = 4.dp)) }

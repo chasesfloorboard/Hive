@@ -253,6 +253,13 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
     fun refreshBackupStatus() = app.phoneBackup.refreshStatus()
     fun backUpToCloud(uri: android.net.Uri) = viewModelScope.launch { app.phoneBackup.setCloud(uri) }
     fun stopCloudBackup() = app.phoneBackup.stopCloud()
+    /** The newest backup the PC keeps from another install, shown as the restore offer; false when there's none. */
+    fun offerPcBackup(onResult: (String?) -> Unit) = viewModelScope.launch {
+        runCatching {
+            val conn = app.sync.pcConnection() ?: return@runCatching "Hive on your PC can't be reached right now."
+            if (app.phoneBackup.offerFromPc(conn, app.linkStore.pairing?.deviceId) == null) "Hive on your PC has no other backup of this phone." else null
+        }.onSuccess(onResult).onFailure { onResult(it.message ?: it.javaClass.simpleName) }
+    }
     /** A backup file picked to restore from: shown as the restore offer once checked. */
     fun offerBackupFile(uri: android.net.Uri, onError: (String) -> Unit) = viewModelScope.launch {
         runCatching { app.phoneBackup.offerFile(uri) }.onFailure { onError(it.message ?: it.javaClass.simpleName) }

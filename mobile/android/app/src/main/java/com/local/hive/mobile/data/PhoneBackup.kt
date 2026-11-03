@@ -224,6 +224,15 @@ class PhoneBackup(
     }
 
     /**
+     * The newest backup Hive on the PC keeps from another install (this phone before a reinstall,
+     * or another phone), shown as the restore offer. Null when it keeps none.
+     */
+    suspend fun offerFromPc(conn: HiveLinkClient.Connection, ownDevice: String?): Offer? {
+        val b = client.phoneBackups(conn).filter { it.device != ownDevice }.maxByOrNull { it.savedAt } ?: return null
+        return Offer(b.savedAt, b.versionName, b.deviceName, pcDevice = b.device, replaces = !(fresh && !answered)).also { _offer.value = it }
+    }
+
+    /**
      * A backup file the user picked (from a cloud, another phone, a download): checked and shown as
      * the restore offer. Throws when it isn't a Hive Mobile backup.
      */

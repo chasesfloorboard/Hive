@@ -82,7 +82,7 @@ class SyncEngine(
     private val deviceName get() = listOf(Build.MANUFACTURER.replaceFirstChar { it.uppercase() }, Build.MODEL).joinToString(" ")
 
     suspend fun pair(host: String, port: Int, code: String): Result<Unit> = runCatchingNotCancelled {
-        paired(host, port, client.pair(host, port, code, deviceName))
+        paired(host, port, client.pair(host, port, code, deviceName, store.phoneKey))
     }
 
     private var autoConnecting = false
@@ -98,7 +98,7 @@ class SyncEngine(
         try {
             val hive = client.discover().firstOrNull() ?: return
             _status.update { it.copy(connecting = "Found ${hive.name}. Allow this phone in Hive on the PC…", error = null) }
-            val ticket = client.requestConnect(hive.host, hive.port, deviceName)
+            val ticket = client.requestConnect(hive.host, hive.port, deviceName, store.phoneKey)
             repeat(70) {
                 kotlinx.coroutines.delay(2_000)
                 val answer = runCatching { client.connectAnswer(hive.host, hive.port, ticket) }.getOrNull() ?: return@repeat
@@ -325,6 +325,9 @@ class SyncEngine(
         rememberAddresses(info)
         if (!info.plays) return
         pushPlays(conn)
+        // Hive learns this phone's key once per pairing, so a reinstall comes back without asking.
+        val pairedAs = store.pairing?.deviceId
+        if (info.phoneKeys && pairedAs != null && store.keyGivenFor != pairedAs) runCatchingNotCancelled { client.sendPhoneKey(conn, store.phoneKey); store.keyGivenFor = pairedAs }
         if (info.ratings) runCatchingNotCancelled { pushRatings(conn) }.onFailure { android.util.Log.w("HiveSync", "ratings: ${it.message}") }
         // Hive shares plays it didn't before (this phone's own, imported MusicBee history): all of them
         // again from the start; any already here is skipped below.

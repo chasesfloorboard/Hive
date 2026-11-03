@@ -5656,12 +5656,12 @@ async function buildYearlyWrapData(year) {
     estimated = rows.length > 0;
   }
   const add=(map,key,amount=1)=>map.set(key,(map.get(key)||0)+amount);
-  const byTrack=new Map(), byArtist=new Map(), byAlbum=new Map(), byGenre=new Map(), byDay=new Map(), byMonth=new Map();
+  const byTrack=new Map(), byArtist=new Map(), byAlbum=new Map(), byGenre=new Map(), byGenreAlbum=new Map(), byDay=new Map(), byMonth=new Map();
   let totalSeconds=0;
   for(const e of rows){
     const duration=Math.max(0,Number(e.duration)||0); totalSeconds+=duration;
     add(byTrack,`${e.title}\u0000${e.artist}`,1); add(byArtist,e.artist,1); add(byAlbum,`${e.album}\u0000${e.artist}`,1);
-    if(e.genre) add(byGenre,e.genre,duration);
+    if(e.genre){ add(byGenre,e.genre,duration); if(e.album && e.album!=='Unknown album') add(byGenreAlbum,`${e.genre}\u0000${e.album}\u0000${e.artist}`,duration+0.001); }
     const d=new Date(Number(e.playedAt||0)); if(Number.isNaN(d.getTime())) continue;
     const day=d.toISOString().slice(0,10), month=day.slice(0,7); add(byDay,day,duration); add(byMonth,month,duration);
   }
@@ -5695,7 +5695,13 @@ async function buildYearlyWrapData(year) {
     topTrack: topTrack ? (() => { const row=rows.find(e=>`${e.title}\u0000${e.artist}`===topTrack[0]) || {}; return { key:topTrack[0], plays:topTrack[1], album:row.album || '', cover:topTrackCover }; })() : null,
     topArtists: topArtistRows,
     topAlbums: topAlbumRows,
-    topGenres: top(byGenre,5).map(([name,seconds])=>({name,seconds})),
+    // Each genre's picture: the album of that genre listened to most this year.
+    topGenres: top(byGenre,5).map(([name,seconds])=>{
+      const best=[...byGenreAlbum.entries()].filter(([k])=>k.split('\u0000')[0]===name).sort((x,y)=>y[1]-x[1])[0];
+      if(!best) return {name,seconds};
+      const [,album,artist]=best[0].split('\u0000');
+      return {name,seconds,album,artist,cover:firstCoverFor(e=>e.genre===name && e.album===album && e.artist===artist && (e.cover || e.artworkUrl)) || firstCoverFor(e=>e.album===album && (e.cover || e.artworkUrl))};
+    }),
     topDay: topDay ? {date:topDay[0],seconds:topDay[1]} : null,
     topMonth: topMonth ? {month:topMonth[0],seconds:topMonth[1]} : null,
     longestStreak, monthly:monthRows,

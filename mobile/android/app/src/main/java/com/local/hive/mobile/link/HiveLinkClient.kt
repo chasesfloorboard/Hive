@@ -63,7 +63,7 @@ import java.util.concurrent.TimeUnit
 /** Song sync on the PC: whether Hive takes song files from the phone. */
 @Serializable data class SongCaps(val receive: Boolean = false)
 @Serializable data class AppUpdate(val versionCode: Long, val versionName: String, val size: Long, val sha256: String)
-@Serializable data class InfoResponse(val serverId: String, val name: String, val port: Int, val seq: Long, val addresses: List<HiveAddress> = emptyList(), val streams: StreamCaps = StreamCaps(), val remote: Boolean = false, val plays: Boolean = false, val playsVersion: Int = 0, val inbox: InboxSummary = InboxSummary(), val songs: SongCaps = SongCaps(), val wrap: Boolean = false, val listening: Boolean = false, val files: Boolean = false, val themes: Boolean = false, val playlistSync: Boolean = false, val ratings: Boolean = false)
+@Serializable data class InfoResponse(val serverId: String, val name: String, val port: Int, val seq: Long, val addresses: List<HiveAddress> = emptyList(), val streams: StreamCaps = StreamCaps(), val remote: Boolean = false, val plays: Boolean = false, val playsVersion: Int = 0, val inbox: InboxSummary = InboxSummary(), val songs: SongCaps = SongCaps(), val wrap: Boolean = false, val listening: Boolean = false, val files: Boolean = false, val themes: Boolean = false, val playlistSync: Boolean = false, val ratings: Boolean = false, val phoneKeys: Boolean = false)
 /** One year's Yearly Wrap as Hive on the PC counts it (its plays, imports and this phone's). */
 @Serializable data class PcWrap(
     val year: Int,
@@ -84,7 +84,8 @@ import java.util.concurrent.TimeUnit
 @Serializable data class PcWrapTrack(val key: String, val plays: Int, val album: String = "", val cover: String? = null)
 @Serializable data class PcWrapArtist(val name: String, val plays: Int, val cover: String? = null)
 @Serializable data class PcWrapAlbum(val album: String, val artist: String = "", val plays: Int, val cover: String? = null)
-@Serializable data class PcWrapGenre(val name: String, val seconds: Double = 0.0)
+/** [album] by [artist]: the genre's most listened album that year, for its picture. */
+@Serializable data class PcWrapGenre(val name: String, val seconds: Double = 0.0, val album: String = "", val artist: String = "", val cover: String? = null)
 @Serializable data class PcWrapDay(val date: String, val seconds: Double = 0.0)
 @Serializable data class PcWrapMonth(val month: String, val seconds: Double = 0.0)
 @Serializable data class WrapYears(val years: List<Int> = emptyList())
@@ -126,8 +127,9 @@ import java.util.concurrent.TimeUnit
     val volume: Double = 1.0,
 )
 @Serializable private data class RemoteCommand(val command: String, val positionMs: Long? = null, val volume: Double? = null)
-@Serializable private data class PairRequest(val code: String, val deviceName: String)
-@Serializable private data class ConnectRequest(val deviceName: String)
+@Serializable private data class PairRequest(val code: String, val deviceName: String, val phoneKey: String = "")
+@Serializable private data class ConnectRequest(val deviceName: String, val phoneKey: String = "")
+@Serializable private data class PhoneKey(val phoneKey: String)
 @Serializable private data class DeleteSongs(val ids: List<String>)
 @Serializable data class RatingOut(val id: String, val stars: Float, val at: Long)
 @Serializable private data class RatingsOut(val changes: List<RatingOut>)
@@ -211,16 +213,16 @@ class HiveLinkClient(private val http: OkHttpClient = defaultHttp()) {
         }.getOrDefault(false)
     }
 
-    suspend fun pair(host: String, port: Int, code: String, deviceName: String): PairResponse = withContext(Dispatchers.IO) {
-        val body = json.encodeToString(PairRequest.serializer(), PairRequest(code.trim(), deviceName)).toRequestBody(jsonType)
+    suspend fun pair(host: String, port: Int, code: String, deviceName: String, phoneKey: String = ""): PairResponse = withContext(Dispatchers.IO) {
+        val body = json.encodeToString(PairRequest.serializer(), PairRequest(code.trim(), deviceName, phoneKey)).toRequestBody(jsonType)
         http.newCall(Request.Builder().url(base(host, port) + "/api/pair").post(body).build()).execute().use {
             json.decodeFromString(PairResponse.serializer(), read(it))
         }
     }
 
     /** Asks Hive to let this phone connect without a code; the person at the PC answers. */
-    suspend fun requestConnect(host: String, port: Int, deviceName: String): ConnectTicket = withContext(Dispatchers.IO) {
-        val body = json.encodeToString(ConnectRequest.serializer(), ConnectRequest(deviceName)).toRequestBody(jsonType)
+    suspend fun requestConnect(host: String, port: Int, deviceName: String, phoneKey: String = ""): ConnectTicket = withContext(Dispatchers.IO) {
+        val body = json.encodeToString(ConnectRequest.serializer(), ConnectRequest(deviceName, phoneKey)).toRequestBody(jsonType)
         http.newCall(Request.Builder().url(base(host, port) + "/api/pair/request").post(body).build()).execute().use {
             json.decodeFromString(ConnectTicket.serializer(), read(it))
         }
@@ -354,6 +356,12 @@ class HiveLinkClient(private val http: OkHttpClient = defaultHttp()) {
     suspend fun deleteSongs(conn: Connection, ids: List<String>): List<String> = withContext(Dispatchers.IO) {
         val body = json.encodeToString(DeleteSongs.serializer(), DeleteSongs(ids)).toRequestBody(jsonType)
         http.newCall(authed(conn, "/api/songs/delete").post(body).build()).execute().use { json.decodeFromString(DeletedSongs.serializer(), read(it)).deleted }
+    }
+
+    /** Gives Hive this phone's key (see LinkStore.phoneKey). */
+    suspend fun sendPhoneKey(conn: Connection, phoneKey: String) = withContext(Dispatchers.IO) {
+        val body = json.encodeToString(PhoneKey.serializer(), PhoneKey(phoneKey)).toRequestBody(jsonType)
+        http.newCall(authed(conn, "/api/phone-key").post(body).build()).execute().use { read(it) }
     }
 
     /** Star ratings made on the phone (0 takes one off). Each answer: applied, unchanged, not-found, waiting (not trusted yet) or failed. */

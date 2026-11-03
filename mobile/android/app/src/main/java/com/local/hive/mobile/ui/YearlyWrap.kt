@@ -94,6 +94,8 @@ data class Wrap(
     val topArtists: List<Ranked>,
     val topAlbums: List<Ranked>,
     val topGenre: String?,
+    /** The top genre's most listened album this year: the genre's picture. */
+    val topGenreAlbum: Ranked? = null,
     val months: List<Long>,
     val biggestDay: Pair<LocalDate, Long>?,
     val biggestMonth: Pair<Int, Long>?,
@@ -128,6 +130,7 @@ data class Wrap(
             topTrack = newTop ?: top,
             topArtists = merge(topArtists, more.topArtists) { fold(it.name) },
             topAlbums = merge(topAlbums, more.topAlbums) { fold(it.name) + "\u0000" + fold(it.sub) },
+            topGenreAlbum = topGenreAlbum ?: more.topGenreAlbum?.takeIf { topGenre == null || fold(topGenre) == fold(more.topGenre.orEmpty()) },
             months = monthsNow, biggestDay = day,
             biggestMonth = monthsNow.withIndex().maxByOrNull { it.value }?.takeIf { it.value > 0 }?.let { (it.index + 1) to it.value },
         )
@@ -159,6 +162,7 @@ data class Wrap(
                 topArtists = pc.topArtists.map { Ranked(it.name, "", it.plays, 0, cover(it.cover)) },
                 topAlbums = pc.topAlbums.map { Ranked(it.album, it.artist, it.plays, albumId(it.album, it.artist), cover(it.cover)) },
                 topGenre = pc.topGenres.firstOrNull()?.name,
+                topGenreAlbum = pc.topGenres.firstOrNull()?.takeIf { it.album.isNotBlank() }?.let { g -> Ranked(g.album, g.artist, 0, albumId(g.album, g.artist), cover(g.cover)) },
                 months = months,
                 biggestDay = pc.topDay?.let { d -> runCatching { LocalDate.parse(d.date) to ms(d.seconds) }.getOrNull() },
                 biggestMonth = pc.topMonth?.let { m -> m.month.substringAfter('-').toIntOrNull()?.let { it to ms(m.seconds) } },
@@ -179,11 +183,16 @@ data class Wrap(
             val byAlbum = rows.filter { it.album.isNotBlank() }.groupBy { it.albumId }.values.map { g -> Ranked(g[0].album, albumArtist(g[0]), g.size, g[0].albumId) }.sortedByDescending { it.plays }
             val months = (1..12).map { m -> rows.filter { Instant.ofEpochMilli(it.playedAt).atZone(zone).monthValue == m }.sumOf { it.listenedMs } }
             val dayTotals = rows.groupBy(::day).mapValues { (_, g) -> g.sumOf { it.listenedMs } }
+            val topGenre = rows.filter { it.genre.isNotBlank() }.groupBy { it.genre }.maxByOrNull { it.value.size }?.key
+            // The genre's picture: its album listened to longest this year (then the most played).
+            val genreAlbum = rows.filter { it.genre == topGenre && it.album.isNotBlank() }.groupBy { it.albumId }.values
+                .maxWithOrNull(compareBy<List<PlayRow>> { g -> g.sumOf { it.listenedMs } }.thenBy { it.size })
+                ?.let { g -> Ranked(g[0].album, albumArtist(g[0]), g.size, g[0].albumId) }
             return Wrap(
                 year = year, listenedMs = rows.sumOf { it.listenedMs }, plays = rows.size,
                 artists = byArtist.size, albums = byAlbum.size, longestStreak = longest,
                 topTrack = byTrack.firstOrNull(), topArtists = byArtist.take(5), topAlbums = byAlbum.take(5),
-                topGenre = rows.filter { it.genre.isNotBlank() }.groupBy { it.genre }.maxByOrNull { it.value.size }?.key,
+                topGenre = topGenre, topGenreAlbum = genreAlbum,
                 months = months, biggestDay = dayTotals.maxByOrNull { it.value }?.toPair(),
                 biggestMonth = months.withIndex().maxByOrNull { it.value }?.takeIf { it.value > 0 }?.let { (it.index + 1) to it.value },
             )
@@ -245,6 +254,7 @@ fun YearlyWrapScreen(vm: MainViewModel, bottomPadding: Dp, onOpenAlbum: (Long) -
             // the next cover as you swipe (each slide drawing its own left hard seams mid-swipe).
             val album = w.topAlbums.firstOrNull()?.let { r -> art(r) }
             val photos by vm.artistPhotos.collectAsStateWithLifecycle()
+            val genreCovers by vm.genreCovers.collectAsStateWithLifecycle()
             val phoneArtists by vm.artists.collectAsStateWithLifecycle()
             fun artistPic(a: Wrap.Ranked) = artistArt(w, a, photos, phoneArtists.firstOrNull { it.artist.equals(a.name, true) }?.albumId)
             val arts = remember(w, photos, phoneArtists) { (0 until 7).map { page -> when (page) { 2 -> w.topTrack?.let { r -> art(r) } ?: album; 3 -> w.topArtists.firstOrNull()?.let { r -> artistPic(r) } ?: album; else -> album } } }
@@ -331,11 +341,16 @@ fun YearlyWrapScreen(vm: MainViewModel, bottomPadding: Dp, onOpenAlbum: (Long) -
                                 Title("The music stays with you.", modifier = Modifier.rise(enter, 0))
                                 Spacer(Modifier.height(18.dp))
                                 // A poster of the year: four tiles, two to a row.
+                                // Never a letter for the genre: its most listened album this year, else its most played one on this phone.
+                                val genreAlbum = w.topGenreAlbum?.takeIf { it.albumId != 0L || it.cover != null }
+                                val genreCover = w.topGenre?.let { g -> genreCovers[g.lowercase()]?.firstOrNull() }
                                 val tiles = listOf(
                                     Tile("Top artist", w.topArtists.firstOrNull()?.name, w.topArtists.firstOrNull()?.let { r -> artistPic(r) }, true) { w.topArtists.firstOrNull()?.let { onOpenArtist(it.name) } },
                                     Tile("Top track", w.topTrack?.name, w.topTrack?.let { r -> art(r) }, false) { w.topTrack?.albumId?.takeIf { it > 0 }?.let(onOpenAlbum) },
                                     Tile("Top album", w.topAlbums.firstOrNull()?.name, w.topAlbums.firstOrNull()?.let { r -> art(r) }, false) { w.topAlbums.firstOrNull()?.albumId?.takeIf { it > 0 }?.let(onOpenAlbum) },
-                                    Tile("Top genre", w.topGenre, null, false) {},
+                                    Tile("Top genre", w.topGenre, genreAlbum?.let { r -> art(r) } ?: genreCover, false) {
+                                        (genreAlbum?.albumId?.takeIf { it != 0L } ?: genreCover?.toString()?.substringAfterLast('/')?.toLongOrNull())?.let(onOpenAlbum)
+                                    },
                                 )
                                 tiles.chunked(2).forEachIndexed { row, pair ->
                                     Row(Modifier.fillMaxWidth().padding(bottom = 12.dp).rise(enter, row + 1), horizontalArrangement = Arrangement.spacedBy(12.dp)) {

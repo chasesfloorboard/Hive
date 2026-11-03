@@ -17,6 +17,21 @@ data class Pairing(
 class LinkStore(context: Context) {
     private val prefs = context.getSharedPreferences("hive-link", Context.MODE_PRIVATE)
 
+    /**
+     * This phone's key for Hive on the PC: a hash of the id Android keeps for Hive Mobile on this
+     * phone, which stays the same through an uninstall (only a factory reset changes it). Hive on
+     * the PC keeps its hash, and lets a phone it trusts back in after a reinstall without asking.
+     */
+    val phoneKey: String by lazy {
+        val id = android.provider.Settings.Secure.getString(context.contentResolver, android.provider.Settings.Secure.ANDROID_ID).orEmpty()
+        val digest = java.security.MessageDigest.getInstance("SHA-256").digest("hive-link-phone:$id".toByteArray())
+        android.util.Base64.encodeToString(digest, android.util.Base64.URL_SAFE or android.util.Base64.NO_PADDING or android.util.Base64.NO_WRAP)
+    }
+    /** The pairing (device id) that Hive on the PC has this phone's key for. */
+    var keyGivenFor: String?
+        get() = prefs.getString("keyGivenFor", null)
+        set(v) { prefs.edit().putString("keyGivenFor", v).apply() }
+
     var pairing: Pairing?
         get() {
             val token = prefs.getString("token", null) ?: return null

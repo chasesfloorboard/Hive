@@ -250,6 +250,8 @@ function createHiveLink({ dataDir, getTracks, setLove, onPaired, streamSong = nu
       playsVersion: 3,
       // Star ratings made on the phone come here (a trusted phone's, applied at once).
       ratings: !!setRating,
+      // Phones give a key so a reinstall comes back without asking (POST /api/phone-key).
+      phoneKeys: true,
       spotifySearch: !!spotifySearch,
       // Song sync: whether Hive takes song files from the phone.
       songs: { receive: !!songTarget && state.receiveSongs },
@@ -282,18 +284,34 @@ function createHiveLink({ dataDir, getTracks, setLove, onPaired, streamSong = nu
       return { status: 403, body: { error: 'Wrong pairing code.' } };
     }
     pairing = null;
-    return { status: 200, body: addDevice(body?.deviceName) };
+    return { status: 200, body: addDevice(body?.deviceName, body?.phoneKey) };
   }
 
-  function addDevice(deviceName) {
+  // A phone's key: a hash of an id Android keeps for Hive Mobile on that phone across uninstalls
+  // (it changes only with a factory reset), so Hive knows the phone again after a reinstall.
+  // Only its hash is kept here.
+  const phoneKeyHash = key => (typeof key === 'string' && key.length >= 32 && key.length <= 128 ? sha256(key) : null);
+  function trustedByKey(key) {
+    const hash = phoneKeyHash(key);
+    return hash ? state.devices.find(d => d.phoneKeyHash === hash && d.trusted) || null : null;
+  }
+
+  function addDevice(deviceName, phoneKey = null) {
     const token = crypto.randomBytes(32).toString('base64url');
+    const hash = phoneKeyHash(phoneKey);
+    // The same phone again (reinstalled): it comes back trusted, as a new device (its plays start
+    // over, so they must not be taken for the old install's), and its old pairings go.
+    const known = hash ? state.devices.filter(d => d.phoneKeyHash === hash) : [];
     const device = {
       id: crypto.randomUUID(),
       name: String(deviceName || 'Phone').slice(0, 80),
       tokenHash: sha256(token),
       pairedAt: Date.now(),
-      lastSeen: Date.now()
+      lastSeen: Date.now(),
+      ...(hash ? { phoneKeyHash: hash } : {}),
+      ...(known.some(d => d.trusted) ? { trusted: true } : {})
     };
+    for (const old of known) unpair(old.id);
     state.devices.push(device);
     saveNow();
     try { onPaired?.(device); } catch {}
@@ -310,11 +328,33 @@ function createHiveLink({ dataDir, getTracks, setLove, onPaired, streamSong = nu
     for (const [id, r] of pairRequests) if (r.expiresAt < now) pairRequests.delete(id);
     const name = String(body?.deviceName || 'Phone').slice(0, 80);
     // One question at a time, so a device on the network can't flood the PC with prompts.
-    if ([...pairRequests.values()].some(r => r.status === 'pending')) return { status: 429, body: { error: 'Hive is already asking about another device.' } };
+    if (!trustedByKey(body?.phoneKey) && !fs.existsSync(path.join(dataDir, 'hive-link-allow-next')) && [...pairRequests.values()].some(r => r.status === 'pending')) return { status: 429, body: { error: 'Hive is already asking about another device.' } };
     const r = { id: crypto.randomUUID(), secret: crypto.randomBytes(24).toString('base64url'), name, status: 'pending', result: null, expiresAt: now + PAIR_REQUEST_TTL_MS };
     pairRequests.set(r.id, r);
+    // A phone Hive already trusts, reinstalled: it's let in without asking anyone. So is the next
+    // phone to ask after the PC's owner left word for it (allowNextPhone), away from the PC.
+    const allowedAhead = takeAllowNext();
+    if (allowedAhead || trustedByKey(body?.phoneKey)) {
+      r.status = 'allowed';
+      r.result = addDevice(name, body?.phoneKey);
+      if (allowedAhead) { const d = state.devices.find(x => x.id === r.result.deviceId); if (d) { d.trusted = true; saveNow(); } }
+      log(allowedAhead ? 'Hive Link: let in the phone allowed ahead' : 'Hive Link: a trusted phone came back', name);
+      return { status: 202, body: { requestId: r.id, secret: r.secret, expiresAt: r.expiresAt } };
+    }
     Promise.resolve().then(() => onPairRequest({ id: r.id, name })).then(allow => answerPairRequest(r.id, !!allow)).catch(() => answerPairRequest(r.id, false));
     return { status: 202, body: { requestId: r.id, secret: r.secret, expiresAt: r.expiresAt } };
+  }
+
+  // Left on the PC itself (a file in Hive's data folder, made by the PC's owner): the next phone to
+  // ask is let in and trusted, once, within half an hour of the file being made.
+  const ALLOW_NEXT_FILE = 'hive-link-allow-next';
+  function takeAllowNext() {
+    const file = path.join(dataDir, ALLOW_NEXT_FILE);
+    try {
+      const made = fs.statSync(file).mtimeMs;
+      fs.rmSync(file, { force: true });
+      return Date.now() - made < 30 * 60_000;
+    } catch { return false; }
   }
 
   function answerPairRequest(id, allow) {
@@ -772,6 +812,17 @@ function createHiveLink({ dataDir, getTracks, setLove, onPaired, streamSong = nu
         const changes = (await readJson(req))?.changes;
         if (!trusted(device)) return send(res, 200, { loves: await getStreamLoves(), applied: false });
         return send(res, 200, { loves: await applyStreamLoves(Array.isArray(changes) ? changes : []), applied: true });
+      }
+      case 'POST /api/phone-key': {
+        // A phone paired before phones had keys gives its key, so a reinstall needs no asking.
+        const hash = phoneKeyHash((await readJson(req))?.phoneKey);
+        if (!hash) return send(res, 400, { error: 'No key.' });
+        if (device.phoneKeyHash !== hash) {
+          // Earlier pairings of the same phone go: this one replaces them.
+          for (const old of state.devices.filter(d => d.id !== device.id && d.phoneKeyHash === hash)) unpair(old.id);
+          device.phoneKeyHash = hash; saveNow();
+        }
+        return send(res, 200, { ok: true });
       }
       case 'POST /api/ratings': {
         // A rating made on the phone (0 clears it), for a song Hive has. Only a trusted phone's; an

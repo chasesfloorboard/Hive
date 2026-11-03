@@ -1147,3 +1147,51 @@ test('a trusted phone\'s star ratings are written in Hive; an untrusted one\'s w
   // Kept to Hive's 0-5 scale in half stars.
   assert.deepEqual(rated, [[path.resolve('/music/Pearl Jam - Black.mp3'), 4.5], [rated[1][0], 5]]);
 });
+
+test('a trusted phone reinstalled comes back by its key without anyone asked; a stranger is still asked', async t => {
+  const asked = [];
+  const ctx = setup({ acceptPhoneChanges: false, onPairRequest: ({ name }) => { asked.push(name); return new Promise(() => {}); } });
+  t.after(() => ctx.link.stop());
+  await waitListening(ctx.port);
+  const key = 'k'.repeat(43);
+  // Paired before keys: it gives its key afterwards, and is trusted by the user.
+  const oldToken = await pair(ctx);
+  assert.equal((await request(ctx.port, 'GET', '/api/info', { token: oldToken })).body.phoneKeys, true);
+  assert.equal((await request(ctx.port, 'POST', '/api/phone-key', { token: oldToken, body: { phoneKey: key } })).status, 200);
+  ctx.link.setTrusted(ctx.link.devices()[0].id, true);
+  const oldId = ctx.link.devices()[0].id;
+
+  // Reinstalled: it asks with its key and is let in at once, trusted, as a new device.
+  const req = await request(ctx.port, 'POST', '/api/pair/request', { body: { deviceName: 'Galaxy A55', phoneKey: key } });
+  assert.equal(req.status, 202);
+  const ok = await request(ctx.port, 'GET', `/api/pair/request?id=${req.body.requestId}&secret=${encodeURIComponent(req.body.secret)}`);
+  assert.equal(ok.body.status, 'allowed');
+  assert.deepEqual(asked, []);
+  const devices = ctx.link.devices();
+  assert.equal(devices.length, 1);
+  assert.notEqual(devices[0].id, oldId);
+  assert.equal(devices[0].trusted, true);
+  // The old install's pairing is gone; the new one works.
+  assert.equal((await request(ctx.port, 'GET', '/api/info', { token: oldToken })).status, 401);
+  assert.equal((await request(ctx.port, 'GET', '/api/info', { token: ok.body.token })).status, 200);
+
+  // Another key (another phone): the PC is asked, as before.
+  await request(ctx.port, 'POST', '/api/pair/request', { body: { deviceName: 'Stranger', phoneKey: 's'.repeat(43) } });
+  assert.deepEqual(asked, ['Stranger']);
+});
+
+test('a phone allowed ahead on the PC (hive-link-allow-next) is let in and trusted, once', async t => {
+  const asked = [];
+  const ctx = setup({ acceptPhoneChanges: false, onPairRequest: ({ name }) => { asked.push(name); return new Promise(() => {}); } });
+  t.after(() => ctx.link.stop());
+  await waitListening(ctx.port);
+  fs.writeFileSync(path.join(ctx.dataDir, 'hive-link-allow-next'), '');
+  const req = await request(ctx.port, 'POST', '/api/pair/request', { body: { deviceName: 'Galaxy A55', phoneKey: 'k'.repeat(43) } });
+  const ok = await request(ctx.port, 'GET', `/api/pair/request?id=${req.body.requestId}&secret=${encodeURIComponent(req.body.secret)}`);
+  assert.equal(ok.body.status, 'allowed');
+  assert.deepEqual([asked, ctx.link.devices()[0].trusted], [[], true]);
+  assert.equal(fs.existsSync(path.join(ctx.dataDir, 'hive-link-allow-next')), false);
+  // Once only: the next one is asked about.
+  await request(ctx.port, 'POST', '/api/pair/request', { body: { deviceName: 'Stranger' } });
+  assert.deepEqual(asked, ['Stranger']);
+});
