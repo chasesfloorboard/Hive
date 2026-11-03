@@ -325,14 +325,23 @@ class SyncEngine(
         rememberAddresses(info)
         if (!info.plays) return
         pushPlays(conn)
+        // Hive shares plays it didn't before (this phone's own, imported MusicBee history): all of them
+        // again from the start; any already here is skipped below.
+        if (info.playsVersion > store.pcPlaysVersion) { store.lastPcPlayAt = 0; store.pcPlaysVersion = info.playsVersion }
         val trackFor = dao.allMatches().groupBy({ it.pcId }, { it.trackId })
-        val fetched = client.plays(conn, store.lastPcPlayAt)
-        val fresh = fetched.flatMap { p -> trackFor[p.id].orEmpty().take(1).map { Play(trackId = it, playedAt = p.playedAt, listenedMs = p.listenedMs, synced = true, fromPc = true) } }
-            // Plays made on this phone come back from the PC too (a fresh install gets its listening back);
-            // one already here, at the same moment, isn't added twice.
-            .filter { dao.playsAtTime(it.playedAt) == 0 }
-        if (fresh.isNotEmpty()) dao.insertPlays(fresh)
-        fetched.maxOfOrNull { it.playedAt }?.let { store.lastPcPlayAt = maxOf(store.lastPcPlayAt, it) }
+        // Hive sends at most 5000 at a time, oldest first: ask again from the newest until it has no more.
+        while (true) {
+            val fetched = client.plays(conn, store.lastPcPlayAt)
+            val fresh = fetched.flatMap { p -> trackFor[p.id].orEmpty().take(1).map { Play(trackId = it, playedAt = p.playedAt, listenedMs = p.listenedMs, synced = true, fromPc = true) } }
+                // Plays made on this phone come back from the PC too (a fresh install gets its listening back);
+                // one already here, at the same moment, isn't added twice.
+                .filter { dao.playsAtTime(it.playedAt) == 0 }
+            if (fresh.isNotEmpty()) dao.insertPlays(fresh)
+            val newest = fetched.maxOfOrNull { it.playedAt } ?: break
+            if (newest <= store.lastPcPlayAt) break
+            store.lastPcPlayAt = newest
+            if (fetched.size < 5000) break
+        }
         // With this phone's plays now in it, Hive's listening history file comes here as a
         // byte-for-byte copy, so phone and PC keep the same readable history.
         if (info.listening) runCatchingNotCancelled {

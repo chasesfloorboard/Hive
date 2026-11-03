@@ -245,6 +245,9 @@ function createHiveLink({ dataDir, getTracks, setLove, onPaired, streamSong = nu
       // Plays go both ways: the phone sends its own when Hive can record them,
       // and fetches Hive's when Hive shares them.
       plays: !!getPlays || !!recordPlays,
+      // Raised when Hive starts sharing plays it didn't before (2: the phone's own, and imported
+      // MusicBee history): the phone then fetches them all again from the start.
+      playsVersion: 3,
       spotifySearch: !!spotifySearch,
       // Song sync: whether Hive takes song files from the phone.
       songs: { receive: !!songTarget && state.receiveSongs },
@@ -532,9 +535,19 @@ function createHiveLink({ dataDir, getTracks, setLove, onPaired, streamSong = nu
     if (!getPlays) return { plays: [] };
     const tracks = await getTracks();
     const byPath = new Map(tracks.filter(t => t?.path).map(t => [path.resolve(String(t.path)), t]));
+    // A play with no file (MusicBee history imported into Hive) is of the library song with its name,
+    // artist and length; built only when there are such plays.
+    let byName = null;
+    const songFor = e => {
+      if (e?.path) return byPath.get(path.resolve(String(e.path))) || null;
+      if (!e?.title) return null;
+      byName ||= createIndex(tracks.filter(t => t?.path && !/^[a-z]+:/i.test(String(t.path))).map(t => ({ key: t, title: text(t.title), artist: text(t.artist), albumArtist: text(t.albumArtist), durationMs: Math.round(num(t.duration) * 1000) })));
+      return byName.match({ title: text(e.title), artist: text(e.artist), albumArtist: text(e.albumArtist), durationMs: Math.round(num(e.trackDuration) * 1000) })?.key || null;
+    };
     const plays = [];
-    for (const e of await getPlays(since)) {
-      const track = e?.path ? byPath.get(path.resolve(String(e.path))) : null;
+    // Oldest first: the phone asks again from the newest it got, so none may be passed over.
+    for (const e of [...await getPlays(since)].sort((a, b) => num(a.playedAt) - num(b.playedAt))) {
+      const track = songFor(e);
       if (!track) continue;
       plays.push({ id: trackIdFor(track), playedAt: num(e.playedAt), listenedMs: Math.round(num(e.duration) * 1000), eventId: String(e.id || '') });
       if (plays.length >= 5000) break;

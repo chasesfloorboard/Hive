@@ -563,17 +563,26 @@ test('the inbox survives a restart', async t => {
   assert.deepEqual(again.inboxSummary(), { loves: 0, plays: 1 });
 });
 
-test("the phone gets Hive's own plays for library songs since a time", async t => {
+test("the phone gets Hive's plays for library songs since a time, oldest first", async t => {
+  // In the history file's order: an imported MusicBee play is added after newer ones.
   const ctx = setup({ getPlays: async since => [
     { id: 'e1', path: '/music/Huge.mp3', playedAt: 2000, duration: 180 },
     { id: 'e2', path: '/music/gone.mp3', playedAt: 3000, duration: 10 },
+    // Imported MusicBee history has no file, only the song's name (and its length).
+    { id: 'e3', path: '', title: 'Black', artist: 'Pearl Jam', trackDuration: 343, playedAt: 1500, duration: 300, source: 'musicbee-wrapped' },
+    { id: 'e4', path: '', title: 'Not In The Library', artist: 'Nobody', trackDuration: 200, playedAt: 1600, duration: 200, source: 'musicbee-wrapped' },
   ].filter(e => e.playedAt > since) });
   t.after(() => ctx.link.stop());
   await waitListening(ctx.port);
   const token = await pair(ctx);
   const res = await request(ctx.port, 'GET', '/api/plays?since=1000', { token });
-  assert.deepEqual(res.body.plays, [{ id: 'b2', playedAt: 2000, listenedMs: 180000, eventId: 'e1' }]);
-  assert.equal((await request(ctx.port, 'GET', '/api/info', { token })).body.plays, true);
+  assert.deepEqual(res.body.plays, [
+    { id: 'a1', playedAt: 1500, listenedMs: 300000, eventId: 'e3' },
+    { id: 'b2', playedAt: 2000, listenedMs: 180000, eventId: 'e1' },
+  ]);
+  const info = (await request(ctx.port, 'GET', '/api/info', { token })).body;
+  assert.equal(info.plays, true);
+  assert.equal(info.playsVersion, 3);
 });
 
 test('the phone searches Spotify through the PC, and hears when Spotify is not running', async t => {

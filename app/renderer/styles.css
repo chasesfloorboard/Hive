@@ -1379,10 +1379,12 @@ html[data-hive-theme="light"] .inline-track-row.selected .inline-track-dur { col
 
 .now-playing-card {
   margin-top: 0;
-  padding-top: 8px;
+  padding: 8px 0 12px;
   display: flex;
   flex-direction: column;
   gap: 8px;
+  /* The card takes whatever the queue leaves, so the cover below always fits in it. */
+  flex: 1 1 0;
   min-height: 0;
   min-width: 0;
   overflow: hidden;
@@ -1436,26 +1438,28 @@ html[data-hive-theme="light"] .inline-track-row.selected .inline-track-dur { col
 }
 .np-format.hidden { display: none; }
 .np-flac-specs { min-width:86px; text-align:center; }
+/* The cover is as large as the space under the track details allows (width or
+   height, whichever is smaller), square, centred, and never cut off: the stage
+   fills the rest of the card and the picture is sized from it. */
 .np-cover-stage {
   order: 2;
   position: relative;
-  width: min(100%, calc(100vh - 300px));
-  aspect-ratio: 1 / 1;
-  max-width: 100%;
-  max-height: 100%;
+  flex: 1 1 0;
+  width: 100%;
   min-width: 0;
   min-height: 0;
-  flex: 1 1 auto;
-  align-self: center;
-  border-radius: 10px;
+  container-type: size;
+  display: flex;
+  align-items: center;
+  justify-content: center;
   overflow: hidden;
   background: transparent;
   box-shadow: none;
 }
 .now-playing-card img {
   display: block;
-  width: 100%;
-  height: 100%;
+  width: min(100cqw, 100cqh);
+  height: min(100cqw, 100cqh);
   max-width: none;
   max-height: none;
   border-radius: 10px;

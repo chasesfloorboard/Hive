@@ -63,7 +63,7 @@ import java.util.concurrent.TimeUnit
 /** Song sync on the PC: whether Hive takes song files from the phone. */
 @Serializable data class SongCaps(val receive: Boolean = false)
 @Serializable data class AppUpdate(val versionCode: Long, val versionName: String, val size: Long, val sha256: String)
-@Serializable data class InfoResponse(val serverId: String, val name: String, val port: Int, val seq: Long, val addresses: List<HiveAddress> = emptyList(), val streams: StreamCaps = StreamCaps(), val remote: Boolean = false, val plays: Boolean = false, val inbox: InboxSummary = InboxSummary(), val songs: SongCaps = SongCaps(), val wrap: Boolean = false, val listening: Boolean = false, val files: Boolean = false, val themes: Boolean = false, val playlistSync: Boolean = false)
+@Serializable data class InfoResponse(val serverId: String, val name: String, val port: Int, val seq: Long, val addresses: List<HiveAddress> = emptyList(), val streams: StreamCaps = StreamCaps(), val remote: Boolean = false, val plays: Boolean = false, val playsVersion: Int = 0, val inbox: InboxSummary = InboxSummary(), val songs: SongCaps = SongCaps(), val wrap: Boolean = false, val listening: Boolean = false, val files: Boolean = false, val themes: Boolean = false, val playlistSync: Boolean = false)
 /** One year's Yearly Wrap as Hive on the PC counts it (its plays, imports and this phone's). */
 @Serializable data class PcWrap(
     val year: Int,

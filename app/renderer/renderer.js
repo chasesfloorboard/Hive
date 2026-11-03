@@ -14280,7 +14280,8 @@
     el.npYear.textContent = release ? release.slice(0, 4) : '';
     const disc = t.disk != null && t.disk !== '' ? String(t.disk) : '';
     const trackNo = t.track != null && t.track !== '' ? String(t.track) : '';
-    el.npTrack.textContent = (disc || trackNo) ? `Disc ${disc || '—'}  ·  Track ${trackNo || '—'}` : '';
+    // Only what the song's tags say: no "Disc —" for a song without a disc number.
+    el.npTrack.textContent = [disc ? `Disc ${disc}` : '', trackNo ? `Track ${trackNo}` : ''].filter(Boolean).join('  ·  ');
     // Streamed tracks have no file extension; name their source instead.
     const streamLabel = isYoutubeMusicTrack(t) ? 'STREAM' : isRadioTrack(t) ? 'RADIO' : isAppleMusicPreview(t) ? 'PREVIEW' : isPodcastTrack(t) ? 'PODCAST' : '';
     const ext = streamLabel ? '' : String(t.path || '').split('.').pop().toUpperCase();
@@ -21135,12 +21136,26 @@
     const n = parseFloat(localStorage.getItem(QUEUE_SPLIT_KEY));
     return Number.isFinite(n) ? n : null;
   }
+  // A split saved on a taller window never squeezes the cover away on a smaller one: the queue
+  // gives up height until the track details and a usable cover fit (the saved split is kept,
+  // and comes back in full when the window is tall enough again).
+  const MIN_COVER_AREA = 260;
+  function queueSplitLimit() {
+    if (!queuePanel || !npCard || npCard.classList.contains('hidden')) return Infinity;
+    const panelH = queuePanel.getBoundingClientRect().height;
+    if (!panelH) return Infinity;
+    const headerH = queuePanel.querySelector('.queue-header')?.getBoundingClientRect().height || 0;
+    const splitterH = (queueSplit?.getBoundingClientRect().height || 0) + 6;
+    return Math.max(30, panelH - headerH - splitterH - 20 - MIN_COVER_AREA);
+  }
   function applyQueueSplit() {
     const saved = loadQueueSplit();
     if (saved == null) return;
-    queueList.style.flexBasis = saved + 'px';
+    queueList.style.flexBasis = Math.min(saved, queueSplitLimit()) + 'px';
   }
   applyQueueSplit();
+  window.addEventListener('resize', () => requestAnimationFrame(applyQueueSplit));
+  if (npCard) new MutationObserver(() => applyQueueSplit()).observe(npCard, { attributes: true, attributeFilter: ['class'] });
 
   if (queueSplit && queuePanel && queueList && npCard) {
     let dragging = false;
@@ -21157,7 +21172,7 @@
       // Keep both areas usable, but otherwise allow the splitter to travel
       // essentially the full height of the panel.
       const minQueue = 30;
-      const minArt = 60;
+      const minArt = MIN_COVER_AREA;
       const maxQueue = Math.max(minQueue, available - minArt);
       const next = Math.max(minQueue, Math.min(maxQueue, startHeight + (e.clientY - startY)));
       queueList.style.flexBasis = next + 'px';

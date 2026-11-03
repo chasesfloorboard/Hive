@@ -1,6 +1,12 @@
 package com.local.hive.mobile.ui
 
 import androidx.compose.foundation.background
+import androidx.compose.ui.platform.LocalConfiguration
+import androidx.compose.runtime.saveable.rememberSaveable
+import androidx.compose.runtime.mutableStateOf
+import androidx.compose.foundation.layout.heightIn
+import androidx.compose.foundation.lazy.items
+import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.border
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.Arrangement
@@ -345,7 +351,11 @@ fun YearlyWrapScreen(vm: MainViewModel, bottomPadding: Dp, onOpenAlbum: (Long) -
             }
             }
         }
-        wrap?.let { w -> if (openMonth in 1..12) MonthSheet(vm, w, openMonth) { openMonth = 0 } }
+        wrap?.let { w ->
+            if (openMonth in 1..12) MonthSheet(vm, w, openMonth,
+                // The month closes as its album or artist opens; back comes to the Wrap.
+                onOpenAlbum = { openMonth = 0; onOpenAlbum(it) }, onOpenArtist = { openMonth = 0; onOpenArtist(it) }) { openMonth = 0 }
+        }
         // The bar: back, the year, share.
         Row(Modifier.fillMaxWidth().statusBarsPadding().padding(horizontal = 10.dp, vertical = 6.dp), verticalAlignment = Alignment.CenterVertically) {
             Box(Modifier.size(42.dp).hiveGlass(CircleShape).clickable(onClick = onBack), contentAlignment = Alignment.Center) {
@@ -487,9 +497,9 @@ private fun Stats(items: List<Pair<String, String>>, modifier: Modifier = Modifi
 
 /** A line of the closing slide: the picture, what it is, and its name. */
 @Composable
-private fun Summary(label: String, name: String?, art: Any?, shape: androidx.compose.ui.graphics.Shape) {
+private fun Summary(label: String, name: String?, art: Any?, shape: androidx.compose.ui.graphics.Shape, onClick: (() -> Unit)? = null) {
     val c = Hive.colors
-    Row(Modifier.fillMaxWidth().padding(vertical = 7.dp), verticalAlignment = Alignment.CenterVertically) {
+    Row(Modifier.fillMaxWidth().clip(HiveShape.thumb).then(if (onClick != null) Modifier.clickable(onClick = onClick) else Modifier).padding(vertical = 7.dp), verticalAlignment = Alignment.CenterVertically) {
         if (art != null) Artwork(art, Modifier.size(52.dp), shape, Icons.Rounded.LibraryMusic)
         else Box(Modifier.size(52.dp).clip(HiveShape.thumb).background(c.accent.copy(alpha = 0.22f)), contentAlignment = Alignment.Center) { Icon(Icons.Rounded.LibraryMusic, null, tint = c.accent, modifier = Modifier.size(22.dp)) }
         Column(Modifier.weight(1f).padding(start = 14.dp)) {
@@ -530,37 +540,87 @@ private fun Months(totals: List<Long>, enter: Float = 1f, onMonth: (Int) -> Unit
 }
 
 /**
- * One month of the Wrap: its listening time (as the Wrap counts it), then what you played most that
- * month, from the plays on this phone (the PC's included, for songs the phone has).
+ * One month of the Wrap: its listening time (as the Wrap counts it), what you played most that month,
+ * then every song you played, day by day or most played first, from the plays on this phone (the
+ * PC's included, for songs the phone has). Everything scrolls; a song, album or artist opens its page.
  */
 @Composable
-private fun MonthSheet(vm: MainViewModel, w: Wrap, month: Int, onDismiss: () -> Unit) {
+private fun MonthSheet(vm: MainViewModel, w: Wrap, month: Int, onOpenAlbum: (Long) -> Unit, onOpenArtist: (String) -> Unit, onDismiss: () -> Unit) {
     val c = Hive.colors
-    val m by produceState<Wrap?>(null, w.year, month) { value = vm.wrapMonth(w.year, month) }
+    val loaded by produceState<Pair<Wrap, List<PlayRow>>?>(null, w.year, month) { value = vm.wrapMonth(w.year, month) }
     val photos by vm.artistPhotos.collectAsStateWithLifecycle()
+    var byDay by rememberSaveable { mutableStateOf(true) }
     val name = java.time.Month.of(month).getDisplayName(TextStyle.FULL, Locale.getDefault())
-    HiveDialog(onDismiss, wide = true, spacing = 6.dp) {
-        Text("$name ${w.year}", style = HiveText.heroTitle.copy(fontSize = 30.sp, lineHeight = 34.sp, fontWeight = FontWeight.Black), color = c.text)
-        val listened = w.months.getOrNull(month - 1) ?: 0
-        Text(listOfNotNull(hours(listened).takeIf { listened > 0 }, m?.plays?.takeIf { it > 0 }?.let { countOf(it, "play") }).joinToString(" · ").ifBlank { "No listening counted" },
-            style = HiveText.body, color = c.textDim)
-        val x = m
-        when {
-            x == null -> Box(Modifier.fillMaxWidth().height(120.dp), contentAlignment = Alignment.Center) { CircularProgressIndicator(Modifier.size(22.dp), strokeWidth = 2.dp, color = c.accent) }
-            x.plays == 0 -> Text("None of this month's songs are on this phone, so there's nothing more to show.", style = HiveText.small, color = c.textDim, modifier = Modifier.padding(top = 8.dp))
-            else -> {
-                x.topTrack?.let { t ->
-                    Spacer(Modifier.height(8.dp))
-                    Summary("Top track · ${countOf(t.plays, "play")}", t.name, art(t), HiveShape.thumb)
+    val zone = remember { ZoneId.systemDefault() }
+    val x = loaded?.first
+    val rows = loaded?.second.orEmpty()
+    val days = remember(rows) { rows.groupBy { Instant.ofEpochMilli(it.playedAt).atZone(zone).toLocalDate() }.toSortedMap().toList() }
+    val mostPlayed = remember(rows) { rows.groupBy { it.trackId }.values.map { g -> g[0] to g.size }.sortedWith(compareByDescending<Pair<PlayRow, Int>> { it.second }.thenBy { it.first.title.lowercase() }) }
+    val open = { r: PlayRow -> r.albumId.takeIf { it > 0 }?.let(onOpenAlbum); Unit }
+    val time = remember { DateTimeFormatter.ofLocalizedTime(java.time.format.FormatStyle.SHORT) }
+    val maxHeight = (LocalConfiguration.current.screenHeightDp * 0.86f).dp
+    HiveDialog(onDismiss, Modifier.heightIn(max = maxHeight), wide = true, spacing = 6.dp) {
+        LazyColumn(Modifier.weight(1f, fill = false), verticalArrangement = Arrangement.spacedBy(6.dp)) {
+            item {
+                Column(verticalArrangement = Arrangement.spacedBy(6.dp)) {
+                    Text("$name ${w.year}", style = HiveText.heroTitle.copy(fontSize = 30.sp, lineHeight = 34.sp, fontWeight = FontWeight.Black), color = c.text)
+                    val listened = w.months.getOrNull(month - 1) ?: 0
+                    Text(listOfNotNull(hours(listened).takeIf { listened > 0 }, x?.plays?.takeIf { it > 0 }?.let { countOf(it, "play") }).joinToString(" · ").ifBlank { "No listening counted" },
+                        style = HiveText.body, color = c.textDim)
+                    when {
+                        x == null -> Box(Modifier.fillMaxWidth().height(120.dp), contentAlignment = Alignment.Center) { CircularProgressIndicator(Modifier.size(22.dp), strokeWidth = 2.dp, color = c.accent) }
+                        x.plays == 0 -> Text("None of this month's songs are on this phone, so there's nothing more to show.", style = HiveText.small, color = c.textDim, modifier = Modifier.padding(top = 8.dp))
+                        else -> {
+                            x.topTrack?.let { t ->
+                                Spacer(Modifier.height(8.dp))
+                                Summary("Top track · ${countOf(t.plays, "play")}", t.name, art(t), HiveShape.thumb, onClick = t.albumId.takeIf { it > 0 }?.let { id -> { onOpenAlbum(id) } })
+                            }
+                            x.topArtists.firstOrNull()?.let { a -> Summary("Top artist · ${countOf(a.plays, "play")}", a.name, artistArt(x, a, photos, null), CircleShape, onClick = { onOpenArtist(a.name) }) }
+                            if (x.topAlbums.isNotEmpty()) {
+                                Text("Top albums", style = HiveText.small, color = c.textDim, modifier = Modifier.padding(top = 10.dp))
+                                x.topAlbums.take(3).forEachIndexed { i, a -> Rank(i + 1, a, onClick = a.albumId.takeIf { it > 0 }?.let { id -> { onOpenAlbum(id) } }) }
+                            }
+                            x.biggestDay?.let { (d, ms) -> Text("Biggest day: ${d.format(DateTimeFormatter.ofPattern("EEEE, MMM d"))}, ${hours(ms)}", style = HiveText.small, color = c.textDim, modifier = Modifier.padding(top = 8.dp)) }
+                        }
+                    }
                 }
-                x.topArtists.firstOrNull()?.let { a -> Summary("Top artist · ${countOf(a.plays, "play")}", a.name, artistArt(x, a, photos, null), CircleShape) }
-                if (x.topAlbums.isNotEmpty()) {
-                    Text("Top albums", style = HiveText.small, color = c.textDim, modifier = Modifier.padding(top = 10.dp))
-                    x.topAlbums.take(3).forEachIndexed { i, a -> Rank(i + 1, a) }
+            }
+            if (rows.isNotEmpty()) {
+                item {
+                    Column(Modifier.padding(top = 14.dp), verticalArrangement = Arrangement.spacedBy(8.dp)) {
+                        Text("Everything you played", style = HiveText.rowStrong.copy(fontSize = 18.sp, fontWeight = FontWeight.Bold), color = c.text)
+                        Row(horizontalArrangement = Arrangement.spacedBy(6.dp)) {
+                            HivePill("By day", active = byDay) { byDay = true }
+                            HivePill("Most played", active = !byDay) { byDay = false }
+                        }
+                    }
                 }
-                x.biggestDay?.let { (d, ms) -> Text("Biggest day: ${d.format(DateTimeFormatter.ofPattern("EEEE, MMM d"))}, ${hours(ms)}", style = HiveText.small, color = c.textDim, modifier = Modifier.padding(top = 8.dp)) }
+                if (byDay) for ((day, plays) in days) {
+                    item {
+                        Text("${day.format(DateTimeFormatter.ofPattern("EEEE, MMM d"))} · ${hours(plays.sumOf { it.listenedMs })}", style = HiveText.small.copy(fontWeight = FontWeight.Bold), color = c.accent, modifier = Modifier.padding(top = 10.dp))
+                    }
+                    items(plays) { r ->
+                        PlayedSong(r, Instant.ofEpochMilli(r.playedAt).atZone(zone).format(time)) { open(r) }
+                    }
+                } else items(mostPlayed, key = { "t${it.first.trackId}" }) { (r, n) ->
+                    PlayedSong(r, countOf(n, "play")) { open(r) }
+                }
             }
         }
         Row(Modifier.fillMaxWidth().padding(top = 8.dp), horizontalArrangement = Arrangement.End) { HiveButton("Done", primary = true) { onDismiss() } }
+    }
+}
+
+/** A song in a Wrap month's list: its cover, title and artist, and when (or how often) it played. */
+@Composable
+private fun PlayedSong(r: PlayRow, note: String, onClick: () -> Unit) {
+    val c = Hive.colors
+    Row(Modifier.fillMaxWidth().clip(HiveShape.thumb).clickable(enabled = r.albumId > 0, onClick = onClick).padding(vertical = 4.dp), verticalAlignment = Alignment.CenterVertically) {
+        Artwork(art(r.albumId), Modifier.size(44.dp), HiveShape.thumb, Icons.Rounded.LibraryMusic)
+        Column(Modifier.weight(1f).padding(horizontal = 12.dp)) {
+            Text(r.title, style = HiveText.rowStrong, color = c.text, maxLines = 1, overflow = TextOverflow.Ellipsis)
+            Text(r.artist, style = HiveText.small, color = c.textDim, maxLines = 1, overflow = TextOverflow.Ellipsis)
+        }
+        Text(note, style = HiveText.small, color = c.textDim)
     }
 }

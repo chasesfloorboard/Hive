@@ -24,7 +24,7 @@
 
 Hive is a Linux-first desktop music player built around your local library. It combines native GStreamer playback with a focused Electron interface for large collections, embedded metadata, artwork, playlists, queue management, and library tools.
 
-![Hive music library showing albums, navigation, queue, artwork, and playback controls.](resources/screenshots/hive-main-library.png)
+![Hive's album grid, with the playing song's cover filling the panel on the right and its colours tinting the window.](resources/screenshots/hive-main-library.png)
 
 ## Built for your library
 
@@ -41,36 +41,35 @@ Hive is designed around the idea that your music library should remain useful ou
 
 ## See Hive in action
 
-### Favorites
+### Albums first
 
-Hive treats Favorites as part of the library itself, with the same browsing and playback workflow as the rest of your collection.
+Covers lead. Click an album and its tracklist opens right in the grid; the window takes its colours from whatever is playing.
 
-![Hive Favorites view showing a large track list with queue and album details.](resources/screenshots/hive-favorites.png)
-
-### Library statistics
-
-Browse listening history and library activity through dedicated views such as Top 25 Most Played.
-
-![Hive Top 25 Most Played view showing play counts and ratings.](resources/screenshots/hive-top-25.png)
-
+![An album opened inside the grid, showing its cover and tracklist, with the window tinted by the album's colours.](resources/screenshots/hive-album.png)
 
 ### Tag editing
 
-Edit track metadata without leaving the player, including album information, ratings, comments, artwork, lyrics, and other fields.
+Edit one song or a whole album without leaving the player: titles, artists, album, year, track and disc numbers, genre, label, lyrics, ratings and artwork, written straight into the files.
 
-![Hive tag editor open over the track library.](resources/screenshots/hive-tag-editor.png)
+![Hive's album tag editor open over the library.](resources/screenshots/hive-tag-editor.png)
 
-### Themes & appearance
+### Themes
 
-Customize Hive's visual treatment, including Frosted Glass surfaces and the application's overall theme.
+Light, dark and a set of colour themes, each still tinted by the album that's playing. Themes can also switch by time of day.
 
-![Hive Appearance settings showing theme and Frosted Glass controls.](resources/screenshots/hive-appearance.png)
+![The same Hive window in a light theme on the left and a dark theme on the right.](resources/screenshots/hive-themes.png)
 
 ### Yearly Wrap
 
-Hive can turn its local play history into a private yearly listening summary.
+Hive turns its own play history into a private yearly summary: listening time, your top track, artist and albums, and your year month by month. Nothing leaves your computer.
 
-![Hive Yearly Wrap showing listening time, plays, artists, albums, and longest streak.](resources/screenshots/hive-yearly-wrap.png)
+![Four Yearly Wrap slides: listening time, top track, top artist and top albums.](resources/screenshots/hive-yearly-wrap.png)
+
+### Hive Mobile
+
+The same library on your Android phone: albums, an album page, the player, and synced lyrics.
+
+![Hive Mobile on a phone: the album grid, an album page, the player and synced lyrics.](resources/screenshots/hive-mobile.png)
 
 ## Installation
 
@@ -94,12 +93,24 @@ The build is not code-signed yet, so Windows SmartScreen may warn the first time
 
 ### Hive Mobile (Android)
 
-Download `Hive-Mobile-<version>.apk` from the release and install it on an Android phone (Android 10 or newer; Android asks you to allow installing apps from your browser or file manager once). It plays the music on the phone and keeps it in step with Hive on your computer over your home Wi-Fi:
+Hive Mobile is a music player for Android 10 or newer. It plays the music on your phone and, if you like, keeps it in step with Hive on your computer.
 
-- **Pairing:** in Hive Mobile, Settings › Hive on your PC. With **Connect automatically** on, the phone finds Hive on the same Wi-Fi and asks to connect; Hive on the computer asks you to **Allow** it once. Or pair with the code from Hive's Settings › Connections › Hive Mobile › Pair phone. Nothing connects without your approval on the computer.
-- **What syncs:** Favorites both ways, plays (they count in Yearly Wrap on both), ratings and playlists from the computer, the theme Hive shows, tag and cover edits made on the phone, and, with **song sync** on, the songs themselves: each side gets the songs it lacks, file for file. Songs deleted on one side are never deleted on the other without asking you.
-- **On the phone alone:** edit tags, change covers and auto-tag albums, edit lyrics, smart playlists, a colourful theme set with a Custom theme of your own colours. It works with an empty library and no computer at all; pairing is optional.
-- Everything stays between your phone and your computer on your own network; nothing goes through a server.
+**Install:** download `HiveMobile.apk` from the [`hive-mobile` release](https://github.com/chasesfloorboard/Hive/releases/tag/hive-mobile) on your phone and open it (Android asks once to allow installing apps from your browser or file manager). After that, updates come to the app itself: Settings › Connections › App updates shows **Update available**, from Hive on your computer or from this release when the computer is off. Your library, favorites and settings stay through every update.
+
+**On the phone:**
+
+- Albums, artists, tracks, playlists and smart playlists, with covers throughout. Hold an album's cover to see it full size, save it to your photos, or change it.
+- A full player with synced lyrics, gapless playback, crossfade, an equaliser, ReplayGain and Auto DJ; a home-screen widget, an optional lock-screen player, and Android Auto.
+- Edit tags and covers, auto-tag albums, and edit lyrics, written into the song files.
+- Favorites (Love) are written into the song files too, the same way Hive on the computer writes them, so they survive anything.
+- A Yearly Wrap of your listening, month by month.
+- Uninstalling never loses anything: Hive Mobile keeps a backup of itself on the phone (and on your computer, if paired), and a fresh install offers to restore it exactly as it was.
+- It works on its own with no computer and no account.
+
+**With Hive on your computer** (optional): in Hive Mobile, Settings › Hive on your PC. With **Connect automatically** on, the phone finds Hive on the same Wi-Fi and asks to connect; Hive on the computer asks you to **Allow** it once. Or pair with the code from Hive's Settings › Connections › Hive Mobile › Pair phone. Nothing connects without your approval on the computer.
+
+- **What syncs:** favorites both ways, plays (they count in Yearly Wrap on both sides), ratings and playlists, the theme, tag and cover edits made on the phone, and, with **song sync** on, the songs themselves: each side gets the songs it lacks, file for file. Songs deleted on one side are never deleted on the other without asking you.
+- Everything stays between your phone and your computer on your own network (or your own VPN); nothing goes through a server.
 
 The APK is signed by the maintainer but not distributed through the Play Store. To build it yourself: `cd mobile/android && ./gradlew assembleRelease` (JDK 21 and the Android SDK), then install `app/build/outputs/apk/release/app-release.apk`.
 

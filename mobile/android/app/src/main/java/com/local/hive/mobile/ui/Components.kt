@@ -885,10 +885,11 @@ fun TrackMenu(expanded: Boolean, loved: Boolean, onDismiss: () -> Unit, track: T
     val context = androidx.compose.ui.platform.LocalContext.current
     val toast = LocalToast.current
     val editor = LocalEditor.current
-    // Two pages: the everyday actions, and "More" for the rest (Samsung Music keeps its song menu this short).
-    var more by remember { mutableStateOf(false) }
-    androidx.compose.runtime.LaunchedEffect(expanded) { if (expanded) more = false }
-    HiveMenu(expanded, onDismiss, settings = !more) {
+    HiveMenu(expanded, onDismiss) {
+        // Two pages: the everyday actions, and "More" for the rest (Samsung Music keeps its song menu this short).
+        // Kept inside the menu, so it opens on the first page every time instead of switching to it in view.
+        var more by remember { mutableStateOf(false) }
+        val openSettings = LocalOpenSettings.current
         SongMenuPages(more) { showMore ->
             if (!showMore) {
                 SongMenuHeader(track.songArtUri, track.title, listOf(track.artist, track.album).filter { it.isNotBlank() }.joinToString(" · "))
@@ -907,6 +908,8 @@ fun TrackMenu(expanded: Boolean, loved: Boolean, onDismiss: () -> Unit, track: T
                     HiveMenuItem("Remove from playlist", Icons.Rounded.RemoveCircleOutline, destructive = true) { onDismiss(); remove(track) }
                 }
                 HiveMenuItem("Delete from phone", Icons.Rounded.Delete, destructive = true) { onDismiss(); actions.onDelete(listOf(track)) }
+                HiveMenuDivider()
+                HiveMenuItem("Settings", Icons.Rounded.Settings) { onDismiss(); openSettings() }
             } else {
                 HiveSubmenuBack("More") { more = false }
                 HiveMenuItem("Track details", Icons.Rounded.Info) { onDismiss(); actions.onInfo(track) }
@@ -926,9 +929,11 @@ fun SongMenuPages(more: Boolean, content: @Composable (Boolean) -> Unit) {
         more,
         transitionSpec = {
             val dir = if (targetState) 1 else -1
-            (fadeIn(tween(150)) + androidx.compose.animation.slideInHorizontally(tween(190)) { dir * it / 6 }) togetherWith
-                (fadeOut(tween(110)) + androidx.compose.animation.slideOutHorizontally(tween(190)) { -dir * it / 6 }) using
-                androidx.compose.animation.SizeTransform(clip = false) { _, _ -> tween(190) }
+            // The box eases to its new size while the pages cross-fade inside it (clipped, so neither spills out).
+            val ease = androidx.compose.animation.core.FastOutSlowInEasing
+            (fadeIn(tween(170, delayMillis = 60)) + androidx.compose.animation.slideInHorizontally(tween(240, easing = ease)) { dir * it / 8 }) togetherWith
+                (fadeOut(tween(90)) + androidx.compose.animation.slideOutHorizontally(tween(240, easing = ease)) { -dir * it / 8 }) using
+                androidx.compose.animation.SizeTransform(clip = true) { _, _ -> tween(240, easing = ease) }
         },
         label = "songMenu",
     ) { page -> Column { content(page) } }

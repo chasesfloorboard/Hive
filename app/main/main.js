@@ -7950,9 +7950,11 @@ function startHiveLink() {
     // Hive's own listening (not imports, not plays that came from the phone).
     getPlays: async since => {
       const events = await readJsonSafe(LISTENING_EVENTS_PATH(), []);
-      // The phone's own plays come back too: a fresh install of Hive Mobile gets all its listening
-      // back from here (the phone skips any it already has, by their time).
-      return (Array.isArray(events) ? events : []).filter(e => e && e.path && Number(e.playedAt) > since && e.source !== 'musicbee-wrapped');
+      // Every play Hive counts goes to the phone (its Wrap months, play counts): Hive's own, the
+      // phone's own (a fresh install gets its listening back) and the MusicBee history imported here.
+      // The phone skips any it already has, by their time.
+      // Imported history has no file, only the song's name: Hive Link finds it in the library by that.
+      return (Array.isArray(events) ? events : []).filter(e => e && (e.path || e.title) && Number(e.playedAt) > since);
     },
     recordPlays: recordPhonePlays,
     // The listening history file itself, so the phone keeps a byte-for-byte copy.
