@@ -163,7 +163,13 @@ class PlayerConnection(private val context: Context, private val scope: Coroutin
 
     fun playNextMedia(items: List<MediaItem>) = withController { c ->
         if (c.mediaItemCount == 0) { playMedia(items); return@withController }
-        c.addMediaItems(c.currentMediaItemIndex + 1, items)
+        if (items.isEmpty()) return@withController
+        // The player puts them after the playing song and those picked to play next before them,
+        // shuffled or not; the queue carries on after them as it was.
+        if (c.isSessionCommandAvailable(HIVE_PLAY_NEXT)) {
+            c.addMediaItems(items)
+            c.sendCustomCommand(HIVE_PLAY_NEXT, android.os.Bundle().apply { putInt("count", items.size); putString("first", items[0].mediaId) })
+        } else c.addMediaItems(c.currentMediaItemIndex + 1, items)
     }
 
     fun addToQueueMedia(items: List<MediaItem>) = withController { c ->

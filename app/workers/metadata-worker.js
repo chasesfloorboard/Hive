@@ -555,7 +555,29 @@ function mp4FullBoxAtom(type,payload){return mp4AtomWithPayload(type,Buffer.conc
 function makeMp4FreeformLoveAtom(loved){const mean=mp4FullBoxAtom('mean',Buffer.from('com.apple.iTunes'));const name=mp4FullBoxAtom('name',Buffer.from('LOVE RATING'));const data=mp4AtomWithPayload('data',Buffer.concat([Buffer.from([0,0,0,1]),Buffer.alloc(4),Buffer.from(loved?'L':'0')]));return mp4AtomWithPayload('----',Buffer.concat([mean,name,data]));}
 function parseMp4FreeformName(buffer,atom){if(atom.type!=='----')return null;let mean='',name='';for(const c of mp4Children(buffer,atom)){if(c.type==='mean'||c.type==='name'){const start=c.offset+c.header+4;const text=buffer.subarray(start,c.end).toString('utf8').replace(/\0+$/g,'');if(c.type==='mean')mean=text;else name=text;}}return {mean,name};}
 function rebuildMp4Parent(buffer,parent,oldChild,newChild){const oldPayload=buffer.subarray(parent.offset+parent.header,parent.end);const rel=oldChild.offset-(parent.offset+parent.header);const before=oldPayload.subarray(0,rel),after=oldPayload.subarray(rel+oldChild.size);return mp4AtomWithPayload(parent.type,Buffer.concat([before,newChild,after]));}
-async function writeMp4LoveTag(trackPath,loved){const input=await fsp.readFile(trackPath);let p=0,top=[];while(p+8<=input.length){const a=mp4Atom(input,p);if(!a)break;top.push(a);p=a.end;}const moov=top.find(a=>a.type==='moov');if(!moov)throw new Error('MP4/M4A file does not contain a moov atom.');const udta=mp4FindPath(input,moov,['udta']),meta=udta&&mp4FindPath(input,udta,['meta']),ilst=meta&&mp4FindPath(input,meta,['ilst']);if(!udta||!meta||!ilst)throw new Error('MP4/M4A file does not contain an iTunes metadata ilst atom.');const kept=[];for(const c of mp4Children(input,ilst)){const ff=parseMp4FreeformName(input,c);if(ff&&ff.mean.toLowerCase()==='com.apple.itunes'&&isBeehiveLoveFieldName(ff.name))continue;kept.push(input.subarray(c.offset,c.end));}if (loved) kept.push(makeMp4FreeformLoveAtom(true));let child=ilst,current=mp4AtomWithPayload('ilst',Buffer.concat(kept));for(const parent of [meta,udta,moov]){current=rebuildMp4Parent(input,parent,child,current);child=parent;}const out=Buffer.concat([input.subarray(0,moov.offset),current,input.subarray(moov.end)]);const temp=await metadataTempPath(trackPath,'love');await writeAndSyncReplacement(temp,trackPath,out);}
+// A rewritten moov that changed size must not move the audio without telling the file where it
+// went: the chunk offsets (stco/co64) point into mdat by absolute position. Moving it by the
+// size change without them made loved songs unplayable. A free atom right after moov takes up the
+// change when it can, so the audio stays exactly where it was; otherwise the offsets of
+// everything after moov are shifted by the change.
+function mp4ShiftChunkOffsets(moovBuf,after,delta){
+  const walk=(from,to)=>{let p=from;while(p+8<=to){const a=mp4Atom(moovBuf,p);if(!a||a.end>to)break;
+    if(['trak','mdia','minf','stbl','moov'].includes(a.type))walk(a.offset+a.header,a.end);
+    else if(a.type==='stco'){const n=moovBuf.readUInt32BE(a.offset+a.header+4);for(let i=0;i<n;i++){const o=a.offset+a.header+8+i*4;const v=moovBuf.readUInt32BE(o);if(v>=after){const nv=v+delta;if(nv<0||nv>0xFFFFFFFF)throw new Error('MP4/M4A chunk offset out of range after rewrite.');moovBuf.writeUInt32BE(nv,o);}}}
+    else if(a.type==='co64'){const n=moovBuf.readUInt32BE(a.offset+a.header+4);for(let i=0;i<n;i++){const o=a.offset+a.header+8+i*8;const v=moovBuf.readBigUInt64BE(o);if(v>=BigInt(after))moovBuf.writeBigUInt64BE(v+BigInt(delta),o);}}
+    p=a.end;}};
+  walk(0,moovBuf.length);
+}
+function mp4ReplaceMoov(input,top,moov,newMoov){
+  const delta=newMoov.length-moov.size;
+  if(delta===0)return Buffer.concat([input.subarray(0,moov.offset),newMoov,input.subarray(moov.end)]);
+  const next=top.find(a=>a.offset===moov.end);
+  const room=next&&next.type==='free'&&next.header===8?next.size-delta:-1;
+  if(room===0||room>=8){const free=room===0?Buffer.alloc(0):mp4AtomWithPayload('free',Buffer.alloc(room-8));return Buffer.concat([input.subarray(0,moov.offset),newMoov,free,input.subarray(next.end)]);}
+  const fixed=Buffer.from(newMoov);mp4ShiftChunkOffsets(fixed,moov.end,delta);
+  return Buffer.concat([input.subarray(0,moov.offset),fixed,input.subarray(moov.end)]);
+}
+async function writeMp4LoveTag(trackPath,loved){const input=await fsp.readFile(trackPath);let p=0,top=[];while(p+8<=input.length){const a=mp4Atom(input,p);if(!a)break;top.push(a);p=a.end;}const moov=top.find(a=>a.type==='moov');if(!moov)throw new Error('MP4/M4A file does not contain a moov atom.');const udta=mp4FindPath(input,moov,['udta']),meta=udta&&mp4FindPath(input,udta,['meta']),ilst=meta&&mp4FindPath(input,meta,['ilst']);if(!udta||!meta||!ilst)throw new Error('MP4/M4A file does not contain an iTunes metadata ilst atom.');const kept=[];for(const c of mp4Children(input,ilst)){const ff=parseMp4FreeformName(input,c);if(ff&&ff.mean.toLowerCase()==='com.apple.itunes'&&isBeehiveLoveFieldName(ff.name))continue;kept.push(input.subarray(c.offset,c.end));}if (loved) kept.push(makeMp4FreeformLoveAtom(true));let child=ilst,current=mp4AtomWithPayload('ilst',Buffer.concat(kept));for(const parent of [meta,udta,moov]){current=rebuildMp4Parent(input,parent,child,current);child=parent;}const out=mp4ReplaceMoov(input,top,moov,current);const temp=await metadataTempPath(trackPath,'love');await writeAndSyncReplacement(temp,trackPath,out);}
 async function verifyMp4LoveTag(trackPath, expected) {
   const input = await fsp.readFile(trackPath);
   let p = 0;

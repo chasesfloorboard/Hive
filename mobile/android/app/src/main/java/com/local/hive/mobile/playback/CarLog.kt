@@ -19,14 +19,15 @@ object CarLog {
     private const val TAG = "HiveCar"
     private const val MAX_BYTES = 512 * 1024L
     private const val MAX_CAPTURE_BYTES = 8 * 1024 * 1024L
-    private const val ANDROID_AUTO = "com.google.android.projection.gearhead"
+    const val ANDROID_AUTO = "com.google.android.projection.gearhead"
     /** Android Auto connecting this long after the last car line is a new drive. */
     private const val NEW_DRIVE_MS = 15 * 60_000L
     /** The system log capture stops this long after Android Auto leaves (or after 4 hours). */
     private const val AFTER_DRIVE_MS = 2 * 60_000L
     private const val LONGEST_DRIVE_MS = 4 * 60 * 60_000L
     @Volatile private var capturing = false
-    @Volatile private var disconnectedAt = 0L
+    /** When Android Auto last left (0: not this time the app has run). */
+    @Volatile var disconnectedAt = 0L; private set
 
     private fun file(context: Context, name: String) = context.getExternalFilesDir(null)?.let { File(it, name) }
 

@@ -44,7 +44,9 @@ class LockPlayerActivity : ComponentActivity() {
             // Still on well past the lock screen's timeout: the phone didn't take the player's (Samsung's
             // may not). The phone's own lock screen takes over and goes off by itself; the player is
             // back when the phone next wakes.
-            if (awake && locked && !leaving && System.currentTimeMillis() - touchedAt > SLEEP_AFTER_MS + IDLE_GRACE_MS) {
+            // In the car the phone stays on while it charges: the player stays up for the drive, as the
+            // lock screen's small media pill is too small to use while driving.
+            if (awake && locked && !leaving && !CarLog.inCar(this@LockPlayerActivity) && System.currentTimeMillis() - touchedAt > SLEEP_AFTER_MS + IDLE_GRACE_MS) {
                 CarLog.lockPlayer(this@LockPlayerActivity, "left idle, the lock screen takes over so the screen can go off")
                 wentHome = true
                 moveTaskToBack(true)
@@ -149,7 +151,9 @@ class LockPlayerActivity : ComponentActivity() {
         if (!locked || !awake || !CarLog.inCar(this)) return
         val now = System.currentTimeMillis()
         broughtBack.removeAll { now - it > 60_000 }
-        if (broughtBack.size >= 3) return
+        // Android Auto pushes the player away each time the phone wakes; a few a minute is still a
+        // screen the user opened (the camera), more than that is a fight.
+        if (broughtBack.size >= 6) return
         broughtBack += now
         window.decorView.postDelayed({ CarLog.lockPlayer(this, "comes back"); showIfWanted(this) }, 400)
     }

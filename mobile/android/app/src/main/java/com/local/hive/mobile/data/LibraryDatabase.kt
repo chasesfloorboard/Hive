@@ -241,10 +241,12 @@ data class LostTrack(
     val folder: String,
     val fileName: String,
     val lostAt: Long,
+    /** When the song first came to the phone, so a copy of it that comes back isn't a new song. */
+    @androidx.room.ColumnInfo(defaultValue = "0") val dateAdded: Long = 0,
 ) {
-    fun asTrack() = Track(id, title, artist, album, "", 0, durationMs, 0, 0, 0, "", folder, fileName, 0, 0)
+    fun asTrack() = Track(id, title, artist, album, "", 0, durationMs, 0, 0, 0, "", folder, fileName, dateAdded, 0)
     companion object {
-        fun of(t: Track, id: Long = t.id, at: Long = System.currentTimeMillis()) = LostTrack(id, t.title, t.artist, t.album, t.durationMs, t.folder, t.fileName, at)
+        fun of(t: Track, id: Long = t.id, at: Long = System.currentTimeMillis()) = LostTrack(id, t.title, t.artist, t.album, t.durationMs, t.folder, t.fileName, at, t.dateAdded)
     }
 }
 
@@ -374,6 +376,7 @@ interface LibraryDao {
         upsertLostTracks(existing.values.filter { it.id !in scanned && it.id !in r.moved && it.id !in r.aside }.map { LostTrack.of(it) })
         forgetLostWithoutThings()
         if (tracks.isEmpty()) { deleteAllTracks(); return existing.size }
+        val tracks = TrackRelink.keepAdded(existing, lostById, r, tracks)
         // SQLite caps bound parameters, so writes and deletes go in chunks.
         val changed = tracks.filter { existing[it.id] != it }
         changed.chunked(500).forEach { upsertTracks(it) }
@@ -770,9 +773,9 @@ interface LibraryDao {
 
 @Database(
     entities = [Track::class, LoveState::class, PcMatch::class, Play::class, FavoriteAlbum::class, Playlist::class, PlaylistEntry::class, StreamTrack::class, Rating::class, SyncedSong::class, HistoryEntry::class, FavoriteItem::class, LostTrack::class],
-    version = 11,
+    version = 12,
     exportSchema = true,
-    autoMigrations = [AutoMigration(from = 1, to = 2), AutoMigration(from = 2, to = 3), AutoMigration(from = 3, to = 4), AutoMigration(from = 4, to = 5), AutoMigration(from = 5, to = 6), AutoMigration(from = 6, to = 7), AutoMigration(from = 7, to = 8, spec = LibraryDatabase.SeedHistory::class), AutoMigration(from = 8, to = 9), AutoMigration(from = 9, to = 10), AutoMigration(from = 10, to = 11, spec = LibraryDatabase.SendOwnRatings::class)],
+    autoMigrations = [AutoMigration(from = 1, to = 2), AutoMigration(from = 2, to = 3), AutoMigration(from = 3, to = 4), AutoMigration(from = 4, to = 5), AutoMigration(from = 5, to = 6), AutoMigration(from = 6, to = 7), AutoMigration(from = 7, to = 8, spec = LibraryDatabase.SeedHistory::class), AutoMigration(from = 8, to = 9), AutoMigration(from = 9, to = 10), AutoMigration(from = 10, to = 11, spec = LibraryDatabase.SendOwnRatings::class), AutoMigration(from = 11, to = 12)],
 )
 abstract class LibraryDatabase : RoomDatabase() {
     abstract fun dao(): LibraryDao

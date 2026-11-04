@@ -591,7 +591,8 @@ class SongSync(
 class SongSyncWorker(context: Context, params: WorkerParameters) : CoroutineWorker(context, params) {
     override suspend fun doWork(): Result {
         val app = applicationContext as com.local.hive.mobile.HiveApp
-        runCatching { setForeground(foreground(SongSyncState())) }
+        // The notification shows only once a song is actually being copied: each sync with Hive
+        // looks for songs to copy, and most times there are none, which flashed "Syncing songs".
         val ok = app.songSync.run { state -> runCatching { setForeground(foreground(state)) } }
         return if (ok) Result.success() else Result.retry()
     }

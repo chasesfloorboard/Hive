@@ -45,4 +45,19 @@ object TrackRelink {
         // A song "moved" to its own number is nothing to do.
         return Result(moved.filter { (a, b) -> a != b }, aside)
     }
+
+    /**
+     * Each song keeps the day it first came to the phone. Android dates a file by when it was last
+     * written: a song whose tags were rewritten (its plays or rating saved into the file, a fresh
+     * copy from the PC) comes back dated today, under its number or a new one, and would be
+     * "Recently added" though it's been here for years.
+     */
+    fun keepAdded(before: Map<Long, Track>, lost: Map<Long, LostTrack>, r: Result, scanned: List<Track>): List<Track> {
+        val from = HashMap<Long, Long>()
+        for ((old, new) in r.moved) (before[old]?.dateAdded ?: lost[old]?.dateAdded)?.let { from[new] = it }
+        return scanned.map { t ->
+            val was = from[t.id] ?: before[t.id]?.takeIf { t.id !in r.moved && t.id !in r.aside }?.dateAdded
+            if (was != null && was > 0 && was < t.dateAdded) t.copy(dateAdded = was) else t
+        }
+    }
 }

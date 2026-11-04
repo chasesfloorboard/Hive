@@ -40,4 +40,18 @@ class TrackRelinkTest {
         val r = TrackRelink.find(listOf(t(1, "Song", file = "a.mp3")), listOf(t(5, "Song", folder = "X", file = "b.mp3"), t(6, "Song", folder = "Y", file = "c.mp3")))
         assertTrue(r.moved.isEmpty())
     }
+
+    @Test fun aRewrittenSongKeepsTheDayItArrived() {
+        fun d(x: Track, at: Long) = x.copy(dateAdded = at)
+        val before = listOf(d(t(1, "Played"), 1_000), d(t(2, "Retagged"), 2_000), d(t(3, "Old"), 3_000))
+        // 1's file was written again (a new number, dated today); 2 was rewritten in place; 4 is really new.
+        val after = listOf(d(t(9, "Played"), 99_000), d(t(2, "Retagged"), 98_000), d(t(3, "Old"), 3_000), d(t(4, "New"), 97_000))
+        val r = TrackRelink.find(before, after)
+        val kept = TrackRelink.keepAdded(before.associateBy { it.id }, emptyMap(), r, after).associate { it.id to it.dateAdded }
+        assertEquals(mapOf(9L to 1_000L, 2L to 2_000L, 3L to 3_000L, 4L to 97_000L), kept)
+        // A song that was away for a scan and comes back keeps its day too.
+        val lost = LostTrack.of(d(t(5, "Away"), 5_000))
+        val back = TrackRelink.find(listOf(lost.asTrack()), listOf(d(t(6, "Away"), 96_000)))
+        assertEquals(5_000L, TrackRelink.keepAdded(emptyMap(), mapOf(5L to lost), back, listOf(d(t(6, "Away"), 96_000))).single().dateAdded)
+    }
 }

@@ -198,7 +198,7 @@ fun PillButton(label: String, icon: androidx.compose.ui.graphics.vector.ImageVec
     val c = Hive.colors
     val base = modifier.height(46.dp)
     Row(
-        (if (accent) base.shadow(14.dp, HiveShape.pill, ambientColor = c.accentGlow, spotColor = c.accent).clip(HiveShape.pill).background(c.accent)
+        (if (accent) base.softShadow(14.dp, HiveShape.pill, c.accent).clip(HiveShape.pill).background(c.accent)
         else base.hiveGlass(HiveShape.pill, strength = 0.2f)).pressable(onClick, 0.96f),
         horizontalArrangement = Arrangement.Center,
         verticalAlignment = Alignment.CenterVertically,

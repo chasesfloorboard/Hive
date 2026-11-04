@@ -213,3 +213,32 @@ test('serializeQueueTrack carries loved/rating so a restored queue entry is neve
   const block = renderer.slice(start, end);
   assert.match(block, /loved:!!t\.loved, rating:Number\(t\.rating\)\|\|0, ratingRaw:Number\(t\.ratingRaw\)\|\|0/);
 });
+
+test('an M4A whose tags grow keeps its audio where its chunk offsets say', () => {
+  const src = fs.readFileSync(path.join(root, 'app/workers/metadata-worker.js'), 'utf8');
+  const pick = (name) => { const m = src.match(new RegExp(`function ${name}\\([\\s\\S]*?\\n}\\n|function ${name}\\(.*\\n`)); assert.ok(m, name); return m[0]; };
+  const { mp4ReplaceMoov, mp4AtomWithPayload, mp4Atom } = new Function(
+    ['mp4Atom', 'mp4AtomWithPayload', 'mp4ShiftChunkOffsets', 'mp4ReplaceMoov'].map(pick).join('\n') + '\nreturn { mp4ReplaceMoov, mp4AtomWithPayload, mp4Atom };')();
+  const box = mp4AtomWithPayload;
+  const audio = Buffer.from('AUDIO-DATA');
+  const build = (withFree, moovPad) => {
+    const make = (offset) => { const stco = Buffer.alloc(12); stco.writeUInt32BE(1, 4); stco.writeUInt32BE(offset, 8);
+      return box('moov', Buffer.concat([box('trak', box('mdia', box('minf', box('stbl', box('stco', stco))))), box('udta', Buffer.alloc(moovPad))])); };
+    const ftyp = box('ftyp', Buffer.from('M4A \0\0\0\0'));
+    const free = withFree ? box('free', Buffer.alloc(200)) : Buffer.alloc(0);
+    const size = make(0).length;
+    return { file: Buffer.concat([ftyp, make(ftyp.length + size + free.length + 8), free, box('mdat', audio)]), make };
+  };
+  const audioAt = (buf) => { // follow the stco offset to the audio
+    const i = buf.indexOf('stco') + 12; return buf.subarray(buf.readUInt32BE(i), buf.readUInt32BE(i) + audio.length).toString(); };
+  for (const withFree of [true, false]) {
+    const { file } = build(withFree, 0);
+    let p = 0; const top = []; while (p + 8 <= file.length) { const a = mp4Atom(file, p); top.push(a); p = a.end; }
+    const moov = top.find((a) => a.type === 'moov');
+    const old = file.subarray(moov.offset, moov.end);
+    const grown = Buffer.concat([old, Buffer.alloc(76)]); grown.writeUInt32BE(grown.length, 0);
+    const out = mp4ReplaceMoov(file, top, moov, grown);
+    assert.equal(audioAt(out), 'AUDIO-DATA', withFree ? 'with padding' : 'without padding');
+    if (withFree) assert.equal(out.length, file.length, 'the padding takes the growth, the audio stays put');
+  }
+});

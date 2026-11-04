@@ -362,10 +362,11 @@ fun AccentPlayButton(playing: Boolean, onClick: () -> Unit, size: Dp = 44.dp) {
     Box(
         Modifier
             .size(size)
-            .shadow(size * 0.3f, CircleShape, ambientColor = c.accentGlow, spotColor = c.accent)
-            .clip(CircleShape)
-            .background(c.accent)
-            .pressable(onClick, 0.9f),
+            // The whole button gives under the finger; the circle and its glow are painted, not a
+            // shadowed layer, which dropped the circle for a few frames as play and pause traded places.
+            .pressable(onClick, 0.9f)
+            .softShadow(size * 0.3f, CircleShape, c.accent)
+            .drawBehind { drawCircle(c.accent) },
         contentAlignment = Alignment.Center,
     ) {
         // Play and pause trade places with a small scale, not a flat fade.

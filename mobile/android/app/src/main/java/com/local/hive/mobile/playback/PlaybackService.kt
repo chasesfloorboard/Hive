@@ -91,6 +91,41 @@ class PlaybackService : MediaLibraryService() {
         val order = intArrayOf(current) + (0 until count).filter { it != current }.shuffled().toIntArray()
         player.setShuffleOrder(androidx.media3.exoplayer.source.ShuffleOrder.DefaultShuffleOrder(order, System.nanoTime()))
     }
+    /** Songs put to play next, in the order picked, still to come. */
+    private val upNext = ArrayList<String>()
+
+    /**
+     * [count] songs, the first of them [first], were just added at the end of the queue to play
+     * next: they go after the playing song and any songs put to play next before them, and the
+     * queue (or its shuffle) carries on after them as it was.
+     */
+    private fun placeNext(player: ExoPlayer, count: Int, first: String, tries: Int = 0) {
+        val total = player.mediaItemCount
+        val start = total - count
+        if (count <= 0 || start < 0) return
+        // The songs may still be on their way into the queue.
+        if (player.getMediaItemAt(start).mediaId != first) {
+            if (tries < 20) android.os.Handler(android.os.Looper.getMainLooper()).postDelayed({ placeNext(player, count, first, tries + 1) }, 50)
+            return
+        }
+        val ids = (start until total).map { player.getMediaItemAt(it).mediaId }
+        val current = player.currentMediaItemIndex
+        val shuffled = player.shuffleModeEnabled
+        val tl = player.currentTimeline
+        val order = if (!shuffled) (0 until total).toList() else
+            generateSequence(tl.getFirstWindowIndex(true).takeIf { it != C.INDEX_UNSET }) { tl.getNextWindowIndex(it, Player.REPEAT_MODE_OFF, true).takeIf { i -> i != C.INDEX_UNSET } }.toList()
+        val added = (start until total).toList()
+        val run = UpNext.run(order.filter { it !in added }, current, { player.getMediaItemAt(it).mediaId }, upNext)
+        while (upNext.size > run) upNext.removeAt(upNext.lastIndex)
+        if (!shuffled) {
+            val at = (current + 1 + run).coerceAtMost(start)
+            if (at < start) player.moveMediaItems(start, total, at)
+        } else {
+            player.setShuffleOrder(androidx.media3.exoplayer.source.ShuffleOrder.DefaultShuffleOrder(UpNext.place(order, current, added, run).toIntArray(), System.nanoTime()))
+        }
+        upNext += ids
+    }
+
     private fun wantsLockPlayer(player: Player) =
         player.mediaItemCount > 0 && (player.isPlaying || System.currentTimeMillis() - lastPlayingAt < LOCK_PLAYER_AFTER_PAUSE_MS)
 
@@ -143,6 +178,13 @@ class PlaybackService : MediaLibraryService() {
         // The queue's name in the car's and other controllers' queue view.
         player.playlistMetadata = androidx.media3.common.MediaMetadata.Builder().setTitle("Up next").build()
         player.addListener(PlayCounter(app.playRecorder, app.scrobbler, scope, player))
+        player.addListener(object : Player.Listener {
+            override fun onPlayWhenReadyChanged(playWhenReady: Boolean, reason: Int) {
+                if (!playWhenReady && reason == Player.PLAY_WHEN_READY_CHANGE_REASON_AUDIO_FOCUS_LOSS) reclaimForDrive()
+                // The user paused or picked something themselves: the drive's start is over.
+                else if (!playWhenReady && reason == Player.PLAY_WHEN_READY_CHANGE_REASON_USER_REQUEST) driveStartedAt = 0L
+            }
+        })
         // The songs the player has open (this one, and the ones either side a skip or crossfade opens):
         // their files aren't rewritten to keep Love in them until they're closed (see LoveFiles).
         player.addListener(object : Player.Listener {
@@ -156,9 +198,13 @@ class PlaybackService : MediaLibraryService() {
         // A shuffle starts from the song playing and plays every other song once after it. ExoPlayer's
         // own order put the starting song anywhere, so the songs ahead of it in the order never played.
         player.addListener(object : Player.Listener {
-            override fun onShuffleModeEnabledChanged(enabled: Boolean) { if (enabled) shuffleFromCurrent(player) }
+            override fun onShuffleModeEnabledChanged(enabled: Boolean) { upNext.clear(); if (enabled) shuffleFromCurrent(player) }
             override fun onTimelineChanged(timeline: androidx.media3.common.Timeline, reason: Int) {
-                if (reason == Player.TIMELINE_CHANGE_REASON_PLAYLIST_CHANGED && newQueue) { newQueue = false; if (player.shuffleModeEnabled) shuffleFromCurrent(player) }
+                if (reason == Player.TIMELINE_CHANGE_REASON_PLAYLIST_CHANGED && newQueue) { newQueue = false; upNext.clear(); if (player.shuffleModeEnabled) shuffleFromCurrent(player) }
+            }
+            // A song put to play next has come up: the next one picked goes after those still to come.
+            override fun onMediaItemTransition(mediaItem: MediaItem?, reason: Int) {
+                if (upNext.firstOrNull() == mediaItem?.mediaId) upNext.removeAt(0) else if (reason != Player.MEDIA_ITEM_TRANSITION_REASON_PLAYLIST_CHANGED) upNext.clear()
             }
         })
         // The next two streamed songs are found on YouTube Music while this one plays, so they start at once.
@@ -311,9 +357,11 @@ class PlaybackService : MediaLibraryService() {
                 MediaSession.ConnectionResult.AcceptedResultBuilder(session)
                     .also {
                         CarLog.note(this@PlaybackService, controller.packageName, "connect (controller version ${controller.controllerVersion}, trusted ${controller.isTrusted})")
+                        val wasInCar = CarLog.carConnected
                         CarLog.car(this@PlaybackService, controller.packageName, connected = true)
+                        if (controller.packageName == CarLog.ANDROID_AUTO && !wasInCar) startForDrive()
                     }
-                    .setAvailableSessionCommands(MediaSession.ConnectionResult.DEFAULT_SESSION_AND_LIBRARY_COMMANDS.buildUpon().add(CMD_LOVE).add(CMD_SHUFFLE).add(CMD_REPEAT).add(CMD_SKIP).build())
+                    .setAvailableSessionCommands(MediaSession.ConnectionResult.DEFAULT_SESSION_AND_LIBRARY_COMMANDS.buildUpon().add(CMD_LOVE).add(CMD_SHUFFLE).add(CMD_REPEAT).add(CMD_SKIP).add(HIVE_PLAY_NEXT).build())
                     .build()
 
             override fun onDisconnected(session: MediaSession, controller: MediaSession.ControllerInfo) =
@@ -326,6 +374,7 @@ class PlaybackService : MediaLibraryService() {
                     // guessing the next song at once (it showed for a moment, then the crossfade's song).
                     CMD_SKIP.customAction -> if (!crossfader.skip()) player.seekToNext()
                     CMD_SHUFFLE.customAction -> player.shuffleModeEnabled = !player.shuffleModeEnabled
+                    HIVE_PLAY_NEXT.customAction -> placeNext(player, args.getInt("count"), args.getString("first").orEmpty())
                     CMD_REPEAT.customAction -> player.repeatMode = when (player.repeatMode) { Player.REPEAT_MODE_OFF -> Player.REPEAT_MODE_ALL; Player.REPEAT_MODE_ALL -> Player.REPEAT_MODE_ONE; else -> Player.REPEAT_MODE_OFF }
                 }
                 return com.google.common.util.concurrent.Futures.immediateFuture(androidx.media3.session.SessionResult(androidx.media3.session.SessionResult.RESULT_SUCCESS))
@@ -492,6 +541,56 @@ class PlaybackService : MediaLibraryService() {
         }
     }
 
+    /** When this drive's music started on its own (0: not in a drive's first moments). */
+    private var driveStartedAt = 0L
+    private var driveReclaimed = false
+
+    private fun onACall() = getSystemService(android.media.AudioManager::class.java)?.mode in
+        listOf(android.media.AudioManager.MODE_IN_CALL, android.media.AudioManager.MODE_IN_COMMUNICATION, android.media.AudioManager.MODE_RINGTONE)
+
+    /**
+     * The phone joined the car (Android Auto came, after a while away): Hive's music starts, from
+     * where it was, unless Hive is already playing or a call is on. Hive takes the sound, so
+     * whatever Android Auto or the Assistant started meanwhile (a news briefing) stops. A reconnect
+     * a few minutes into the same drive (a loose cable) is left alone.
+     */
+    private fun startForDrive() {
+        val away = CarLog.disconnectedAt
+        if (away > 0 && System.currentTimeMillis() - away < DRIVE_GAP_MS) return
+        scope.launch {
+            val player = session?.player ?: return@launch
+            // Android Auto starts its own things first (it resumes its last app); Hive comes after.
+            delay(2_500)
+            if (player.isPlaying || onACall()) return@launch
+            val station = player.currentMediaItem?.mediaId?.let(PlaybackMemory::notMusic) == true
+            if (player.mediaItemCount == 0 || station) {
+                val music = withContext(Dispatchers.IO) { memory.restore() } ?: return@launch
+                player.setMediaItems(music.items, music.index, music.positionMs)
+                player.shuffleModeEnabled = music.shuffle
+                player.repeatMode = music.repeatMode
+            }
+            CarLog.note(this@PlaybackService, CarLog.ANDROID_AUTO, "drive starts: Hive plays")
+            driveStartedAt = System.currentTimeMillis(); driveReclaimed = false
+            player.prepare(); player.play()
+        }
+    }
+
+    /**
+     * Something took the sound away from Hive just as the drive began (a news briefing starting a
+     * moment late): Hive takes it back, once. Later, or a second time, what the user picked wins.
+     */
+    private fun reclaimForDrive() {
+        if (driveStartedAt == 0L || driveReclaimed || System.currentTimeMillis() - driveStartedAt > RECLAIM_MS) return
+        driveReclaimed = true
+        scope.launch {
+            val player = session?.player ?: return@launch
+            delay(1_500)
+            if (player.isPlaying || onACall() || !CarLog.carConnected) return@launch
+            CarLog.note(this@PlaybackService, CarLog.ANDROID_AUTO, "sound taken at the drive's start: Hive plays again")
+            player.play()
+        }
+    }
+
     override fun onDestroy() {
         OpenSongs.ids = emptySet()
         screenOff?.let { runCatching { unregisterReceiver(it) } }
@@ -627,8 +726,16 @@ fun interface PlayRecorder {
 /** How long a song plays before it shows in Recently played. */
 const val HISTORY_MS = 5_000L
 
+/** Android Auto back within this long is the same drive (a loose cable), not a new one. */
+private const val DRIVE_GAP_MS = 10 * 60_000L
+/** How long into a drive Hive takes the sound back from something that started on its own. */
+private const val RECLAIM_MS = 60_000L
+
 /** Hive's own skip button (see PlayerConnection.next): the player answers with what it really did. */
 val HIVE_SKIP = androidx.media3.session.SessionCommand("hive.skip", android.os.Bundle.EMPTY)
+
+/** Songs just added at the end of the queue to play next (see PlaybackService.placeNext). */
+val HIVE_PLAY_NEXT = androidx.media3.session.SessionCommand("hive.playNext", android.os.Bundle.EMPTY)
 
 /** The playing song's notification channel (no icon badge). */
 const val PLAYBACK_CHANNEL = "hive-playback"
