@@ -101,19 +101,20 @@ test('Settings > Discord no longer reads/writes Music Presence settings.json or 
   assert.match(restartBlock, /discordPresence\.start\(\);/);
 });
 
-// Real bug the user reported and confirmed with screenshots: Rich Presence
-// data was correct (track/artist/artwork/pause state all showed correctly
-// under Discord's full profile Activity tab) but never appeared in the
-// compact hover-card the way games/Spotify do -- it always landed on the
-// deeper surface only. The activity object never set `instance`, which
-// every reference Discord RPC implementation includes; every other field
-// already matched a normal, complete Activity payload.
-test('the published activity sets instance: true, matching a standard/complete Activity payload', () => {
-  const start = discordPresence.indexOf('const activity = {');
-  const end = discordPresence.indexOf('\n    };', start);
-  assert.ok(start >= 0 && end > start, 'expected to find the activity object construction');
-  const block = discordPresence.slice(start, end);
-  assert.match(block, /instance:\s*true/);
+// Real bug the user reported with screenshots: Hive's song showed only under the full profile's
+// Activity tab, never in the profile pop-up where Spotify and Music Presence show. Hive sent
+// `instance: true` (a joinable game session); Music Presence, recorded over IPC, sends
+// `instance: false` and `status_display_type: 1`.
+test('the published activity is shaped as a music player\'s: not a game instance, the artist as the status', async () => {
+  const { presence, sent, cleanup } = makePresence();
+  try {
+    presence.start();
+    presence.rpc.ready = true;
+    await presence.update(samplePayload);
+    assert.equal(sent.length, 1);
+    assert.equal(sent[0].instance, false);
+    assert.equal(sent[0].status_display_type, 1);
+  } finally { cleanup(); }
 });
 
 // Behavior tests against the real module, with Discord and the loon relay

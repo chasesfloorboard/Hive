@@ -64,17 +64,21 @@ function createClient({ cacheFile, fetchImpl = global.fetch } = {}) {
 
   async function networkJson(url, headers = {}) {
     // MusicBrainz asks clients to stay at or below one request per second.
-    requestChain = requestChain.then(async () => {
+    // Each request waits for the one before to settle, failed or not: the chain used to carry a
+    // failure forward, so after one 503 every later lookup returned that error until restart.
+    const request = requestChain.catch(() => {}).then(async () => {
       const wait = Math.max(0, 1000 - (Date.now() - lastRequest));
       if (wait) await new Promise(resolve => setTimeout(resolve, wait));
       lastRequest = Date.now();
       const response = await fetchImpl(url, {
-        headers: { 'User-Agent': USER_AGENT, 'Accept': 'application/json', ...headers }
+        headers: { 'User-Agent': USER_AGENT, 'Accept': 'application/json', ...headers },
+        signal: AbortSignal.timeout(20000),
       });
       if (!response.ok) throw new Error(`MusicBrainz request failed (${response.status}).`);
       return response.json();
     });
-    return requestChain;
+    requestChain = request.catch(() => {});
+    return request;
   }
 
   async function searchReleaseGroups({ album, artist, limit = 5 } = {}) {

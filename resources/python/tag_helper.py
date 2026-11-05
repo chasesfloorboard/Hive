@@ -653,8 +653,8 @@ def apply_artwork_flac(f, op):
         if not (0<=index<len(old)): raise RuntimeError('Artwork item no longer exists.')
         del old[index]
     elif action=='remove_front':
+        # No front cover: nothing to remove (another picture type is never taken for it).
         indexes=[i for i,p in enumerate(old) if norm_type(getattr(p,'type',0))=='Cover (Front)']
-        if not indexes and old: indexes=[0]
         old=[p for i,p in enumerate(old) if i not in set(indexes)]
     elif action=='remove_all':
         old=[]
@@ -719,7 +719,6 @@ def apply_artwork_mp3(id3, op):
         for picture in old: id3.add(picture)
     elif action=='remove_front':
         front_indexes=[i for i,p in enumerate(old) if norm_type(p.type)=='Cover (Front)']
-        if not front_indexes and old: front_indexes=[0]
         keep=[p for i,p in enumerate(old) if i not in set(front_indexes)]
         id3.delall('APIC')
         for picture in keep: id3.add(picture)
@@ -907,7 +906,7 @@ def apply_artwork_asf(f, op):
         i=at(int(op.get('index',-1))); old[i]['type']=type_id(ptype); old[i]['desc']=desc
     elif action=='delete': del old[at(int(op.get('index',-1)))]
     elif action=='remove_front':
-        indexes=[i for i,p in enumerate(old) if norm_type(p['type'])=='Cover (Front)'] or ([0] if old else [])
+        indexes=[i for i,p in enumerate(old) if norm_type(p['type'])=='Cover (Front)']
         old=[p for i,p in enumerate(old) if i not in set(indexes)]
     elif action=='remove_all': old=[]
     elif action=='write':
@@ -951,16 +950,22 @@ def modify_artwork(path, op):
         f=ASF(path); apply_artwork_asf(f,op); f.save(); return
     raise RuntimeError(f'Native artwork editing is not implemented for {ext or "this format"}.')
 
+# MP4 covers carry no picture type, so there the first picture is the front cover. In every other
+# format a picture of another type (Back, Artist) is never taken for the front: removing or replacing
+# "the front cover" of a file without one deleted or overwrote that other picture.
+_UNTYPED_ARTWORK = {'.m4a', '.mp4', '.m4b', '.m4p', '.alac'}
+
 def replace_front(path,image,ptype='Cover (Front)',comment=''):
     ext=Path(path).suffix.lower(); pics=read_artwork(path)
-    idx=next((i for i,p in enumerate(pics) if p['type']=='Cover (Front)'), 0 if pics else -1)
+    fallback = 0 if (pics and ext in _UNTYPED_ARTWORK) else -1
+    idx=next((i for i,p in enumerate(pics) if p['type']=='Cover (Front)'), fallback)
     if idx>=0: modify_artwork(path,{'action':'replace','index':idx,'imagePath':image,'pictureType':'Cover (Front)','comment':comment})
     else: modify_artwork(path,{'action':'add','imagePath':image,'pictureType':'Cover (Front)','comment':comment})
 
 def remove_front(path):
     pics=read_artwork(path)
     indexes=[p['index'] for p in pics if p['type']=='Cover (Front)']
-    if not indexes and pics: indexes=[0]
+    if not indexes and pics and Path(path).suffix.lower() in _UNTYPED_ARTWORK: indexes=[0]
     for idx in reversed(indexes): modify_artwork(path,{'action':'delete','index':idx})
 
 
@@ -1102,8 +1107,14 @@ def read_compilation(path):
     return '0'
 
 
+# MusicBee's POPM bytes for 0.5..5 stars, the same table Hive reads them back with (id3-frames.js
+# musicBeePopmValue/Stars). Scaling stars to 0-255 wrote 51/77/102/128 for 1-2.5 stars, which read
+# back as 1.5-3 stars, so those ratings failed their check and were never saved.
+_MUSICBEE_POPM = [0, 13, 1, 54, 64, 118, 128, 186, 196, 242, 255]
+
 def _rating_255(stars):
-    return max(0, min(255, int(round((float(stars or 0) / 5.0) * 255.0))))
+    half_steps = max(0, min(10, int(round(float(stars or 0) * 2))))
+    return _MUSICBEE_POPM[half_steps]
 
 def _set_freeform_mp4(tags, name, value):
     key=f'----:com.apple.iTunes:{name}'

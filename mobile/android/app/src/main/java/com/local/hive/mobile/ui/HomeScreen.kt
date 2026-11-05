@@ -1,5 +1,10 @@
 package com.local.hive.mobile.ui
 
+import androidx.compose.foundation.gestures.detectDragGesturesAfterLongPress
+import androidx.compose.foundation.border
+import androidx.compose.ui.input.pointer.pointerInput
+import androidx.compose.ui.graphics.graphicsLayer
+import androidx.compose.ui.zIndex
 import androidx.compose.foundation.combinedClickable
 import kotlinx.coroutines.flow.first
 import kotlinx.coroutines.flow.map
@@ -454,14 +459,19 @@ private fun ArtistsTab(vm: MainViewModel, nav: HomeNavigation, bottom: Dp) {
         }
         if (artists.isEmpty()) item(span = { androidx.compose.foundation.lazy.grid.GridItemSpan(2) }) { EmptyState("No artists yet", "") }
         gridItems(artists, key = { it.artist }) { a ->
-            ArtistSquare(vm, a, covers[a.artist].orEmpty(), onLongClick = { nav.collection(AutoDjRequest(a.artist) { vm.artistTracks(a.artist).first() }) }) { nav.openArtist(a.artist) }
+            // Hold to pick an artist (all their songs), as albums are picked; while picking, a tap picks more.
+            val pickArtist = rememberArtistPicker(vm, a.artist)
+            val selection = LocalSelection.current
+            ArtistSquare(vm, a, covers[a.artist].orEmpty(), picked = selection?.hasGroup(artistGroupKey(a.artist)) == true, onLongClick = pickArtist) {
+                if (selection?.active == true) pickArtist() else nav.openArtist(a.artist)
+            }
         }
     }
 }
 
 /** An artist as a square: Hive's photo of them when artist photos are on, else four of their most played albums' covers (or their one). */
 @Composable
-private fun ArtistSquare(vm: MainViewModel, a: ArtistSummary, covers: List<Any>, onLongClick: (() -> Unit)? = null, onClick: () -> Unit) {
+private fun ArtistSquare(vm: MainViewModel, a: ArtistSummary, covers: List<Any>, picked: Boolean = false, onLongClick: (() -> Unit)? = null, onClick: () -> Unit) {
     val photo = rememberArtistPhoto(vm, a.artist)
     val pictures = when {
         photo != null -> listOf<Any>(photo)
@@ -469,15 +479,37 @@ private fun ArtistSquare(vm: MainViewModel, a: ArtistSummary, covers: List<Any>,
         covers.isNotEmpty() -> covers.take(1)
         else -> listOf<Any>(Uri.parse("content://media/external/audio/albumart/${a.albumId}"))
     }
-    FavoriteSquare(a.artist, pictures, round = false, icon = Icons.Rounded.Person, subtitle = "${countOf(a.albumCount, "album")} · ${countOf(a.trackCount, "track")}", onLongClick = onLongClick, onClick = onClick)
+    FavoriteSquare(a.artist, pictures, round = false, icon = Icons.Rounded.Person, subtitle = "${countOf(a.albumCount, "album")} · ${countOf(a.trackCount, "track")}", picked = picked, onLongClick = onLongClick, onClick = onClick)
+}
+
+/** An artist's key among the picked groups (the same artist picked from any list is one pick). */
+internal fun artistGroupKey(name: String) = "artist:" + name.trim().lowercase()
+
+/** Picks or un-picks an artist, as all their songs. */
+@Composable
+internal fun rememberArtistPicker(vm: MainViewModel, name: String): () -> Unit {
+    val selection = LocalSelection.current
+    val scope = androidx.compose.runtime.rememberCoroutineScope()
+    val haptics = androidx.compose.ui.platform.LocalHapticFeedback.current
+    return remember(name, selection) {
+        {
+            val sel = selection
+            if (sel != null) {
+                if (!sel.active) haptics.performHapticFeedback(androidx.compose.ui.hapticfeedback.HapticFeedbackType.LongPress)
+                scope.launch { sel.toggleGroup(artistGroupKey(name), "artist", vm.tracksOfArtist(name)) }
+            }
+        }
+    }
 }
 
 /** A row for things that aren't songs: art, name, detail line. */
 @Composable
-fun LibraryRow(art: Any?, fallback: ImageVector, title: String, subtitle: String, round: Boolean = false, trailing: String? = null, modifier: Modifier = Modifier, onLongClick: (() -> Unit)? = null, onClick: () -> Unit) {
+fun LibraryRow(art: Any?, fallback: ImageVector, title: String, subtitle: String, round: Boolean = false, trailing: String? = null, modifier: Modifier = Modifier, picked: Boolean = false, onLongClick: (() -> Unit)? = null, onClick: () -> Unit) {
     val c = Hive.colors
     Row(
-        modifier.fillMaxWidth().padding(horizontal = 8.dp).height(68.dp).clip(HiveShape.row).combinedClickable(onClick = onClick, onLongClick = onLongClick).padding(horizontal = 10.dp),
+        modifier.fillMaxWidth().padding(horizontal = 8.dp).height(68.dp).clip(HiveShape.row)
+            .then(if (picked) Modifier.background(c.accent.copy(alpha = 0.18f)) else Modifier)
+            .combinedClickable(onClick = onClick, onLongClick = onLongClick).padding(horizontal = 10.dp),
         verticalAlignment = Alignment.CenterVertically,
     ) {
         Artwork(art, Modifier.size(48.dp), if (round) CircleShape else HiveShape.thumb, fallback)
@@ -733,7 +765,10 @@ private fun likedLine(liked: Int, rest: String = "") = listOf("♥ ${countOf(lik
 @Composable
 private fun LikedArtistRow(vm: MainViewModel, a: LikedGroup, onClick: () -> Unit) {
     val photo = rememberArtistPhoto(vm, a.name)
-    LibraryRow(photo ?: Uri.parse("content://media/external/audio/albumart/${a.albumId}"), Icons.Rounded.Person, a.name, likedLine(a.liked), round = true, onClick = onClick)
+    val pick = rememberArtistPicker(vm, a.name)
+    val selection = LocalSelection.current
+    LibraryRow(photo ?: Uri.parse("content://media/external/audio/albumart/${a.albumId}"), Icons.Rounded.Person, a.name, likedLine(a.liked), round = true,
+        picked = selection?.hasGroup(artistGroupKey(a.name)) == true, onLongClick = pick) { if (selection?.active == true) pick() else onClick() }
 }
 
 /**
@@ -743,9 +778,29 @@ private fun LikedArtistRow(vm: MainViewModel, a: LikedGroup, onClick: () -> Unit
 @Composable
 private fun FavoritesHome(vm: MainViewModel, nav: HomeNavigation, tracks: List<Track>, streams: List<Pair<StreamTrack, Long>>, tiles: List<FavoriteTile>, favoritesImage: String?, bottom: Dp, searching: Boolean) {
     val c = Hive.colors
+    val selection = LocalSelection.current
+    val scope = androidx.compose.runtime.rememberCoroutineScope()
+    val haptics = androidx.compose.ui.platform.LocalHapticFeedback.current
+    val grid = androidx.compose.foundation.lazy.grid.rememberLazyGridState()
+    // The squares in the order the user arranged them; ones liked since then come first, newest first.
+    val order by vm.favoriteOrder.collectAsStateWithLifecycle()
+    val arranged = remember(tiles, order) {
+        val at = order.withIndex().associate { it.value to it.index }
+        val (known, fresh) = tiles.partition { it.key in at }
+        fresh + known.sortedBy { at[it.key] }
+    }
+    // What the grid shows: the arranged order, or the order mid-drag.
+    val shown = remember { androidx.compose.runtime.mutableStateListOf<FavoriteTile>() }
+    var dragging by remember { mutableStateOf<String?>(null) }
+    var dragOffset by remember { mutableStateOf(androidx.compose.ui.geometry.Offset.Zero) }
+    LaunchedEffect(arranged) { if (dragging == null) { shown.clear(); shown.addAll(arranged) } }
+    fun groupKey(t: FavoriteTile) = "fav:" + t.key
+    fun kindOf(t: FavoriteTile) = when (t.kind) { "album", "artist" -> t.kind; else -> "playlist" }
+    fun pick(t: FavoriteTile) { val sel = selection ?: return; scope.launch { sel.toggleGroup(groupKey(t), kindOf(t), vm.tracksForTile(t)) } }
     androidx.compose.foundation.lazy.grid.LazyVerticalGrid(
         androidx.compose.foundation.lazy.grid.GridCells.Fixed(2),
         Modifier.fillMaxSize(),
+        state = grid,
         contentPadding = PaddingValues(start = 16.dp, end = 16.dp, top = 6.dp, bottom = bottom + 12.dp),
         horizontalArrangement = Arrangement.spacedBy(14.dp),
         verticalArrangement = Arrangement.spacedBy(16.dp),
@@ -754,8 +809,48 @@ private fun FavoritesHome(vm: MainViewModel, nav: HomeNavigation, tracks: List<T
             val covers: List<Any> = favoritesImage?.let { listOf(it) } ?: mosaicCovers(tracks) + streams.mapNotNull { it.first.artworkUrl.ifBlank { null } }.distinct().take(MOSAIC)
             FavoriteSquare(AutoPlaylist.Favorites.title, covers, round = false, icon = Icons.Rounded.Favorite) { nav.openPlaylist(AutoPlaylist.Favorites) }
         }
-        gridItems(tiles, key = { it.key }) { t ->
-            FavoriteSquare(t.title, listOfNotNull(t.art), round = false, icon = when (t.kind) { "artist" -> Icons.Rounded.Person; "album" -> Icons.Rounded.LibraryMusic; else -> Icons.AutoMirrored.Rounded.QueueMusic }) { nav.open(t.route) }
+        gridItems(shown, key = { it.key }) { t ->
+            val isDragged = dragging == t.key
+            val picked = selection?.hasGroup(groupKey(t)) == true
+            Box(
+                Modifier
+                    .then(if (isDragged) Modifier.zIndex(1f).graphicsLayer { translationX = dragOffset.x; translationY = dragOffset.y; scaleX = 1.05f; scaleY = 1.05f } else Modifier.animateItem())
+                    // Hold: pick it, and (not while searching) drag it to a new place; release keeps the order.
+                    .pointerInput(t.key, searching) {
+                        detectDragGesturesAfterLongPress(
+                            onDragStart = {
+                                haptics.performHapticFeedback(androidx.compose.ui.hapticfeedback.HapticFeedbackType.LongPress)
+                                if (selection?.hasGroup(groupKey(t)) != true) pick(t)
+                                if (!searching) { dragging = t.key; dragOffset = androidx.compose.ui.geometry.Offset.Zero }
+                            },
+                            onDrag = { change, amount ->
+                                if (dragging != t.key) return@detectDragGesturesAfterLongPress
+                                change.consume()
+                                dragOffset += amount
+                                val visible = grid.layoutInfo.visibleItemsInfo
+                                val me = visible.firstOrNull { it.key == t.key } ?: return@detectDragGesturesAfterLongPress
+                                val centre = androidx.compose.ui.geometry.Offset(me.offset.x + dragOffset.x + me.size.width / 2f, me.offset.y + dragOffset.y + me.size.height / 2f)
+                                val over = visible.firstOrNull { it.key != t.key && it.key != "favorites" &&
+                                    centre.x >= it.offset.x && centre.x < it.offset.x + it.size.width && centre.y >= it.offset.y && centre.y < it.offset.y + it.size.height }
+                                    ?: return@detectDragGesturesAfterLongPress
+                                val from = shown.indexOfFirst { it.key == t.key }
+                                val to = shown.indexOfFirst { it.key == over.key }
+                                if (from < 0 || to < 0) return@detectDragGesturesAfterLongPress
+                                shown.add(to, shown.removeAt(from))
+                                // The square takes the other's place: keep it under the finger.
+                                dragOffset += androidx.compose.ui.geometry.Offset((me.offset.x - over.offset.x).toFloat(), (me.offset.y - over.offset.y).toFloat())
+                                haptics.performHapticFeedback(androidx.compose.ui.hapticfeedback.HapticFeedbackType.TextHandleMove)
+                            },
+                            onDragEnd = { if (dragging == t.key) { dragging = null; dragOffset = androidx.compose.ui.geometry.Offset.Zero; vm.setFavoriteOrder(shown.map { it.key }) } },
+                            onDragCancel = { if (dragging == t.key) { dragging = null; dragOffset = androidx.compose.ui.geometry.Offset.Zero; vm.setFavoriteOrder(shown.map { it.key }) } },
+                        )
+                    },
+            ) {
+                FavoriteSquare(t.title, listOfNotNull(t.art), round = false, icon = when (t.kind) { "artist" -> Icons.Rounded.Person; "album" -> Icons.Rounded.LibraryMusic; else -> Icons.AutoMirrored.Rounded.QueueMusic }, picked = picked) {
+                    // While picking, a tap picks or un-picks; otherwise it opens.
+                    if (selection?.active == true) pick(t) else nav.open(t.route)
+                }
+            }
         }
         if (tiles.isEmpty() && !searching) item(span = { androidx.compose.foundation.lazy.grid.GridItemSpan(2) }) {
             Text("Tap ♥ on an album, an artist or any playlist and it shows here.", style = HiveText.small, color = c.textDim, modifier = Modifier.padding(top = 8.dp, start = 4.dp, end = 4.dp))
@@ -779,15 +874,20 @@ internal fun CoverMosaic(covers: List<Any>) = Column {
 
 /** A big square on the Favorites page: the picture (four covers for Favorites) and the name under it. */
 @Composable
-private fun FavoriteSquare(title: String, covers: List<Any>, round: Boolean, icon: ImageVector, subtitle: String? = null, onLongClick: (() -> Unit)? = null, onClick: () -> Unit) {
+private fun FavoriteSquare(title: String, covers: List<Any>, round: Boolean, icon: ImageVector, subtitle: String? = null, picked: Boolean = false, onLongClick: (() -> Unit)? = null, onClick: () -> Unit) {
     val c = Hive.colors
     val shape = if (round) CircleShape else HiveShape.art
     Column(Modifier.fillMaxWidth().pressable(onClick, onLongClick = onLongClick)) {
-        Box(Modifier.fillMaxWidth().aspectRatio(1f).softShadow(18.dp, shape).clip(shape).background(mix(c.accent, c.panelStrong, 0.12f)), contentAlignment = Alignment.Center) {
+        Box(Modifier.fillMaxWidth().aspectRatio(1f).softShadow(18.dp, shape).clip(shape).background(mix(c.accent, c.panelStrong, 0.12f))
+            .then(if (picked) Modifier.border(3.dp, c.accent, shape) else Modifier), contentAlignment = Alignment.Center) {
             when {
                 covers.size >= 4 -> CoverMosaic(covers)
                 covers.isNotEmpty() -> Artwork(covers.first(), Modifier.fillMaxSize(), androidx.compose.ui.graphics.RectangleShape, icon)
                 else -> Icon(icon, null, tint = c.textDim, modifier = Modifier.size(40.dp))
+            }
+            // Picked: a tick in the corner, as picked album cards show.
+            if (picked) Box(Modifier.align(Alignment.TopEnd).padding(8.dp).size(26.dp).clip(CircleShape).background(c.accent), contentAlignment = Alignment.Center) {
+                Icon(Icons.Rounded.Check, "Picked", tint = readableOn(c.accent), modifier = Modifier.size(18.dp))
             }
         }
         Text(title, style = HiveText.cardTitle, color = c.text, maxLines = 1, overflow = TextOverflow.Ellipsis, modifier = Modifier.padding(top = 8.dp, start = 2.dp, end = 2.dp))

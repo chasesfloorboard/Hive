@@ -310,8 +310,30 @@ fun CoverSheet(vm: MainViewModel, tracks: List<Track>, onDismiss: () -> Unit, on
         }
     }
 
+    // The album's online cover when it shows a different picture from the embedded one: one tap puts
+    // it on the songs as a back cover, so both versions travel with the files.
+    val alternate = remember(first.albumId) { com.local.hive.mobile.data.EmbeddedPictures.onlineAlternate(context, first.albumId) }
     EditSheet(onDismiss) {
         EditHeader("Covers", tracks)
+        if (alternate != null) {
+            val altUri = remember(alternate) { android.net.Uri.fromFile(alternate) }
+            val added = changes.values.any { it == altUri }
+            Row(Modifier.fillMaxWidth().clip(RoundedCornerShape(14.dp)).background(c.text.copy(alpha = 0.05f)).padding(10.dp), verticalAlignment = Alignment.CenterVertically) {
+                Artwork(alternate, Modifier.size(56.dp), HiveShape.thumb, Icons.Rounded.Album)
+                Column(Modifier.weight(1f).padding(horizontal = 12.dp)) {
+                    Text("Another cover of this album", style = HiveText.rowStrong, color = c.text)
+                    Text(if (added) "Added as a back cover. Save to write it." else "Found online, different from the one in your files.", style = HiveText.small, color = c.textDim)
+                }
+                if (!added) HiveButton("Add as back cover") {
+                    // An empty back slot takes it; else a new one after the others.
+                    val empty = slots.firstOrNull { it.back >= 0 && it.now == null && changes[it.back] == null }
+                    val place = empty?.back ?: (slots.maxOf { it.back } + 1).coerceAtLeast(0)
+                    if (empty == null) slots = slots + CoverSlot(place, null)
+                    changes[place] = altUri
+                    selected = place
+                }
+            }
+        }
         Row(Modifier.fillMaxWidth().horizontalScroll(rememberScrollState()), horizontalArrangement = Arrangement.spacedBy(12.dp)) {
             slots.forEach { slot ->
                 val change = changes[slot.back]

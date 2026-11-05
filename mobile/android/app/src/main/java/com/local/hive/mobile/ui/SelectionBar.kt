@@ -72,7 +72,13 @@ fun SelectionBar(vm: MainViewModel, selection: Selection, modifier: Modifier, on
             Modifier.padding(end = 12.dp).height(52.dp).shadow(22.dp, HiveShape.pill, ambientColor = c.accentGlow).hiveGlass(HiveShape.pill, strength = 0.3f).padding(start = 18.dp, end = 4.dp),
             verticalAlignment = Alignment.CenterVertically,
         ) {
-            val what = listOfNotNull(selection.albums.size.takeIf { it > 0 }?.let { countOf(it, "album") }, (selection.tracks.size + selection.streams.size).takeIf { it > 0 }?.let { countOf(it, "song") }).joinToString(" · ")
+            val groupKinds = selection.groups.values.groupingBy { it.kind }.eachCount()
+            val what = listOfNotNull(
+                (selection.albums.size + (groupKinds["album"] ?: 0)).takeIf { it > 0 }?.let { countOf(it, "album") },
+                groupKinds["artist"]?.let { countOf(it, "artist") },
+                groupKinds["playlist"]?.let { countOf(it, "playlist") },
+                (selection.tracks.size + selection.streams.size).takeIf { it > 0 }?.let { countOf(it, "song") },
+            ).joinToString(" · ")
             Text(what, style = HiveText.rowStrong, color = c.text)
             Box(Modifier.padding(start = 10.dp)) {
                 Row(

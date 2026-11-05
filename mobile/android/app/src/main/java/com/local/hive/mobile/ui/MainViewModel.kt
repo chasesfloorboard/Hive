@@ -314,6 +314,29 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
         (albumTiles + itemTiles).sortedByDescending { it.addedAt }.distinctBy { it.route }
     }.flowOn(Dispatchers.Default).state(emptyList())
 
+    /** A Favorites square's songs, for picking it (an album, an artist, a playlist of yours). */
+    suspend fun tracksForTile(tile: FavoriteTile): List<Track> = when {
+        tile.route.startsWith("album/") -> tile.route.removePrefix("album/").toLongOrNull()?.let { dao.albumTracks(it).first() }.orEmpty()
+        tile.kind == "artist" -> dao.artistTracks(tile.title).first()
+        tile.route.startsWith("userplaylist/") -> tile.route.removePrefix("userplaylist/").toLongOrNull()?.let { id -> dao.playlistRows(id).first().mapNotNull { it.track } }.orEmpty()
+        tile.route.startsWith("smart/") -> tile.route.removePrefix("smart/").toLongOrNull()?.let { smartTracks(it).first() }.orEmpty()
+        else -> emptyList()
+    }
+
+    /** An artist's songs, for picking the artist. */
+    suspend fun tracksOfArtist(name: String): List<Track> = dao.artistTracks(name).first()
+
+    // ---- the Favorites page's own order ----
+
+    private val favoriteOrderPrefs = app.getSharedPreferences("favorites-order", android.content.Context.MODE_PRIVATE)
+    private val _favoriteOrder = MutableStateFlow(favoriteOrderPrefs.getString("keys", "").orEmpty().split('\n').filter { it.isNotBlank() })
+    /** The squares' order as the user arranged them (keys); squares liked since then come first. */
+    val favoriteOrder: StateFlow<List<String>> = _favoriteOrder
+    fun setFavoriteOrder(keys: List<String>) {
+        _favoriteOrder.value = keys
+        favoriteOrderPrefs.edit().putString("keys", keys.joinToString("\n")).apply()
+    }
+
     /** Pictures chosen for playlists (see PlaylistImages). */
     val playlistImages: StateFlow<Map<String, String>> = app.playlistImages.images
     fun setPlaylistImage(key: String, picture: android.net.Uri) = viewModelScope.launch { app.playlistImages.set(key, picture) }

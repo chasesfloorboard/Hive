@@ -57,7 +57,18 @@ class AlbumArtFetcher(private val context: Context, private val albumId: Long, p
         if (embedded != null && longestSide(embedded) >= SMALL) runCatching { kept.writeBytes(embedded) }
         val side = embedded?.let { longestSide(it) } ?: 0
         if (side >= SMALL) return@withContext result(embedded!!)
-        upgraded(song)?.let { return@withContext result(it) }
+        upgraded(song)?.let { online ->
+            // A sharper copy of the same cover replaces a small one; a different picture never does.
+            // The embedded cover is the one shown, and the online one is kept as the album's second
+            // cover (the player turns to it; Covers offers it as a back cover).
+            val differs = File(File(context.cacheDir, "hq-art"), "$albumId.differs")
+            if (embedded != null && !EmbeddedPictures.looksAlike(embedded, online)) {
+                runCatching { differs.writeText("") }
+                return@withContext result(embedded)
+            }
+            differs.delete()
+            return@withContext result(online)
+        }
         embedded?.let { result(it) } ?: fallback()
     }
 

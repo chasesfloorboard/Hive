@@ -335,7 +335,8 @@ print(json.dumps({
     const result = spawnSync('python3', ['-c', script, mp3], { cwd: path.resolve(__dirname, '..', 'resources', 'python'), encoding: 'utf8' });
     assert.equal(result.status, 0, result.stderr || result.stdout);
     const out = JSON.parse(result.stdout.trim().split('\n').pop());
-    assert.deepEqual(out.ratedPopm, [204]);
+    // 4 stars is MusicBee's byte 196 (the table Hive reads ratings back with), not 4/5 of 255.
+    assert.deepEqual(out.ratedPopm, [196]);
     assert.deepEqual(out.clearedPopm, []);
     assert.deepEqual(out.clearedFmps, []);
     assert.equal(out.loved, true);

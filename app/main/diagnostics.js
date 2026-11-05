@@ -28,7 +28,12 @@ function redactDiagnosticText(value, roots = []) {
   }
   text = text.replace(/\/home\/[^\s"'<>]+\/Music(?:[\/][^\s"'<>]*)*/gi, '<music-library-path>');
   text = text.replace(/(?:[A-Z]:[\\/])[^\s"'<>]+[\\/]Music(?:[\\/][^\s"'<>]*)*/gi, '<music-library-path>');
-  text = text.replace(/(?:Bearer|token|access[_-]?token|refresh[_-]?token|client[_-]?secret|shared[_-]?secret|api[_-]?key)\s*[:=]\s*[^\s,}]+/gi, '$1=<redacted>');
+  // Secrets in "key=value", "key: value" and JSON ("key": "value") form, and "Bearer <token>". The old
+  // pattern had no capturing group (it wrote a literal "$1") and never matched JSON, which is how the
+  // session log writes details, so tokens reached the "redacted" report.
+  const secretKey = '(?:access[_-]?token|refresh[_-]?token|session[_-]?key|client[_-]?secret|shared[_-]?secret|api[_-]?key|apikey|password|passwd|secret|token|sk)';
+  text = text.replace(new RegExp(`(["']?)(${secretKey})\\1(\\s*[:=]\\s*)(["']?)[^"'\\s,}&]+\\4`, 'gi'), '$1$2$1$3$4<redacted>$4');
+  text = text.replace(/\bBearer\s+[A-Za-z0-9._~+\/=-]+/g, 'Bearer <redacted>');
   return text;
 }
 

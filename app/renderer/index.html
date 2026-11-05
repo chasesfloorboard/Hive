@@ -149,7 +149,7 @@
       <!-- ============ RIGHT QUEUE PANEL ============ -->
       <aside id="queue-panel" class="glass">
         <div class="queue-header">Playing Tracks</div>
-        <ol id="queue-list" tabindex="0" data-row-list aria-label="Queue"></ol>
+        <ol id="queue-list" class="is-empty" tabindex="0" data-row-list aria-label="Queue"></ol>
         <div id="queue-art-resize" class="queue-art-resize" title="Drag to resize queue and cover art"></div>
         <div id="now-playing-card" class="now-playing-card hidden">
           <div class="np-meta">
@@ -506,10 +506,10 @@
 
           <section class="settings-section">
             <header class="settings-section-head"><h4 class="settings-section-title">Theme</h4></header>
-            <label class="settings-row">
-              <span class="settings-row-text"><span class="settings-row-label">Base theme</span><span id="builtin-theme-description" class="settings-hint theme-description"></span></span>
+            <div class="settings-row">
+              <span class="settings-row-text"><label for="builtin-theme-select" class="settings-row-label">Base theme</label><span id="builtin-theme-description" class="settings-hint theme-description"></span></span>
               <span class="theme-select-group"><button type="button" id="theme-shuffle-btn" class="theme-shuffle-btn" title="Random theme" aria-label="Random theme"></button><select id="builtin-theme-select" class="settings-select" aria-label="Theme"></select></span>
-            </label>
+            </div>
             <label class="settings-row">
               <span class="settings-row-text"><span class="settings-row-label">Show legacy themes</span><span class="settings-hint">Adds the older themes to the list: the imported MusicBee skins and Hive's early dark ones.</span></span>
               <span class="settings-row-control"><input type="checkbox" id="theme-show-legacy"></span>

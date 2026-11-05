@@ -118,5 +118,5 @@ test('setTrackRating and applyBulkRating update the UI optimistically instead of
   const renderIndex = bulkBlock.indexOf('renderCurrentView();');
   const setTimeoutIndex = bulkBlock.indexOf('setTimeout(async () => {');
   assert.ok(renderIndex >= 0 && setTimeoutIndex > renderIndex, 'the model update and render must happen before the background write is scheduled');
-  assert.match(bulkBlock, /setTimeout\(async \(\) => \{\s*const result = await window\.beehive\.setRatings/, 'the bulk write must be deferred to a background task');
+  assert.match(bulkBlock, /setTimeout\(async \(\) => \{[\s\S]{0,400}?await window\.beehive\.setRatings/, 'the bulk write must be deferred to a background task');
 });

@@ -153,6 +153,9 @@ fun LazyListScope.songGroups(vm: MainViewModel, view: SongsView, tracks: List<Tr
 @Composable
 private fun GroupArtistRow(vm: MainViewModel, a: SongGroup, onClick: () -> Unit) {
     val photo = rememberArtistPhoto(vm, a.name)
+    val pick = rememberArtistPicker(vm, a.name)
+    val selection = LocalSelection.current
     LibraryRow(photo ?: Uri.parse("content://media/external/audio/albumart/${a.track.albumId}"), Icons.Rounded.Person, a.name,
-        "${countOf(a.count, "song")} · ${countOf(a.albums, "album")}", round = true, onClick = onClick)
+        "${countOf(a.count, "song")} · ${countOf(a.albums, "album")}", round = true,
+        picked = selection?.hasGroup(artistGroupKey(a.name)) == true, onLongClick = pick) { if (selection?.active == true) pick() else onClick() }
 }

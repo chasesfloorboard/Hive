@@ -236,8 +236,10 @@ const val COVER_ROTATE_MS = 4_000L
 @Composable
 fun rotatingCover(base: Any?, trackId: Long?): CoverFrame {
     val context = androidx.compose.ui.platform.LocalContext.current
-    val pictures by androidx.compose.runtime.produceState(emptyList<java.io.File>(), trackId) {
-        value = trackId?.let { com.local.hive.mobile.data.EmbeddedPictures.forTrack(context, it) }.orEmpty()
+    // The album (from the base cover's address) brings its online cover when that one differs.
+    val albumId = (base as? android.net.Uri ?: base as? String)?.toString()?.substringAfter("/audio/albumart/", "")?.toLongOrNull()
+    val pictures by androidx.compose.runtime.produceState(emptyList<java.io.File>(), trackId, albumId) {
+        value = trackId?.let { com.local.hive.mobile.data.EmbeddedPictures.forTrack(context, it, albumId) }.orEmpty()
     }
     if (pictures.size < 2) return CoverFrame(base, null)
     val tick by androidx.compose.runtime.produceState(System.currentTimeMillis() / COVER_ROTATE_MS, pictures) {
@@ -442,7 +444,15 @@ class Selection {
     val albums = androidx.compose.runtime.mutableStateListOf<Long>()
     /** Apple Music and Spotify songs, picked on their pages and in the online search. */
     val streams = androidx.compose.runtime.mutableStateListOf<StreamTrack>()
-    val active: Boolean get() = tracks.isNotEmpty() || albums.isNotEmpty() || streams.isNotEmpty()
+    /**
+     * Picked artists and playlists (and Favorites' album squares), by key, each with its songs: an
+     * artist or a playlist picked anywhere plays, queues or goes to a playlist as all its songs.
+     */
+    class Group(val kind: String, val tracks: List<Track>)
+    val groups = androidx.compose.runtime.mutableStateMapOf<String, Group>()
+    fun hasGroup(key: String) = key in groups
+    fun toggleGroup(key: String, kind: String, tracks: List<Track>) { if (groups.remove(key) == null) groups[key] = Group(kind, tracks) }
+    val active: Boolean get() = tracks.isNotEmpty() || albums.isNotEmpty() || streams.isNotEmpty() || groups.isNotEmpty()
     // Ids beside the lists, so "is it picked" stays quick with thousands picked (Select all on Songs).
     // Reading the list's size first makes a check recompose when picks change.
     private val trackIds = HashSet<Long>()
@@ -455,7 +465,7 @@ class Selection {
     fun toggle(s: StreamTrack) { if (streamKeys.remove(s.key)) streams.removeAll { it.key == s.key } else add(s) }
     fun hasAlbum(id: Long) = id in albums
     fun toggleAlbum(id: Long) { if (!albums.remove(id)) albums += id }
-    fun clear() { tracks.clear(); albums.clear(); streams.clear(); trackIds.clear(); streamKeys.clear(); dragAnchor = null; trackDragAnchor = null }
+    fun clear() { tracks.clear(); albums.clear(); streams.clear(); groups.clear(); trackIds.clear(); streamKeys.clear(); dragAnchor = null; trackDragAnchor = null }
 
     // ---- select all ----
 
@@ -484,10 +494,11 @@ class Selection {
 
     /** The picked songs, then every song of the picked albums in album order. */
     fun picked(library: List<Track>): List<Track> {
-        if (albums.isEmpty()) return tracks.toList()
+        val fromGroups = groups.values.flatMap { it.tracks }
+        if (albums.isEmpty()) return if (fromGroups.isEmpty()) tracks.toList() else (tracks + fromGroups).distinctBy { it.id }
         val byAlbum = library.filter { it.albumId in albums }.groupBy { it.albumId }
         val fromAlbums = albums.flatMap { id -> byAlbum[id].orEmpty().sortedWith(compareBy<Track> { it.discNumber }.thenBy { it.trackNumber }) }
-        return (tracks + fromAlbums).distinctBy { it.id }
+        return (tracks + fromAlbums + fromGroups).distinctBy { it.id }
     }
 
     // ---- hold and drag over albums ----

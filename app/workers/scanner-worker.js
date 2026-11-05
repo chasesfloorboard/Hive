@@ -98,7 +98,10 @@ async function readMp3PopmRaw(filePath) {
           pos += 10+size;
         }
       }
-      return musicBee || any || 0;
+      // Only MusicBee's own POPM frame (the one Hive writes and clears) is a rating. Another
+      // player's frame was used as a fallback, against the rule below, and Hive could never clear it.
+      void any;
+      return musicBee || 0;
     } finally { await fd.close(); }
   } catch { return 0; }
 }

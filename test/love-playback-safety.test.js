@@ -108,7 +108,7 @@ test('metadata temp files are created next to the target file, not only in the O
   const block = metadataWriter.slice(start, end);
   assert.match(block, /\.beehive-tmp/);
   assert.match(block, /path\.dirname\(trackPath\)/);
-  assert.match(main, /if \(\/\^\\\.beehive-tmp\$\/i\.test\(entry\.name\)\) continue;/, 'the library scan walk must skip the .beehive-tmp convention');
+  assert.match(main, /if \(\/\^\\\.beehive-tmp\$\/i\.test\(entry\.name\)\)[^\n]*continue;/, 'the library scan walk must skip the .beehive-tmp convention (after sweeping stale copies)');
 
   const workerPath = path.join(root, 'app', 'workers', 'metadata-worker.js');
   const worker = fs.readFileSync(workerPath, 'utf8');

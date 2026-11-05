@@ -196,13 +196,12 @@ class DiscordPresence extends EventEmitter {
       type: this._readActivityType(),
       details: String(track.title || '').slice(0, 128),
       assets: {},
-      // Every reference Discord RPC implementation sets this on the activity
-      // object; this one never did. Absent it, Discord appears to still
-      // accept and store the activity (it shows correctly under the full
-      // profile's Activity tab, per data alone) but does not treat it as a
-      // "live session" worth surfacing in the compact hover-card the way it
-      // does for games/Spotify -- it only shows the deeper, full-profile view.
-      instance: true
+      // Shaped as Music Presence's (a music app Discord shows in the profile pop-up, recorded from its
+      // IPC traffic): `instance: false`, since `true` marks a joinable game session and Discord then
+      // kept Hive's song to the full profile's Activity tab; and the artist as the status line
+      // ("Listening to <artist>"), as Spotify shows.
+      status_display_type: 1,
+      instance: false
     };
     if (largeImageUrl) {
       activity.assets.large_image = largeImageUrl;

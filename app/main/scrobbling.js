@@ -16,7 +16,7 @@ function lastFmSignature(params, secret) {
 async function postForm(url, params, headers = {}) {
   const body = new URLSearchParams();
   for (const [key, value] of Object.entries(params || {})) body.set(key, String(value));
-  const response = await fetch(url, {
+  const response = await fetch(url, { signal: AbortSignal.timeout(20000),
     method: 'POST',
     headers: { 'Content-Type': 'application/x-www-form-urlencoded', 'User-Agent': 'Hive/1.0.0 (scrobbling)', ...headers },
     body: body.toString()
@@ -27,7 +27,7 @@ async function postForm(url, params, headers = {}) {
 }
 
 async function getJson(url, headers = {}) {
-  const response = await fetch(url, { headers: { 'User-Agent': 'Hive/1.0.0 (scrobbling)', ...headers } });
+  const response = await fetch(url, { signal: AbortSignal.timeout(20000), headers: { 'User-Agent': 'Hive/1.0.0 (scrobbling)', ...headers } });
   const text = await response.text();
   if (!response.ok) throw new Error(`Scrobble request failed (${response.status})`);
   try { return JSON.parse(text); } catch { throw new Error('Scrobble service returned invalid JSON.'); }
@@ -163,7 +163,7 @@ class ScrobblingService {
     if (key === this.lastNowPlayingKey) return true;
     const meta = this.metadata(track);
     const tasks = [];
-    if (cfg.listenbrainz.enabled && cfg.listenbrainz.token) tasks.push(fetch('https://api.listenbrainz.org/1/submit-listens', {
+    if (cfg.listenbrainz.enabled && cfg.listenbrainz.token) tasks.push(fetch('https://api.listenbrainz.org/1/submit-listens', { signal: AbortSignal.timeout(20000),
       // ListenBrainz's API requires the literal "Token " prefix, not just the
       // bare user token -- every request was silently rejected with 401
       // without it.
@@ -202,7 +202,7 @@ class ScrobblingService {
   async submitItem(item, cfg) {
     const meta = item.metadata || {};
     if (item.service === 'listenbrainz' && cfg.listenbrainz.enabled && cfg.listenbrainz.token) {
-      const response = await fetch('https://api.listenbrainz.org/1/submit-listens', {
+      const response = await fetch('https://api.listenbrainz.org/1/submit-listens', { signal: AbortSignal.timeout(20000),
         method: 'POST', headers: { Authorization: `Token ${cfg.listenbrainz.token}`, 'Content-Type': 'application/json', 'User-Agent': 'Hive/1.0.0 (ListenBrainz)' },
         body: JSON.stringify({ listen_type: 'single', payload: [{ listened_at: item.timestamp, track_metadata: { artist_name: meta.artist, track_name: meta.title, release_name: meta.album || undefined, additional_info: meta.additional } }] })
       });
@@ -226,12 +226,14 @@ class ScrobblingService {
       if (!this.pending.length) return;
       const cfg = await this.config();
       if (!cfg.enabled) return;
-      const keep = [];
-      for (const item of this.pending) {
-        try { await this.submitItem(item, cfg); }
-        catch { keep.push(item); }
+      // Only the items sent now leave the list: a listen queued while this runs (a song ending on a
+      // slow network) was dropped when the list was replaced with the ones kept.
+      const sent = new Set();
+      for (const item of [...this.pending]) {
+        try { await this.submitItem(item, cfg); sent.add(item); }
+        catch {}
       }
-      this.pending = keep;
+      this.pending = this.pending.filter(item => !sent.has(item));
       await this.saveCache();
     })().finally(() => { this.flushPromise = null; });
     return this.flushPromise;

@@ -563,7 +563,8 @@ discordPresence.on('error', (err) => startupDebug('DISCORD PRESENCE ERROR', { me
 let gpuCrashFallbackRecorded = false;
 const scrobbling = new ScrobblingService(
   async () => readJsonSafe(CONFIG_PATH(), { folders: [] }),
-  async (next) => writeJsonSafe(CONFIG_PATH(), next),
+  // The scrobbler owns only config.scrobbling; the rest of what it passes back is its stale read.
+  async (next) => updateConfig(config => { config.scrobbling = next?.scrobbling; }),
   { userData: USER_DATA }
 );
 
@@ -813,11 +814,51 @@ function decodePath(url, prefix) {
   return decodeURIComponent(url.slice(prefix.length).replace(/^\/+/, ''));
 }
 
-async function readJsonSafe(p, fallback) {
+// Where writeJsonSafe mirrors a user-owned JSON file in the in-project backup, or null.
+function userBackupPathFor(p) {
   try {
-    const txt = await fsp.readFile(p, 'utf8');
+    const backupRoot = HIVE_USER_BACKUP_ROOT();
+    if (!backupRoot) return null;
+    const relative = path.relative(STABLE_DATA_ROOT(), p);
+    if (!relative || relative.startsWith('..') || path.isAbsolute(relative)) return null;
+    return path.join(backupRoot, relative);
+  } catch { return null; }
+}
+
+// Files read back as their fallback because they were damaged: their backup copy is left alone
+// (a write of the fallback must never replace the last good copy).
+const damagedJsonFiles = new Set();
+
+async function readJsonSafe(p, fallback) {
+  let txt;
+  try {
+    txt = await fsp.readFile(p, 'utf8');
+  } catch (err) {
+    if (err?.code === 'ENOENT') return fallback; // not created yet
+    console.warn('[Hive] Could not read', p, err?.message || String(err));
+    return fallback;
+  }
+  try {
     return JSON.parse(txt);
-  } catch {
+  } catch (err) {
+    // Damaged (a crash mid-write, a 0-byte file on exFAT). Before, this silently returned the
+    // fallback, the caller wrote it back, and the backup copy was overwritten too: playlists and
+    // settings were lost for good. Keep the damaged file aside, and use the backup copy if it reads.
+    console.warn('[Hive] Damaged JSON file', p, err?.message || String(err));
+    if (!damagedJsonFiles.has(p)) {
+      try { await fsp.copyFile(p, `${p}.damaged-${Date.now()}`); } catch {}
+    }
+    const backup = userBackupPathFor(p);
+    if (backup) {
+      try {
+        const restored = JSON.parse(await fsp.readFile(backup, 'utf8'));
+        console.warn('[Hive] Restored', p, 'from its backup copy');
+        try { await fsp.copyFile(backup, p); } catch {}
+        damagedJsonFiles.delete(p);
+        return restored;
+      } catch {}
+    }
+    damagedJsonFiles.add(p);
     return fallback;
   }
 }
@@ -871,8 +912,10 @@ async function writeJsonSafe(p, data) {
   // portable exFAT data drive an abrupt exit could otherwise leave the renamed
   // file truncated, and a truncated cache made Hive open on an empty library.
   try {
-    if (isLibraryCache) await writeFileDurable(temp, payload);
-    else await fsp.writeFile(temp, payload, 'utf8');
+    // Flushed before it replaces the old file, for every JSON file: on a portable exFAT data drive
+    // an abrupt exit could otherwise leave the renamed file truncated (a truncated library cache
+    // opened Hive on an empty library; a truncated playlists.json lost the playlists).
+    await writeFileDurable(temp, payload);
     await fsp.rename(temp, p);
     try { await fsp.chmod(p, 0o600); } catch {}
   } catch (err) {
@@ -891,17 +934,14 @@ async function writeJsonSafe(p, data) {
   // Mirror user-owned JSON state into the in-project Hive backup. Library cache
   // writes are intentionally excluded here because they are large; the complete
   // profile is snapshotted on application shutdown.
-  if (p !== LIBRARY_CACHE_PATH() && !p.includes(`${path.sep}session${path.sep}`) && !p.includes(`${path.sep}logs${path.sep}`)) {
+  // A file read back as its fallback because it was damaged keeps its backup copy as it was.
+  if (p !== LIBRARY_CACHE_PATH() && !damagedJsonFiles.has(p) && !p.includes(`${path.sep}session${path.sep}`) && !p.includes(`${path.sep}logs${path.sep}`)) {
     try {
-      const backupRoot = HIVE_USER_BACKUP_ROOT();
-      if (backupRoot) {
-        const relative = path.relative(STABLE_DATA_ROOT(), p);
-        if (relative && !relative.startsWith('..') && !path.isAbsolute(relative)) {
-          const backupPath = path.join(backupRoot, relative);
-          await fsp.mkdir(path.dirname(backupPath), { recursive:true });
-          await fsp.copyFile(p, backupPath);
-          try { await fsp.chmod(backupPath, 0o600); } catch {}
-        }
+      const backupPath = userBackupPathFor(p);
+      if (backupPath) {
+        await fsp.mkdir(path.dirname(backupPath), { recursive:true });
+        await fsp.copyFile(p, backupPath);
+        try { await fsp.chmod(backupPath, 0o600); } catch {}
       }
     } catch (err) { console.warn('[Hive] User-data JSON backup skipped:', err?.message || String(err)); }
   }
@@ -953,6 +993,21 @@ function withJsonFileLock(filePath, fn) {
   const next = previous.catch(() => {}).then(fn);
   jsonFileWriteQueues.set(filePath, next.catch(() => {}));
   return next;
+}
+
+// Every change to config.json goes through here, one at a time: most writers used to read the file,
+// change it and write it back unlocked, so two at once (a UI-state save and adding a folder) each
+// wrote over the other's change. `folders` is always a list (a fresh profile had none, and adding a
+// folder threw). Returns what `mutate` returns.
+function updateConfig(mutate) {
+  return withJsonFileLock(CONFIG_PATH(), async () => {
+    const read = await readJsonSafe(CONFIG_PATH(), { folders: [] });
+    const config = read && typeof read === 'object' && !Array.isArray(read) ? read : { folders: [] };
+    if (!Array.isArray(config.folders)) config.folders = [];
+    const result = await mutate(config);
+    await writeJsonSafe(CONFIG_PATH(), config);
+    return result;
+  });
 }
 
 // Serialize mutations to Beehive's play-stats.json so a clear operation cannot
@@ -1131,8 +1186,7 @@ ipcMain.handle('window:theme-bar:set', async (_evt, enabled) => {
   const next = !!enabled;
   if (next === themeWindowBarEnabled) return { changed:false, enabled:next };
   themeWindowBarEnabled = next;
-  const config = await readJsonSafe(CONFIG_PATH(), {});
-  await writeJsonSafe(CONFIG_PATH(), { ...config, [THEME_WINDOW_BAR_KEY]: next });
+  await updateConfig(config => { config[THEME_WINDOW_BAR_KEY] = next; });
   if (!mainWindow || mainWindow.isDestroyed()) {
     createWindow();
     return { changed:true, enabled:next };
@@ -1369,10 +1423,12 @@ app.whenReady().then(async () => {
   try {
     const config = await readJsonSafe(CONFIG_PATH(), {});
     if (config?.gpuAccelerationAutoDisabled === true) {
-      delete config.gpuAccelerationAutoDisabled;
-      delete config.gpuAccelerationAutoDisabledAt;
-      delete config.disableGpuAcceleration;
-      await writeJsonSafe(CONFIG_PATH(), config);
+      await updateConfig(latest => {
+        const config = latest;
+        delete config.gpuAccelerationAutoDisabled;
+        delete config.gpuAccelerationAutoDisabledAt;
+        delete config.disableGpuAcceleration;
+      });
       startupDebug('GPU AUTOMATIC FALLBACK CLEARED', 'Hardware acceleration restored as the default graphics path.');
     }
   } catch (err) {
@@ -1679,8 +1735,10 @@ app.whenReady().then(() => {
 app.on('before-quit', () => { try { hiveLink?.stop(); } catch {} });
 
 app.on('window-all-closed', () => {
-  stopLibraryWatchers();
+  // Re-creating the window (the themed window bar toggled) isn't quitting: folder watching used to
+  // stop here and never start again, so new or removed files went unnoticed until a restart.
   if (windowRecreateInProgress) return;
+  stopLibraryWatchers();
   if (process.platform !== 'darwin') app.quit();
 });
 
@@ -1930,11 +1988,11 @@ ipcMain.handle('devices:setDestination', async (_evt, payload = {}) => {
   if (!id) throw new Error('Android device ID is required.');
   const parts = destinationPath.split('/').filter(Boolean);
   if (parts.some(part => part === '.' || part === '..')) throw new Error('Invalid Android destination path.');
-  const config = await readJsonSafe(CONFIG_PATH(), { folders: [] });
-  config.androidDeviceDestinations = config.androidDeviceDestinations && typeof config.androidDeviceDestinations === 'object' ? config.androidDeviceDestinations : {};
-  if (destinationPath) config.androidDeviceDestinations[id] = destinationPath;
-  else delete config.androidDeviceDestinations[id];
-  await writeJsonSafe(CONFIG_PATH(), config);
+  await updateConfig(config => {
+    config.androidDeviceDestinations = config.androidDeviceDestinations && typeof config.androidDeviceDestinations === 'object' ? config.androidDeviceDestinations : {};
+    if (destinationPath) config.androidDeviceDestinations[id] = destinationPath;
+    else delete config.androidDeviceDestinations[id];
+  });
   return { ok: true, deviceId: id, destinationPath };
 });
 ipcMain.handle('audio-output:list', async () => listAudioOutputs());
@@ -1948,12 +2006,13 @@ ipcMain.handle('audio-output:set', async (_evt, choice = {}) => {
   const sink = String(legacy ? choice : (choice?.sink || '')).trim();
   const bitPerfect = legacy ? sink.startsWith('alsa:') : !!choice?.bitPerfect;
   const { device, error } = legacy ? { device: sink } : await effectiveOutputDevice(sink, bitPerfect);
-  const config = await readJsonSafe(CONFIG_PATH(), { folders: [] });
-  if (device) config.audioOutputDevice = device; else delete config.audioOutputDevice;
-  config.audioOutputSink = sink;
-  config.audioBitPerfect = bitPerfect && !error;
-  await writeJsonSafe(CONFIG_PATH(), config);
-  return { ok: !error, deviceId: device, bitPerfect: config.audioBitPerfect, error: error || '' };
+  const savedBitPerfect = await updateConfig(config => {
+    if (device) config.audioOutputDevice = device; else delete config.audioOutputDevice;
+    config.audioOutputSink = sink;
+    config.audioBitPerfect = bitPerfect && !error;
+    return config.audioBitPerfect;
+  });
+  return { ok: !error, deviceId: device, bitPerfect: savedBitPerfect, error: error || '' };
 });
 ipcMain.handle('devices:sendTracks', async (evt, payload = {}) => {
   const result = await sendTracksToDevice(payload?.device || {}, Array.isArray(payload?.tracks) ? payload.tracks : [], {
@@ -2454,11 +2513,11 @@ ipcMain.handle('equaliser:importPresets', async () => {
 });
 
 ipcMain.handle('config:saveUiState', async (_evt, uiState = {}) => {
-  const config = await readJsonSafe(CONFIG_PATH(), { folders: [] });
   const incoming = uiState && typeof uiState === 'object' ? uiState : {};
-  config.uiState = { ...(config.uiState && typeof config.uiState === 'object' ? config.uiState : {}), ...incoming };
-  await writeJsonSafe(CONFIG_PATH(), config);
-  return config.uiState;
+  return updateConfig(config => {
+    config.uiState = { ...(config.uiState && typeof config.uiState === 'object' ? config.uiState : {}), ...incoming };
+    return config.uiState;
+  });
 });
 
 // Hive's own Discord Rich Presence status/control -- replaces the old
@@ -2561,10 +2620,7 @@ ipcMain.handle('stats:getEmbedPlayCounts', async () => {
 });
 
 ipcMain.handle('stats:setEmbedPlayCounts', async (_evt, enabled) => {
-  const config = await readJsonSafe(CONFIG_PATH(), { folders: [] });
-  config.embedPlayCounts = !!enabled;
-  await writeJsonSafe(CONFIG_PATH(), config);
-  return config.embedPlayCounts;
+  return updateConfig(config => { config.embedPlayCounts = !!enabled; return config.embedPlayCounts; });
 });
 
 ipcMain.handle('graphics:getGpuAcceleration', async () => {
@@ -2831,7 +2887,10 @@ ipcMain.handle('plugins:installFolder', async () => {
   const res=await dialog.showOpenDialog(mainWindow,{properties:['openDirectory']}); if(res.canceled||!res.filePaths[0]) return {canceled:true};
   const source=path.resolve(res.filePaths[0]); const manifestPath=path.join(source,'manifest.json');
   const manifest=JSON.parse(await fsp.readFile(manifestPath,'utf8'));
-  if(!/^[a-zA-Z0-9._-]{1,80}$/.test(String(manifest?.id||''))) throw new Error('Plugin manifest id must contain only letters, numbers, dots, underscores, and dashes.');
+  // The id names the plugin's folder, so "." or ".." (which the pattern allows) would point the
+  // replace below at the plugins folder itself or at all of Hive's data.
+  const pluginId = String(manifest?.id || '');
+  if(!/^[a-zA-Z0-9._-]{1,80}$/.test(pluginId) || /^\.+$/.test(pluginId) || path.basename(pluginId) !== pluginId) throw new Error('Plugin manifest id must contain only letters, numbers, dots, underscores, and dashes.');
   // Plugins run sandboxed (app/renderer/plugin-sandbox.js): no files, no network, nothing of Hive's
   // beyond what their declared permissions allow. What those permissions are is shown here, naming
   // the actual plugin, before anything is copied into the plugins folder.
@@ -2847,7 +2906,10 @@ ipcMain.handle('plugins:installFolder', async () => {
     detail: `Plugins run in a sandbox: this plugin can't open your files, use the network or reach the rest of Hive. It can only do what the permissions below allow. Only install plugins from sources you trust.\n\nAuthor: ${String(manifest.author || 'Unknown')}\nDeclared permissions: ${permissions.length ? permissions.join(', ') : 'none declared'}`,
   });
   if (confirmChoice.response !== 1) return { canceled: true };
-  const target=path.join(PLUGINS_DIR(),String(manifest.id)); await fsp.mkdir(PLUGINS_DIR(),{recursive:true,mode:0o700});
+  const target=path.join(PLUGINS_DIR(),pluginId); await fsp.mkdir(PLUGINS_DIR(),{recursive:true,mode:0o700});
+  if (path.dirname(target) !== path.resolve(PLUGINS_DIR())) throw new Error('That plugin id can\'t be used.');
+  // Reinstalling from the installed copy itself: removing the target first would delete the source.
+  if (source === path.resolve(target) || source.startsWith(path.resolve(target) + path.sep)) throw new Error('This plugin is already installed from that folder.');
   await fsp.rm(target,{recursive:true,force:true}); await fsp.cp(source,target,{recursive:true,filter:(src)=>!src.includes(path.sep+'.git'+path.sep)&&!src.endsWith(path.sep+'.git')});
   return {canceled:false,id:String(manifest.id),dir:target};
 });
@@ -2867,10 +2929,8 @@ ipcMain.handle('scrobble:submit', async (_evt, track={}) => scrobbling.submit(tr
 ipcMain.handle('music:similarArtists', async (_evt, artistName) => scrobbling.getSimilarArtists(artistName));
 
 ipcMain.handle('graphics:setGpuAcceleration', async (_evt, enabled) => {
-  const config = await readJsonSafe(CONFIG_PATH(), { folders: [] });
-  config.disableGpuAcceleration = !enabled;
-  await writeJsonSafe(CONFIG_PATH(), config);
-  return config.disableGpuAcceleration !== true;
+  const disabled = await updateConfig(config => { config.disableGpuAcceleration = !enabled; return config.disableGpuAcceleration; });
+  return disabled !== true;
 });
 
 ipcMain.handle('config:addFolder', async () => {
@@ -2878,10 +2938,11 @@ ipcMain.handle('config:addFolder', async () => {
     properties: ['openDirectory']
   });
   if (res.canceled || !res.filePaths.length) return null;
-  const config = await readJsonSafe(CONFIG_PATH(), { folders: [] });
   const folder = res.filePaths[0];
-  if (!config.folders.some(existing => resolveConfiguredFolder(existing) === path.resolve(folder))) config.folders.push(serializePortableFolder(folder));
-  await writeJsonSafe(CONFIG_PATH(), config);
+  const config = await updateConfig(config => {
+    if (!config.folders.some(existing => resolveConfiguredFolder(existing) === path.resolve(folder))) config.folders.push(serializePortableFolder(folder));
+    return config;
+  });
   await startLibraryWatchers();
   return config;
 });
@@ -2893,9 +2954,10 @@ ipcMain.handle('config:addFolder', async () => {
 // removed folder's tracks straight back into the cache when it finishes.
 ipcMain.handle('config:removeFolder', async (_evt, folder) => {
   const target = path.resolve(String(folder || ''));
-  const config = await readJsonSafe(CONFIG_PATH(), { folders: [] });
-  config.folders = (Array.isArray(config.folders) ? config.folders : []).filter((f) => resolveConfiguredFolder(f) !== target);
-  await writeJsonSafe(CONFIG_PATH(), config);
+  const config = await updateConfig(config => {
+    config.folders = config.folders.filter((f) => resolveConfiguredFolder(f) !== target);
+    return config;
+  });
   await startLibraryWatchers();
   cancelActiveLibraryScan();
 
@@ -2956,7 +3018,9 @@ async function isTrackPathAllowedInLibrary(trackPath) {
   const resolved = path.resolve(String(trackPath || ''));
   if (!resolved) return false;
   const config = await readJsonSafe(CONFIG_PATH(), { folders: [] });
-  const folders = Array.isArray(config.folders) ? config.folders.map(f => path.resolve(String(f || ''))).filter(Boolean) : [];
+  // resolveConfigFolders understands folders stored in portable form ({type:'portable', path});
+  // stringifying them gave "[object Object]", so every edit of music kept on a portable drive failed.
+  const folders = resolveConfigFolders(config);
   return folders.some(folder => isPathInsideFolder(resolved, folder));
 }
 const LIBRARY_BOUNDARY_ERROR = 'File is outside a configured Beehive library folder.';
@@ -3012,7 +3076,7 @@ async function deleteTracksFromDisk(filePaths = []) {
   if (!requested.length) return { ok: false, deleted: [], errors: [] };
 
   const config = await readJsonSafe(CONFIG_PATH(), { folders: [] });
-  const folders = Array.isArray(config.folders) ? config.folders.map(f => path.resolve(String(f || ''))).filter(Boolean) : [];
+  const folders = resolveConfigFolders(config); // portable folders included
   const invalid = requested.filter(p => !folders.some(folder => isPathInsideFolder(p, folder)));
   if (invalid.length) {
     return { ok: false, deleted: [], errors: invalid.map(p => ({ path: p, error: 'File is outside a configured Beehive library folder.' })) };
@@ -3120,6 +3184,20 @@ ipcMain.handle('library:getCached', async (_evt, options = {}) => {
   return cached;
 });
 
+// A tag write works on a copy in the album's .beehive-tmp folder and renames it over the song; a
+// crash or force-quit mid-write leaves that copy behind for good. Copies older than a day (no write
+// takes that long) are removed as the scan passes, and the folder with them once it's empty.
+async function sweepStaleWriteTemps(dir) {
+  try {
+    const cutoff = Date.now() - 24 * 60 * 60 * 1000;
+    for (const name of await fsp.readdir(dir)) {
+      const file = path.join(dir, name);
+      try { const st = await fsp.stat(file); if (st.isFile() && st.mtimeMs < cutoff) await fsp.unlink(file); } catch {}
+    }
+    await fsp.rmdir(dir).catch(() => {}); // only succeeds when empty
+  } catch {}
+}
+
 async function walk(dir, out, onDirectory = null, state = { directories: 0 }) {
   if (state.isCancelled?.()) return;
   let entries;
@@ -3127,6 +3205,9 @@ async function walk(dir, out, onDirectory = null, state = { directories: 0 }) {
     entries = await fsp.readdir(dir, { withFileTypes: true });
   } catch (err) {
     scanLog('WALK ERROR', { dir, error: err?.message || String(err) });
+    // Remembered so a scan never takes an unreadable folder's songs as deleted (a drive not mounted
+    // yet, a permission or I/O error): see the full scan's removal step.
+    (state.unreadable ||= []).push(dir);
     return;
   }
   state.directories++;
@@ -3135,7 +3216,7 @@ async function walk(dir, out, onDirectory = null, state = { directories: 0 }) {
     if (state.isCancelled?.()) return;
     const full = path.join(dir, entry.name);
     if (entry.isDirectory()) {
-      if (/^\.beehive-tmp$/i.test(entry.name)) continue;
+      if (/^\.beehive-tmp$/i.test(entry.name)) { sweepStaleWriteTemps(full); continue; }
       await walk(full, out, onDirectory, state);
     } else {
       if (/\.beehive-(?:native-|love-|rating-|tags-|musicbee-)/i.test(entry.name)) continue;
@@ -3340,7 +3421,8 @@ function runAudioFullDecode(absolutePath, startOffset = 0, scanState = null) {
     };
     timer = setTimeout(() => {
       try { child?.kill('SIGKILL'); } catch {}
-      finish({ status:'corrupt', error:`Full audio integrity scan timed out after ${AUDIO_LIBRARY_SCAN_TIMEOUT_MS / 1000} seconds.` });
+      // A slow drive or a very long file isn't a damaged one: it was offered for "repair" before.
+      finish({ status:'unavailable', error:`The full audio check took longer than ${AUDIO_LIBRARY_SCAN_TIMEOUT_MS / 1000} seconds.` });
     }, AUDIO_LIBRARY_SCAN_TIMEOUT_MS);
     try {
       child = spawnTracked('ffmpeg', [
@@ -3362,8 +3444,11 @@ function runAudioFullDecode(absolutePath, startOffset = 0, scanState = null) {
         if (stderr.length > 16000) stderr = stderr.slice(-16000);
       });
       child.on('error', err => finish({ status:'unavailable', error:err?.message || 'ffmpeg could not be started.' }));
-      child.on('close', code => {
+      child.on('close', (code, signal) => {
         const detail = stderr.trim();
+        // Stopped (the scan was cancelled): no verdict. Stopping used to mark the files being
+        // checked as corrupt, cache that and skip them on resume.
+        if (signal || scanState?.cancelled) { finish({ status:'cancelled' }); return; }
         if (code === 0 && !detail) finish({ status:'ok' });
         else finish({ status:'corrupt', error:detail || `Audio decoder rejected the file (ffmpeg exit ${code ?? 'unknown'}).` });
       });
@@ -3703,6 +3788,7 @@ async function scanAudioIntegrityLibrary(paths, sender, checkpoint = null) {
       if (index >= workPaths.length) return;
       const filePath = workPaths[index];
       const result = await validateAudioForLibraryScan(filePath, state);
+      if (result?.status === 'cancelled' || state.cancelled) return; // checked again on resume
       const loveAudit = await inspectLoveMetadata(filePath);
       state.completed++;
       state.completedPaths.add(filePath);
@@ -4305,9 +4391,17 @@ ipcMain.handle('library:scanChanged', async (evt, changedPaths = []) => {
         scanLog('INCREMENTAL SCAN TIMEOUT - preserving cached track', { file: info.path });
         changedResults.push({ info, track: oldByPath.get(path.resolve(info.path)) || null });
         slot.busy=false; slot.job=null; finished++;
+        // The hung worker is replaced, not reused: its late answer for this file would otherwise be
+        // taken as the answer for the next file it was given (one file's tags on another).
+        cleanup(slot);
+        const fresh = spawnScanner(); pool.splice(pool.indexOf(fresh), 1);
+        fresh.child.on('error',()=>{}); fresh.child.on('exit',()=>{});
+        slot.child = fresh.child;
         dispatch(slot); if (finished >= existing.length) resolve();
       }, 12000);
-      slot.child.once('message', msg => {
+      const onMessage = msg => {
+        if (msg?.id !== undefined && msg.id !== i) return; // an answer for another file
+        slot.child.off('message', onMessage);
         if (slot.timer) { clearTimeout(slot.timer); slot.timer=null; }
         const old = oldByPath.get(path.resolve(info.path));
         if (msg?.type === 'result' && msg.track) {
@@ -4321,7 +4415,8 @@ ipcMain.handle('library:scanChanged', async (evt, changedPaths = []) => {
         }
         slot.busy=false; slot.job=null; finished++;
         dispatch(slot); if (finished >= existing.length) resolve();
-      });
+      };
+      slot.child.on('message', onMessage);
       try { slot.child.send({ type:'scan', id:i, filePath:info.path, coversDir:COVERS_DIR() }); }
       catch { const old=oldByPath.get(path.resolve(info.path)); changedResults.push({info,track:old||null}); slot.busy=false; slot.job=null; finished++; dispatch(slot); if(finished>=existing.length) resolve(); }
     };
@@ -4440,7 +4535,13 @@ ipcMain.handle('library:scan', async (evt, options = {}) => {
     scanLog('WALK DONE', { folder, addedFiles: files.length - before, totalFiles: files.length });
   }
   throwIfCancelled();
-  scanLog('FILE ENUMERATION DONE', { total: files.length });
+  // A library folder that can't be read at all (an unmounted drive): keep the library as it was rather
+  // than dropping every song in it and their added dates.
+  const unreadableDirs = walkState.unreadable || [];
+  const unreadableRoot = folders.find(folder => unreadableDirs.some(dir => path.resolve(dir) === path.resolve(folder)));
+  if (unreadableRoot) throw new Error(`Can't read the library folder ${unreadableRoot}; keeping the previous library.`);
+  const inUnreadableDir = trackPath => unreadableDirs.some(dir => trackPath === dir || String(trackPath).startsWith(dir + path.sep));
+  scanLog('FILE ENUMERATION DONE', { total: files.length, unreadableDirs: unreadableDirs.length });
   // Folder times as of this walk (see findLibraryChangeSinceLastScan). Taken
   // now rather than at the end, so anything added during the scan still
   // registers as a change next launch.
@@ -4783,7 +4884,9 @@ ipcMain.handle('library:scan', async (evt, options = {}) => {
   }
   throwIfCancelled();
   const currentPaths = new Set(fileInfo.filter(Boolean).map(info => info.path));
-  const removedPaths = oldTracks.map(track => track.path).filter(trackPath => !currentPaths.has(trackPath));
+  // Songs in a folder that couldn't be read this time are kept, not removed.
+  const keptUnreadable = oldTracks.filter(track => !currentPaths.has(track.path) && inUnreadableDir(track.path));
+  const removedPaths = oldTracks.map(track => track.path).filter(trackPath => !currentPaths.has(trackPath) && !inUnreadableDir(trackPath));
   if (removedPaths.length) {
     try { await databaseRequest('remove_tracks', { paths: removedPaths }); }
     catch (err) { crashDebug('DATABASE removed-track cleanup failed', { message: err?.message || String(err) }); }
@@ -4872,6 +4975,7 @@ ipcMain.handle('library:scan', async (evt, options = {}) => {
   const byPath = new Map(tracks.map(t => [t.path, t]));
   const ordered = [];
   for (const info of fileInfo) if (info && byPath.has(info.path)) ordered.push(byPath.get(info.path));
+  for (const track of keptUnreadable) if (!byPath.has(track.path)) ordered.push(track);
   // Love/favorite state is part of the same reconciliation result. Changed
   // files are refreshed by scanner-worker, while unchanged records that need a
   // compatibility migration are refreshed by the bounded Love pass above.
@@ -5036,8 +5140,10 @@ ipcMain.handle('yearly-wrap:importMusicBee', async (_evt, archivePath) => {
     };
     yearSummary.push({ year, sourcePlayCount: plays.length, storedPlayCount: mergedPlays.length, added: Math.max(0, mergedStore.addedFromImport || 0), skipped: Math.max(0, plays.length - Math.max(0, mergedStore.addedFromImport || 0)), metadata });
   }
-  events.sort((a,b) => Number(a?.playedAt || 0) - Number(b?.playedAt || 0));
-  await writeJsonSafe(LISTENING_EVENTS_PATH(), events.slice(-20000));
+  // Newest first, as every other writer keeps it, and the same cap: stored oldest-first, the next
+  // play's trim to the first 10,000 dropped the newest listens instead of the oldest.
+  events.sort((a,b) => Number(b?.playedAt || 0) - Number(a?.playedAt || 0));
+  await writeJsonSafe(LISTENING_EVENTS_PATH(), events.slice(0, LISTENING_EVENTS_CAP));
   await writeJsonSafe(MUSICBEE_WRAPPED_IMPORTS_PATH(), state);
   return { ok: true, added, skipped, years: yearSummary, totalEvents: events.length, playCountsChanged: false, syncEnabled: true };
 });
@@ -5307,6 +5413,7 @@ ipcMain.handle('listening:record', async (_evt, payload = {}) => recordListening
 
 // One playback session into listening-events.json and the per-year Wrapped
 // store: Hive's own plays, and the phone's once the user applies them.
+const LISTENING_EVENTS_CAP = 20000;
 async function recordListeningEvent(payload = {}) {
   const event = {
     id: crypto.randomUUID(),
@@ -5326,10 +5433,15 @@ async function recordListeningEvent(payload = {}) {
     completed: !!payload.completed
   };
   if (!event.playedAt || !event.title && !event.path && !event.spotifyUri) return { ok:false, error:'missing track identity' };
-  const events = await readJsonSafe(LISTENING_EVENTS_PATH(), []);
-  const next = Array.isArray(events) ? events : [];
-  next.unshift(event);
-  await writeJsonSafe(LISTENING_EVENTS_PATH(), next.slice(0, 10000));
+  // Locked (phone plays and local plays arriving together each rewrote the file from the same old
+  // read, losing one), kept newest first whatever order an older file was in, one cap.
+  await withJsonFileLock(LISTENING_EVENTS_PATH(), async () => {
+    const events = await readJsonSafe(LISTENING_EVENTS_PATH(), []);
+    const next = Array.isArray(events) ? events : [];
+    next.unshift(event);
+    next.sort((a, b) => Number(b?.playedAt || 0) - Number(a?.playedAt || 0));
+    await writeJsonSafe(LISTENING_EVENTS_PATH(), next.slice(0, LISTENING_EVENTS_CAP));
+  });
   // Mirror every play into the same per-year Wrapped store used for a MusicBee
   // import/export, unconditionally -- not only once the user has explicitly
   // imported a MusicBee archive. This is what lets "Export Hive Wrapped" work
@@ -6667,7 +6779,7 @@ ipcMain.handle('beta:environmentAudit', async () => {
   return runEnvironmentAudit(HIVE_PROJECT_ROOT, {
     logDir: beehiveLogDir(),
     tempDir: path.join(app.getPath('temp'), 'BeehiveMusicBrainz'),
-    libraryRoots: Array.isArray(cfg?.folders) ? cfg.folders : []
+    libraryRoots: resolveConfigFolders(cfg)
   });
 });
 ipcMain.handle('diagnostics:start', async () => inAppDiagnostics.startSession());
@@ -7301,8 +7413,7 @@ ipcMain.handle('podcasts:favorites:get', async () => {
   const config = await readJsonSafe(CONFIG_PATH(), { folders: [] });
   return Array.isArray(config.podcastFavorites) ? config.podcastFavorites : [];
 });
-ipcMain.handle('podcasts:favorites:toggle', async (_evt, favorite = {}) => {
-  const config = await readJsonSafe(CONFIG_PATH(), { folders: [] });
+ipcMain.handle('podcasts:favorites:toggle', async (_evt, favorite = {}) => updateConfig(config => {
   const current = Array.isArray(config.podcastFavorites) ? config.podcastFavorites : [];
   const feedUrl = String(favorite.feedUrl || '').trim();
   if (!feedUrl) throw new Error('Podcast feed URL is required.');
@@ -7322,9 +7433,8 @@ ipcMain.handle('podcasts:favorites:toggle', async (_evt, favorite = {}) => {
     favorited = true;
   }
   config.podcastFavorites = next;
-  await writeJsonSafe(CONFIG_PATH(), config);
   return { favorited, favorites: next };
-});
+}));
 
 const STAR_FAVORITES_PLAYLIST_ID = 'hive-star-favorites';
 const STAR_FAVORITES_PLAYLIST = {
@@ -7957,8 +8067,7 @@ function startHiveLink() {
     files: {
       root: async () => {
         const config = await readJsonSafe(CONFIG_PATH(), { folders: [] });
-        const first = Array.isArray(config.folders) ? config.folders.find(Boolean) : null;
-        return first ? path.resolve(String(first)) : null;
+        return resolveConfigFolders(config)[0] || null;
       },
       keepDir: path.join(USER_DATA(), 'Deleted songs', 'From phone sync')
     },
@@ -8469,7 +8578,16 @@ ipcMain.handle('tracks:setLove', async (evt, trackPaths = [], loved) => {
     const state = { child, busy: false, job: null, timer: null };
     child.stdout?.on('data', chunk => { const text = String(chunk || '').trim(); if (text) scanLog(`metadata worker stdout: ${text}`); });
     child.stderr?.on('data', chunk => { const text = String(chunk || '').trim(); if (text) scanLog(`metadata worker stderr: ${text}`); });
-    workers.push(state);
+    // Listeners belong to each worker, including one that replaces a timed-out worker: they used
+    // to be attached only to the first set, so after one timeout nothing the replacement answered
+    // was handled and the bulk Love waited forever, holding its file lock and the watcher off.
+    child.on('message', msg => { finishJob(state, msg).catch(err => scanLog('Metadata job completion error', { error: String(err) })); });
+    child.on('error', err => {
+      if (state.busy) finishJob(state, { ok: false, error: err?.message || String(err) }).catch(() => {});
+    });
+    child.on('exit', (code, signal) => {
+      if (state.busy) finishJob(state, { ok: false, error: `Metadata worker exited (${code ?? 'null'}${signal ? `, ${signal}` : ''}).` }).catch(() => {});
+    });
     return state;
   };
 
@@ -8549,11 +8667,12 @@ ipcMain.handle('tracks:setLove', async (evt, trackPaths = [], loved) => {
         completed++;
         results.errors.push({ path: timedOutJob.path, error: 'Metadata worker timed out after 120 seconds.' });
         sendProgress(true, path.basename(timedOutJob.path));
-        try { state.child.kill(); } catch {}
+        try { state.child.removeAllListeners(); state.child.kill(); } catch {}
         const idx = workers.indexOf(state);
-        if (idx >= 0) workers[idx] = createWorker();
+        const replacement = createWorker();
+        if (idx >= 0) workers[idx] = replacement; else workers.push(replacement);
         timedOutJob.releaseLock?.();
-        dispatch(workers[idx]);
+        dispatch(replacement);
         if (completed >= total) stopped = true;
       }, 120000);
       try { state.child.send({ cmd: 'love', path: job.path, loved: value }); }
@@ -8564,16 +8683,7 @@ ipcMain.handle('tracks:setLove', async (evt, trackPaths = [], loved) => {
   sendTagProgress(evt, { active: true, operation: 'love', operationLabel: `${value ? 'Loving' : 'Unloving'} ${total.toLocaleString()} files${results.skipped ? ` (${results.skipped.toLocaleString()} already Loved skipped)` : ''}`, phase: 'Starting background metadata workers', done: 0, total, updated: 0, failed: 0, skipped: results.skipped, current: '' });
 
   try {
-    for (let i = 0; i < WORKER_COUNT; i++) createWorker();
-    for (const state of workers) {
-      state.child.on('message', msg => { finishJob(state, msg).catch(err => scanLog('Metadata job completion error', { error: String(err) })); });
-      state.child.on('error', err => {
-        if (state.busy) finishJob(state, { ok: false, error: err?.message || String(err) }).catch(() => {});
-      });
-      state.child.on('exit', (code, signal) => {
-        if (state.busy) finishJob(state, { ok: false, error: `Metadata worker exited (${code ?? 'null'}${signal ? `, ${signal}` : ''}).` }).catch(() => {});
-      });
-    }
+    for (let i = 0; i < WORKER_COUNT; i++) workers.push(createWorker());
     for (const state of workers) dispatch(state);
 
     while (completed < total) await new Promise(resolve => setTimeout(resolve, 100));

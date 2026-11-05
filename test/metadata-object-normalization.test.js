@@ -13,7 +13,7 @@ test('renderer has one object-safe text normalizer for comments and lyrics', () 
   assert.match(renderer, /normalizeMetadataText\(t\?\.comment\)/);
   assert.match(renderer, /normalizeMetadataText\(t\.lyrics\)/);
   assert.match(renderer, /t\.comment\s*=\s*normalizeMetadataText\(t\.comment\)/);
-  assert.match(renderer, /comment:normalizeMetadataText\(t\.comment\)/);
+  assert.match(renderer, /comment:(?:t=>)?normalizeMetadataText\(t\.comment\)/);
   assert.doesNotMatch(renderer, /get:t=>String\(t\?\.comment \|\| ''\)/);
 });
 

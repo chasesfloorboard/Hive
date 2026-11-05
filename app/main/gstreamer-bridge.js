@@ -140,24 +140,31 @@ function createGstreamerBridge(deps) {
         const win = getMainWindow();
         try { if (win && !win.isDestroyed()) win.webContents.send('gstreamer:event', { name: 'BIT_PERFECT_UNAVAILABLE', value: launchOutput.reason }); } catch {}
       }
-      gstreamerProcess = spawnTracked(gstreamerHelperBinary(), [], {
+      const child = spawnTracked(gstreamerHelperBinary(), [], {
         stdio: isWindows ? ['pipe', 'pipe', 'pipe'] : ['pipe', 'ignore', 'pipe', 'pipe'],
         env: helperSpawnEnv(launchOutput.device),
         windowsHide: true
       });
+      gstreamerProcess = child;
       // Whenever this helper exits -- output switch, restart, crash, or Hive
       // quitting -- hand an exclusively-held card back to PipeWire properly.
-      if (launchOutput.bitPerfect) gstreamerProcess.once('exit', () => { scheduleExclusiveReleaseRestore(launchOutput.restore); });
+      if (launchOutput.bitPerfect) child.once('exit', () => { scheduleExclusiveReleaseRestore(launchOutput.restore); });
       // GStreamer owns the real-time-ish audio path. Do not deliberately nice the
       // helper below normal priority: doing so can starve the native transport and
       // make short ramp/transport transitions audible as stutter or clicks under
       // desktop load. UI/background workloads must yield to the audio owner.
-      gstreamerProcess.stdio[2].on('data', chunk => {
+      child.stdio[2].on('data', chunk => {
         const text = chunk.toString('utf8').trim();
         if (text) crashDebug('GSTREAMER stderr', text);
       });
-      (isWindows ? gstreamerProcess.stdout : gstreamerProcess.stdio[3]).on('data', chunk => {
-        gstreamerEventBuffer += chunk.toString('utf8');
+      // Decoded across chunks: a character split between two pipe reads (a tag or path in an event)
+      // used to become U+FFFD.
+      const eventDecoder = new (require('string_decoder').StringDecoder)('utf8');
+      (isWindows ? child.stdout : child.stdio[3]).on('data', chunk => {
+        // A helper that has been replaced (a restart, a READY timeout) may still be shutting down:
+        // its events are not the current playback's.
+        if (gstreamerProcess !== child) return;
+        gstreamerEventBuffer += eventDecoder.write(chunk);
         let idx;
         while ((idx = gstreamerEventBuffer.indexOf('\n')) >= 0) {
           const line = gstreamerEventBuffer.slice(0, idx).replace(/\r$/, '');
@@ -186,9 +193,12 @@ function createGstreamerBridge(deps) {
           }
         }
       });
-      gstreamerProcess.on('exit', (code, signal) => {
+      child.on('exit', (code, signal) => {
+        // An older helper exiting late (after a restart or a READY timeout already started the next
+        // one) must not clear the current one: that left the new helper running unreferenced and
+        // auto-restart started a third, so two songs could play at once.
+        if (gstreamerProcess !== child) { crashDebug('GSTREAMER previous helper exited', { code, signal }); return; }
         crashDebug('GSTREAMER exit', { code, signal, unexpected: !gstreamerShuttingDown });
-        const exiting = gstreamerProcess;
         gstreamerProcess = null;
         gstreamerRuntimeReady = false;
         const mainWindow = getMainWindow();
@@ -207,7 +217,6 @@ function createGstreamerBridge(deps) {
             }, 750).unref?.();
           }
         }
-        void exiting;
       });
       return true;
     } catch (err) {

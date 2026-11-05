@@ -17,8 +17,48 @@ import java.security.MessageDigest
  * are kept per song in the cache, distinct by content, in file order.
  */
 object EmbeddedPictures {
-    /** The song's pictures when it has two or more distinct ones; otherwise empty. */
-    suspend fun forTrack(context: Context, trackId: Long): List<File> = withContext(Dispatchers.IO) {
+    /**
+     * The album's cover found online when it shows a different picture from the one embedded in its
+     * songs (Apple Music's Nothing Was The Same is the adult cover; the files have the baby one): Hive
+     * shows the embedded one and keeps this as the album's second cover. Null when they agree or none.
+     */
+    fun onlineAlternate(context: Context, albumId: Long): File? {
+        val dir = File(context.cacheDir, "hq-art")
+        val art = File(dir, "$albumId.jpg")
+        return art.takeIf { File(dir, "$albumId.differs").exists() && it.length() > 0 }
+    }
+
+    /** Whether two pictures show the same artwork (perhaps at other sizes): a 16×16 average hash. */
+    fun looksAlike(a: ByteArray, b: ByteArray): Boolean {
+        val ha = averageHash(a) ?: return false
+        val hb = averageHash(b) ?: return false
+        return ha.indices.count { ha[it] != hb[it] } <= LOOK_ALIKE_BITS
+    }
+
+    /**
+     * The song's pictures when it has two or more distinct ones (with [albumId], the album's online
+     * cover counts when it differs from the embedded one, shown after it); otherwise empty.
+     */
+    suspend fun forTrack(context: Context, trackId: Long, albumId: Long? = null): List<File> = withContext(Dispatchers.IO) {
+        val own = embeddedForTrack(context, trackId)
+        val alternate = albumId?.let { onlineAlternate(context, it) } ?: return@withContext own
+        // The song's own picture first, then the online one.
+        val first = if (own.isNotEmpty()) own else ownFirstPicture(context, trackId)?.let(::listOf).orEmpty()
+        if (first.isEmpty()) return@withContext own
+        first + alternate
+    }
+
+    /** The song's first embedded picture, kept as a file, for a song with only one. */
+    private fun ownFirstPicture(context: Context, trackId: Long): File? {
+        val file = File(context.cacheDir, "pictures/$trackId/single.img")
+        if (file.length() > 0) return file
+        val uri = ContentUris.withAppendedId(MediaStore.Audio.Media.EXTERNAL_CONTENT_URI, trackId)
+        val bytes = runCatching { context.contentResolver.openInputStream(uri)?.use { read(it) } }.getOrNull().orEmpty().firstOrNull() ?: return null
+        file.parentFile?.mkdirs()
+        return runCatching { file.writeBytes(bytes); file }.getOrNull()
+    }
+
+    private suspend fun embeddedForTrack(context: Context, trackId: Long): List<File> = withContext(Dispatchers.IO) {
         val dir = File(context.cacheDir, "pictures/$trackId")
         val marker = File(dir, "count")
         if (marker.exists()) return@withContext (0 until (marker.readText().toIntOrNull() ?: 0)).map { File(dir, "$it.img") }.filter { it.exists() }

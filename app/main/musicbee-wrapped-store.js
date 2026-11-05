@@ -74,20 +74,41 @@ function historyXml(plays) {
   return `<?xml version="1.0"?>\n<PlayHistory xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance" xmlns:xsd="http://www.w3.org/2001/XMLSchema">\n  <Plays>\n${rows.map(playXml).join('\n')}\n  </Plays>\n</PlayHistory>\n`;
 }
 
+// Each file is written whole beside its final name, flushed, then renamed over it: written in place,
+// a crash mid-write truncated plays.json, the year then read as empty, and the next write kept only
+// the new plays (a year of listening history gone).
+async function writeFileAtomic(file, text) {
+  const temp = `${file}.${process.pid}-${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 8)}.tmp`;
+  const handle = await fsp.open(temp, 'w');
+  try { await handle.writeFile(text, 'utf8'); await handle.sync(); }
+  finally { await handle.close(); }
+  try { await fsp.rename(temp, file); }
+  catch (err) { try { await fsp.unlink(temp); } catch {} throw err; }
+}
+
+// One write at a time per year: two plays recorded together each rewrote the year from the same read.
+const yearLocks = new Map();
+function withYearLock(year, task) {
+  const previous = yearLocks.get(year) || Promise.resolve();
+  const run = previous.catch(() => {}).then(task);
+  yearLocks.set(year, run.catch(() => {}));
+  return run;
+}
+
 async function writeYearStore(userData, year, plays, metadata = null, backupXml = null) {
   year = safeYear(year);
   const dir = yearDir(userData, year);
   await fsp.mkdir(dir, { recursive: true });
   const rows = Array.isArray(plays) ? plays : [];
   const meta = metadata || metadataFor(year, rows);
-  await fsp.writeFile(path.join(dir, 'play_history.xml'), historyXml(rows), 'utf8');
-  await fsp.writeFile(path.join(dir, 'year_metadata.xml'), metadataXml(meta), 'utf8');
-  await fsp.writeFile(path.join(dir, 'plays.json'), JSON.stringify(rows, null, 2) + '\n', 'utf8');
+  await writeFileAtomic(path.join(dir, 'play_history.xml'), historyXml(rows));
+  await writeFileAtomic(path.join(dir, 'year_metadata.xml'), metadataXml(meta));
+  await writeFileAtomic(path.join(dir, 'plays.json'), JSON.stringify(rows, null, 2) + '\n');
   if (backupXml) {
     const backupPath = path.join(dir, 'play_history_backup.xml');
     if (!fs.existsSync(backupPath)) await fsp.writeFile(backupPath, String(backupXml), 'utf8');
   }
-  await fsp.writeFile(path.join(dir, 'manifest.json'), JSON.stringify({ version: 2, year, updatedAt: Date.now(), source: 'MusicBeeWrapped', playCount: rows.length, hasOriginalBackup: fs.existsSync(path.join(dir, 'play_history_backup.xml')) }, null, 2) + '\n', 'utf8');
+  await writeFileAtomic(path.join(dir, 'manifest.json'), JSON.stringify({ version: 2, year, updatedAt: Date.now(), source: 'MusicBeeWrapped', playCount: rows.length, hasOriginalBackup: fs.existsSync(path.join(dir, 'play_history_backup.xml')) }, null, 2) + '\n');
   return { dir, metadata: meta, plays: rows };
 }
 
@@ -148,6 +169,9 @@ if not os.path.getsize(out): raise RuntimeError('Export archive is empty.')`;
 async function appendHiveEvent(userData, event) {
   const year = new Date(Number(event?.playedAt || 0)).getFullYear();
   if (year < 1900 || year > 3000) return false;
+  return withYearLock(year, () => appendHiveEventLocked(userData, event, year));
+}
+async function appendHiveEventLocked(userData, event, year) {
   const existing = await readStoredYear(userData, year);
   if (!existing) return false;
   const play = {

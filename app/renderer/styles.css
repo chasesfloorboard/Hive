@@ -1,3 +1,8 @@
+/* The hidden attribute always hides: several components set display:flex/inline-flex, which beat the
+   browser's own [hidden] rule (Soulseek's "Sign out" showed when signed out, an empty results box sat
+   under Health check). */
+[hidden] { display: none !important; }
+
 :root {
   /* Neutral until the user explicitly selects an album. */
   --accent: hsla(220, 6%, 62%, 1);
@@ -490,7 +495,12 @@ button {
    when the whole atomic inline-flex box doesn't fit, the browser drops it
    entirely and renders only the ellipsis, so a long enough title showed no
    text at all. Give the nested label its own truncation instead. */
-.tab-label .tab-rich-label { display: inline-block; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; vertical-align: bottom; max-width: 100%; }
+/* The icon keeps its size and the title takes the rest: with the icon as loose text before an
+   inline-block title, a long title was pushed past the label's edge and Chromium's ellipsis dropped
+   it whole, so the tab read "♫ …". */
+.tab-label { display: flex; align-items: center; }
+.tab-label .tab-icon { flex: none; margin-right: 0.3em; }
+.tab-label .tab-rich-label { display: block; flex: 1 1 auto; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 /* A title too long for its box (marquee() in renderer.js): the end fades out
    instead of an ellipsis, and the text glides across to show the rest and
    back, pausing at each end. The playbar's title always glides; a tab's while
@@ -498,6 +508,10 @@ button {
 @property --marquee-fade-l { syntax: '<length>'; inherits: false; initial-value: 0px; }
 @property --marquee-fade-r { syntax: '<length>'; inherits: false; initial-value: 14px; }
 .marquee { overflow: hidden; white-space: nowrap; }
+/* The marquee's track is one inline box: with text-overflow: ellipsis on the box (or the tab label
+   around it) a title that didn't fit was dropped whole and the tab showed only "…". A marquee cuts
+   its text at the edge instead (the fade above shows it goes on). */
+.marquee, .tab-label .tab-rich-label.marquee { text-overflow: clip; }
 .marquee-track { display: inline-flex; align-items: center; white-space: nowrap; }
 .marquee.marquee-on { -webkit-mask-image: linear-gradient(90deg, transparent 0, #000 var(--marquee-fade-l), #000 calc(100% - var(--marquee-fade-r)), transparent 100%); }
 .pb-title.marquee-on, .tab:hover .marquee-on { animation: marqueeFade var(--marquee-time, 8s) ease-in-out infinite; }
@@ -1491,7 +1505,7 @@ html[data-hive-theme="light"] .inline-track-row.selected .inline-track-dur { col
 .playbar-left { display: flex; align-items: center; gap: 10px; width: 255px; flex: none; padding: 6px 12px; margin-left: -6px; border-radius: 10px; background: transparent; color: var(--text); box-sizing: border-box; }
 .playbar-left.colored-bg { background: var(--accent); }
 .pb-cover { width: 44px; height: 44px; border-radius: 8px; object-fit: cover; background: var(--panel-strong); box-shadow: 0 8px 18px -8px var(--accent-glow); }
-.pb-title { font-size: 12.5px; font-weight: 600; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; max-width: 180px; color: var(--text); }
+.pb-title { font-size: 12.5px; font-weight: 600; white-space: nowrap; overflow: hidden; text-overflow: clip; max-width: 180px; color: var(--text); } /* clip: its marquee fades the end; an ellipsis dropped the whole title to "…" */
 /* Current-track artist contrast is defined with the queue/Now Playing rules above. */
 
 .playbar-center { flex: 1; display: flex; flex-direction: column; gap: 4px; align-items: center; }
@@ -1657,8 +1671,10 @@ input[type="range"]::-webkit-slider-thumb {
 .playlist-row:hover { background:rgba(255,255,255,.055); }
 .smart-badge { display:inline-block; margin-left:8px; padding:2px 6px; border:1px solid var(--accent-soft); border-radius:999px; color:var(--accent-soft); font-size:9px; letter-spacing:.6px; vertical-align:2px; }
 .playlist-modal { width:min(480px, calc(100vw - 40px)); }
-.smart-playlist-modal { width:min(760px, calc(100vw - 44px)); max-height:min(900px, calc(100vh - 36px)); overflow:hidden; }
-.smart-playlist-body { min-height:0; overflow-y:auto; scrollbar-gutter:stable; padding:16px 18px 18px; gap:14px; }
+.smart-playlist-modal { width:min(760px, calc(100vw - 44px)); max-height:min(900px, calc(100vh - 36px)); overflow:hidden; display:flex; flex-direction:column; }
+/* A flex column, so the body scrolls inside the dialog's height (it couldn't, and on a small window
+   the Create and Cancel buttons were out of reach). */
+.smart-playlist-body { flex:1 1 auto; min-height:0; overflow-y:auto; scrollbar-gutter:stable; padding:16px 18px 18px; gap:14px; }
 .modal-subtitle { color:var(--text-dimmer); font-size:10.5px; margin-top:3px; }
 .smart-section { display:flex; flex-direction:column; gap:11px; padding:13px; border:1px solid var(--border); border-radius:12px; background:color-mix(in srgb, var(--panel-strong) 78%, transparent); }
 .smart-section-primary { box-shadow:0 10px 28px -24px var(--accent-glow); }
@@ -3531,6 +3547,11 @@ input::placeholder, textarea::placeholder { color: var(--text-dimmer); opacity: 
 
 /* ---------------- Build 37: rich navigation labels ---------------- */
 .sidebar-nav-label, .tab-rich-label, .sidebar-divider-label { display:inline-flex; align-items:center; min-width:0; }
+/* A sidebar entry lays out its picture or icon and its name side by side, and the name is cut at the
+   edge: as a nowrap block with an inline-flex name, a long playlist name showed only "…". */
+.sidebar-nav-list .sidebar-item { display:flex; align-items:center; }
+.sidebar-nav-list .sidebar-item > .sidebar-nav-icon, .sidebar-nav-list .sidebar-item > .sidebar-nav-cover { flex:none; }
+.sidebar-nav-list .sidebar-item > .sidebar-nav-label { display:block; flex:1 1 auto; min-width:0; overflow:hidden; text-overflow:ellipsis; white-space:nowrap; }
 .sidebar-nav-label .hive-pulse, .tab-rich-label .hive-pulse { animation:hiveRichPulse 1.8s ease-in-out infinite; }
 .sidebar-nav-label .hive-rainbow, .tab-rich-label .hive-rainbow { animation:hiveRichRainbow 4s linear infinite; text-shadow:0 0 7px color-mix(in srgb,currentColor 48%,transparent); }
 .sidebar-nav-label .hive-glow, .tab-rich-label .hive-glow { animation:hiveRichGlow 1.7s ease-in-out infinite; }
@@ -5223,6 +5244,8 @@ html[data-hive-theme="light"] .modal-overlay { --accent: #0A84FF; }
   #settings-modal .settings-tabs { grid-row: 2; flex-direction: row; overflow-x: auto; border-right: 0; border-bottom: 1px solid var(--border); padding: 8px; }
   #settings-modal .settings-tab-btn { width: auto; white-space: nowrap; }
   #settings-modal .settings-body { grid-column: 1; grid-row: 3; }
+  /* The footer goes below the body in this layout (it stayed on row 3 and covered the settings). */
+  #settings-modal .settings-footer { grid-column: 1; grid-row: 4; }
   #settings-modal .settings-tab-panel { padding: 16px; }
   #settings-modal .settings-row { flex-direction: column; align-items: stretch; gap: 10px; }
   #settings-modal .settings-row > input[type="checkbox"] { align-self: flex-start; }
@@ -5814,3 +5837,8 @@ span.apple-track-art{display:block;background:rgba(255,255,255,.06)}
 /* Sandboxed plugin frames (plugin-sandbox.js), laid over the page they draw. */
 #hive-plugin-frames .hive-plugin-frame { position:fixed; border:0; margin:0; padding:0; z-index:2; background:transparent; color-scheme:normal; }
 #hive-plugin-frames .hive-plugin-frame[hidden] { display:none; }
+
+/* Empty side panels say what goes in them instead of being blank boxes. */
+#queue-list.is-empty::before { content: 'Songs you play line up here. Use Play next or Add to queue to add more.'; display: block; padding: 18px 14px; color: var(--text-dim); font-size: 12px; line-height: 1.5; text-align: center; }
+#lyrics-text:empty::before { content: 'Lyrics for the playing song show here.'; display: block; padding: 14px 10px; color: var(--text-dim); font-size: 12px; line-height: 1.5; text-align: center; }
+.empty-state[data-collection-empty] { margin-top: 64px; }
