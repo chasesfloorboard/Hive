@@ -2128,7 +2128,8 @@ ipcMain.handle('ytmusic:tags', async (_evt, track) => youtubeMusic.musicBrainzTa
 // Download a streamed song into the first library folder as
 // <Artist>/<Album>/<NN - >Title.mp3, tagged and with its cover, so the
 // library picks it up and Hive plays the file from then on.
-ipcMain.handle('ytmusic:download', async (_evt, track = {}) => {
+ipcMain.handle('ytmusic:download', async (_evt, track = {}) => downloadStreamedSong(track));
+async function downloadStreamedSong(track = {}) {
   const config = await readJsonSafe(CONFIG_PATH(), { folders: [] });
   const folder = (Array.isArray(config.folders) ? config.folders : []).map(resolveConfiguredFolder).find(f => f && fs.existsSync(f));
   if (!folder) throw new Error('Add a music folder in Settings → Library first.');
@@ -2169,7 +2170,7 @@ ipcMain.handle('ytmusic:download', async (_evt, track = {}) => {
   catch (err) { console.warn('[YouTube Music] tagging failed:', err?.message || err); }
   if (cover && cover.startsWith(require('os').tmpdir())) fsp.unlink(cover).catch(() => {});
   return { path: file, existed: false };
-});
+}
 // A picture the artwork editor just chose, copied into the covers cache under
 // its content hash (the scanner's naming), so cover views can show it while
 // the background write embeds it. Returns the cover name.
@@ -5825,7 +5826,9 @@ async function buildYearlyWrapData(year) {
     topDay: topDay ? {date:topDay[0],seconds:topDay[1]} : null,
     topMonth: topMonth ? {month:topMonth[0],seconds:topMonth[1]} : null,
     longestStreak, monthly:monthRows,
-    rows: rows.slice(0,100).map(e=>({playedAt:e.playedAt,title:e.title,artist:e.artist,album:e.album,duration:e.duration,cover:e.cover || e.artworkUrl || null,source:e.source || ''}))
+    rows: rows.slice(0,100).map(e=>({playedAt:e.playedAt,title:e.title,artist:e.artist,album:e.album,duration:e.duration,cover:e.cover || e.artworkUrl || null,source:e.source || ''})),
+    // Each month's top tracks, artists and albums for the Wrap's month view, worked out from every play.
+    months: (() => { try { const { monthDetail } = require('../renderer/yearly-wrap-view.js'); const all = rows.map(e => ({ playedAt: e.playedAt, title: e.title, artist: e.artist, album: e.album, duration: e.duration, cover: e.cover || e.artworkUrl || null })); return Array.from({ length: 12 }, (_, m) => monthDetail(all, year, m)); } catch { return null; } })()
   };
 }
 
@@ -6392,7 +6395,24 @@ async function searchLrcLibLyrics(artist, title, album, duration) {
   const found = await searchLrcLibLyricsExact(artist, title, album, duration);
   if (found) return found;
   const cleaned = lyricsSearchTitle(title);
-  return cleaned && cleaned !== title ? searchLrcLibLyricsExact(artist, cleaned, album, duration) : null;
+  const again = cleaned && cleaned !== title ? await searchLrcLibLyricsExact(artist, cleaned, album, duration) : null;
+  if (again) return again;
+  // Still nothing: LRCLIB's fuzzy search, matched by artist and length.
+  return searchLrcLibLyricsFuzzy(artist, cleaned || title, duration);
+}
+
+async function searchLrcLibLyricsFuzzy(artist, title, duration) {
+  const params = new URLSearchParams({ track_name: title, artist_name: artist });
+  try {
+    const response = await fetch(`https://lrclib.net/api/search?${params.toString()}`, {
+      headers: { 'User-Agent': 'Hive/1.0 (BeehiveMusicBrainz)' }
+    });
+    if (!response.ok) return null;
+    const best = require('./lrclib-pick').pickLrcLibCandidate(await response.json(), { artist, duration });
+    return best ? selectPreferredLyrics({ syncedLyrics: best.syncedLyrics, plainLyrics: best.plainLyrics, source: 'lrclib' }) : null;
+  } catch (_) {
+    return null;
+  }
 }
 
 async function searchLrcLibLyricsExact(artist, title, album, duration) {
@@ -8265,6 +8285,12 @@ function soulseekQueue() {
     settings: soulseekSettings,
     musicFolder: librarySongFolder,
     createClient: opts => new SoulseekClient(opts),
+    // Not on Soulseek: the song from YouTube, tagged from what the streaming service said.
+    fallback: async (t) => {
+      const m = t.meta || {};
+      const r = await downloadStreamedSong({ ...m, path: t.streamPath || m.path || '', title: t.title, artist: t.artist, album: t.album || '', duration: Number(m.duration) || (t.durationMs ? t.durationMs / 1000 : 0) });
+      return r.path;
+    },
     log,
     onChange: jobs => { try { if (mainWindow && !mainWindow.isDestroyed()) mainWindow.webContents.send('soulseek:jobs', jobs); } catch {} },
     // The window adds the songs to the library, points playlists at them and carries likes over.

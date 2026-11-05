@@ -35,7 +35,10 @@ class SoulseekClientTest {
     /** The peer closes it: Hive asks the server where the peer is and connects directly. */
     @Test fun downloadsOverADirectConnectionWhenThePeerHungUp() = scenario(closeSearchConnection = true)
 
-    private fun scenario(closeSearchConnection: Boolean) = runBlocking<Unit> {
+    /** A part of the file already here from a try that dropped: Hive asks for the rest only, from that offset. */
+    @Test fun resumesAPartialFileFromWhereItStopped() = scenario(closeSearchConnection = false, resumeFrom = 7)
+
+    private fun scenario(closeSearchConnection: Boolean, resumeFrom: Int = 0) = runBlocking<Unit> {
         val serverSocket = ServerSocket(0)
         val peerSocket = ServerSocket(0)
         val serverSaw = CopyOnWriteArrayList<Int>()
@@ -76,8 +79,9 @@ class SoulseekClientTest {
                                 peerSaw += "file"
                                 Frame.write(out, Out().u32(55).bytes())
                                 val offset = ByteArray(8); Frame.readFully(input, offset)
-                                assertEquals(0L, In(offset).u64())
-                                out.write(song); out.flush(); s.close()
+                                val from = In(offset).u64()
+                                assertEquals(resumeFrom.toLong(), from)
+                                out.write(song, from.toInt(), song.size - from.toInt()); out.flush(); s.close()
                             }
                         }
                         Code.PEER_INIT -> {
@@ -130,6 +134,7 @@ class SoulseekClientTest {
             assertEquals(path, picks.single().files[0]!!.path)
 
             val target = File.createTempFile("nanana", ".flac")
+            if (resumeFrom > 0) target.writeBytes(song.copyOfRange(0, resumeFrom))
             var progress = 0L
             client.download("alice", path, target, startWithinMs = 10_000) { got, _ -> progress = got }
             assertArrayEquals(song, target.readBytes())

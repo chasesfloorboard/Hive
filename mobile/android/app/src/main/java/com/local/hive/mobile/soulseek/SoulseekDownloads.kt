@@ -20,6 +20,8 @@ import androidx.work.OneTimeWorkRequestBuilder
 import androidx.work.WorkManager
 import androidx.work.WorkerParameters
 import kotlinx.coroutines.delay
+import kotlinx.coroutines.flow.first
+import kotlinx.coroutines.launch
 import kotlinx.serialization.Serializable
 import kotlinx.serialization.json.Json
 import java.io.File
@@ -86,7 +88,16 @@ class SoulseekSettings(context: Context) {
     val losslessOnly: Boolean = false,
 ) {
     /** [replaces]: the library song (a lossy download of Hive's) this download takes the place of. */
-    @Serializable data class Track(val title: String, val durationMs: Long = 0, val replaces: Long? = null)
+    @Serializable data class Track(
+        val title: String,
+        val durationMs: Long = 0,
+        val replaces: Long? = null,
+        // What the streaming service said, for the tags when the song comes from YouTube instead.
+        val artist: String = "",
+        val album: String = "",
+        val year: String = "",
+        val artworkUrl: String = "",
+    )
     val label get() = if (kind == "track") "${tracks.firstOrNull()?.title.orEmpty()} by $artist" else "$album by $artist"
 }
 
@@ -109,6 +120,8 @@ class SoulseekWorker(context: Context, params: WorkerParameters) : CoroutineWork
 
     override suspend fun doWork(): Result {
         val request = runCatching { json.decodeFromString(SoulseekRequest.serializer(), inputData.getString(KEY).orEmpty()) }.getOrNull() ?: return Result.success()
+        // Cancelled while it waited its turn.
+        if (downloads.isCancelled(request.id)) return Result.success()
         val settings = SoulseekSettings(applicationContext)
         runCatching { logFile()?.writeText("") }
         log("Download: ${request.label} (${request.tracks.size} songs, prefer ${settings.quality}, to ${settings.volumeNow(applicationContext)} Music/${settings.folder})")
@@ -121,11 +134,23 @@ class SoulseekWorker(context: Context, params: WorkerParameters) : CoroutineWork
         for (i in have) downloads.song(request.id, i) { it.copy(state = "done", percent = 100, from = "already in your library") }
         if (have.isNotEmpty()) log("Already in the library, not downloaded: " + have.joinToString { request.tracks[it].title })
         if (have.size == request.tracks.size) { finish("${request.label} is already in your library", request, "done"); return Result.success() }
-        if (!settings.configured) { finish("Sign in to Soulseek to download", request, "failed"); return Result.success() }
+        if (!settings.configured) {
+            // Not signed in to Soulseek: YouTube, as Hive on the PC does then.
+            val got = fromYouTube(request, notDone(request))
+            if (got > 0) newSongs()
+            finishWithYouTube(request, got, "Sign in to Soulseek to download")
+            return Result.success()
+        }
         title = "Finding ${request.label}"
         line = "Searching Soulseek…"
         runCatching { setForeground(foreground()) }
         val client = SoulseekClient(settings.username, settings.password, log = ::log)
+        // Cancelled from the list: the connection closes, which stops the song coming in.
+        val watcher = kotlinx.coroutines.CoroutineScope(kotlinx.coroutines.Dispatchers.Default).launch {
+            downloads.jobs.first { list -> list.firstOrNull { it.id == request.id }?.cancelled == true }
+            log("Cancelled")
+            client.close()
+        }
         try {
             client.login()
             val wanted = request.tracks.map { WantedTrack(it.title, it.durationMs) }
@@ -148,7 +173,13 @@ class SoulseekWorker(context: Context, params: WorkerParameters) : CoroutineWork
                 if (picks.isNotEmpty()) break
             }
             if (picks.isEmpty() && request.losslessOnly) { finish("Nobody on Soulseek is sharing a lossless copy of ${request.label} right now", request, "failed"); return Result.success() }
-            if (picks.isEmpty()) { finish("Couldn't find ${request.label} on Soulseek", request, "failed", offerSeeker = true); return Result.success() }
+            if (picks.isEmpty()) {
+                log("Not on Soulseek: trying YouTube")
+                val got = fromYouTube(request, notDone(request))
+                if (got > 0) newSongs()
+                finishWithYouTube(request, got, "Couldn't find ${request.label} on Soulseek")
+                return Result.success()
+            }
 
             val already = downloads.jobs.value.firstOrNull { it.id == request.id }?.songs.orEmpty()
             val needed = wanted.indices.filter { already.getOrNull(it)?.state != "done" }.toMutableSet()
@@ -166,13 +197,20 @@ class SoulseekWorker(context: Context, params: WorkerParameters) : CoroutineWork
                     runCatching { setForeground(foreground()) }
                     downloads.song(request.id, i) { it.copy(state = "downloading", percent = 0, from = pick.user) }
                     downloads.update(request.id) { it.copy(message = "From ${pick.user} · ${formatName(pick.format)}") }
-                    val part = File(temp, "${System.nanoTime()}.${file.extension}")
-                    val got = runCatching {
+                    // Named after this peer's copy of the file, so a try that drops part-way is continued, not restarted.
+                    val part = File(temp, "${(pick.user + "\u0000" + file.path).hashCode().toUInt().toString(16)}-${file.size}.${file.extension}")
+                    suspend fun attempt() = runCatching {
                         client.download(pick.user, file.path, part, startWithinMs = if (fromPeer == 0) FIRST_START_MS else NEXT_START_MS, expectedSize = file.size) { bytes, size ->
                             line = "${file.name} · ${percent(bytes, size)} · from ${pick.user}"
                             runCatching { setForegroundAsync(foreground(bytes, size)) }
                             if (size > 0) downloads.song(request.id, i) { it.copy(percent = (bytes * 100 / size).toInt()) }
                         }
+                    }
+                    var got = attempt()
+                    // The peer stopped mid-file: ask once more and carry on from the bytes already here.
+                    if (got.isFailure && got.exceptionOrNull() !is kotlinx.coroutines.CancellationException && client.ended == null && part.length() in 1 until file.size) {
+                        log("${file.name} from ${pick.user} stopped at ${part.length()} of ${file.size} bytes; resuming")
+                        got = attempt()
                     }
                     (got.exceptionOrNull() as? kotlinx.coroutines.CancellationException)?.let { part.delete(); throw it }
                     if (got.isFailure) {
@@ -198,9 +236,13 @@ class SoulseekWorker(context: Context, params: WorkerParameters) : CoroutineWork
                     done++
                 }
             }
+            val viaYouTube = fromYouTube(request, needed)
+            done += viaYouTube
+            needed.retainAll(notDone(request).toSet())
             val missing = needed.size
             for (i in needed) downloads.song(request.id, i) { it.copy(state = "missing", percent = 0) }
             finish(when {
+                missing == 0 && viaYouTube > 0 -> "Downloaded ${request.label} (${if (viaYouTube == done) "from YouTube" else "$viaYouTube from YouTube"})"
                 missing == 0 -> "Downloaded ${request.label}"
                 done == 0 -> "Couldn't download ${request.label}: nobody sharing it answered"
                 else -> "Downloaded $done of $total songs of ${request.label}"
@@ -214,12 +256,17 @@ class SoulseekWorker(context: Context, params: WorkerParameters) : CoroutineWork
             downloads.update(request.id) { j -> j.copy(state = "queued", message = "Waiting", songs = j.songs.map { if (it.state == "downloading") it.copy(state = "waiting", percent = 0) else it }) }
             throw e
         } catch (e: Exception) {
+            if (downloads.isCancelled(request.id)) { if (done > 0) newSongs(); return Result.success() }
             log("Stopped: $e")
+            val viaYouTube = runCatching { fromYouTube(request, notDone(request)) }.getOrDefault(0)
+            if (viaYouTube > 0) { newSongs(); if (notDone(request).isEmpty()) { finishWithYouTube(request, viaYouTube, ""); return Result.success() } }
             downloads.update(request.id) { j -> j.copy(songs = j.songs.map { if (it.state == "done") it else it.copy(state = "missing", percent = 0) }) }
             finish("Soulseek: ${e.message ?: "download failed"}", request, if (done > 0) "partial" else "failed", offerSeeker = true)
             if (done > 0) newSongs()
         } finally {
+            watcher.cancel()
             client.close()
+            File(applicationContext.cacheDir, "soulseek").listFiles()?.forEach { if (downloads.isCancelled(request.id)) it.delete() }
         }
         return Result.success()
     }
@@ -238,6 +285,72 @@ class SoulseekWorker(context: Context, params: WorkerParameters) : CoroutineWork
                 com.local.hive.mobile.link.TrackMatcher.artistParts(have.artist.ifBlank { have.albumArtist }).any { it in artists } &&
                     (t.durationMs <= 0 || kotlin.math.abs(have.durationMs - t.durationMs) <= 10_000)
             }
+        }
+    }
+
+    /** The songs of [request] not yet in. */
+    private fun notDone(request: SoulseekRequest): List<Int> {
+        val songs = downloads.jobs.value.firstOrNull { it.id == request.id }?.songs.orEmpty()
+        return request.tracks.indices.filter { songs.getOrNull(it)?.state != "done" }
+    }
+
+    /**
+     * Songs Soulseek couldn't give, from YouTube instead ([YouTubeFallback]),
+     * tagged from the streaming service. Never for a lossless replacement: a
+     * YouTube copy is no better than the song it would replace. Returns how many came.
+     */
+    private suspend fun fromYouTube(request: SoulseekRequest, indices: Collection<Int>): Int {
+        if (request.losslessOnly || downloads.isCancelled(request.id)) return 0
+        val todo = indices.filter { request.tracks[it].replaces == null }.sorted()
+        if (todo.isEmpty()) return 0
+        val settings = SoulseekSettings(applicationContext)
+        val temp = File(applicationContext.cacheDir, "youtube").apply { mkdirs() }
+        downloads.update(request.id) { it.copy(state = "downloading", message = "Not on Soulseek, getting it from YouTube") }
+        title = "Downloading ${request.label}"
+        var got = 0
+        for (i in todo) {
+            if (downloads.isCancelled(request.id)) break
+            val t = request.tracks[i]
+            downloads.song(request.id, i) { it.copy(state = "downloading", percent = 0, from = "YouTube") }
+            line = "${t.title} · from YouTube"
+            runCatching { setForeground(foreground()) }
+            val result = runCatching {
+                kotlinx.coroutines.withContext(kotlinx.coroutines.Dispatchers.IO) {
+                    YouTubeFallback.fetch(applicationContext, request.artist, request.album, t, temp) { bytes, size ->
+                        if (size > 0) downloads.song(request.id, i) { it.copy(percent = (bytes * 100 / size).toInt()) }
+                    }
+                }
+            }
+            (result.exceptionOrNull() as? kotlinx.coroutines.CancellationException)?.let { throw it }
+            val file = result.getOrElse {
+                log("${t.title} from YouTube failed: ${it.message}")
+                downloads.song(request.id, i) { s -> s.copy(state = "waiting", percent = 0, from = "") }
+                continue
+            }
+            if (downloads.isCancelled(request.id)) { file.delete(); break }
+            val saved = runCatching { save(file, request, "${t.artist.ifBlank { request.artist }} - ${t.title}.m4a", "m4a", settings) }
+            file.delete()
+            if (saved.isFailure) {
+                log("Couldn't save ${t.title}: ${saved.exceptionOrNull()?.message}")
+                downloads.song(request.id, i) { s -> s.copy(state = "waiting", percent = 0, from = "") }
+                continue
+            }
+            log("Got ${t.title} from YouTube")
+            downloads.song(request.id, i) { s -> s.copy(state = "done", percent = 100, from = "YouTube") }
+            got++
+        }
+        return got
+    }
+
+    /** The outcome once YouTube has had its turn at the songs Soulseek didn't have ([failure]: why Soulseek couldn't). */
+    private fun finishWithYouTube(request: SoulseekRequest, viaYouTube: Int, failure: String) {
+        val missing = notDone(request)
+        for (i in missing) downloads.song(request.id, i) { it.copy(state = "missing", percent = 0) }
+        when {
+            missing.isEmpty() -> finish("Downloaded ${request.label}${if (viaYouTube > 0) " from YouTube" else ""}", request, "done")
+            viaYouTube > 0 -> finish("Downloaded ${request.tracks.size - missing.size} of ${request.tracks.size} songs of ${request.label}", request, "partial", offerSeeker = true,
+                seekerQuery = missing.singleOrNull()?.let { com.local.hive.mobile.stream.Seeker.albumQuery(request.artist, request.tracks[it].title) })
+            else -> finish(failure.ifBlank { "Couldn't download ${request.label}" }, request, "failed", offerSeeker = true)
         }
     }
 
@@ -265,19 +378,21 @@ class SoulseekWorker(context: Context, params: WorkerParameters) : CoroutineWork
     private fun jobFor(r: SoulseekRequest) = DownloadJob(r.id, r.artist, r.album, r.label, r.tracks.map { DownloadSong(it.title) }, message = "Waiting")
 
     /** Into Music/<folder>/<artist>/<album>/ on the chosen storage, through MediaStore, where the library (and song sync) find it. */
-    private fun save(part: File, request: SoulseekRequest, file: SharedFile, settings: SoulseekSettings): android.net.Uri {
+    private fun save(part: File, request: SoulseekRequest, file: SharedFile, settings: SoulseekSettings): android.net.Uri = save(part, request, file.name, file.extension, settings)
+
+    private fun save(part: File, request: SoulseekRequest, name: String, extension: String, settings: SoulseekSettings): android.net.Uri {
         fun safe(s: String) = s.replace(Regex("""[\\/:*?"<>|]"""), "_").trim().trimEnd('.').ifBlank { "Unknown" }.take(80)
         val base = settings.folder.split('/').filter { it.isNotBlank() }.joinToString("/") { safe(it) }
         val folder = listOf("Music", base, safe(request.artist), safe(if (request.kind == "track") "Singles" else request.album)).filter { it.isNotBlank() }.joinToString("/", postfix = "/")
-        val mime = when (file.extension) { "flac" -> "audio/flac"; "mp3" -> "audio/mpeg"; "m4a", "aac", "alac" -> "audio/mp4"; "ogg" -> "audio/ogg"; "opus" -> "audio/opus"; "wav" -> "audio/wav"; else -> "audio/*" }
+        val mime = when (extension) { "flac" -> "audio/flac"; "mp3" -> "audio/mpeg"; "m4a", "aac", "alac" -> "audio/mp4"; "ogg" -> "audio/ogg"; "opus" -> "audio/opus"; "wav" -> "audio/wav"; else -> "audio/*" }
         val resolver = applicationContext.contentResolver
         val values = ContentValues().apply {
-            put(MediaStore.Audio.Media.DISPLAY_NAME, safe(file.name.substringBeforeLast('.')).take(120) + "." + file.extension)
+            put(MediaStore.Audio.Media.DISPLAY_NAME, safe(name.substringBeforeLast('.')).take(120) + "." + extension)
             put(MediaStore.Audio.Media.MIME_TYPE, mime)
             put(MediaStore.Audio.Media.RELATIVE_PATH, folder)
             put(MediaStore.Audio.Media.IS_PENDING, 1)
         }
-        val uri = resolver.insert(MediaStore.Audio.Media.getContentUri(settings.volumeNow(applicationContext)), values) ?: throw SoulseekException("Couldn't save ${file.name}")
+        val uri = resolver.insert(MediaStore.Audio.Media.getContentUri(settings.volumeNow(applicationContext)), values) ?: throw SoulseekException("Couldn't save $name")
         try {
             resolver.openOutputStream(uri)!!.use { out -> part.inputStream().use { it.copyTo(out) } }
             resolver.update(uri, ContentValues().apply { put(MediaStore.Audio.Media.IS_PENDING, 0) }, null, null)
@@ -349,6 +464,7 @@ class SoulseekWorker(context: Context, params: WorkerParameters) : CoroutineWork
 
     /** The outcome, as its own notification; when songs are missing, a tap opens Seeker's search to pick them by hand. */
     private fun finish(message: String, request: SoulseekRequest, state: String, offerSeeker: Boolean = false, seekerQuery: String? = null) {
+        if (downloads.isCancelled(request.id)) return
         downloads.update(request.id) { it.copy(state = state, message = message) }
         val nm = channel()
         val ctx = applicationContext

@@ -53,7 +53,7 @@
   pill.type = 'button';
   pill.className = 'soulseek-pill hidden';
   pill.setAttribute('aria-haspopup', 'dialog');
-  pill.innerHTML = '<span class="soulseek-pill-ring" aria-hidden="true"></span><span class="soulseek-pill-text"></span>';
+  pill.innerHTML = '<span class="soulseek-orb" aria-hidden="true"><span class="soulseek-pill-ring"></span><svg class="soulseek-arrow" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round"><path d="M12 4v12M6.5 10.5 12 16l5.5-5.5"/><path class="soulseek-tray" d="M5 20h14"/></svg><svg class="soulseek-tick" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.6" stroke-linecap="round" stroke-linejoin="round"><path d="M5 12.5l4.5 4.5L19 7.5"/></svg><span class="soulseek-count"></span></span><span class="soulseek-pill-text"></span>';
   const panel = document.createElement('section');
   panel.className = 'soulseek-panel hidden';
   panel.setAttribute('role', 'dialog');
@@ -87,12 +87,23 @@
       pill.classList.remove('searching');
     } else pill.querySelector('.soulseek-pill-text').textContent = 'Downloads';
     pill.classList.toggle('failed', !head && unseen[0]?.state === 'failed');
+    pill.classList.toggle('active', !!head);
+    pill.classList.toggle('finished', !head && unseen.length > 0 && unseen[0]?.state !== 'failed');
+    const count = pill.querySelector('.soulseek-count');
+    if (count) { count.textContent = active.length > 1 ? String(active.length) : ''; count.hidden = active.length < 2; }
+    pill.setAttribute('aria-label', head ? `Downloading ${active.length} ${active.length === 1 ? 'album' : 'albums'}. Open downloads` : 'Open downloads');
     pill.setAttribute('aria-expanded', String(panelOpen));
     // Above the player bar, however tall it is (or near the bottom when the player sits on top).
     const bar = document.getElementById('playbar')?.getBoundingClientRect();
     const above = bar && bar.height && bar.bottom > window.innerHeight - 8 ? window.innerHeight - bar.top + 14 : 24;
+    // Bottom right of the main view, clear of the queue and cover on the right.
+    const right = document.getElementById('queue-panel');
+    const rr = right && right.offsetParent ? right.getBoundingClientRect() : null;
+    const edge = rr && rr.width > 40 && rr.left > window.innerWidth / 2 ? window.innerWidth - rr.left + 18 : 22;
     pill.style.bottom = `${above}px`;
-    panel.style.bottom = `${above + 42}px`;
+    pill.style.right = `${edge}px`;
+    panel.style.bottom = `${above + 68}px`;
+    panel.style.right = `${edge}px`;
     panel.classList.toggle('hidden', !panelOpen);
     if (!panelOpen) return;
     // Progress redraws the list: what was open stays open, and focus stays on its button.
@@ -141,7 +152,10 @@
           const one = part.length === 1;
           await api.soulseekDownload({
             kind: one ? 'track' : 'album', artist, album: first.album || '', label: one ? part[0].title : first.album,
-            tracks: part.map(t => ({ title: t.title, durationMs: ms(t.duration), loved: !!t.loved, streamPath: t.path || '' })),
+            tracks: part.map(t => ({ title: t.title, durationMs: ms(t.duration), loved: !!t.loved, streamPath: t.path || '',
+              // For tags if the song comes from YouTube instead (it isn't on Soulseek).
+              meta: { artist: t.artist || '', album: t.album || '', albumArtist: t.albumArtist || '', year: t.year || '', genre: t.genre || '', track: t.track || 0,
+                disk: t.disk || t.disc || '', duration: Number(t.duration) || 0, artworkUrl: t.artworkUrl || '', cover: t.cover || '', ytVideoId: t.ytVideoId || '' } })),
           });
         }
       }

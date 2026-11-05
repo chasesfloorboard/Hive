@@ -652,6 +652,10 @@
     const i = currentQueue.indexOf(track);
     return i >= 0 && [currentQueue[i - 1], currentQueue[i + 1]].some(n => n && key(n) === own);
   }
+  function r128GainToReplayGainText(raw) {
+    const q = Number.parseInt(String(raw ?? '').trim(), 10);
+    return Number.isFinite(q) ? `${(q / 256 + 5).toFixed(2)} dB` : '';
+  }
   async function resolveReplayGainForTrack(track) {
     engineTrackGain = 1;
     const chosen = replayGainMode();
@@ -671,6 +675,9 @@
         gainText = value('REPLAYGAIN_TRACK_GAIN');
         peakText = value('REPLAYGAIN_TRACK_PEAK') || peakText;
       }
+      // Opus files carry R128_* gains instead: Q7.8 fixed-point dB relative to
+      // -23 LUFS. ReplayGain 2.0 aims at -18 LUFS, so add 5 dB.
+      if (!gainText) gainText = r128GainToReplayGainText((mode === 'album' && value('R128_ALBUM_GAIN')) || value('R128_TRACK_GAIN'));
       const gain = replayGainDbToLinear(gainText);
       if (!Number.isFinite(gain) || gain <= 0) return;
       let effective = Math.min(gain, 8);
@@ -1927,7 +1934,7 @@
         let a;
         try { a = await window.beehive.getAppleMusicArtist(url); } catch (err) { status.textContent = cleanError(err); return; }
         a.songs.forEach(at => browseSongs.set(at.appleId, at));
-        view.innerHTML = `<div class="apple-head">${a.artwork ? `<img src="${escapeHtml(a.artwork)}" alt="" style="border-radius:50%">` : ''}<div><div class="apple-kicker">ARTIST</div><h3>${escapeHtml(a.name)}</h3>
+        view.innerHTML = `<div class="apple-head">${a.artwork ? `<img src="${escapeHtml(a.artwork)}" alt="" style="border-radius:50%">` : ''}<div><div class="apple-kicker">Artist</div><h3>${escapeHtml(a.name)}</h3>
             <div class="apple-actions"><button type="button" class="sidebar-add" id="apple-artist-play">Play top songs</button><a class="sidebar-add" href="${escapeHtml(a.url)}" target="_blank" rel="noopener">Open in Apple Music</a></div></div></div>
           ${a.songs.length ? `<h4 class="radio-heading">Top songs</h4><div class="apple-tracks apple-song-shelf">${a.songs.slice(0, 10).map(songRowHtml).join('')}</div>` : ''}
           ${a.shelves.map(sh => `<h4 class="radio-heading">${escapeHtml(sh.title)}</h4><div class="apple-shelf">${sh.items.map(sh.kind === 'artists' ? appleArtistCardHtml : appleCardHtml).join('')}</div>`).join('')}`;
@@ -3845,7 +3852,7 @@
         const date = track?.pubDate ? new Date(track.pubDate) : null;
         const dateText = date && !Number.isNaN(date.getTime()) ? date.toLocaleDateString([], {year:'numeric', month:'short', day:'numeric'}) : '';
         container.innerHTML = `<div class="podcast-info">
-          <div class="podcast-info-kicker">${isRadioTrack(track) ? 'INTERNET RADIO' : isAppleMusicPreview(track) ? 'APPLE MUSIC PREVIEW' : 'PODCAST EPISODE'}</div>
+          <div class="podcast-info-kicker">${isRadioTrack(track) ? 'Internet radio' : isAppleMusicPreview(track) ? 'Apple Music preview' : 'Podcast episode'}</div>
           <strong class="podcast-info-title">${escapeHtml(track?.title || 'Untitled episode')}</strong>
           <div class="podcast-info-meta">${escapeHtml(track?.album || 'Podcast')}${dateText ? ` · ${escapeHtml(dateText)}` : ''}</div>
           ${description ? `<p class="podcast-info-description">${escapeHtml(description)}</p>` : `<p class="podcast-info-description dim">${isRadioTrack(track) ? 'Live stream. The song that is on now shows under the station name.' : 'No episode description was provided by the feed.'}</p>`}
@@ -4835,7 +4842,20 @@
     await refreshFolders();
   }
 
-  function hideContentViews(){ unmountPluginView(activeTabId); stopNowPlayingSpectrum(); document.body.classList.remove('sandbox-mode', 'plugin-view-mode'); [el.emptyState,el.tabPlaceholder,el.albumsToolbar,el.albumsGrid,el.songsTable,el.artistsGrid,el.contentTools].forEach(x=>x.classList.add('hidden')); }
+  // The view settles in (a short fade-up) only when where you are changes:
+  // another view mode, page, playlist, folder or artist. Re-draws of the same
+  // view, which happen on every click, rating or track change, stay still.
+  let lastViewEnterKey = '';
+  function markViewEnter() {
+    const key = [specialView || '', viewMode || '', activePlaylistId || '', activeFolderPath || '', artistSearchTerm || '', activeTabId || ''].join('|');
+    if (key === lastViewEnterKey) return;
+    lastViewEnterKey = key;
+    const shown = [el.albumsGrid, el.songsTable, el.artistsGrid, el.contentTools].find(x => x && !x.classList.contains('hidden'));
+    if (!shown) return;
+    shown.classList.remove('view-enter'); void shown.offsetWidth; shown.classList.add('view-enter');
+    shown.addEventListener('animationend', () => shown.classList.remove('view-enter'), { once: true });
+  }
+  function hideContentViews(){ unmountPluginView(activeTabId); stopNowPlayingSpectrum(); document.body.classList.remove('sandbox-mode', 'plugin-view-mode'); el.contentTools?.classList.remove('wrapv-host'); [el.emptyState,el.tabPlaceholder,el.albumsToolbar,el.albumsGrid,el.songsTable,el.artistsGrid,el.contentTools].forEach(x=>x.classList.add('hidden')); }
   function ratingStars(t, interactive = true) {
     // MusicBee MP3 ratings are stored in POPM. Treat the raw 255 value as the
     // authoritative 5-star state so older cached library entries cannot hide it.
@@ -5539,7 +5559,10 @@
   function favoriteAddedAtForTrack(pl, track) {
     const key = String(track?.path || '');
     const value = Number(pl?.favoriteAddedAt?.[key]);
-    return Number.isFinite(value) && value > 0 ? value : 0;
+    if (Number.isFinite(value) && value > 0) return value;
+    // A liked streamed song isn't a file: its like time is in streamLoves (addedAt).
+    if (isPodcastTrack(track) && !isRadioTrack(track)) return Number(track?.addedAt) || 0;
+    return 0;
   }
 
   function sortFavoritesByAddedAt(tracks, pl) {
@@ -5789,6 +5812,7 @@
       card.className='album-card'+(a.key===playingKey?' now-playing':'')+(String(a.key)===String(highlightedAlbumKey)?' album-highlighted':'')+(selectedAlbumKeys.has(String(a.key))?' album-selected':'');
       card.dataset.key=a.key;
       card.innerHTML=`<div class="art-wrap">${lazyCoverImg(coverSrc(a.cover))}</div><div class="title">${escapeHtml(a.title)}</div><div class="artist">${escapeHtml(a.artist)} · ${a.tracks.length} track${a.tracks.length===1?'':'s'}</div>`;
+      addCardPlayButton(card,a);
       attachCoverInteractions(card,a);
       card.addEventListener('contextmenu',e=>{e.preventDefault();showAlbumContextMenu(e,a);});
       return card;
@@ -6870,12 +6894,60 @@
   // Music Viewer is the shared presentation surface for every playable music collection.
   // The source may be the library, a playlist, Favorites, History, Recently Added,
   // Top Played, or a folder; the viewer always exposes Albums / Tracks / Artists and Years.
+  // A header for any collection you open (a playlist, an artist, History...):
+  // its artwork, what it is, how much is in it, and Play / Shuffle.
+  function renderCollectionHero(kind, title, tracks) {
+    const bar = el.albumsToolbar;
+    if (!bar) return;
+    let hero = bar.querySelector(':scope > .collection-hero');
+    const list = Array.isArray(tracks) ? tracks.filter(Boolean) : [];
+    if (!kind) { bar.classList.remove('has-collection-hero'); hero?.remove(); return; }
+    if (!hero) {
+      hero = document.createElement('div'); hero.className = 'collection-hero';
+      hero.innerHTML = '<div class="collection-hero-art"></div><div class="collection-hero-copy"><div class="collection-hero-kind"></div><h2 class="collection-hero-title"></h2><div class="collection-hero-meta"></div><div class="collection-hero-actions"><button type="button" class="collection-hero-play"></button><button type="button" class="collection-hero-shuffle"></button><button type="button" class="collection-hero-more panel-menu-btn" aria-label="Playlist info" title="Playlist info"><svg viewBox="0 0 24 24" width="18" height="18" fill="currentColor" aria-hidden="true"><circle cx="5" cy="12" r="1.8"/><circle cx="12" cy="12" r="1.8"/><circle cx="19" cy="12" r="1.8"/></svg></button></div></div>';
+      bar.prepend(hero);
+      hero.querySelector('.collection-hero-play').addEventListener('click', () => { const t = hero.__tracks || []; if (t.length) playQueue(t, 0, false); });
+      hero.querySelector('.collection-hero-shuffle').addEventListener('click', () => { const t = hero.__tracks || []; if (t.length) playQueue(shuffleForPlayback(t), 0, false); });
+      hero.querySelector('.collection-hero-more').addEventListener('click', () => { const pl = hero.__playlist; if (pl) showPlaylistInfo(pl); });
+    }
+    hero.__tracks = list;
+    const pl = kind === 'playlist' ? playlists.find(p => String(p.id) === String(activePlaylistId)) : null;
+    hero.__playlist = pl || null;
+    const kindLabel = { playlist: pl?.smart ? 'Smart playlist' : 'Playlist', artist: 'Artist', history: 'Recently played', recent: 'Recently added', top: 'Most played', folder: 'Folder' }[kind] || '';
+    hero.querySelector('.collection-hero-kind').textContent = kindLabel;
+    hero.querySelector('.collection-hero-title').textContent = richLabelText(title) || title || '';
+    const seconds = list.reduce((sum, t) => sum + (Number(t.duration) || 0), 0);
+    const h = Math.floor(seconds / 3600), m = Math.round((seconds % 3600) / 60);
+    const albums = new Set(list.map(t => albumKey(t))).size;
+    const meta = [`${list.length.toLocaleString()} ${list.length === 1 ? 'song' : 'songs'}`];
+    if (kind !== 'history' && albums > 1) meta.push(`${albums.toLocaleString()} albums`);
+    if (seconds > 0) meta.push(h ? `${h} hr ${m} min` : `${m} min`);
+    hero.querySelector('.collection-hero-meta').textContent = meta.join(', ');
+    const art = hero.querySelector('.collection-hero-art');
+    const ownImage = pl ? playlistImageSrc(pl) : '';
+    const covers = mosaicCoversFromTracks(list);
+    const artKey = ownImage ? `img:${ownImage}` : covers.join('|');
+    if (art.dataset.key !== artKey) {
+      art.dataset.key = artKey;
+      art.innerHTML = ownImage ? `<img src="${escapeHtml(ownImage)}" alt="" draggable="false">` : (covers.length ? playlistArtHtml(covers) : '<div class="collection-hero-empty">♪</div>');
+    }
+    const play = hero.querySelector('.collection-hero-play');
+    const icons = window.BeehiveIcons || {};
+    play.innerHTML = `${icons.play || ''}<span>Play</span>`; play.disabled = !list.length;
+    const shuf = hero.querySelector('.collection-hero-shuffle');
+    shuf.innerHTML = `${icons.shuffle || ''}<span>Shuffle</span>`; shuf.disabled = list.length < 2;
+    hero.querySelector('.collection-hero-more').hidden = !pl;
+    bar.classList.add('has-collection-hero');
+  }
+
   function renderMusicViewer(title,tracks,kind){
     specialView=kind;
     hideContentViews();
     el.albumsToolbar.classList.remove('hidden');
     el.albumsToolbar.dataset.musicViewer = 'true';
     if (el.sectionTitleText) el.sectionTitleText.textContent=title;
+    try { syncSongColumnsButton(); } catch {}
+    try { renderCollectionHero(['playlist', 'history', 'recent', 'top', 'folder'].includes(kind) ? kind : null, kind === 'playlist' ? richLabelText(title) : title, tracks); } catch (err) { console.warn('[Hive] collection header:', err); }
     if(viewMode==='albums'){
       el.albumsGrid.classList.remove('hidden');
       renderSpecialAlbums(tracks);
@@ -6892,6 +6964,7 @@
     // wrong visual mode.
     syncTabControls();
     syncSidebarSelectionForContext();
+    try { markViewEnter(); } catch {}
     const activeTab = getActiveTab();
     if (activeTab?.kind === 'music') {
       // A sidebar collection is the tab's base context. The tab is opened in
@@ -8399,7 +8472,7 @@
     const plugins = [...hivePluginState.plugins.values()].filter(p => p.enabled !== false);
     if (!activeSandboxPluginId || !plugins.some(p => p.id === activeSandboxPluginId)) activeSandboxPluginId = plugins[0]?.id || null;
     const cards = plugins.map(plugin => `<button type="button" class="sandbox-app-card" data-sandbox-plugin="${escapeHtml(plugin.id)}"><span class="sandbox-app-icon">${escapeHtml(plugin.icon || 'MC')}</span><strong>${escapeHtml(plugin.name)}</strong><span>${escapeHtml(plugin.description || 'Hive sandbox extension')}</span></button>`).join('');
-    contentTools.innerHTML = `<section class="sandbox-launcher" aria-label="Hive Sandbox"><header class="sandbox-launcher-head"><div><div class="sandbox-kicker">HIVE EXTENSIONS</div><h1>Sandbox</h1><p>Independent spaces for extensions and experiments.</p></div></header><div class="sandbox-app-grid">${cards || '<div class="sandbox-empty">No enabled extensions are installed.</div>'}</div></section>`;
+    contentTools.innerHTML = `<section class="sandbox-launcher" aria-label="Hive Sandbox"><header class="sandbox-launcher-head"><div><div class="sandbox-kicker">Extensions</div><h1>Sandbox</h1><p>Independent spaces for extensions and experiments.</p></div></header><div class="sandbox-app-grid">${cards || '<div class="sandbox-empty">No enabled extensions are installed.</div>'}</div></section>`;
     contentTools.querySelectorAll('[data-sandbox-plugin]').forEach(card => card.addEventListener('click', () => { activeSandboxPluginId = card.dataset.sandboxPlugin; showSandboxPlugin(activeSandboxPluginId, tab); }));
     syncSidebarSelectionForContext();
     updateActiveTabLabel();
@@ -8415,7 +8488,7 @@
     contentTools.classList.remove('hidden');
     document.body.classList.add('sandbox-mode');
     const panel = [...hivePluginState.panels.values()].find(p => p.pluginId === plugin.id);
-    contentTools.innerHTML = `<section class="sandbox-plugin-view" aria-label="${escapeHtml(plugin.name)}"><header class="sandbox-plugin-head"><button type="button" class="sidebar-add sandbox-back">← Sandbox</button><div><div class="sandbox-kicker">SANDBOX</div><h1>${escapeHtml(plugin.name)}</h1><p>${escapeHtml(plugin.description || '')}</p></div></header><div id="hive-plugin-sandbox-panels" class="hive-plugin-sandbox-panels"></div></section>`;
+    contentTools.innerHTML = `<section class="sandbox-plugin-view" aria-label="${escapeHtml(plugin.name)}"><header class="sandbox-plugin-head"><button type="button" class="sidebar-add sandbox-back">← Sandbox</button><div><div class="sandbox-kicker">Sandbox</div><h1>${escapeHtml(plugin.name)}</h1><p>${escapeHtml(plugin.description || '')}</p></div></header><div id="hive-plugin-sandbox-panels" class="hive-plugin-sandbox-panels"></div></section>`;
     const host=document.getElementById('hive-plugin-sandbox-panels');
     if (panel && host) { const section=document.createElement('section'); section.className='hive-plugin-panel'; section.dataset.pluginId=panel.pluginId; section.dataset.panelId=panel.id; host.appendChild(section); try { panel.mount(section); } catch(err) { section.textContent=err?.message || 'Plugin failed to load.'; } }
     // A wrapper: passed directly, the click event arrived as the tab argument and Back did nothing.
@@ -8503,38 +8576,39 @@
     return showSandboxLauncher(tab);
   }
 
+  // Yearly Wrap lives in the main window (app/renderer/yearly-wrap-view.js):
+  // slides like Hive Mobile's, opening albums, artists and songs right here.
+  let yearlyWrapMounted = null;
   async function renderYearlyWrap(tab = getActiveTab()) {
     if (!tab || getActiveTab()?.id !== tab.id) return false;
     const contentTools = tab.dom?.contentTools;
-    if (!contentTools) return false;
+    if (!contentTools || !window.HiveYearlyWrapView) return false;
     hideContentViews();
     contentTools.classList.remove('hidden');
+    contentTools.classList.add('wrapv-host');
     specialView='yearly-wrap'; activePlaylistId=null; activeFolderPath=''; searchTerm=''; artistSearchTerm='';
-    const year = new Date().getFullYear();
-    let history = [];
-    try { history = await window.beehive.getHistory(); } catch {}
-    if (getActiveTab()?.id !== tab.id) return false;
-    const entries = (Array.isArray(history) ? history : []).filter(x => {
-      const ts = Number(x?.playedAt || 0); return ts > 0 && new Date(ts).getFullYear() === year;
+    try { yearlyWrapMounted?.destroy(); } catch {}
+    const findTrack = (title, artist) => {
+      const t = String(title || '').trim().toLowerCase(), a = String(artist || '').trim().toLowerCase();
+      return library.tracks.find(x => String(x.title || '').trim().toLowerCase() === t && String(x.artist || '').trim().toLowerCase() === a)
+        || library.tracks.find(x => String(x.title || '').trim().toLowerCase() === t && String(x.artist || '').toLowerCase().includes(a));
+    };
+    const leaveWrap = () => { contentTools.classList.remove('wrapv-host'); try { yearlyWrapMounted?.destroy(); } catch {} yearlyWrapMounted = null; };
+    yearlyWrapMounted = window.HiveYearlyWrapView.mount(contentTools, {
+      api: window.beehive,
+      coverUrl: file => /^(https?:|mbcover:|data:)/.test(String(file)) ? String(file) : coverSrc(file),
+      onPlayTrack: (title, artist) => { const t = findTrack(title, artist); if (t) playQueue([t], 0, false); else showAppNotice(`"${title}" isn't in your library any more.`); },
+      onOpenArtist: name => { leaveWrap(); specialView = null; searchForArtist(name); },
+      onOpenAlbum: (album, artist) => {
+        const t = library.tracks.find(x => String(x.album || '') === String(album || '') && (!artist || String(x.albumArtist || x.artist || '') === String(artist))) || library.tracks.find(x => String(x.album || '') === String(album || ''));
+        if (!t) { showAppNotice(`"${album}" isn't in your library any more.`); return; }
+        leaveWrap(); showAlbumFromTrack(t);
+      },
     });
-    const byTrack = new Map(), byArtist = new Map(), byAlbum = new Map(), byDay = new Map();
-    let totalSeconds = 0;
-    for (const x of entries) {
-      const title=String(x.title||'Unknown track'), artist=String(x.artist||'Unknown artist'), album=String(x.album||'Unknown album');
-      const duration=Math.max(0,Number(x.duration)||0); totalSeconds += duration;
-      const add=(map,key,amount=1)=>map.set(key,(map.get(key)||0)+amount);
-      add(byTrack,`${title}\u0000${artist}`,1); add(byArtist,artist,1); add(byAlbum,album,1);
-      const day=new Date(Number(x.playedAt)); const dayKey=day.toISOString().slice(0,10); add(byDay,dayKey,duration);
-    }
-    const top = (map, limit=5) => [...map.entries()].sort((a,b)=>b[1]-a[1]).slice(0,limit);
-    const fmtHours = seconds => { const mins=Math.round(seconds/60); if(mins<60)return `${mins} min`; const h=Math.floor(mins/60),m=mins%60; return `${h}h ${m}m`; };
-    const topTrack=top(byTrack,1)[0]; const topArtist=top(byArtist,1)[0]; const topAlbum=top(byAlbum,1)[0]; const topDay=top(byDay,1)[0];
-    const trackRows=top(byTrack).map(([key,count],i)=>{const [title,artist]=key.split('\u0000');return `<div class="yearly-wrap-row"><span>${i+1}</span><div><strong>${escapeHtml(title)}</strong><small>${escapeHtml(artist)}</small></div><b>${count.toLocaleString()} plays</b></div>`;}).join('');
-    const artistRows=top(byArtist).map(([name,count],i)=>`<div class="yearly-wrap-row"><span>${i+1}</span><div><strong>${escapeHtml(name)}</strong></div><b>${count.toLocaleString()}</b></div>`).join('');
-    const empty=entries.length===0;
-    contentTools.innerHTML=`<section class="yearly-wrap-page"><div class="yearly-wrap-hero"><div><div class="beta-kicker">HIVE LISTENING RETROSPECTIVE</div><h1>Yearly Wrap · ${year}</h1><p>A calm summary of the music you actually played this year.</p></div><div class="yearly-wrap-year">${year}</div></div>${empty?`<div class="yearly-wrap-empty"><strong>No listening history for ${year} yet.</strong><span>As Hive records plays, your Yearly Wrap will build automatically.</span></div>`:`<div class="yearly-wrap-stats"><article><span>Listening time</span><strong>${fmtHours(totalSeconds)}</strong></article><article><span>Plays</span><strong>${entries.length.toLocaleString()}</strong></article><article><span>Artists</span><strong>${byArtist.size.toLocaleString()}</strong></article><article><span>Albums</span><strong>${byAlbum.size.toLocaleString()}</strong></article></div><div class="yearly-wrap-featured"><article><span>Top artist</span><strong>${escapeHtml(topArtist?.[0]||'—')}</strong><small>${topArtist?.[1]?.toLocaleString()||0} plays</small></article><article><span>Top track</span><strong>${escapeHtml(topTrack?.[0]?.split('\u0000')[0]||'—')}</strong><small>${topTrack?.[1]?.toLocaleString()||0} plays</small></article><article><span>Top album</span><strong>${escapeHtml(topAlbum?.[0]||'—')}</strong><small>${topAlbum?.[1]?.toLocaleString()||0} plays</small></article><article><span>Most listened day</span><strong>${topDay?.[0] ? escapeHtml(new Date(`${topDay[0]}T12:00:00`).toLocaleDateString([], {month:'short',day:'numeric'})) : '—'}</strong><small>${topDay?.[1] ? fmtHours(topDay[1]) : '—'}</small></article></div><div class="yearly-wrap-columns"><section><div class="yearly-wrap-section-title">Top tracks</div>${trackRows||'<div class="dim">Not enough history yet.</div>'}</section><section><div class="yearly-wrap-section-title">Top artists</div>${artistRows||'<div class="dim">Not enough history yet.</div>'}</section></div>`}</section>`;
-    if(el.sectionTitleText) el.sectionTitleText.textContent=`Yearly Wrap · ${year}`;
+    if(el.sectionTitleText) el.sectionTitleText.textContent='Yearly Wrap';
+    syncSidebarSelectionForContext?.();
     updateActiveTabLabel(); saveActiveTabState();
+    return true;
   }
 
   async function openPlaylistFromSidebar(pl, navId) {
@@ -8644,22 +8718,13 @@
     // Opened before any tab switch: Yearly Wrap is its own window, and switching to its empty hidden
     // tab first left the main window blank behind it.
     if (nav === 'yearly-wrap') {
-      // Yearly Wrap is a dedicated slideshow window (real per-play listening
-      // time, top track/artist/album slides, share/save-image tools) opened
-      // via window.beehive.openYearlyWrap(), not an inline sidebar view.
-      // renderYearlyWrap() below is legacy Build 37 inline-summary code kept
-      // only for reference; routing this destination through it instead of
-      // opening the real window was an unintentional regression.
-      // The main window keeps its view and highlight; the Wrap is a window of its own.
-      try {
-        // Theme the window at open time to whatever's currently playing;
-        // pushYearlyWrapTheme() keeps it in sync afterward as the track changes.
-        const currentAccent = accentRgbFromColor(getComputedStyle(document.documentElement).getPropertyValue('--accent'));
-        const currentGlow = accentRgbFromColor(getComputedStyle(document.documentElement).getPropertyValue('--accent-glow')) || currentAccent;
-        const theme = currentAccent ? { accent: currentAccent.map(n => Math.round(n)).join(','), accent2: (currentGlow || currentAccent).map(n => Math.round(n)).join(',') } : null;
-        await window.beehive.openYearlyWrap(new Date().getFullYear(), theme);
-      }
-      catch (err) { console.warn('[Yearly Wrap] window open failed', err?.message || String(err)); }
+      // Yearly Wrap opens inside the main window, like any other place
+      // (it used to be a window of its own; the user asked for it in the app).
+      if (activeTabId !== tab.id) switchTab(tab.id);
+      if (activeTabId !== tab.id) return false;
+      el.sidebarItems?.forEach(i => i.classList.toggle('active', i.dataset.nav === nav));
+      el.folderList?.querySelectorAll('.sidebar-item').forEach(i => i.classList.remove('active'));
+      await renderYearlyWrap(tab);
       return true;
     }
     if (activeTabId !== tab.id) switchTab(tab.id);
@@ -10218,7 +10283,7 @@
           <div class="artwork-library-heading"><strong>${escapeHtml(artworkTypeLabel(picture?.type))}</strong><span>${escapeHtml(picture?.mime || '')}</span></div>
           <label>Picture type<select data-artwork-type>${artworkTypeOptions(picture?.type || 'Other')}</select></label>
           <label>Comments<textarea data-artwork-comment rows="2">${escapeHtml(picture?.description || '')}</textarea></label>
-          <div class="artwork-library-actions"><button type="button" data-artwork-search>Search Internet for Cover…</button><button type="button" data-artwork-upload>Upload…</button><button type="button" data-artwork-save>Save To…</button><button type="button" data-artwork-delete class="danger">Delete</button>${canArrange ? `<button type="button" data-artwork-move="-1" ${i === 0 ? 'disabled' : ''}>Move up</button><button type="button" data-artwork-move="1" ${i === pictures.length - 1 ? 'disabled' : ''}>Move down</button>` : ''}</div>
+          <div class="artwork-library-actions"><button type="button" data-artwork-search>Find online…</button><button type="button" data-artwork-upload>Replace…</button><button type="button" data-artwork-save>Save as…</button><button type="button" data-artwork-delete class="danger">Delete</button>${canArrange ? `<button type="button" data-artwork-move="-1" ${i === 0 ? 'disabled' : ''}>Move up</button><button type="button" data-artwork-move="1" ${i === pictures.length - 1 ? 'disabled' : ''}>Move down</button>` : ''}</div>
         </div>
       </article>`;
     }).join('');
@@ -10239,7 +10304,7 @@
           <div class="artwork-library-heading"><strong>${escapeHtml(label)}</strong><span>${previewState}${hasPreview ? ` · ${escapeHtml(previewMime)}` : ''}</span></div>
           <label>Picture type<select data-artwork-blank-type>${artworkTypeOptions(slot?.type || 'Cover (Back)')}</select></label>
           <label>Comments<textarea data-artwork-blank-comment rows="2" placeholder="Optional description">${escapeHtml(slot?.description || '')}</textarea></label>
-          <div class="artwork-library-actions"><button type="button" data-artwork-blank-search>Search Internet for Cover…</button><button type="button" data-artwork-blank-upload>Choose Picture…</button><button type="button" data-artwork-blank-paste>Paste Picture</button>${artworkEditorBlankSlots.length > 1 ? '<button type="button" data-artwork-blank-remove>Remove Slot</button>' : ''}</div>
+          <div class="artwork-library-actions"><button type="button" data-artwork-blank-search>Find online…</button><button type="button" data-artwork-blank-upload>Choose picture…</button><button type="button" data-artwork-blank-paste>Paste picture</button>${artworkEditorBlankSlots.length > 1 ? '<button type="button" data-artwork-blank-remove>Remove slot</button>' : ''}</div>
         </div>
       </article>`;
     }).join('');
@@ -10284,9 +10349,9 @@
         // Keep the artwork-tab context menu identical to the Tags-tab menu,
         // but scope each action to the specific picture that was right-clicked.
         showContextMenu(e.clientX, e.clientY, [
-          { label:'Choose Picture…', action:()=>replaceArtworkItem(index, card) },
-          { label:'Search Internet for Cover…', action:()=>searchEditorArtwork(true, artworkEditorSlotForIndex(index)) },
-          { label:'Paste Picture', action:async()=>{
+          { label:'Choose picture…', action:()=>replaceArtworkItem(index, card) },
+          { label:'Find online…', action:()=>searchEditorArtwork(true, artworkEditorSlotForIndex(index)) },
+          { label:'Paste picture', action:async()=>{
               try {
                 const chosen = await window.beehive.pasteCover();
                 if (chosen) await replaceArtworkItem(index, card, chosen);
@@ -10377,10 +10442,10 @@
         e.stopPropagation();
         artworkEditorSelected = -1000 - Number(slot.id);
         showContextMenu(e.clientX, e.clientY, [
-          { label:'Choose Picture…', action:async()=>{ const chosen=await chooseArtworkForItem(); if(chosen) await fillArtworkBlankSlot(slot.id, chosen, card.querySelector('[data-artwork-blank-type]')?.value || slot.type, card.querySelector('[data-artwork-blank-comment]')?.value || slot.description || ''); } },
-          { label:'Search Internet for Cover…', action:()=>searchEditorArtwork(true, { blank:true, blankId:Number(slot.id) }) },
-          { label:'Paste Picture', action:async()=>{ try { const chosen=await window.beehive.pasteCover(); if(chosen) await fillArtworkBlankSlot(slot.id, chosen, card.querySelector('[data-artwork-blank-type]')?.value || slot.type, card.querySelector('[data-artwork-blank-comment]')?.value || slot.description || ''); else el.tagStatus.textContent='No image was available on the clipboard.'; } catch(err) { el.tagStatus.textContent=err.message || 'Could not paste artwork.'; } } },
-          ...(artworkEditorBlankSlots.length > 1 ? [{ label:'Remove Slot', danger:true, action:()=>{ const idx=artworkEditorBlankIndex(slot.id); if(idx>=0){ artworkEditorBlankSlots.splice(idx,1); ensureArtworkEditorBlankSlot(); renderArtworkEditorList(); } } }] : [])
+          { label:'Choose picture…', action:async()=>{ const chosen=await chooseArtworkForItem(); if(chosen) await fillArtworkBlankSlot(slot.id, chosen, card.querySelector('[data-artwork-blank-type]')?.value || slot.type, card.querySelector('[data-artwork-blank-comment]')?.value || slot.description || ''); } },
+          { label:'Find online…', action:()=>searchEditorArtwork(true, { blank:true, blankId:Number(slot.id) }) },
+          { label:'Paste picture', action:async()=>{ try { const chosen=await window.beehive.pasteCover(); if(chosen) await fillArtworkBlankSlot(slot.id, chosen, card.querySelector('[data-artwork-blank-type]')?.value || slot.type, card.querySelector('[data-artwork-blank-comment]')?.value || slot.description || ''); else el.tagStatus.textContent='No image was available on the clipboard.'; } catch(err) { el.tagStatus.textContent=err.message || 'Could not paste artwork.'; } } },
+          ...(artworkEditorBlankSlots.length > 1 ? [{ label:'Remove slot', danger:true, action:()=>{ const idx=artworkEditorBlankIndex(slot.id); if(idx>=0){ artworkEditorBlankSlots.splice(idx,1); ensureArtworkEditorBlankSlot(); renderArtworkEditorList(); } } }] : [])
         ]);
       });
       card.querySelector('[data-artwork-blank-remove]')?.addEventListener('click', e => {
@@ -10870,7 +10935,8 @@
       : (bulkMode ? `Edit ${editingTracks.length} selected tracks` : 'Edit track');
     document.getElementById('tag-editor-scope').textContent = albumMode
       ? `Changes will be applied to all ${editingTracks.length} tracks in this album.`
-      : (bulkMode ? `Changes will be applied to all ${editingTracks.length} selected tracks.` : 'Changes apply to this track.');
+      : (bulkMode ? `Changes will be applied to all ${editingTracks.length} selected tracks.` : [t.title, t.artist].filter(Boolean).join(' · ') || 'Changes apply to this track.');
+    { const headArt = document.getElementById('tag-editor-head-art'); if (headArt) headArt.src = (t.cover ? coverSrc(t.cover) : '') || placeholderCover(); }
     setTagEditorTab(keepTab ? previousTab : 'tags');
     el.tagStatus.textContent='Loading tags from file…';
 
@@ -10981,7 +11047,7 @@
     prop('tag-prop-lastplayed', bulkMode ? 'Multiple' : (t.lastPlayedAt ? new Date(t.lastPlayedAt).toLocaleString() : 'Unknown')); prop('tag-prop-plays', bulkMode ? 'Multiple' : String(t.playCount||0));
     prop('tag-prop-rating', ratingLabel); prop('tag-prop-loved', lovedLabel);
     prop('tag-prop-track-count', propertyTracks.length); prop('tag-prop-album-duration', fmtTime(albumDuration)); prop('tag-prop-album-size', formatBytes(albumSize)); prop('tag-prop-formats', formats.join(', '));
-    const heading=document.getElementById('tag-properties-heading'); if(heading) heading.textContent=albumMode ? 'Album properties' : 'Track properties';
+    const heading=document.getElementById('tag-properties-heading'); if(heading) heading.textContent=albumMode ? 'Album files' : 'File';
     const summary=document.getElementById('tag-properties-summary'); if(summary) summary.textContent=albumMode ? `${propertyTracks.length} tracks · ${lovedLabel.toLowerCase()}` : (t.album ? `${t.album}${t.albumArtist ? ` · ${t.albumArtist}` : ''}` : '');
     set('tag-prop-location', albumMode ? locationDir : (t.path||''));
     const artworkSignatures = loaded.map(item => Array.isArray(item.data?.pictureSignatures) ? item.data.pictureSignatures : []);
@@ -10996,6 +11062,7 @@
       if(img) {
         const previewPicture = artworkEditorPrimary(firstData.pictures || firstCommon.picture || []);
         img.src = artworkEditorPictureSrc(previewPicture, t.cover);
+        if (id === 'tag-art-preview') { const headArt = document.getElementById('tag-editor-head-art'); if (headArt) headArt.src = img.src; }
         img.closest('.tag-cover-preview')?.classList.toggle('mismatching-covers', mismatchingArtwork);
       }
     });
@@ -12120,8 +12187,21 @@
       const isCurrentQueueTrack = !!currentQueue[currentIndex]?.path && String(currentQueue[currentIndex].path) === String(t.path || '');
       row.classList.toggle('playing', isCurrentQueueTrack);
       const featuredArtists = inlineTrackFeaturedArtists(t, album.artist);
-      row.innerHTML = `<span class="inline-track-num">${escapeHtml(t.track || i+1)}</span><span class="inline-track-playing" aria-hidden="true"></span><span class="inline-track-title">${escapeHtml(t.title || 'Untitled')}</span><span class="inline-track-artist"${featuredArtists ? ` title="${escapeHtml(featuredArtists)}"` : ''}>${escapeHtml(featuredArtists)}</span><span class="inline-track-dur">${fmtTime(t.duration)}</span>`;
+      row.innerHTML = `<span class="inline-track-num">${escapeHtml(t.track || i+1)}</span><span class="inline-track-playing" aria-hidden="true"></span><span class="inline-track-title">${escapeHtml(t.title || 'Untitled')}</span><span class="inline-track-artist"${featuredArtists ? ` title="${escapeHtml(featuredArtists)}"` : ''}>${escapeHtml(featuredArtists)}</span><span class="inline-track-love${t.loved ? ' loved' : ''}" role="button" tabindex="-1" aria-label="${t.loved ? 'Loved: click to unlove' : 'Love'}" title="${t.loved ? 'Loved' : 'Love'}">${(window.BeehiveIcons || {})[t.loved ? 'heartFilled' : 'heartOutline'] || '♥'}</span><span class="inline-track-dur">${fmtTime(t.duration)}</span>`;
       row.draggable = true;
+      // Loved songs show a heart at a glance, like on Hive Mobile; clicking it loves or unloves the song.
+      row.querySelector('.inline-track-love')?.addEventListener('click', async e => {
+        e.preventDefault(); e.stopPropagation();
+        const heart = e.currentTarget;
+        const next = !t.loved;
+        heart.classList.toggle('loved', next);
+        heart.innerHTML = (window.BeehiveIcons || {})[next ? 'heartFilled' : 'heartOutline'] || '♥';
+        heart.setAttribute('aria-label', next ? 'Loved: click to unlove' : 'Love');
+        heart.title = next ? 'Loved' : 'Love';
+        heart.classList.remove('pop'); void heart.offsetWidth; if (next) heart.classList.add('pop');
+        try { await setTrackLove(t, next); } catch (err) { console.warn('[Hive] love from album:', err); }
+      });
+      row.querySelector('.inline-track-love')?.addEventListener('dblclick', e => e.stopPropagation());
       row.classList.toggle('selected', selectedSongPaths.has(String(t.path || '')));
       row.addEventListener('click', e => {
         e.stopPropagation();
@@ -12158,6 +12238,7 @@
 
   function refreshInlineTrackPlayingState() {
     const playingPath = String(currentQueue[currentIndex]?.path || '');
+    document.querySelectorAll('.song-row[data-path]').forEach(row => row.classList.toggle('playing', !!playingPath && row.dataset.path === playingPath));
     document.querySelectorAll('.inline-track-row').forEach(row => {
       const active = !!playingPath && String(row.dataset.path || '') === playingPath;
       row.classList.toggle('playing', active);
@@ -12307,6 +12388,22 @@
     saveActiveTabState();
   }
 
+  // A round play button that springs up from the cover on hover (plays the
+  // album without opening it), and bouncing bars on the album that's playing.
+  function addCardPlayButton(card, a) {
+    const wrap = card.querySelector('.art-wrap');
+    if (!wrap || wrap.querySelector('.card-play')) return;
+    const b = document.createElement('button');
+    b.type = 'button'; b.className = 'card-play'; b.tabIndex = -1;
+    b.setAttribute('aria-label', `Play ${a?.title || 'album'}`);
+    b.innerHTML = (window.BeehiveIcons || {}).play || '';
+    const stop = e => e.stopPropagation();
+    ['pointerdown', 'mousedown', 'mouseup', 'dblclick'].forEach(t => b.addEventListener(t, stop));
+    b.addEventListener('click', e => { e.preventDefault(); e.stopPropagation(); playAlbum(a); });
+    const eq = document.createElement('span');
+    eq.className = 'card-eq'; eq.setAttribute('aria-hidden', 'true'); eq.innerHTML = '<i></i><i></i><i></i>';
+    wrap.append(b, eq);
+  }
   function makeAlbumCard(a, playingKey) {
     const card = document.createElement('div');
     card.className = 'album-card' + (a.key === playingKey ? ' now-playing' : '') + (String(a.key) === String(highlightedAlbumKey) ? ' album-highlighted' : '') + (selectedAlbumKeys.has(String(a.key)) ? ' album-selected' : '');
@@ -12315,6 +12412,7 @@
     card.setAttribute('role', 'button');
     card.setAttribute('aria-label', window.HiveKeyboardAccess?.albumLabel(a) || String(a.title || ''));
     card.innerHTML = `<div class="art-wrap">${lazyCoverImg(coverSrc(a.cover))}</div><div class="title">${escapeHtml(a.title)}</div><div class="artist">${escapeHtml(a.artist)}</div>`;
+    addCardPlayButton(card, a);
     attachCoverInteractions(card, a);
     card.addEventListener('contextmenu', e => { e.preventDefault(); showAlbumContextMenu(e, a); });
     return card;
@@ -12511,6 +12609,16 @@
     }
     return out;
   }
+  // "Columns" beside Browser in Tracks: the same menu as right-clicking the list header.
+  function syncSongColumnsButton() {
+    const colsBtn = el.albumsToolbar?.querySelector('.song-columns-btn');
+    if (!colsBtn) return;
+    if (!columnBrowserBoundToggles.has(colsBtn)) {
+      columnBrowserBoundToggles.add(colsBtn);
+      colsBtn.addEventListener('click', () => { const r = colsBtn.getBoundingClientRect(); showSongColumnMenu(r.left, r.bottom + 4); });
+    }
+    colsBtn.classList.toggle('hidden', viewMode !== 'songs');
+  }
   function renderColumnBrowser(sourceTracks) {
     const host = el.albumsToolbar?.querySelector('.column-browser');
     const toggle = el.albumsToolbar?.querySelector('.column-browser-toggle');
@@ -12520,6 +12628,7 @@
       columnBrowserBoundToggles.add(toggle);
       toggle.addEventListener('click', () => { setHbPref('browser.enabled', !hbPref('browser.enabled')); renderSongsTable(); });
     }
+    syncSongColumnsButton();
     if (toggle) { toggle.classList.toggle('hidden', viewMode !== 'songs' || !!specialView); toggle.classList.toggle('active', !!hbPref('browser.enabled')); toggle.setAttribute('aria-pressed', hbPref('browser.enabled') ? 'true' : 'false'); }
     if (!host) return;
     const active = columnBrowserActive();
@@ -12619,7 +12728,7 @@
       if (key === 'rating') return `<span class="s-rating">${ratingStars(t)}</span>`;
       return `<span class="s-${escapeHtml(key)} dim">${escapeHtml(value)}</span>`;
     }).join('');
-    return `<div class="song-row" draggable="true" tabindex="-1" aria-label="${escapeHtml([t.title, t.artist].filter(Boolean).join(' by '))}" data-idx="${i}" data-path="${escapeHtml(t.path || '')}">${cells}</div>`;
+    return `<div class="song-row${t?.path && String(t.path) === String(currentQueue[currentIndex]?.path || '') ? ' playing' : ''}" draggable="true" tabindex="-1" aria-label="${escapeHtml([t.title, t.artist].filter(Boolean).join(' by '))}" data-idx="${i}" data-path="${escapeHtml(t.path || '')}">${cells}</div>`;
   }
 
   function updateVirtualSongRows(force = false) {
@@ -12963,6 +13072,7 @@
   // view mode. Switching tabs used to reset it to the mode, so Favorites was titled "Albums".
   function currentViewTitle(mode) {
     if (artistSearchTerm) return artistSearchTerm;
+    if (!specialView && searchTerm) return `Results for “${String(el.search?.value || searchTerm).trim()}”`;
     const byMode = mode === 'artists' ? 'Artists' : mode === 'songs' ? 'Tracks' : 'Albums';
     try {
       if (specialView === 'playlist' && activePlaylistId) {
@@ -13165,6 +13275,8 @@
     if (mode === 'albums') renderAlbums();
     if (mode === 'songs') renderSongsTable();
     if (mode === 'artists') renderArtists(tracksForCurrentContext());
+    try { renderCollectionHero(artistSearchTerm ? 'artist' : null, artistSearchTerm, artistSearchTerm ? (library.tracks || []).filter(t => trackMatchesArtistSearch(t)) : []); } catch (err) { console.warn('[Hive] collection header:', err); }
+    try { markViewEnter(); } catch {}
     saveActiveTabState();
     updateActiveTabLabel();
   }
@@ -14994,8 +15106,19 @@
     window.beehive.pushYearlyWrapTheme({ accent: rgbStr(accent), accent2: rgbStr(glow) }).catch(() => {});
   }
 
+  // The playing cover, blurred far out, lights the window behind the glass.
+  function applyAmbientCover(src) {
+    const host = document.getElementById('ambient-bg');
+    if (!host) return;
+    let layer = document.getElementById('ambient-cover');
+    if (!layer) { layer = document.createElement('div'); layer.id = 'ambient-cover'; layer.setAttribute('aria-hidden', 'true'); host.insertBefore(layer, host.firstChild); }
+    const value = src ? `url("${String(src).replace(/["\\\n]/g, encodeURIComponent)}")` : 'none';
+    if (layer.style.backgroundImage !== value) layer.style.backgroundImage = value;
+  }
+
   function applyPaletteFromCover(src) {
     if (!src) return;
+    applyAmbientCover(src);
     lastPaletteSrc = src;
     const isLightTheme = document.documentElement.dataset.hiveTheme === 'light';
     const cacheKey = `${src}|${isLightTheme ? 'light' : 'dark'}`;
@@ -15199,23 +15322,77 @@
     badge.textContent = parts.join(' · ');
     badge.classList.toggle('hidden', !parts.length);
   }
-  el.btnPlay.addEventListener('contextmenu', e => {
-    e.preventDefault();
+  function playbackOptionItems({ withAutoDj = false } = {}) {
     const sleepActive = k => hivebeeSleep?.kind === k;
     const sleepItems = (action) => [15, 30, 45, 60, 90, 120].map(min => ({
       label: `${min} minutes`, icon: 'timer', active: sleepActive('minutes') && hivebeeSleep.minutes === min && hivebeeSleep.action === action,
       action: () => setHiveBeeSleep({ kind: 'minutes', minutes: min, endsAt: Date.now() + min * 60000, action })
     })).concat([{ label: 'At the end of the queue', icon: 'queueEnd', active: sleepActive('queue') && hivebeeSleep.action === action, action: () => setHiveBeeSleep({ kind: 'queue', action }) }]);
-    showContextMenu(e.clientX, e.clientY, [
+    return [
+      ...(withAutoDj ? [{ label: 'Auto-DJ', icon: 'radio', active: autoDjEnabled(), tooltip: 'Keep playing when the queue runs out by adding related tracks', action: () => { setAutoDjEnabled(!autoDjEnabled()); syncAutoDjSetting(); } }] : []),
       { label: 'Stop after current track', icon: 'stopAfter', active: hivebeeStopAfterCurrent, action: () => setHiveBeeStopAfterCurrent(!hivebeeStopAfterCurrent) },
       { label: 'Sleep timer: stop playback', icon: 'timer', submenu: sleepItems('stop') },
       { label: 'Sleep timer: close Hive', icon: 'timer', submenu: sleepItems('close') },
       ...(hivebeeSleep ? [{ label: 'Cancel sleep timer', icon: 'minus', action: () => setHiveBeeSleep(null) }] : []),
       { label: 'Equaliser…', icon: 'equaliser', action: () => openEqualiserModal() }
-    ]);
+    ];
+  }
+  function syncAutoDjSetting() { const box = document.getElementById('setting-auto-dj'); if (box) box.checked = autoDjEnabled(); }
+  document.getElementById('setting-auto-dj')?.addEventListener('change', e => setAutoDjEnabled(!!e.target.checked));
+  syncAutoDjSetting();
+  {
+    const queueMenuBtn = document.getElementById('queue-menu-btn');
+    const openQueueMenu = (e, anchor) => {
+      e.preventDefault(); e.stopPropagation();
+      const r = anchor?.getBoundingClientRect();
+      showContextMenu(r ? r.left : e.clientX, r ? r.bottom + 4 : e.clientY, playbackOptionItems({ withAutoDj: true }));
+    };
+    queueMenuBtn?.addEventListener('click', e => openQueueMenu(e, queueMenuBtn));
+    queueMenuBtn?.closest('.queue-header')?.addEventListener('contextmenu', e => openQueueMenu(e, null));
+    const lyricsMenuBtn = document.getElementById('lyrics-menu-btn');
+    lyricsMenuBtn?.addEventListener('click', e => {
+      e.preventDefault(); e.stopPropagation();
+      const t = currentQueue[currentIndex];
+      if (!t) return;
+      const r = lyricsMenuBtn.getBoundingClientRect();
+      showLyricsContextMenu({ clientX: r.left, clientY: r.bottom + 4, preventDefault() {}, stopPropagation() {} }, t);
+    });
+    const corners = document.getElementById('setting-np-cover-corners');
+    if (corners) { corners.value = npCoverSharp() ? 'sharp' : 'rounded'; corners.addEventListener('change', () => setNpCoverSharp(corners.value === 'sharp')); }
+    const healthSection = document.getElementById('health-checks-section');
+    const healthRunners = {
+      library: async () => { const r = await window.beehive.betaLibraryHealth(); return `${r.tracks.toLocaleString()} files checked: ${r.missingFiles.toLocaleString()} missing, ${r.unreadableFiles.toLocaleString()} unreadable, ${r.duplicateGroups.toLocaleString()} possible duplicate groups.`; },
+      database: async () => { const r = await window.beehive.betaDatabaseHealth(); return r.healthy ? `Healthy. ${Number(r.trackCount || 0).toLocaleString()} tracks, ${Object.values(r.jobCounts || {}).reduce((a, b) => a + Number(b || 0), 0).toLocaleString()} saved jobs.` : `Problem found: ${r.integrity}`; },
+      security: async () => { const r = await window.beehive.betaSecurityAudit(); const bad = r.findings.filter(x => x.status !== 'PASS'); return `${r.score}/100. ${r.findings.length - bad.length} passed${bad.length ? `; to look at: ${bad.slice(0, 3).map(x => x.title || x.check || x.name).filter(Boolean).join(', ')}` : '.'}`; },
+      environment: async () => { const r = await window.beehive.betaEnvironmentAudit(); const bad = r.findings.filter(x => x.status !== 'PASS'); return `${r.score}/100. ${r.findings.length - bad.length} passed${bad.length ? `; to look at: ${bad.slice(0, 3).map(x => x.title || x.check || x.name).filter(Boolean).join(', ')}` : '.'}`; }
+    };
+    healthSection?.addEventListener('click', async e => {
+      const btn = e.target.closest('[data-health-run]');
+      if (!btn) return;
+      const key = btn.dataset.healthRun;
+      const out = healthSection.querySelector(`[data-health-result="${key}"]`);
+      btn.disabled = true; if (out) out.textContent = 'Checking…';
+      try { if (out) out.textContent = await healthRunners[key](); }
+      catch (err) { if (out) out.textContent = `The check couldn't run: ${err?.message || err}`; }
+      finally { btn.disabled = false; }
+    });
+  }
+  el.btnPlay.addEventListener('contextmenu', e => {
+    e.preventDefault();
+    showContextMenu(e.clientX, e.clientY, playbackOptionItems());
   });
-  audio.addEventListener('play', () => { el.btnPlay.innerHTML = ic.pause || ''; });
-  audio.addEventListener('pause', () => { el.btnPlay.innerHTML = ic.play || ''; });
+  // A new cover settles in: a small scale and fade each time the picture changes.
+  {
+    const npImg = document.getElementById('np-cover');
+    let lastNpSrc = '';
+    npImg?.addEventListener('load', () => {
+      if (!npImg.currentSrc || npImg.currentSrc === lastNpSrc) return;
+      lastNpSrc = npImg.currentSrc;
+      npImg.classList.remove('np-cover-swap'); void npImg.offsetWidth; npImg.classList.add('np-cover-swap');
+    });
+  }
+  audio.addEventListener('play', () => { el.btnPlay.innerHTML = ic.pause || ''; document.body.classList.add('hive-is-playing'); });
+  audio.addEventListener('pause', () => { el.btnPlay.innerHTML = ic.play || ''; document.body.classList.remove('hive-is-playing'); });
 
   el.btnNext.addEventListener('click', () => {
     // MusicBee's "crossfade when skipping".
@@ -18105,7 +18282,7 @@
     const list = host.classList.contains('podcast-episodes') ? host : host.querySelector('.podcast-episodes');
     if (!list) return;
     list.innerHTML=feed.episodes.map((ep,i)=>`<div class="podcast-episode" data-episode-index="${i}"><img src="${escapeHtml(ep.cover||feed.image||'')}" alt="" loading="lazy"><div class="podcast-episode-main"><strong>${escapeHtml(ep.title)}</strong><span>${escapeHtml(formatPodcastDate(ep.pubDate))}${ep.duration?` · ${escapeHtml(fmtTime(ep.duration))}`:''}</span><p>${escapeHtml(String(ep.description||'').replace(/<[^>]+>/g,' ').replace(/\s+/g,' ').slice(0,220))}</p></div><div class="podcast-episode-actions"><button class="sidebar-add podcast-play">Play</button><button class="sidebar-add podcast-queue">Queue</button></div></div>`).join('') || '<div class="dim">No playable episodes were found in this feed.</div>';
-    list.querySelectorAll('.podcast-episode').forEach(row=>{ const ep=feed.episodes[Number(row.dataset.episodeIndex)]; const track=podcastTrackFromEpisode(ep,feed); row.querySelector('.podcast-play')?.addEventListener('click',()=>playQueue([track],0,false)); row.querySelector('.podcast-queue')?.addEventListener('click',()=>{addTracksToQueue([track]);}); });
+    list.querySelectorAll('.podcast-episode').forEach(row=>{ const ep=feed.episodes[Number(row.dataset.episodeIndex)]; const track=podcastTrackFromEpisode(ep,feed); row.querySelector('.podcast-play')?.addEventListener('click',()=>playQueue([track],0,false)); row.querySelector('.podcast-queue')?.addEventListener('click',()=>{addTracksToQueue([track]);}); row.addEventListener('dblclick',e=>{ if(!e.target.closest('button')) playQueue([track],0,false); }); });
   }
   async function loadPodcastFeed(feedUrl, card) {
     const list = card?.querySelector('.podcast-episodes');
@@ -18129,49 +18306,56 @@
       renderPodcastFavorites(document.querySelector('.podcast-favorites')); 
       document.querySelectorAll('.podcast-favorite-toggle').forEach(button => {
         button.classList.toggle('active', isPodcastFavorite(button.dataset.feedUrl));
-        button.textContent = isPodcastFavorite(button.dataset.feedUrl) ? '★ Favorited' : '☆ Favorite';
+        const on = isPodcastFavorite(button.dataset.feedUrl);
+        button.textContent = on ? '★ In your shows' : '☆ Add to your shows';
+        button.setAttribute('aria-pressed', String(on)); button.setAttribute('aria-label', on ? 'Remove from your shows' : 'Add to your shows');
       });
     } catch (err) { showAppNotice(err?.message || 'Could not update podcast favorite.'); }
   }
   function podcastFavoriteButton(show) {
     const active = isPodcastFavorite(show.feedUrl);
-    return `<button type="button" class="podcast-favorite-toggle${active ? ' active' : ''}" data-feed-url="${escapeHtml(show.feedUrl)}">${active ? '★ Favorited' : '☆ Favorite'}</button>`;
+    return `<button type="button" class="podcast-favorite-toggle${active ? ' active' : ''}" data-feed-url="${escapeHtml(show.feedUrl)}" aria-pressed="${active}" aria-label="${active ? 'Remove from your shows' : 'Add to your shows'}">${active ? '★ In your shows' : '☆ Add to your shows'}</button>`;
   }
   function renderPodcastFavorites(host) {
     if (!host) return;
-    if (!podcastFavorites.length) { host.innerHTML = '<div class="podcast-favorites-empty">Favorite a show to keep it here for quick access.</div>'; return; }
-    host.innerHTML = podcastFavorites.map((show,i) => `<article class="podcast-favorite-card" data-favorite-index="${i}"><img src="${escapeHtml(show.image || '')}" alt=""><div class="podcast-favorite-main"><strong>${escapeHtml(show.title || 'Podcast')}</strong><span>${escapeHtml(show.author || '')}</span></div><button type="button" class="podcast-favorite-open" title="Open show">Open</button><button type="button" class="podcast-favorite-remove" title="Remove from favorites">×</button></article>`).join('');
-    host.querySelectorAll('.podcast-favorite-open').forEach(button => button.addEventListener('click', async () => {
-      const card=button.closest('.podcast-favorite-card'); const show=podcastFavorites[Number(card?.dataset.favoriteIndex)]; if(!show)return;
-      const results=document.querySelector('.podcast-results');
-      if (!results) return;
-      // Opening a favorite used to wipe out the entire results panel,
-      // silently discarding any current search and any other shows the user
-      // already had expanded. Reuse an already-open card for this show if
-      // one exists, otherwise prepend a new one instead of replacing
-      // everything -- current search results/expanded shows are preserved.
-      let target = results.querySelector(`.podcast-card[data-podcast-feed="${CSS.escape(show.feedUrl)}"]`);
-      if (target) {
-        if (!target.classList.contains('open')) {
-          target.classList.add('open');
-          if (!podcastFeeds.has(show.feedUrl)) void loadPodcastFeed(show.feedUrl, target);
-        }
-      } else {
-        if (results.querySelector('.podcast-empty-state, .podcast-error-state')) results.innerHTML = '';
-        const wrapper = document.createElement('div');
-        wrapper.innerHTML = `<article class="podcast-card open" data-podcast-feed="${escapeHtml(show.feedUrl)}"><button class="podcast-card-head" type="button"><img src="${escapeHtml(show.image||'')}" alt=""><div><h3>${escapeHtml(show.title||'Podcast')}</h3><p>${escapeHtml(show.author||'')}${show.genre?` · ${escapeHtml(show.genre)}`:''}</p></div><span class="podcast-chevron">›</span></button><div class="podcast-episodes" data-podcast-feed="${escapeHtml(show.feedUrl)}"></div></article>`;
-        target = wrapper.firstElementChild;
-        results.prepend(target);
-        target.querySelector('.podcast-card-head').addEventListener('click', () => {
-          const open = target.classList.toggle('open');
-          if (open && !podcastFeeds.has(show.feedUrl)) void loadPodcastFeed(show.feedUrl, target);
-        });
-        const episodesHost = target.querySelector('.podcast-episodes');
-        try { const feed=await window.beehive.podcastFeed(show.feedUrl); renderPodcastFeed(feed,episodesHost); } catch(err){episodesHost.innerHTML=`<div class="dim">Could not load this feed: ${escapeHtml(err?.message||String(err))}</div>`;}
-      }
-      target.scrollIntoView({block:'start',behavior:'smooth'});
+    if (!podcastFavorites.length) { host.innerHTML = '<div class="podcast-favorites-empty">Shows you favourite appear here as a row of covers. Search for one below and tap its star.</div>'; return; }
+    // A row of square covers, like Apple Music's and Spotify's shelves: click a show to open it.
+    host.innerHTML = podcastFavorites.map((show,i) => `<div class="apple-card podcast-favorite-card podcast-favorite-open" role="button" tabindex="0" data-favorite-index="${i}" aria-label="Open ${escapeHtml(show.title || 'Podcast')}">${show.image ? `<img src="${escapeHtml(show.image)}" alt="" loading="lazy">` : '<span class="apple-card-blank"></span>'}<strong>${escapeHtml(show.title || 'Podcast')}</strong><small>${escapeHtml(show.author || 'Podcast')}</small><button type="button" class="podcast-favorite-remove" aria-label="Remove ${escapeHtml(show.title || 'this show')} from your shows">×</button></div>`).join('');
+    host.querySelectorAll('.podcast-favorite-card').forEach(card => card.addEventListener('keydown', e => { if (e.key === 'Enter' || e.key === ' ') { e.preventDefault(); card.click(); } }));
+    host.querySelectorAll('.podcast-favorite-open').forEach(button => button.addEventListener('click', () => {
+      const card=button.closest('.podcast-favorite-card'); const show=podcastFavorites[Number(card?.dataset.favoriteIndex)];
+      if(show) openPodcastShow(show, button.closest('.podcasts-page'));
     }));
-    host.querySelectorAll('.podcast-favorite-remove').forEach(button => button.addEventListener('click', () => { const card=button.closest('.podcast-favorite-card'); const show=podcastFavorites[Number(card?.dataset.favoriteIndex)]; if(show) togglePodcastFavorite(show); }));
+    host.querySelectorAll('.podcast-favorite-remove').forEach(button => button.addEventListener('click', e => { e.stopPropagation(); const card=button.closest('.podcast-favorite-card'); const show=podcastFavorites[Number(card?.dataset.favoriteIndex)]; if(show) togglePodcastFavorite(show); }));
+  }
+  // A show opens as its own page, like an album: the cover and its name at the top, then the episodes.
+  function openPodcastShow(show, page) {
+    if (!show?.feedUrl || !page) return;
+    const view = page.querySelector('.podcast-show');
+    if (!view) return;
+    page.classList.add('show-open');
+    const icons = window.BeehiveIcons || {};
+    view.innerHTML = `<button type="button" class="podcast-back">${icons.chevronLeft || '‹'}<span>Podcasts</span></button>
+      <div class="collection-hero podcast-hero"><div class="collection-hero-art">${show.image ? `<img src="${escapeHtml(show.image)}" alt="" draggable="false">` : '<div class="collection-hero-empty">♪</div>'}</div>
+        <div class="collection-hero-copy"><div class="collection-hero-kind">Podcast</div><h2 class="collection-hero-title">${escapeHtml(show.title || 'Podcast')}</h2>
+        <div class="collection-hero-meta">${escapeHtml([show.author, show.genre].filter(Boolean).join(', '))}</div>
+        <div class="collection-hero-actions"><button type="button" class="collection-hero-play" disabled>${icons.play || ''}<span>Play latest</span></button>${podcastFavoriteButton(show)}</div></div></div>
+      <div class="podcast-episodes podcast-show-episodes" data-podcast-feed="${escapeHtml(show.feedUrl)}"><div class="dim">Loading episodes…</div></div>`;
+    view.querySelector('.podcast-back').addEventListener('click', () => { page.classList.remove('show-open'); view.innerHTML = ''; page.closest('#content-tools, .content-tools')?.scrollTo?.({ top: 0 }); });
+    bindPodcastFavoriteButtons(view);
+    const list = view.querySelector('.podcast-show-episodes');
+    const play = view.querySelector('.collection-hero-play');
+    const shown = feed => {
+      renderPodcastFeed(feed, list);
+      const first = feed.episodes?.[0];
+      play.disabled = !first;
+      play.onclick = () => { if (first) playQueue([podcastTrackFromEpisode(first, feed)], 0, false); };
+      const n = feed.episodes?.length || 0;
+      view.querySelector('.collection-hero-meta').textContent = [show.author, show.genre, n ? `${n.toLocaleString()} ${n === 1 ? 'episode' : 'episodes'}` : ''].filter(Boolean).join(', ');
+    };
+    if (podcastFeeds.has(show.feedUrl)) shown(podcastFeeds.get(show.feedUrl));
+    else window.beehive.podcastFeed(show.feedUrl).then(shown).catch(err => { list.innerHTML = `<div class="dim">Couldn't load this show's episodes: ${escapeHtml(err?.message || String(err))}</div>`; });
+    (page.closest('#content-tools') || page).scrollTo?.({ top: 0 });
   }
   function bindPodcastFavoriteButtons(root) {
     root?.querySelectorAll('.podcast-favorite-toggle').forEach(button => button.addEventListener('click', e => {
@@ -18190,35 +18374,19 @@
     tab.dom.podcastsInitialized = true;
     tab.dom.podcastResults = [];
     podcastResults = [];
-    contentTools.innerHTML=`<section class="podcasts-page">
-      <header class="podcasts-hero">
-        <div class="podcasts-hero-copy">
-          <h1>Podcasts</h1>
-          <p>Find shows, open their latest episodes, and keep your favorite channels one click away.</p>
-        </div>
-        <form class="podcast-search-form" role="search">
-          <div class="podcast-search-shell">
-            <span class="podcast-search-icon" aria-hidden="true">⌕</span>
-            <input class="podcast-search-input" placeholder="Search shows, hosts, or topics…" autocomplete="off" spellcheck="false" aria-label="Search podcasts">
-            <button class="podcast-search-clear" type="button" aria-label="Clear podcast search" title="Clear search">×</button>
-          </div>
-          <button class="podcast-search-submit" type="submit">Search</button>
-        </form>
-      </header>
+    contentTools.innerHTML=`<section class="podcasts-page streaming-podcasts">
+      <header class="streaming-page-head"><div><h1>Podcasts</h1>
+        <p>Find shows and play their latest episodes. Your favourite shows sit right at the top.</p></div></header>
+      <form class="podcast-search-form radio-search streaming-search" role="search"><span class="streaming-search-icon" aria-hidden="true">${theaterIcon('search')}</span><input type="search" class="podcast-search-input streaming-search-input" placeholder="Search shows, hosts or topics" autocomplete="off" spellcheck="false" aria-label="Search podcasts"><button class="podcast-search-clear" type="button" aria-label="Clear podcast search">×</button><button class="podcast-search-submit streaming-search-btn" type="submit">Search</button></form>
       <section class="podcast-home-favorites">
-        <div class="podcast-home-head">
-          <div><h2>Favorite shows</h2></div>
-          <span class="podcast-section-note">Saved channels stay here for fast access.</span>
-        </div>
-        <div class="podcast-favorites"></div>
+        <h4 class="radio-heading">Your shows</h4>
+        <div class="podcast-favorites apple-shelf"></div>
       </section>
       <section class="podcast-discovery">
-        <div class="podcast-results-head">
-          <div><h2>Search results</h2></div>
-          <span class="podcast-result-count" aria-live="polite"></span>
-        </div>
-        <div class="podcast-results"><div class="podcast-empty-state"><strong>Search for a podcast</strong><span>Try a show name, creator, subject, or broad topic.</span></div></div>
+        <div class="podcast-results-head"><h4 class="radio-heading">Search results</h4><span class="podcast-result-count" aria-live="polite"></span></div>
+        <div class="podcast-results"><div class="podcast-empty-state"><strong>Search for a podcast</strong><span>Try a show name, a host, or a topic.</span></div></div>
       </section>
+      <section class="podcast-show" aria-live="polite"></section>
     </section>`;
     const input=contentTools.querySelector('.podcast-search-input'), clear=contentTools.querySelector('.podcast-search-clear'), results=contentTools.querySelector('.podcast-results'), count=contentTools.querySelector('.podcast-result-count'), favoritesHost=contentTools.querySelector('.podcast-favorites');
     void loadPodcastFavorites().then(()=>renderPodcastFavorites(favoritesHost));
@@ -18240,18 +18408,12 @@
         if(generation !== searchGeneration) return;
         podcastResults=data.results||[];
         setCount(`${podcastResults.length} ${podcastResults.length === 1 ? 'show' : 'shows'}`);
-        results.innerHTML=podcastResults.map((r,i)=>`<article class="podcast-card" data-result-index="${i}">
-          <button class="podcast-card-head" type="button">
-            <img src="${escapeHtml(r.image||'')}" alt="" loading="lazy" decoding="async">
-            <div class="podcast-card-copy"><h3>${escapeHtml(r.title)}</h3><p>${escapeHtml(r.author||'Independent creator')}${r.genre?` <span>· ${escapeHtml(r.genre)}</span>`:''}</p></div>
-            <span class="podcast-chevron" aria-hidden="true">›</span>
-          </button>
-          <div class="podcast-card-actions">${podcastFavoriteButton(r)}</div>
-          <div class="podcast-episodes" data-podcast-feed="${escapeHtml(r.feedUrl)}"></div>
-        </article>`).join('') || '<div class="podcast-empty-state"><strong>No shows found</strong><span>Try a shorter title, a creator name, or a broader topic.</span></div>';
-        results.querySelectorAll('.podcast-card').forEach((card,i)=>{
-          const r=podcastResults[i]; const head=card.querySelector('.podcast-card-head');
-          head.addEventListener('click',()=>{ const open=card.classList.toggle('open'); if(open && !podcastFeeds.has(r.feedUrl)) void loadPodcastFeed(r.feedUrl,card); });
+        // Square covers, as albums are everywhere else in Hive; a show opens as its own page.
+        results.innerHTML=podcastResults.length ? `<div class="apple-grid podcast-grid">${podcastResults.map((r,i)=>`<div class="apple-card podcast-result-card" role="button" tabindex="0" data-result-index="${i}" aria-label="Open ${escapeHtml(r.title)}">${r.image ? `<img src="${escapeHtml(r.image)}" alt="" loading="lazy" decoding="async">` : '<span class="apple-card-blank"></span>'}<strong>${escapeHtml(r.title)}</strong><small>${escapeHtml(r.author||'Podcast')}</small>${podcastFavoriteButton(r)}</div>`).join('')}</div>` : '<div class="podcast-empty-state"><strong>No shows found</strong><span>Try a shorter title, a host\'s name, or a broader topic.</span></div>';
+        results.querySelectorAll('.podcast-result-card').forEach(card=>{
+          const r=podcastResults[Number(card.dataset.resultIndex)];
+          card.addEventListener('click',()=>openPodcastShow(r, card.closest('.podcasts-page')));
+          card.addEventListener('keydown',e=>{ if(e.key==='Enter'||e.key===' '){ e.preventDefault(); card.click(); } });
         });
         bindPodcastFavoriteButtons(results);
       } catch(err) {
@@ -19009,9 +19171,9 @@
       el.tagStatus.textContent='Front artwork marked for removal. Save tags to apply it.';
     };
     showContextMenu(e.clientX, e.clientY, [
-      {label:'Choose Picture…', action:async()=>{ try { const type = document.getElementById('tag-picture-type'); if (type) type.value = 'Cover (Front)'; const chosen = await window.beehive.chooseCover(); await setPendingArtwork(chosen); } catch(err) { el.tagStatus.textContent = err.message || 'Could not choose artwork.'; } }},
-      {label:'Search Internet for Cover…', action:()=>searchEditorArtwork()},
-      {label:'Paste Picture', action:async()=>{ try { const type = document.getElementById('tag-picture-type'); if (type) type.value = 'Cover (Front)'; const chosen = await window.beehive.pasteCover(); if (chosen) await setPendingArtwork(chosen); else el.tagStatus.textContent='No image was available on the clipboard.'; } catch(err) { el.tagStatus.textContent = err.message || 'Could not paste artwork.'; } }},
+      {label:'Choose picture…', action:async()=>{ try { const type = document.getElementById('tag-picture-type'); if (type) type.value = 'Cover (Front)'; const chosen = await window.beehive.chooseCover(); await setPendingArtwork(chosen); } catch(err) { el.tagStatus.textContent = err.message || 'Could not choose artwork.'; } }},
+      {label:'Find online…', action:()=>searchEditorArtwork()},
+      {label:'Paste picture', action:async()=>{ try { const type = document.getElementById('tag-picture-type'); if (type) type.value = 'Cover (Front)'; const chosen = await window.beehive.pasteCover(); if (chosen) await setPendingArtwork(chosen); else el.tagStatus.textContent='No image was available on the clipboard.'; } catch(err) { el.tagStatus.textContent = err.message || 'Could not paste artwork.'; } }},
       {label:'Remove Picture', danger:true, action:removePicture}
     ]);
   });
@@ -21042,6 +21204,15 @@
     const hotkeys = makePanel('hotkeys', 'Hotkeys', 'layout');
     hotkeys.append(section('Keyboard shortcuts', 'Click a shortcut and press the new keys. They work while Hive is focused, but not while you type in a text box.', '<div id="hotkey-settings"></div><div class="settings-row settings-row-actions-only"><span class="settings-row-control"><button type="button" class="sidebar-add" id="hotkeys-reset-btn">Restore defaults</button></span></div>'));
     hotkeys.querySelector('#hotkeys-reset-btn').addEventListener('click', () => { setHbPref('hotkeys', null); renderHotkeySettings(); });
+
+    // Group the rail like a desktop preferences window. The tab buttons keep
+    // their order inside each group; group labels are presentational.
+    const organiseLabel = tabs.querySelector('[data-settings-tab="organise"]'); if (organiseLabel) organiseLabel.textContent = 'Files';
+    [['Listening', ['general', 'hotkeys']], ['Library', ['library', 'tags', 'organise']], ['Look and layout', ['appearance', 'layout', 'navigation']], ['Hive', ['connections', 'plugins', 'logs']]].forEach(([label, keys]) => {
+      const head = document.createElement('div'); head.className = 'settings-tab-group'; head.setAttribute('role', 'presentation'); head.textContent = label;
+      tabs.appendChild(head);
+      keys.forEach(key => { const b = tabs.querySelector(`[data-settings-tab="${key}"]`); if (b) tabs.appendChild(b); });
+    });
 
     // Search across every category.
     const search = document.createElement('input');

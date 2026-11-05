@@ -27,7 +27,10 @@ const safe = s => String(s || '').replace(/[\\/:*?"<>|\u0000-\u001f]/g, '_').tri
 const safeFile = name => { const ext = path.extname(String(name)).slice(0, 8); return safe(path.basename(String(name), path.extname(String(name))).slice(0, 120)) + ext.replace(/[^.\w]/g, ''); };
 const finished = j => ['done', 'partial', 'failed'].includes(j.state);
 
-function createSoulseekDownloads({ dataDir, settings, musicFolder, createClient, onChange = () => {}, onSongs = async () => {}, log = () => {}, wait = ms => new Promise(r => setTimeout(r, ms)) }) {
+// fallback(track, job): when Soulseek has no copy of a song, another source
+// (YouTube, tagged from what the streaming service said) saves it and returns
+// the file's path, or throws.
+function createSoulseekDownloads({ dataDir, settings, musicFolder, createClient, fallback = null, onChange = () => {}, onSongs = async () => {}, log = () => {}, wait = ms => new Promise(r => setTimeout(r, ms)) }) {
   const file = path.join(dataDir, 'soulseek-downloads.json');
   let jobs = [];
   try { jobs = JSON.parse(fs.readFileSync(file, 'utf8')); if (!Array.isArray(jobs)) jobs = []; } catch {}
@@ -49,7 +52,8 @@ function createSoulseekDownloads({ dataDir, settings, musicFolder, createClient,
   const job = id => jobs.find(j => j.id === id);
   const list = () => jobs.map(j => ({ ...j, songs: j.songs.map(s => ({ ...s })) }));
 
-  // A request: { id, kind: 'album'|'track', artist, album, label, tracks: [{ title, durationMs, loved, streamPath }] }.
+  // A request: { id, kind: 'album'|'track', artist, album, label, tracks: [{ title, durationMs, loved, streamPath, meta }] }
+  // (meta: what the streaming service said about the song, for the fallback's tags).
   function add(request) {
     const r = { ...request, tracks: (request.tracks || []).filter(t => t && t.title) };
     if (!r.tracks.length) throw new Error('Nothing to download');
@@ -57,7 +61,7 @@ function createSoulseekDownloads({ dataDir, settings, musicFolder, createClient,
     const old = job(r.id);
     if (old && !finished(old)) return old;
     jobs = [{ id: r.id, kind: r.kind === 'track' ? 'track' : 'album', artist: r.artist || '', album: r.album || '', label: r.label || r.album || r.tracks[0].title,
-      tracks: r.tracks.map(t => ({ title: String(t.title), durationMs: Number(t.durationMs) || 0, loved: !!t.loved, streamPath: t.streamPath || '' })),
+      tracks: r.tracks.map(t => ({ title: String(t.title), durationMs: Number(t.durationMs) || 0, loved: !!t.loved, streamPath: t.streamPath || '', ...(t.meta && typeof t.meta === 'object' ? { meta: t.meta } : {}) })),
       songs: r.tracks.map(t => ({ title: String(t.title), state: 'waiting', percent: 0, from: '', path: '' })),
       state: 'queued', message: 'Waiting', at: Date.now() }, ...jobs.filter(j => j.id !== r.id)];
     change();
@@ -92,10 +96,13 @@ function createSoulseekDownloads({ dataDir, settings, musicFolder, createClient,
     let s, folder;
     try { s = await settings(); folder = await musicFolder(); } catch (err) { finish(j, err.message || String(err), 'failed'); return; }
     if (!s.username || !s.password) { finish(j, 'Sign in to Soulseek in Settings › Connections', 'failed'); return; }
+    let viaFallback = 0;
+    const got = [];
     const client = createClient({ username: s.username, password: s.password, log });
     current = { id: j.id, client };
     let done = j.songs.filter(x => x.state === 'done').length;
-    const got = [];
+    // Songs Soulseek couldn't give: the fallback tries them once Soulseek is done.
+    let leftover = [];
     try {
       j.state = 'searching'; j.message = 'Looking on Soulseek'; change();
       await client.login();
@@ -120,7 +127,7 @@ function createSoulseekDownloads({ dataDir, settings, musicFolder, createClient,
         if (picks.length || j.cancelled) break;
       }
       if (j.cancelled) throw new Error('Cancelled');
-      if (!picks.length) { finish(j, `Couldn't find ${j.label} on Soulseek`, 'failed'); return; }
+      if (!picks.length) throw Object.assign(new Error(`Couldn't find ${j.label} on Soulseek`), { notFound: true });
 
       const needed = new Set(wanted.map((_, i) => i).filter(i => j.songs[i].state !== 'done'));
       j.state = 'downloading'; j.message = `From ${picks[0].user} · ${formatName(picks[0].format)}`; change();
@@ -137,10 +144,18 @@ function createSoulseekDownloads({ dataDir, settings, musicFolder, createClient,
           fs.mkdirSync(dir, { recursive: true });
           const target = uniqueTarget(path.join(dir, safeFile(f.name)));
           const part = `${target}.part`;
+          const attempt = () => client.download(pick.user, f.path, part, done === 0 ? 120000 : 300000, (bytes, size) => {
+            if (size > 0) { song.percent = Math.floor(bytes * 100 / size); change(false); }
+          }, f.size);
           try {
-            await client.download(pick.user, f.path, part, done === 0 ? 120000 : 300000, (bytes, size) => {
-              if (size > 0) { song.percent = Math.floor(bytes * 100 / size); change(false); }
-            }, f.size);
+            try { await attempt(); } catch (err) {
+              // The peer stopped mid-file: ask once more and carry on from the bytes already here.
+              let have = 0;
+              try { have = fs.statSync(part).size; } catch {}
+              if (client.ended || j.cancelled || !(have > 0 && have < f.size)) throw err;
+              log(`${f.name} from ${pick.user} stopped at ${have} of ${f.size} bytes; resuming`);
+              await attempt();
+            }
             fs.renameSync(part, target);
           } catch (err) {
             try { fs.rmSync(part, { force: true }); } catch {}
@@ -158,18 +173,44 @@ function createSoulseekDownloads({ dataDir, settings, musicFolder, createClient,
           change();
         }
       }
-      for (const i of needed) Object.assign(j.songs[i], { state: 'missing', percent: 0 });
-      const missing = needed.size;
-      finish(j, missing === 0 ? `Downloaded ${j.label}` : done === 0 ? `Couldn't download ${j.label}: nobody sharing it answered` : `Downloaded ${done} of ${j.songs.length} songs of ${j.label}`,
-        missing === 0 ? 'done' : done === 0 ? 'failed' : 'partial');
+      leftover = [...needed];
+      if (leftover.length) j.failure = done === 0 ? `Couldn't download ${j.label}: nobody sharing it answered` : '';
     } catch (err) {
-      log(`Stopped: ${err.message}`);
-      for (const x of j.songs) if (x.state !== 'done') Object.assign(x, { state: 'missing', percent: 0 });
-      finish(j, err.message === 'Cancelled' ? 'Cancelled' : `Soulseek: ${err.message || 'download failed'}`, done > 0 ? 'partial' : 'failed');
+      log(err.notFound ? err.message : `Stopped: ${err.message}`);
+      leftover = j.songs.map((x, i) => i).filter(i => j.songs[i].state !== 'done');
+      j.failure = err.message === 'Cancelled' ? 'Cancelled' : err.notFound ? err.message : `Soulseek: ${err.message || 'download failed'}`;
     } finally {
       client.close();
       current = null;
     }
+    if (leftover.length && fallback && !j.cancelled) {
+      j.state = 'downloading'; j.message = 'Not on Soulseek, getting it from YouTube'; change();
+      for (const i of leftover) {
+        if (j.cancelled) break;
+        const song = j.songs[i];
+        Object.assign(song, { state: 'downloading', percent: 0, from: 'YouTube' });
+        change();
+        try {
+          const file = await fallback({ ...j.tracks[i], artist: j.tracks[i].meta?.artist || j.artist, album: j.tracks[i].meta?.album ?? j.album }, j);
+          log(`Got ${song.title} from YouTube: ${file}`);
+          Object.assign(song, { state: 'done', percent: 100, path: file });
+          got.push({ index: i, path: file, ...j.tracks[i] });
+          done++; viaFallback++;
+        } catch (err) {
+          log(`${song.title} from YouTube failed: ${err.message}`);
+          Object.assign(song, { from: '' });
+        }
+        change();
+      }
+    }
+    for (const x of j.songs) if (x.state !== 'done') Object.assign(x, { state: 'missing', percent: 0 });
+    const missing = j.songs.filter(x => x.state !== 'done').length;
+    const from = viaFallback ? (viaFallback === done ? ' from YouTube' : ` (${viaFallback} from YouTube)`) : '';
+    if (j.cancelled && missing) finish(j, 'Cancelled', done > 0 ? 'partial' : 'failed');
+    else if (missing === 0) finish(j, `Downloaded ${j.label}${from}`, 'done');
+    else if (done === 0) finish(j, j.failure || `Couldn't download ${j.label}`, 'failed');
+    else finish(j, `Downloaded ${done} of ${j.songs.length} songs of ${j.label}${from}`, 'partial');
+    delete j.failure;
     if (got.length) { try { await onSongs(got, j); } catch (err) { log(`Adding to the library failed: ${err.message}`); } }
   }
 

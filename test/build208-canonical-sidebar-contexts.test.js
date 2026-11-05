@@ -52,24 +52,18 @@ test('Build 208 podcast renderer is scoped to the active canonical tab and has p
   assert.doesNotMatch(block, /el\.contentTools\.dataset\.podcastsInitialized/);
 });
 
-test('Yearly Wrap sidebar destination opens the real slideshow window, not the legacy inline summary', () => {
-  // Yearly Wrap is a dedicated BrowserWindow slideshow (yearly-wrap.html) with
-  // real per-play listening time, top track/artist/album slides, and
-  // share/save-image tools -- opened via window.beehive.openYearlyWrap().
-  // renderYearlyWrap() is legacy Build 37 inline-summary code that predates
-  // the slideshow; the sidebar handler was regressed at some point to route
-  // through it instead, silently losing the real feature. It must stay wired
-  // to openYearlyWrap().
+test('Yearly Wrap sidebar destination opens the slideshow inside the main window', () => {
+  // The user asked for Yearly Wrap in the app instead of a separate window
+  // (2026-11). The sidebar destination renders the slideshow view
+  // (app/renderer/yearly-wrap-view.js) into the tab's own content area; the
+  // standalone yearly-wrap.html window is no longer opened from the sidebar.
   const start = renderer.indexOf("if (nav === 'yearly-wrap')");
   const end = renderer.indexOf('\n    }', start);
   const block = renderer.slice(start, end);
-  // The window is now themed to the currently playing track's accent at open
-  // time (see pushYearlyWrapTheme in colorExtract/renderer.js), so the call
-  // grew a second argument; the destination itself must still stay wired to
-  // the real window rather than the legacy inline summary.
-  assert.match(block, /window\.beehive\.openYearlyWrap\(new Date\(\)\.getFullYear\(\), ?theme\)/);
-  assert.doesNotMatch(block, /await renderYearlyWrap\(/);
-  assert.doesNotMatch(block, /specialView = 'yearly-wrap'/);
+  assert.match(block, /await renderYearlyWrap\(tab\)/);
+  assert.doesNotMatch(block, /openYearlyWrap\(/);
+  const fn = renderer.slice(renderer.indexOf('async function renderYearlyWrap'), renderer.indexOf('async function renderYearlyWrap') + 3000);
+  assert.match(fn, /window\.HiveYearlyWrapView\.mount\(contentTools/);
 });
 
 // Clicking Music kept its sidebar row highlighted, but Playlists, Favorites,
@@ -120,4 +114,22 @@ test('Build 208 top-level context renderers use their own tab DOM instead of sta
     const block = renderer.slice(start, end > start ? end : renderer.length);
     assert.match(block, /getActiveTab\(\)/, `${name} should resolve its active context`);
   }
+});
+
+test('Yearly Wrap month detail counts that month only, top first', () => {
+  const { monthDetail } = require('../app/renderer/yearly-wrap-view.js');
+  const at = (m, d) => new Date(2026, m, d, 12).getTime();
+  const rows = [
+    { playedAt: at(1, 3), title: 'A', artist: 'X', album: 'One', duration: 200 },
+    { playedAt: at(1, 4), title: 'A', artist: 'X', album: 'One', duration: 200 },
+    { playedAt: at(1, 5), title: 'B', artist: 'Y', album: 'Two', duration: 100 },
+    { playedAt: at(2, 5), title: 'C', artist: 'Z', album: 'Three', duration: 300 },
+  ];
+  const feb = monthDetail(rows, 2026, 1);
+  assert.equal(feb.plays, 3);
+  assert.equal(feb.seconds, 500);
+  assert.equal(feb.tracks[0].title, 'A');
+  assert.equal(feb.tracks[0].plays, 2);
+  assert.deepEqual(feb.artists.map(a => a.name), ['X', 'Y']);
+  assert.equal(monthDetail(rows, 2026, 0).plays, 0);
 });

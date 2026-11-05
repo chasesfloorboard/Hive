@@ -19,9 +19,9 @@ test('blank artwork slots expose the same choose/search/paste/remove interaction
   assert.match(block, /data-artwork-blank-upload/);
   assert.match(renderer, /pasteCover\(\)/);
   assert.match(block, /showContextMenu\(e\.clientX, e\.clientY/);
-  assert.match(block, /Choose Picture…/);
-  assert.match(block, /Paste Picture/);
-  assert.match(block, /Search Internet for Cover…/);
+  assert.match(block, /Choose picture…/);
+  assert.match(block, /Paste picture/);
+  assert.match(block, /Find online…/);
 });
 
 test('new blank artwork defaults to front when no front cover exists and back when a front exists', () => {

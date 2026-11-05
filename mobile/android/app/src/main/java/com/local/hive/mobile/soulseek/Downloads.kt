@@ -21,6 +21,8 @@ import java.io.File
     val state: String = "queued",
     val message: String = "",
     val at: Long = System.currentTimeMillis(),
+    /** Stopped from the list: the worker leaves it be. */
+    val cancelled: Boolean = false,
 ) {
     val finished get() = state == "done" || state == "partial" || state == "failed"
     val doneCount get() = songs.count { it.state == "done" }
@@ -41,7 +43,17 @@ class Downloads(context: Context) {
 
     fun add(job: DownloadJob) = change { listOf(job) + it.filter { j -> j.id != job.id } }
 
-    fun update(id: String, block: (DownloadJob) -> DownloadJob) = change { list -> list.map { if (it.id == id) block(it) else it } }
+    // A cancelled download takes no more updates (the worker may still be winding down).
+    fun update(id: String, block: (DownloadJob) -> DownloadJob) = change { list -> list.map { if (it.id == id && !it.cancelled) block(it) else it } }
+
+    /** Stops a download that isn't finished: the songs already in stay, the rest are left. */
+    fun cancel(id: String) = change { list -> list.map { j ->
+        if (j.id != id || j.finished) j
+        else j.copy(state = if (j.doneCount > 0) "partial" else "failed", message = "Cancelled", cancelled = true,
+            songs = j.songs.map { if (it.state == "done") it else it.copy(state = "missing", percent = 0) })
+    } }
+
+    fun isCancelled(id: String) = _jobs.value.firstOrNull { it.id == id }?.cancelled == true
 
     fun song(id: String, index: Int, block: (DownloadSong) -> DownloadSong) =
         update(id) { j -> j.copy(songs = j.songs.mapIndexed { i, s -> if (i == index) block(s) else s }) }

@@ -946,6 +946,18 @@ typedef struct {
   guint tick;
 } XfadeCompanion;
 
+/* Tag a PulseAudio/PipeWire stream as Hive's music, so WirePlumber's role
+ * policies (ducking, per-role routing) and desktop mixers recognise it. */
+static void hive_tag_pulse_stream(GstElement *s) {
+  if (!s) return;
+  GstStructure *props = gst_structure_new("props",
+    "media.role", G_TYPE_STRING, "music",
+    "application.name", G_TYPE_STRING, "Hive",
+    "application.icon-name", G_TYPE_STRING, "hive", NULL);
+  g_object_set(s, "stream-properties", props, NULL);
+  gst_structure_free(props);
+}
+
 static void xfade_companion_free(XfadeCompanion *x) {
   if (!x) return;
   if (x->tick) g_source_remove(x->tick);
@@ -994,6 +1006,7 @@ static void start_xfade_companion(const gchar *b64, gdouble position, gdouble ms
   GstElement *bin = gst_bin_new(NULL);
   x->volume = gst_element_factory_make("volume", NULL);
   GstElement *out = !g_strcmp0(output_kind, "null") ? gst_element_factory_make("fakesink", NULL) : gst_element_factory_make("pulsesink", NULL);
+  if (out && g_strcmp0(output_kind, "null")) hive_tag_pulse_stream(out);
   if (!x->pipe || !bin || !x->volume || !out) {
     if (bin) gst_object_unref(bin);
     g_free(uri); xfade_companion_free(x); return;
@@ -1341,6 +1354,7 @@ int main(int argc, char **argv) {
     }
   }
   if (sink_is_pulse) g_object_set(sink, "volume", 1.0, "mute", FALSE, NULL);
+  if (sink_is_pulse) hive_tag_pulse_stream(sink);
 
   /* playbin inserts its own internal queue (default ~1 second) between the
    * audio-filter chain and the audio-sink slot. A gain change applied

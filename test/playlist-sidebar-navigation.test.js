@@ -385,9 +385,12 @@ test('opening a favorited podcast show does not destroy the current search resul
   const end = renderer.indexOf("host.querySelectorAll('.podcast-favorite-remove')", start);
   assert.ok(start >= 0 && end > start, 'expected to find the Podcast Favorites open-button handler');
   const block = renderer.slice(start, end);
-  assert.doesNotMatch(block, /results\.innerHTML\s*=\s*`<article/);
-  assert.match(block, /results\.querySelector\(`\.podcast-card\[data-podcast-feed=/);
-  assert.match(block, /results\.prepend\(target\)/);
+  assert.doesNotMatch(block, /results\.innerHTML\s*=/);
+  // A show now opens as its own page over the search, which is left as it was (Back returns to it).
+  assert.match(block, /openPodcastShow\(show,/);
+  const show = renderer.slice(renderer.indexOf('function openPodcastShow('), renderer.indexOf('function bindPodcastFavoriteButtons('));
+  assert.doesNotMatch(show, /podcast-results/);
+  assert.match(show, /classList\.remove\('show-open'\)/);
 });
 
 // A Love write finished on the next launch (or any rating/play-count write)

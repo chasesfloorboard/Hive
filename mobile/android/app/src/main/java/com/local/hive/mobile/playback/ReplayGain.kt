@@ -31,7 +31,7 @@ object ReplayGain {
                 }
             }
         }
-        return out.filterKeys { it.startsWith("REPLAYGAIN_") }
+        return out.filterKeys { it.startsWith("REPLAYGAIN_") || it.startsWith("R128_") }
     }
 
     /** The linear gain for the song under [mode], or 1 for none. */
@@ -40,7 +40,10 @@ object ReplayGain {
         fun db(key: String) = tags[key]?.replace(Regex("(?i)db"), "")?.trim()?.toFloatOrNull()
         fun peak(key: String) = tags[key]?.trim()?.toFloatOrNull()?.takeIf { it > 0 }
         val album = mode == "album"
-        val gainDb = (if (album) db("REPLAYGAIN_ALBUM_GAIN") else null) ?: db("REPLAYGAIN_TRACK_GAIN") ?: return 1f
+        // Opus files carry R128_* instead: Q7.8 fixed-point dB relative to -23 LUFS; ReplayGain aims at -18, so add 5 dB.
+        fun r128(key: String) = tags[key]?.trim()?.toIntOrNull()?.let { it / 256f + 5f }
+        val gainDb = (if (album) db("REPLAYGAIN_ALBUM_GAIN") else null) ?: db("REPLAYGAIN_TRACK_GAIN")
+            ?: (if (album) r128("R128_ALBUM_GAIN") else null) ?: r128("R128_TRACK_GAIN") ?: return 1f
         val peakValue = (if (album) peak("REPLAYGAIN_ALBUM_PEAK") else null) ?: peak("REPLAYGAIN_TRACK_PEAK")
         var gain = 10f.pow(gainDb / 20f).coerceAtMost(8f)
         if (clippingGuard && peakValue != null) gain = minOf(gain, 1f / peakValue)

@@ -301,7 +301,11 @@ class SoulseekClient(
         }
     }
 
-    /** A file connection: the peer's token, our offset (0: always whole files), then the bytes. */
+    /**
+     * A file connection: the peer's token, our offset, then the bytes. A part
+     * of this same file already on disk (an earlier try from this peer that
+     * dropped) is continued from where it stopped instead of starting over.
+     */
     private fun receiveFile(sock: Socket) {
         var t: Transfer? = null
         try {
@@ -311,12 +315,14 @@ class SoulseekClient(
             Frame.readFully(input, head)
             t = byToken.remove(In(head).u32()) ?: return sock.close()
             t.started.complete(Unit)
-            Frame.write(sock.getOutputStream(), Out().u64(0).bytes())
             t.target.parentFile?.mkdirs()
-            var got = 0L
+            val have = if (t.target.exists()) t.target.length() else 0L
+            val offset = if (have in 1 until t.size) have else 0L
+            Frame.write(sock.getOutputStream(), Out().u64(offset).bytes())
+            var got = offset
             val buf = ByteArray(64 * 1024)
             var lastReport = 0L
-            t.target.outputStream().use { fileOut ->
+            java.io.FileOutputStream(t.target, offset > 0).use { fileOut ->
                 while (got < t.size) {
                     val n = input.read(buf, 0, minOf(buf.size.toLong(), t.size - got).toInt())
                     if (n < 0) break

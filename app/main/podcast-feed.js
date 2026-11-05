@@ -3,13 +3,22 @@
 // Podcast RSS feed fetching + parsing. Pure/network-only — no Electron or
 // main.js process state — so the parser is safe to unit test with fixture XML.
 
+// Conditional GET: a feed fetched before is asked for again with its ETag /
+// Last-Modified, and a "304 Not Modified" reuses the copy already held.
+const feedCache = new Map();
 function podcastRequest(url) {
   return new Promise((resolve, reject) => {
     let target;
     try { target = new URL(String(url)); } catch { reject(new Error('Invalid podcast URL.')); return; }
     if (!/^https?:$/.test(target.protocol)) { reject(new Error('Only HTTP(S) podcast feeds are supported.')); return; }
     const client = target.protocol === 'https:' ? require('https') : require('http');
-    const req = client.get(target, { headers: { 'User-Agent': 'Hive/1.0 Podcast Reader' }, timeout: 12000 }, res => {
+    const key = target.toString();
+    const cached = feedCache.get(key);
+    const headers = { 'User-Agent': 'Hive/1.0 Podcast Reader' };
+    if (cached?.etag) headers['If-None-Match'] = cached.etag;
+    if (cached?.lastModified) headers['If-Modified-Since'] = cached.lastModified;
+    const req = client.get(target, { headers, timeout: 12000 }, res => {
+      if (res.statusCode === 304 && cached) { res.resume(); resolve(cached.body); return; }
       if (res.statusCode >= 300 && res.statusCode < 400 && res.headers.location) {
         res.resume(); podcastRequest(new URL(res.headers.location, target).toString()).then(resolve, reject); return;
       }
@@ -17,7 +26,13 @@ function podcastRequest(url) {
       let body='';
       res.setEncoding('utf8');
       res.on('data', chunk => { body += chunk; if (body.length > 8*1024*1024) req.destroy(new Error('Podcast feed is too large.')); });
-      res.on('end', () => resolve(body));
+      res.on('end', () => {
+        if (res.headers.etag || res.headers['last-modified']) {
+          feedCache.set(key, { etag: res.headers.etag || '', lastModified: res.headers['last-modified'] || '', body });
+          while (feedCache.size > 60) feedCache.delete(feedCache.keys().next().value);
+        }
+        resolve(body);
+      });
     });
     req.on('timeout', () => req.destroy(new Error('Podcast request timed out.')));
     req.on('error', reject);

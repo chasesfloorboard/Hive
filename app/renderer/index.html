@@ -102,7 +102,7 @@
 
         <!-- ============ LYRICS (merged into sidebar column) ============ -->
         <div id="lyrics-section" class="collapsed">
-          <div class="sidebar-heading">Lyrics</div>
+          <div class="sidebar-heading lyrics-heading"><span>Lyrics</span><button id="lyrics-menu-btn" class="panel-menu-btn" type="button" title="Lyrics options: edit, search again, alignment" aria-label="Lyrics options"><svg viewBox="0 0 24 24" width="16" height="16" fill="currentColor" aria-hidden="true"><circle cx="5" cy="12" r="1.7"/><circle cx="12" cy="12" r="1.7"/><circle cx="19" cy="12" r="1.7"/></svg></button></div>
           <div class="sidebar-lyrics" id="lyrics-rail">
             <div class="lyrics-scroll" id="lyrics-text"></div>
           </div>
@@ -127,6 +127,7 @@
         <div id="albums-toolbar">
           <h1 id="section-title"><button id="artist-back-btn" class="artist-back-btn hidden" type="button" title="Back" aria-label="Back"><img class="artist-back-icon" src="assets/back-chevron.svg" alt="" aria-hidden="true" draggable="false"></button><span id="section-title-text">Albums</span></h1>
           <div class="view-toggle">
+            <button class="view-btn song-columns-btn hidden" type="button" title="Choose the columns in the Tracks list (also by right-clicking its header)">Columns</button>
             <button class="view-btn column-browser-toggle hidden" type="button" aria-pressed="false" title="MusicBee-style column browser: filter by genre, artist and album">Browser</button>
             <button class="view-btn years-toggle" data-action="toggle-years" type="button" aria-pressed="true">Years: ON</button>
             <button class="view-btn active" data-mode="albums">Albums</button>
@@ -147,7 +148,7 @@
 
       <!-- ============ RIGHT QUEUE PANEL ============ -->
       <aside id="queue-panel" class="glass">
-        <div class="queue-header">Playing Tracks</div>
+        <div class="queue-header"><span class="queue-header-title">Playing Tracks</span><button id="queue-menu-btn" class="panel-menu-btn" type="button" title="Queue options: Auto-DJ, sleep timer, stop after this track" aria-label="Queue options"><svg viewBox="0 0 24 24" width="16" height="16" fill="currentColor" aria-hidden="true"><circle cx="5" cy="12" r="1.7"/><circle cx="12" cy="12" r="1.7"/><circle cx="19" cy="12" r="1.7"/></svg></button></div>
         <ol id="queue-list" class="is-empty" tabindex="0" data-row-list aria-label="Queue"></ol>
         <div id="queue-art-resize" class="queue-art-resize" title="Drag to resize queue and cover art"></div>
         <div id="now-playing-card" class="now-playing-card hidden">
@@ -305,7 +306,11 @@
           </section>
 
           <section class="settings-section">
-            <header class="settings-section-head"><h4 class="settings-section-title">Auto-DJ</h4><p class="settings-section-desc">Turn Auto-DJ on from the queue menu. It keeps tracks queued ahead so playback never runs out.</p></header>
+            <header class="settings-section-head"><h4 class="settings-section-title">Auto-DJ</h4><p class="settings-section-desc">Keeps tracks queued ahead so playback never runs out, picking music related to what you just played.</p></header>
+            <label class="settings-row">
+              <span class="settings-row-text"><span class="settings-row-label">Auto-DJ</span><span class="settings-hint">Also in the queue's options menu (…).</span></span>
+              <input id="setting-auto-dj" type="checkbox">
+            </label>
             <label class="settings-row">
               <span class="settings-row-text"><span class="settings-row-label">Play from</span></span>
               <select class="settings-select" data-hivebee-pref="autodj.source"><option value="library">Whole library</option></select>
@@ -559,6 +564,18 @@
           </section>
 
           <section class="settings-section">
+            <header class="settings-section-head"><h4 class="settings-section-title">Now Playing</h4><p class="settings-section-desc">How the playing song is shown on the right and in Theater mode.</p></header>
+            <label class="settings-row">
+              <span class="settings-row-text"><span class="settings-row-label">Cover corners</span><span class="settings-hint">Also from right-clicking the cover.</span></span>
+              <select id="setting-np-cover-corners" class="settings-select"><option value="rounded">Rounded</option><option value="sharp">Sharp</option></select>
+            </label>
+            <label class="settings-row">
+              <span class="settings-row-text"><span class="settings-row-label">Artist info in Theater mode</span><span class="settings-hint">A short artist bio beside the cover when one is available.</span></span>
+              <input type="checkbox" data-hivebee-pref="theater.artistInfo">
+            </label>
+          </section>
+
+          <section class="settings-section">
             <header class="settings-section-head"><h4 class="settings-section-title">Window &amp; glass</h4></header>
             <label class="settings-row">
               <span class="settings-row-text"><span class="settings-row-label">Themed title bar</span><span class="settings-hint">Hive's own title bar with window controls. Off uses your desktop's title bar.</span></span>
@@ -802,6 +819,14 @@
                 <li><strong>Stress:</strong> scroll large views, switch tabs, and open artwork and the queue while audio plays.</li>
               </ol>
             </details>
+          </section>
+
+          <section class="settings-section" id="health-checks-section">
+            <header class="settings-section-head"><h4 class="settings-section-title">Health checks</h4><p class="settings-section-desc">Read-only checks of your library, Hive's database and its safety settings. Nothing is changed.</p></header>
+            <div class="settings-row"><span class="settings-row-text"><span class="settings-row-label">Library files</span><span class="settings-hint" data-health-result="library">Looks for missing or unreadable files and duplicates.</span></span><span class="settings-row-control"><button type="button" class="sidebar-add" data-health-run="library">Check</button></span></div>
+            <div class="settings-row"><span class="settings-row-text"><span class="settings-row-label">Database</span><span class="settings-hint" data-health-result="database">Verifies Hive's library database and its saved jobs.</span></span><span class="settings-row-control"><button type="button" class="sidebar-add" data-health-run="database">Check</button></span></div>
+            <div class="settings-row"><span class="settings-row-text"><span class="settings-row-label">Security</span><span class="settings-hint" data-health-result="security">Checks how Hive's windows and plugins are isolated.</span></span><span class="settings-row-control"><button type="button" class="sidebar-add" data-health-run="security">Check</button></span></div>
+            <div class="settings-row"><span class="settings-row-text"><span class="settings-row-label">Runtime</span><span class="settings-hint" data-health-result="environment">Checks Hive's files, playback engine and temporary folders.</span></span><span class="settings-row-control"><button type="button" class="sidebar-add" data-health-run="environment">Check</button></span></div>
           </section>
 
           <section class="settings-section">
@@ -1063,8 +1088,8 @@
           </div>
         </details>
 
-        <div class="tag-actions smart-playlist-actions"><button id="smart-playlist-cancel" class="sidebar-add" type="button">Cancel</button><button id="smart-playlist-save" class="sidebar-add settings-save-primary" type="button">Create smart playlist</button></div>
       </div>
+      <div class="tag-actions smart-playlist-actions"><button id="smart-playlist-cancel" class="sidebar-add" type="button">Cancel</button><button id="smart-playlist-save" class="sidebar-add settings-save-primary" type="button">Create smart playlist</button></div>
     </div>
   </div>
 
@@ -1083,39 +1108,40 @@
   <!-- ============ TAG EDITOR ============ -->
   <div id="tag-modal" class="modal-overlay floating-panel hidden">
     <div class="modal glass modal-tags">
-      <div class="modal-header"><div><h3 id="tag-editor-title">Edit track</h3><div id="tag-editor-scope" class="settings-hint"></div></div><button class="modal-close" aria-label="Close" data-close>✕</button></div>
+      <div class="modal-header tag-editor-header"><img id="tag-editor-head-art" class="tag-editor-head-art" src="" alt="" aria-hidden="true"><div class="tag-editor-head-copy"><h3 id="tag-editor-title">Edit track</h3><div id="tag-editor-scope" class="settings-hint"></div></div><button class="modal-close" aria-label="Close" data-close>✕</button></div>
       <div class="tag-editor-tabs" id="tag-editor-tabs">
         <button class="tag-editor-tab active" data-tag-tab="properties">Properties</button>
         <button class="tag-editor-tab" data-tag-tab="tags">Tags</button>
-        <button class="tag-editor-tab" data-tag-tab="tags2">Tags (2)</button>
+        <button class="tag-editor-tab" data-tag-tab="tags2">More tags</button>
         <button class="tag-editor-tab" data-tag-tab="sorting">Sorting</button>
         <button class="tag-editor-tab" data-tag-tab="artwork">Artwork</button>
         <button class="tag-editor-tab" data-tag-tab="lyrics">Lyrics</button>
-        <button class="tag-editor-tab" data-tag-tab="settings">Settings</button>
+        <button class="tag-editor-tab" data-tag-tab="settings">Playback</button>
       </div>
       <div class="modal-body tag-editor-body">
         <section class="tag-editor-panel active" data-tag-panel="properties">
-          <div class="tag-editor-section-head"><div><span class="tag-editor-kicker">FILE & LIBRARY</span><h4 id="tag-properties-heading">Track properties</h4></div><span id="tag-properties-summary" class="tag-editor-muted"></span></div>
+          <div class="tag-editor-section-head"><div><h4 id="tag-properties-heading">File</h4></div><span id="tag-properties-summary" class="tag-editor-muted"></span></div>
           <div class="tag-properties-grid">
-            <div class="tag-property"><span>type</span><strong id="tag-prop-type">—</strong></div>
-            <div class="tag-property"><span>format / tags</span><strong id="tag-prop-version">—</strong></div>
-            <div class="tag-property"><span>encoded with</span><strong id="tag-prop-encoder">—</strong></div>
-            <div class="tag-property"><span>channels</span><strong id="tag-prop-channels">—</strong></div>
-            <div class="tag-property"><span>size</span><strong id="tag-prop-size">—</strong></div>
-            <div class="tag-property"><span>bitrate</span><strong id="tag-prop-bitrate">—</strong></div>
-            <div class="tag-property"><span>duration</span><strong id="tag-prop-duration">—</strong></div>
-            <div class="tag-property"><span>sample rate</span><strong id="tag-prop-samplerate">—</strong></div>
-            <div class="tag-property"><span>date added</span><strong id="tag-prop-added">—</strong></div>
-            <div class="tag-property"><span>last played</span><strong id="tag-prop-lastplayed">Unknown</strong></div>
-            <div class="tag-property"><span>play count</span><strong id="tag-prop-plays">0</strong></div>
-            <div class="tag-property"><span>rating</span><strong id="tag-prop-rating">☆☆☆☆☆</strong></div>
-            <div class="tag-property"><span>loved</span><strong id="tag-prop-loved">Not loved</strong></div>
+            <div class="tag-property"><span>Type</span><strong id="tag-prop-type">—</strong></div>
+            <div class="tag-property"><span>Tag format</span><strong id="tag-prop-version">—</strong></div>
+            <div class="tag-property"><span>Encoded with</span><strong id="tag-prop-encoder">—</strong></div>
+            <div class="tag-property"><span>Channels</span><strong id="tag-prop-channels">—</strong></div>
+            <div class="tag-property"><span>Size</span><strong id="tag-prop-size">—</strong></div>
+            <div class="tag-property"><span>Bitrate</span><strong id="tag-prop-bitrate">—</strong></div>
+            <div class="tag-property"><span>Length</span><strong id="tag-prop-duration">—</strong></div>
+            <div class="tag-property"><span>Sample rate</span><strong id="tag-prop-samplerate">—</strong></div>
+            <div class="tag-property"><span>Added</span><strong id="tag-prop-added">—</strong></div>
+            <div class="tag-property"><span>Last played</span><strong id="tag-prop-lastplayed">Unknown</strong></div>
+            <div class="tag-property"><span>Plays</span><strong id="tag-prop-plays">0</strong></div>
+            <div class="tag-property"><span>Rating</span><strong id="tag-prop-rating">☆☆☆☆☆</strong></div>
+            <div class="tag-property"><span>Loved</span><strong id="tag-prop-loved">Not loved</strong></div>
           </div>
+          <h4 class="tag-editor-subhead">This album</h4>
           <div class="tag-property-band">
-            <div><span>tracks</span><strong id="tag-prop-track-count">1</strong></div>
-            <div><span>album length</span><strong id="tag-prop-album-duration">—</strong></div>
-            <div><span>album size</span><strong id="tag-prop-album-size">—</strong></div>
-            <div><span>formats</span><strong id="tag-prop-formats">—</strong></div>
+            <div><span>Tracks</span><strong id="tag-prop-track-count">1</strong></div>
+            <div><span>Length</span><strong id="tag-prop-album-duration">—</strong></div>
+            <div><span>Size</span><strong id="tag-prop-album-size">—</strong></div>
+            <div><span>Formats</span><strong id="tag-prop-formats">—</strong></div>
           </div>
           <label class="tag-wide-field">Location<input id="tag-prop-location" readonly></label>
         </section>
@@ -1141,12 +1167,11 @@
         </section>
 
         <section class="tag-editor-panel" data-tag-panel="tags2">
-          <div class="tag-editor-section-head"><div><span class="tag-editor-kicker">STANDARD METADATA</span><h4>Additional tags</h4></div></div>
-          <div class="tag-editor-note">A standard set of tags every track can carry, shown in a plain readable form. Fields that could corrupt the file if edited incorrectly (raw native frame IDs and values) are intentionally not exposed here.</div>
+          <div class="tag-editor-section-head"><div><h4>More tags</h4><p class="tag-editor-lede">Less common details a track can carry. Each one is saved in the file.</p></div></div>
           <div class="musicbee-main-fields">
             <div class="musicbee-field-row">
               <label>Play count<input id="tag-pcount" type="number" min="0" inputmode="numeric"></label>
-              <label class="tag-check"><input id="tag-compilation" type="checkbox"> part of a compilation</label>
+              <label class="tag-switch-row"><span><b>Part of a compilation</b><small>Groups it with other artists on one album.</small></span><input id="tag-compilation" type="checkbox"></label>
             </div>
             <div class="musicbee-field-row"><label>BPM<input id="tag-bpm" type="number" min="0" inputmode="numeric"></label><label>Tempo<input id="tag-tempo" placeholder="e.g. Fast"></label></div>
             <div class="musicbee-field-row"><label>Mood<input id="tag-mood"></label><label>Occasion<input id="tag-occasion"></label></div>
@@ -1158,7 +1183,8 @@
         </section>
 
         <section class="tag-editor-panel" data-tag-panel="sorting">
-          <label class="tag-check"><input id="tag-custom-sorting" type="checkbox"> enable custom sorting - use "sort as" values when sorting</label>
+          <div class="tag-editor-section-head"><div><h4>Sorting</h4><p class="tag-editor-lede">Sort this track by a different name, such as "Beatles" for "The Beatles", without changing what's shown.</p></div></div>
+          <label class="tag-switch-row"><span><b>Use custom sorting</b><small>Sort by the "Sort as" names below.</small></span><input id="tag-custom-sorting" type="checkbox"></label>
           <div class="sorting-grid musicbee-sorting-grid">
             <label>Track title<input id="tag-sort-title"></label><label>Sort as<input id="tag-sort-title-as"></label>
             <label>Album<input id="tag-sort-album"></label><label>Sort as<input id="tag-sort-album-as"></label>
@@ -1166,23 +1192,22 @@
             <label>Artist<input id="tag-sort-artist"></label><label>Sort as<input id="tag-sort-artist-as"></label>
             <label>Composer<input id="tag-sort-composer"></label><label>Sort as<input id="tag-sort-composer-as"></label>
           </div>
-          <div class="settings-hint">Custom sort values are stored with the track so display names can remain unchanged.</div>
-        </section>
+                  </section>
 
         <section class="tag-editor-panel" data-tag-panel="artwork">
           <div class="artwork-library-editor">
             <div class="artwork-library-toolbar">
               <div><strong>Embedded artwork</strong><span id="tag-artwork-count">0 pictures</span></div>
-              <div class="artwork-button-row"><button id="tag-artwork-add" class="sidebar-add">Add Picture…</button><button id="tag-artwork-itunes" class="sidebar-add">Search MusicBrainz</button><button id="tag-artwork-paste" class="sidebar-add">Paste</button></div>
+              <div class="artwork-button-row"><button id="tag-artwork-add" class="sidebar-add">Add picture…</button><button id="tag-artwork-itunes" class="sidebar-add">Search MusicBrainz</button><button id="tag-artwork-paste" class="sidebar-add">Paste</button></div>
             </div>
             <div id="tag-artwork-list" class="artwork-library-list"></div>
-            <div class="settings-hint">Filled cards are embedded in the audio file. The final empty card is always ready for another picture; adding artwork never disturbs the other pictures. The Album Cover and Album Cover (back) types are the primary artwork types Hive exposes.</div>
+            <div class="settings-hint">Every picture here is saved in the file. Front and back covers are the ones players show.</div>
           </div>
         </section>
 
         <section class="tag-editor-panel" data-tag-panel="lyrics">
           <div class="lyrics-edit-heading">
-            <div><span class="tag-editor-kicker">LYRICS WORKSPACE</span><h4>Lyrics for this track</h4></div>
+            <div><h4>Lyrics</h4></div>
             <div class="lyrics-edit-status" id="tag-lyrics-source">Checking embedded lyrics…</div>
           </div>
           <div class="lyrics-result-card">
@@ -1197,20 +1222,20 @@
             <label>Lyricist<input id="tag-lyricist" placeholder="Optional"></label>
           </div>
           <div class="lyrics-edit-options">
-            <label class="tag-check"><input id="tag-no-lyrics" type="checkbox"> Mark this track as having no lyrics</label>
-            <span class="settings-hint">This tab always shows the plain embedded lyrics -- the ones saved to the audio file. Automatic search follows Settings → Highlighted Lyrics: when enabled, LRCLIB is preferred and the plain text is embedded here; when disabled, Hive uses Genius for plain lyrics. The player's synced/highlighted display during playback is separate and never affects what's embedded.</span>
+            <label class="tag-switch-row"><span><b>This track has no lyrics</b><small>Hive stops looking for lyrics for it.</small></span><input id="tag-no-lyrics" type="checkbox"></label>
+            
           </div>
-          <div class="settings-hint lyrics-save-note">Saving writes the lyrics to the audio file. Automatic search alone does not overwrite embedded lyrics.</div>
+          <div class="settings-hint lyrics-save-note">Lyrics are written to the file when you save. Searching online on its own never replaces lyrics already in the file.</div>
         </section>
 
         <section class="tag-editor-panel" data-tag-panel="settings">
-          <div class="tag-editor-section-head"><div><span class="tag-editor-kicker">PLAYBACK</span><h4>Per-track behavior</h4></div><span class="tag-editor-muted">Only affects this track</span></div>
+          <div class="tag-editor-section-head"><div><h4>Playback</h4><p class="tag-editor-lede">How this one track plays. Your other songs aren't affected.</p></div></div>
           <div class="settings-tag-checks">
-            <label class="tag-check"><input id="tag-exclude-playback" type="checkbox"> exclude this track from normal playback <span class="tag-setting-help">Skips this track when Hive builds normal playback queues.</span></label>
-            <label class="tag-check"><input id="tag-do-not-crossfade" type="checkbox"> do not crossfade this track <span class="tag-setting-help">Ends this track without a crossfade into the next track.</span></label>
-            <label class="tag-check"><input id="tag-remember-position" type="checkbox"> remember this track's playback position <span class="tag-setting-help">Restores this track's saved position when you play it again.</span></label>
+            <label class="tag-switch-row"><span><b>Skip in normal playback</b><small>Leaves it out when Hive builds a queue from your library.</small></span><input id="tag-exclude-playback" type="checkbox"></label>
+            <label class="tag-switch-row"><span><b>No crossfade</b><small>Plays to the end before the next song starts.</small></span><input id="tag-do-not-crossfade" type="checkbox"></label>
+            <label class="tag-switch-row"><span><b>Remember position</b><small>Picks up where you left off, good for long mixes.</small></span><input id="tag-remember-position" type="checkbox"></label>
           </div>
-          <div class="tag-editor-section-head compact"><div><span class="tag-editor-kicker">TRIM & LYRIC TIMING</span><h4>Playback range</h4></div></div>
+          <div class="tag-editor-section-head compact"><div><h4>Trim</h4></div></div>
           <div class="tag-time-rows">
             <div class="tag-time-row" data-time-target="tag-start-time">
               <span class="tag-time-label"><strong>Starts at</strong><span class="settings-hint">Skip the beginning of the song. Leave empty to start at the beginning.</span></span>
@@ -1235,7 +1260,7 @@
             <div id="tag-time-summary" class="tag-time-summary" aria-live="polite"></div>
           </div>
           <label class="tag-time-offset lyrics-offset-field">Lyrics offset<input id="tag-lyrics-offset" placeholder="+0.00" inputmode="decimal"><span class="settings-hint">Seconds to move synchronized lyrics. Positive delays them; add <strong>−</strong> to move them earlier. Example: <strong>-0.50</strong>.</span></label>
-          <div class="tag-editor-section-head compact"><div><span class="tag-editor-kicker">LOUDNESS METADATA</span><h4>ReplayGain</h4></div><span class="tag-editor-muted">Read from / written to the audio file</span></div>
+          <div class="tag-editor-section-head compact"><div><h4>ReplayGain</h4><p class="tag-editor-lede">Loudness values written by a ReplayGain scanner. Leave them blank if the file has none.</p></div></div>
           <div class="replaygain-grid">
             <label>Track gain<input id="tag-replaygain-track-gain" placeholder="-7.21 dB"></label>
             <label>Track peak<input id="tag-replaygain-track-peak" placeholder="0.9876"></label>
@@ -1243,15 +1268,14 @@
             <label>Album peak<input id="tag-replaygain-album-peak" placeholder="0.9912"></label>
             <label>R128 track gain<input id="tag-r128-track-gain" placeholder="Integer value"></label>
           </div>
-          <div class="settings-hint">ReplayGain values are loudness metadata. You normally do not type these manually: leave them blank when the file has none. If a ReplayGain scanner has written them, Hive reads and preserves them here. The global ReplayGain mode in Settings determines whether they are used during playback.</div>
         </section>
 
         <details class="tag-editor-advanced-wrap">
-          <summary>Advanced compatibility fields <span class="settings-hint">Legacy custom fields and uncommon metadata are preserved here for power users.</span></summary>
+          <summary>Raw tags <span class="settings-hint">Uncommon fields Hive keeps as they are. Edit with care.</span></summary>
           <label>Raw custom tag map<textarea id="tag-advanced" rows="4" spellcheck="false"></textarea></label>
         </details>
-        <div class="tag-actions"><div id="tag-status" class="settings-hint tag-status-line"></div><button id="tag-cancel" class="sidebar-add">Cancel</button><button id="tag-save" class="sidebar-add settings-primary-action">Save</button></div>
       </div>
+      <div class="tag-actions"><div id="tag-status" class="settings-hint tag-status-line"></div><button id="tag-cancel" class="sidebar-add">Cancel</button><button id="tag-save" class="sidebar-add settings-primary-action">Save</button></div>
     </div>
   </div>
 
@@ -1260,8 +1284,7 @@
     <div class="modal glass cover-picker-modal">
       <div class="modal-header cover-picker-header">
         <div class="cover-picker-heading">
-          <div class="cover-picker-kicker">ALBUM ARTWORK</div>
-          <h3 id="cover-picker-title">Choose artwork</h3>
+                    <h3 id="cover-picker-title">Choose artwork</h3>
           <div id="cover-picker-query" class="cover-picker-subtitle"></div>
         </div>
         <button class="modal-close" id="cover-picker-close" data-close type="button" aria-label="Close">✕</button>
@@ -1283,7 +1306,7 @@
         <div class="cover-picker-content">
           <div id="cover-picker-results" class="cover-picker-results"></div>
           <aside class="cover-picker-preview" id="cover-picker-preview-panel">
-            <div class="cover-picker-preview-label">PREVIEW</div>
+            <div class="cover-picker-preview-label">Preview</div>
             <div class="cover-picker-preview-image-wrap"><img id="cover-picker-preview-image" alt="" /></div>
             <div class="cover-picker-preview-info">
               <strong id="cover-picker-preview-title">Select artwork</strong>
@@ -1311,6 +1334,7 @@
   <script src="../main/file-organiser.js"></script>
   <script src="colorExtract.js"></script>
   <script src="accent-contrast.js"></script>
+  <script src="yearly-wrap-view.js"></script>
   <script src="drag-out.js"></script>
   <script src="keyboard-access.js"></script>
   <script src="plugin-frame.js"></script>

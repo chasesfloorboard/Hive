@@ -361,7 +361,8 @@ class SoulseekClient {
     }
   }
 
-  // A file connection: the peer's token, our offset (0: always whole files), then the bytes.
+  // A file connection: the peer's token, our offset, then the bytes. A part of this file
+  // already on disk (a try from this peer that dropped) is continued, not restarted.
   // Only the user we accepted the transfer from can fill it; anything going wrong fails that song, never Hive.
   receiveFile(sock, rest, user = '') {
     const fs = require('node:fs');
@@ -387,9 +388,13 @@ class SoulseekClient {
           this.byToken.delete(key);
           t.start();
           if (!(t.size > 0)) { finish(new Error(`${t.user} sent an empty file`)); return; }
-          sock.write(new Out().u64(0).bytes());
           fs.mkdirSync(path.dirname(t.target), { recursive: true });
-          out = fs.createWriteStream(t.target);
+          let have = 0;
+          try { have = fs.statSync(t.target).size; } catch {}
+          const offset = have > 0 && have < t.size ? have : 0;
+          sock.write(new Out().u64(offset).bytes());
+          got = offset;
+          out = fs.createWriteStream(t.target, { flags: offset ? 'a' : 'w' });
           out.on('error', err => finish(err));
           chunk = head.subarray(4);
           if (!chunk.length) return;

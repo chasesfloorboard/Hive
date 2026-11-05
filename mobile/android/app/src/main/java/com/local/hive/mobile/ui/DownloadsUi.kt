@@ -2,6 +2,12 @@ package com.local.hive.mobile.ui
 
 import androidx.compose.foundation.layout.PaddingValues
 import androidx.compose.foundation.border
+import androidx.compose.animation.core.animateFloat
+import androidx.compose.foundation.background
+import androidx.compose.ui.draw.shadow
+import androidx.compose.ui.graphics.graphicsLayer
+import androidx.compose.ui.semantics.contentDescription
+import androidx.compose.ui.semantics.semantics
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
@@ -143,6 +149,7 @@ fun DownloadsSheet(onDismiss: () -> Unit) {
 private fun DownloadCard(job: DownloadJob) {
     val c = Hive.colors
     val context = LocalContext.current
+    val app = context.applicationContext as HiveApp
     val toast = LocalToast.current
     var open by remember(job.id) { mutableStateOf(!job.finished) }
     Column(Modifier.fillMaxWidth().clickable { open = !open }.padding(horizontal = 18.dp, vertical = 10.dp), verticalArrangement = Arrangement.spacedBy(4.dp)) {
@@ -152,6 +159,9 @@ private fun DownloadCard(job: DownloadJob) {
                 Text(job.message.ifBlank { job.state }, style = HiveText.small, color = if (job.state == "failed") Failed else c.textDim, maxLines = 2, overflow = TextOverflow.Ellipsis)
             }
             Text("${job.doneCount}/${job.songs.size}", style = HiveText.numbers, color = c.textDim)
+            if (!job.finished) Box(Modifier.padding(start = 6.dp).size(40.dp).clip(CircleShape).clickable(onClickLabel = "Cancel") { app.downloads.cancel(job.id); toast("Cancelled ${job.label}") }, contentAlignment = Alignment.Center) {
+                Icon(Icons.Rounded.Close, "Cancel downloading ${job.label}", tint = c.textDim, modifier = Modifier.size(20.dp))
+            }
         }
         if (!job.finished) {
             if (job.state == "downloading") LinearProgressIndicator(progress = { job.progress }, Modifier.fillMaxWidth().padding(top = 4.dp), color = c.accent, trackColor = c.border)
@@ -177,3 +187,77 @@ private fun DownloadCard(job: DownloadJob) {
         }
     }
 }
+
+/**
+ * A small floating bubble while Soulseek downloads are coming in: a ring for
+ * how far along they are, an arrow that keeps dropping so it clearly reads as
+ * busy, and a count when more than one album is coming. It pops in from
+ * nothing, shows a tick for a moment when the last one finishes, then goes.
+ * Tapping it opens the download queue.
+ */
+@Composable
+fun DownloadBubble(modifier: Modifier = Modifier, hidden: Boolean = false) {
+    val c = Hive.colors
+    val app = LocalContext.current.applicationContext as HiveApp
+    val haptics = androidx.compose.ui.platform.LocalHapticFeedback.current
+    val jobs by app.downloads.jobs.collectAsStateWithLifecycle()
+    val active = jobs.filter { !it.finished }
+    var justFinished by remember { mutableStateOf(false) }
+    var wasActive by remember { mutableStateOf(false) }
+    androidx.compose.runtime.LaunchedEffect(active.isNotEmpty()) {
+        if (active.isNotEmpty()) { wasActive = true; justFinished = false }
+        else if (wasActive) { wasActive = false; justFinished = true; kotlinx.coroutines.delay(2_400); justFinished = false }
+    }
+    var list by remember { mutableStateOf(false) }
+    val visible = !hidden && (active.isNotEmpty() || justFinished)
+    androidx.compose.animation.AnimatedVisibility(
+        visible, modifier,
+        enter = androidx.compose.animation.scaleIn(androidx.compose.animation.core.spring(dampingRatio = 0.55f, stiffness = 420f), initialScale = 0.3f) + androidx.compose.animation.fadeIn(androidx.compose.animation.core.tween(140)),
+        exit = androidx.compose.animation.scaleOut(androidx.compose.animation.core.tween(220), targetScale = 0.5f) + androidx.compose.animation.fadeOut(androidx.compose.animation.core.tween(200)),
+    ) {
+        val progress = if (active.isEmpty()) 1f else active.map { it.progress }.average().toFloat()
+        val shown by androidx.compose.animation.core.animateFloatAsState(progress, androidx.compose.animation.core.spring(stiffness = 120f), label = "dl-progress")
+        val loop = androidx.compose.animation.core.rememberInfiniteTransition(label = "dl-loop")
+        val drop by loop.animateFloat(0f, 1f, androidx.compose.animation.core.infiniteRepeatable(androidx.compose.animation.core.tween<Float>(2000, easing = androidx.compose.animation.core.LinearEasing)), label = "dl-drop")
+        val spin by loop.animateFloat(0f, 360f, androidx.compose.animation.core.infiniteRepeatable(androidx.compose.animation.core.tween<Float>(1600, easing = androidx.compose.animation.core.LinearEasing)), label = "dl-spin")
+        val searching = active.isNotEmpty() && active.none { it.state == "downloading" }
+        Box(Modifier.size(64.dp)) {
+        Box(
+            Modifier.size(58.dp).align(Alignment.Center)
+                .androidxShadow(c.accentGlow)
+                .clip(CircleShape)
+                .background(com.local.hive.mobile.ui.theme.mix(c.accent, c.control, 0.10f).copy(alpha = 0.97f))
+                .border(1.dp, com.local.hive.mobile.ui.theme.hiveGlassBorder(), CircleShape)
+                .clickable(onClickLabel = "Open downloads") { haptics.performHapticFeedback(androidx.compose.ui.hapticfeedback.HapticFeedbackType.TextHandleMove); list = true }
+                .semantics { contentDescription = if (active.isEmpty()) "Downloads finished" else "Downloading ${active.size} ${if (active.size == 1) "album" else "albums"}, ${(progress * 100).toInt()}%. Open downloads" },
+            contentAlignment = Alignment.Center,
+        ) {
+            androidx.compose.foundation.Canvas(Modifier.size(50.dp)) {
+                val stroke = androidx.compose.ui.graphics.drawscope.Stroke(width = 3.dp.toPx(), cap = androidx.compose.ui.graphics.StrokeCap.Round)
+                drawArc(c.border, 0f, 360f, false, style = stroke)
+                if (searching) drawArc(c.accent, spin - 90f, 70f, false, style = stroke)
+                else drawArc(c.accent, -90f, 360f * shown.coerceIn(0.02f, 1f), false, style = stroke)
+            }
+            if (justFinished && active.isEmpty()) {
+                Icon(Icons.Rounded.Check, null, tint = c.accent, modifier = Modifier.size(26.dp))
+            } else {
+                // The arrow rests in the middle, slips down a little as it fades, then fades back in where it was.
+                val ease = androidx.compose.animation.core.FastOutSlowInEasing
+                val (y, alpha) = when {
+                    drop < 0.42f -> 0f to 1f
+                    drop < 0.75f -> ease.transform((drop - 0.42f) / 0.33f).let { it * 3.5f to 1f - it }
+                    else -> ease.transform((drop - 0.75f) / 0.25f).let { -1.5f * (1f - it) to it }
+                }
+                Icon(Icons.Rounded.Download, null, tint = c.text, modifier = Modifier.size(24.dp).graphicsLayer { translationY = y.dp.toPx(); this.alpha = alpha })
+            }
+        }
+            if (active.size > 1) Box(
+                Modifier.align(Alignment.TopEnd).size(22.dp).shadow(4.dp, CircleShape).clip(CircleShape).background(c.accent),
+                contentAlignment = Alignment.Center,
+            ) { Text("${active.size}", style = HiveText.small.copy(fontWeight = androidx.compose.ui.text.font.FontWeight.Bold), color = c.bg) }
+        }
+    }
+    if (list) DownloadsSheet(onDismiss = { list = false })
+}
+
+private fun Modifier.androidxShadow(glow: Color) = this.shadow(16.dp, CircleShape, ambientColor = glow, spotColor = glow)

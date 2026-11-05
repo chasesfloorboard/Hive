@@ -179,6 +179,39 @@ test('the download queue files an album under Artist/Album and keeps the list', 
   } finally { fs.rmSync(dataDir, { recursive: true, force: true }); fs.rmSync(music, { recursive: true, force: true }); }
 });
 
+test('a song nobody on Soulseek has comes from the fallback (YouTube), tagged from the streaming service', async () => {
+  const dataDir = fs.mkdtempSync(path.join(os.tmpdir(), 'hive-slsk-data-'));
+  const music = fs.mkdtempSync(path.join(os.tmpdir(), 'hive-slsk-music-'));
+  const empty = () => ({ ended: null, login: async () => {}, search() { return 1; }, stopSearch() {}, async download() { throw new Error('no'); }, close() {} });
+  const asked = [];
+  let added = null;
+  const d = createSoulseekDownloads({ dataDir, settings: async () => ({ username: 'u', password: 'p' }), musicFolder: async () => music, createClient: empty,
+    fallback: async t => { asked.push(t); const f = path.join(music, 'Eyes Without a Face.mp3'); fs.writeFileSync(f, 'song'); return f; },
+    onSongs: async g => { added = g; }, wait: async () => {} });
+  try {
+    d.add({ kind: 'track', artist: 'Billy Idol', album: 'Rebel Yell', label: 'Eyes Without a Face', tracks: [{ title: 'Eyes Without a Face', loved: true, streamPath: 'ytm:apple:1',
+      meta: { artist: 'Billy Idol', album: 'Rebel Yell', year: '1983', artworkUrl: 'https://example.invalid/c.jpg' } }] });
+    for (let i = 0; i < 100 && !added; i++) await new Promise(r => setTimeout(r, 10));
+    assert.equal(added.length, 1);
+    assert.equal(added[0].loved, true);
+    assert.equal(added[0].streamPath, 'ytm:apple:1');
+    assert.equal(asked[0].meta.year, '1983');
+    assert.equal(asked[0].album, 'Rebel Yell');
+    assert.equal(d.list()[0].state, 'done');
+    assert.equal(d.list()[0].message, 'Downloaded Eyes Without a Face from YouTube');
+    assert.equal(d.list()[0].songs[0].from, 'YouTube');
+    // Without a fallback (or when it fails too), the job still says Soulseek didn't have it.
+    const dir2 = fs.mkdtempSync(path.join(os.tmpdir(), 'hive-slsk-data-'));
+    const d2 = createSoulseekDownloads({ dataDir: dir2, settings: async () => ({ username: 'u', password: 'p' }), musicFolder: async () => music, createClient: empty,
+      fallback: async () => { throw new Error('no match'); }, wait: async () => {} });
+    d2.add({ kind: 'track', artist: 'X', tracks: [{ title: 'Nowhere' }] });
+    for (let i = 0; i < 100 && d2.list()[0].state !== 'failed'; i++) await new Promise(r => setTimeout(r, 10));
+    assert.equal(d2.list()[0].state, 'failed');
+    assert.match(d2.list()[0].message, /Couldn't find Nowhere on Soulseek/);
+    fs.rmSync(dir2, { recursive: true, force: true });
+  } finally { fs.rmSync(dataDir, { recursive: true, force: true }); fs.rmSync(music, { recursive: true, force: true }); }
+});
+
 test('a peer offering a different size than the search showed is turned down', async () => {
   const net0 = await fakeNetwork({ 'a\\b.flac': Buffer.alloc(1000, 1) });
   const client = new SoulseekClient({ username: 'hive-test', password: 'x', host: '127.0.0.1', port: net0.port, listenPorts: [0, 0] });

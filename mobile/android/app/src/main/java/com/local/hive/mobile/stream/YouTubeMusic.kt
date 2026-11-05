@@ -15,6 +15,7 @@ import okhttp3.MediaType.Companion.toMediaType
 import okhttp3.OkHttpClient
 import okhttp3.Request
 import okhttp3.RequestBody.Companion.toRequestBody
+import java.io.File
 import java.io.IOException
 import java.text.Normalizer
 import java.util.concurrent.ConcurrentHashMap
@@ -97,11 +98,39 @@ class YouTubeMusic(context: Context, private val http: OkHttpClient = AppleMusic
 
     // ---- audio ----
 
-    private fun audioUrl(videoId: String): String {
-        val cacheKey = videoId
-        // Links last hours: kept across restarts, so a song played earlier today starts without asking YouTube.
-        (links[cacheKey] ?: prefs.getString("link:$cacheKey", null)?.split('|', limit = 2)?.takeIf { it.size == 2 }?.let { (at, url) -> url to (at.toLongOrNull() ?: 0L) })
-            ?.let { (url, expires) -> if (expires - System.currentTimeMillis() > 5 * 60_000) { links[cacheKey] = url to expires; return url } }
+    /**
+     * Saves [song]'s audio to [out] for keeping: YouTube's best AAC (M4A, which
+     * tags can be written to; its Opus comes as WebM, which they can't), fetched
+     * in parts as YouTube's servers want. Blocking. Returns the video's id.
+     */
+    fun saveAudio(song: WantedSong, out: File, progress: (Long, Long) -> Unit = { _, _ -> }): String {
+        val id = prefs.getString("match:${song.key}", null) ?: findMatch(song)?.also { prefs.edit().putString("match:${song.key}", it).apply() }
+            ?: throw IOException("Couldn't find “${song.title}” on YouTube.")
+        val aac = playerFormats(id).filter { it.str("mimeType")?.startsWith("audio/mp4") == true }
+            .maxByOrNull { it.str("bitrate")?.toIntOrNull() ?: 0 } ?: throw IOException("YouTube has no AAC audio for “${song.title}”.")
+        val url = aac.str("url")!!
+        val total = aac.str("contentLength")?.toLongOrNull() ?: 0L
+        out.outputStream().use { sink ->
+            var at = 0L
+            while (total == 0L || at < total) {
+                val end = if (total > 0) minOf(total - 1, at + PART - 1) else at + PART - 1
+                val req = Request.Builder().url(url).header("User-Agent", VISION_UA).header("Range", "bytes=$at-$end").build()
+                val got = http.newCall(req).execute().use { res ->
+                    if (res.code == 416) 0L
+                    else if (!res.isSuccessful) throw IOException("YouTube answered ${res.code}")
+                    else res.body.byteStream().use { it.copyTo(sink) }
+                }
+                if (got <= 0L) break
+                at += got
+                progress(at, total)
+                if (total == 0L && got < PART) break
+            }
+            if (total > 0 && at < total) throw IOException("The download stopped at $at of $total bytes.")
+        }
+        return id
+    }
+
+    private fun playerFormats(videoId: String): List<JsonObject> {
         val visitor = visitor()
         val body = buildJsonObject {
             putJsonObject("context") {
@@ -120,8 +149,16 @@ class YouTubeMusic(context: Context, private val http: OkHttpClient = AppleMusic
             if (status?.str("status") == "LOGIN_REQUIRED") prefs.edit().remove("visitor").apply()
             throw IOException(status?.str("reason") ?: "This song can't be played in full right now.")
         }
-        val formats = ((o["streamingData"] as? JsonObject)?.get("adaptiveFormats") as? JsonArray).orEmpty().mapNotNull { it as? JsonObject }
+        return ((o["streamingData"] as? JsonObject)?.get("adaptiveFormats") as? JsonArray).orEmpty().mapNotNull { it as? JsonObject }
             .filter { it.str("mimeType")?.startsWith("audio/") == true && it.str("url") != null }
+    }
+
+    private fun audioUrl(videoId: String): String {
+        val cacheKey = videoId
+        // Links last hours: kept across restarts, so a song played earlier today starts without asking YouTube.
+        (links[cacheKey] ?: prefs.getString("link:$cacheKey", null)?.split('|', limit = 2)?.takeIf { it.size == 2 }?.let { (at, url) -> url to (at.toLongOrNull() ?: 0L) })
+            ?.let { (url, expires) -> if (expires - System.currentTimeMillis() > 5 * 60_000) { links[cacheKey] = url to expires; return url } }
+        val formats = playerFormats(videoId)
         // Opus first (the best YouTube offers), then AAC; the highest bitrate of the kind.
         val preferred = "audio/webm"
         val best = formats.maxWithOrNull(compareBy<JsonObject> { if (it.str("mimeType")!!.startsWith(preferred)) 1 else 0 }.thenBy { it.str("bitrate")?.toIntOrNull() ?: 0 })
@@ -160,6 +197,8 @@ class YouTubeMusic(context: Context, private val http: OkHttpClient = AppleMusic
         private const val SONGS = "EgWKAQIIAWoMEA4QChADEAQQCRAF"
         private const val VIDEOS = "EgWKAQIQAWoMEA4QChADEAQQCRAF"
         private const val WEB_UA = "Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/130.0 Safari/537.36"
+        /** How much of a song one request fetches when saving it. */
+        private const val PART = 4L * 1024 * 1024
         private const val VISION_UA = "Mozilla/5.0 (Macintosh; Intel Mac OS X 15_7_3) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/26.0 Safari/605.1.15"
 
         private fun JsonObject.str(key: String): String? = (this[key] as? JsonPrimitive)?.contentOrNull

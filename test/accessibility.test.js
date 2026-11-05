@@ -109,7 +109,7 @@ test('the library and the menu are wired to the keyboard module', () => {
   assert.ok(html.indexOf('keyboard-access.js') > 0 && html.indexOf('keyboard-access.js') < html.indexOf('src="renderer.js"'));
   assert.match(html, /id="songs-table"[^>]*tabindex="0"[^>]*data-row-list/);
   assert.match(html, /id="queue-list"[^>]*tabindex="0"[^>]*data-row-list/);
-  assert.match(renderer, /class="song-row"[^`]*tabindex="-1"/);
+  assert.match(renderer, /class="song-row[^`]*tabindex="-1"/);
   assert.match(renderer, /HiveKeyboardAccess\?\.install\(document\)/);
   assert.match(renderer, /HiveKeyboardAccess\?\.prepareMenu\(m\)/);
   assert.match(renderer, /HiveKeyboardAccess\?\.menuClosed\(/);

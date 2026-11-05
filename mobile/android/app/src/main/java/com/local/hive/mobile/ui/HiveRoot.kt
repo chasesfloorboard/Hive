@@ -347,6 +347,7 @@ private fun HiveContent(vm: MainViewModel, openPlayerInitially: Boolean) {
                     SelectAllButton(selection, Modifier.align(Alignment.TopStart).statusBarsPadding().padding(start = 10.dp, top = 6.dp))
                     CompositionLocalProvider(LocalEditor provides editor) { SelectionBar(vm, selection, Modifier.align(Alignment.BottomEnd).navigationBarsPadding().padding(bottom = playbarPadding + 8.dp), onAddToPlaylist = { addTarget = it }, onDelete = { deleteRequest(it) }, onToast = { toast = it },
                         onAutoDj = { tracks -> if (tracks.isNotEmpty()) autoDj = AutoDjRequest(autoDjLabel(tracks)) { tracks } }) }
+                    DownloadBubble(Modifier.align(Alignment.BottomEnd).navigationBarsPadding().padding(end = 16.dp, bottom = bottomPadding + 16.dp), hidden = playerOpen || lyricsOpen || selection.active)
                     HiveToast(toast, Modifier.align(Alignment.BottomCenter).navigationBarsPadding().padding(bottom = bottomPadding + 16.dp)) { toast = null }
                     AnimatedVisibility(lyricsOpen, enter = slideInVertically(Motion.open()) { it } + fadeIn(Motion.underFade()), exit = slideOutVertically(Motion.close()) { it } + fadeOut(Motion.close())) {
                         LyricsScreen(vm) { lyricsOpen = false }

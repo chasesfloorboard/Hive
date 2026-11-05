@@ -490,3 +490,19 @@ test('XFADE starts a companion that holds later commands until it plays, then fa
   assert.match(tick, /cos\(t \* G_PI \/ 2\.0\)/);
   assert.match(native, /pending_load_fade_in_us = nparts > 5 && parts\[5\]/);
 });
+
+// Opus files carry R128_* gains (Q7.8 dB relative to -23 LUFS) instead of
+// REPLAYGAIN_*; Hive converts them to ReplayGain's -18 LUFS reference (+5 dB).
+test('ReplayGain falls back to R128 gains, converted to the -18 LUFS reference', () => {
+  const fs = require('fs');
+  const path = require('path');
+  const src = fs.readFileSync(path.join(__dirname, '..', 'app', 'renderer', 'renderer.js'), 'utf8');
+  const start = src.indexOf('function r128GainToReplayGainText(raw) {');
+  assert.ok(start >= 0, 'r128GainToReplayGainText must exist');
+  const body = src.slice(start, src.indexOf('\n  }\n', start) + 4);
+  const r128GainToReplayGainText = new Function(`${body}; return r128GainToReplayGainText;`)();
+  assert.equal(r128GainToReplayGainText('-1280'), '0.00 dB');
+  assert.equal(r128GainToReplayGainText('-2560'), '-5.00 dB');
+  assert.equal(r128GainToReplayGainText(''), '');
+  assert.match(src, /if \(!gainText\) gainText = r128GainToReplayGainText\(/);
+});

@@ -296,7 +296,7 @@ private fun ServiceSongRow(vm: MainViewModel, s: StreamTrack, local: Track?, now
 fun downloadStreams(context: android.content.Context, songs: List<StreamTrack>, onToast: (String) -> Unit) {
     songs.groupBy { it.artist.substringBefore(",").trim() to it.album }.forEach { (key, group) ->
         val (artist, album) = key
-        val tracks = group.map { com.local.hive.mobile.soulseek.SoulseekRequest.Track(it.title, it.durationMs) }
+        val tracks = group.map { com.local.hive.mobile.soulseek.SoulseekRequest.Track(it.title, it.durationMs, artist = it.artist, album = it.album, artworkUrl = it.artworkUrl) }
         com.local.hive.mobile.soulseek.SoulseekWorker.enqueue(context,
             com.local.hive.mobile.soulseek.SoulseekRequest(artist, album, tracks, if (group.size == 1 || album.isBlank()) "track" else "album"))
     }
@@ -403,7 +403,7 @@ private fun ServiceCollectionScreen(
                                 if (album) {
                                     val artist = col.curator.ifBlank { col.songs.firstOrNull()?.artist.orEmpty() }
                                     DownloadButton(artist, col.name, {
-                                        com.local.hive.mobile.soulseek.SoulseekRequest(artist, col.name, col.songs.map { com.local.hive.mobile.soulseek.SoulseekRequest.Track(it.title, it.durationMs) }, if (col.kind == "track") "track" else "album")
+                                        com.local.hive.mobile.soulseek.SoulseekRequest(artist, col.name, col.songs.map { com.local.hive.mobile.soulseek.SoulseekRequest.Track(it.title, it.durationMs, artist = it.artist, album = it.album.ifBlank { col.name }, artworkUrl = it.artworkUrl.ifBlank { col.artwork }) }, if (col.kind == "track") "track" else "album")
                                     }, onToast)
                                 }
                             }
