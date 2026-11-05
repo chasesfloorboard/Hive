@@ -283,15 +283,11 @@ button {
 .settings-footer .sidebar-add { width:auto; margin:0; min-width:94px; }
 .settings-section-title { font-size: 12px; font-weight: 650; color: var(--text); letter-spacing: .02em; }
 .settings-section-copy { margin-top: -7px; line-height: 1.45; }
-.settings-divider { height: 1px; background: var(--border); margin: 4px 0; }
-.settings-form-grid { display: grid; grid-template-columns: 1.3fr 1fr 1fr; gap: 10px; }
-.settings-form-grid label { display: flex; flex-direction: column; gap: 6px; color: var(--text-dim); font-size: 11px; }
-.settings-form-grid input { width: 100%; box-sizing: border-box; }
+
 .settings-actions { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 8px; }
 .settings-save-primary { font-weight: 650; box-shadow: 0 0 0 1px color-mix(in srgb, var(--accent) 28%, transparent), 0 6px 18px -12px color-mix(in srgb, var(--accent) 70%, transparent); }
 .settings-save-primary:hover { box-shadow: 0 0 0 1px color-mix(in srgb, var(--accent) 45%, transparent), 0 8px 22px -12px color-mix(in srgb, var(--accent) 80%, transparent); }
-.settings-save-status-row { display: flex; align-items: center; justify-content: flex-end; gap: 8px; min-height: 34px; }
-.settings-save-prompt { color: var(--text-dim); font-size: 11px; white-space: nowrap; }
+
 .settings-save-prompt.hidden { display: none; }
 .settings-status { min-height: 18px; padding: 8px 10px; border-radius: 8px; background: var(--control-bg); color: var(--text-dim); font-size: 11px; }
 .custom-css-panel {
@@ -558,7 +554,6 @@ button {
   transform: none;
 }
 
-
 #topbar-right { display: flex; align-items: center; }
 .topbar-right {
   display: flex;
@@ -683,7 +678,6 @@ button {
   min-height: min(176px, 30vh);
   overflow-y: auto;
   overflow-x: hidden;
-  scrollbar-width: thin;
   padding-right: 1px;
 }
 .lyrics-resize {
@@ -1110,59 +1104,7 @@ html[data-hive-theme="light"] .artist-back-icon { filter: invert(1); }
 .song-row:hover .song-thumb { box-shadow:0 7px 16px -7px var(--accent-glow); }
 
 /* ---------------- expanding album panel ---------------- */
-.album-panel {
-  position: absolute;
-  top: 54px;
-  left: 18px;
-  right: 18px;
-  border-radius: var(--radius);
-  padding: 22px;
-  box-shadow: 0 30px 60px -20px rgba(0,0,0,0.7), 0 0 60px -20px var(--accent-glow);
-  z-index: 5;
-}
-.panel-close {
-  position: absolute;
-  top: 14px; right: 14px;
-  background: var(--control-bg);
-  border: none;
-  color: var(--text);
-  border-radius: 8px;
-  width: 26px; height: 26px;
-}
-.album-panel-inner {
-  display: grid;
-  grid-template-columns: 220px 1fr;
-  grid-template-rows: auto 1fr;
-  gap: 4px 24px;
-}
-.album-panel-art {
-  position: relative;
-  grid-row: 1 / span 2;
-  width: 220px; height: 220px;
-  border-radius: 12px;
-  overflow: hidden;
-  box-shadow: 0 20px 40px -15px rgba(0,0,0,0.7);
-}
-.album-panel-art img { width: 100%; height: 100%; object-fit: cover; }
-.cover-open-fab {
-  position:absolute; bottom:10px; left:10px; width:34px; height:34px;
-  border-radius:50%; border:1px solid var(--border); background:rgba(10,10,14,.62);
-  color:var(--text); display:flex; align-items:center; justify-content:center;
-  font-size:16px; z-index:2;
-}
-.cover-open-fab:hover { background:rgba(10,10,14,.86); }
-.play-fab {
-  position: absolute;
-  bottom: 10px; right: 10px;
-  width: 42px; height: 42px;
-  border-radius: 50%;
-  border: none;
-  background: var(--accent);
-  color: var(--text);
-  font-size: 15px;
-  box-shadow: 0 8px 20px -6px var(--accent-glow);
-}
-.album-panel-meta h2 { margin: 0 0 2px; font-size: 20px; }
+
 .dim { color: var(--text-dim); }
 .small { font-size: 11px; }
 
@@ -1176,7 +1118,6 @@ html[data-hive-theme="light"] .artist-back-icon { filter: invert(1); }
   overflow-y: hidden;
   columns: 2;
   column-gap: 24px;
-  scrollbar-width: thin;
 }
 .tracklist li {
   display: flex;
@@ -1657,13 +1598,12 @@ input[type="range"]::-webkit-slider-thumb {
 .small-empty { margin-top:40px; }
 .modal-tags { width:min(760px, calc(100vw - 40px)); max-height:88vh; overflow:hidden; }
 .tag-editor-body { overflow-y:auto; }
-.tag-grid { display:grid;grid-template-columns:1fr 1fr;gap:10px; }
+
 .tag-grid label,.tag-editor-body > label { display:flex;flex-direction:column;gap:5px;color:var(--text-dim);font-size:11px; }
 .tag-editor-body input,.tag-editor-body textarea { width:100%;background:rgba(0,0,0,.3);border:1px solid var(--border);border-radius:8px;color:var(--text);padding:7px 9px;outline:none;font:inherit;resize:vertical; }
 .tag-editor-body input:focus,.tag-editor-body textarea:focus { border-color:var(--accent-soft);box-shadow:0 0 0 3px var(--accent-soft); }
 .tag-actions { display:flex;justify-content:flex-end;gap:8px; }
 .tag-actions .sidebar-add { width:auto;margin:0; }
-
 
 .playlist-manager-create { display:flex; gap:8px; flex-wrap:wrap; }
 .playlist-manager-create .sidebar-add { width:auto; margin:0; }
@@ -1718,9 +1658,6 @@ input[type="range"]::-webkit-slider-thumb {
 @media (max-width:900px) { .smart-source-grid { grid-template-columns:1fr; } .smart-results-grid { grid-template-columns:1fr 1fr; } }
 @media (max-width:700px) { .smart-rule-row,.smart-results-grid,.smart-advanced-grid { grid-template-columns:1fr; } .smart-rule-row .sidebar-add { width:100%; } .smart-playlist-modal { width:calc(100vw - 24px); } }
 
-.lyrics-editor-toolbar{display:flex;align-items:center;gap:10px;flex-wrap:wrap;}
-.lyrics-editor-toolbar .inline-radio{display:flex;flex-direction:row;align-items:center;gap:4px;white-space:nowrap;}
-.lyrics-align-label{color:var(--text-dim);font-size:11px;margin-left:8px;}
 .lyrics-scroll{white-space:pre-wrap;}
 
 /* Song list: themed, compact sortable header and MusicBee-style rating display. */
@@ -1977,7 +1914,6 @@ input[type="range"]::-webkit-slider-thumb {
   left:0; top:calc(100% + 5px); width:min(520px,68vw); z-index:60;
 }
 
-
 /* ---------------- unified interactive control theme ----------------
    Keep native inputs/selects/buttons in the same glass/accent system as the
    rest of the application. This intentionally sits at the end so older,
@@ -2222,7 +2158,6 @@ input[type="range"]::-moz-range-thumb {
 .tag-editor-panel { display: none; }
 .tag-editor-panel.active { display: block; }
 .tag-editor-body { min-height: 0; max-height: calc(88vh - 120px); }
-
 
 /* ---------------- global context-menu interaction layer ----------------
    Context menus are modal interaction surfaces: they must paint above every
@@ -2511,17 +2446,6 @@ body.legacy-art-scaling .album-year-grid > .inline-album-dropdown {
 .playlist-import-choice:hover { border-color:var(--accent-soft); background:rgba(255,255,255,.06); box-shadow:0 0 0 2px var(--accent-soft); }
 .playlist-import-choice strong { font-size:13px; }
 .playlist-import-choice span { color:var(--text-dim); font-size:11px; }
-.playlist-import-choice.spotify-deferred,
-.playlist-import-choice.spotify-deferred:hover,
-.playlist-import-choice.spotify-deferred:disabled {
-  border-color: rgba(255, 70, 70, .55);
-  background: rgba(170, 35, 35, .16);
-  color: #ff6b6b;
-  cursor: not-allowed;
-  opacity: 1;
-  box-shadow: none;
-}
-.playlist-import-choice.spotify-deferred span { color: rgba(255, 150, 150, .82); }
 
     /* Build 243: context menus use one coherent frosted-glass surface at every
        nesting depth. Keep labels left-aligned, but never let a long metadata
@@ -2566,7 +2490,7 @@ body.legacy-art-scaling .album-year-grid > .inline-album-dropdown {
 .context-submenu-trigger .context-arrow {
   margin-left:4px;
 }
-.context-rating-wrap {}
+
 .context-submenu-wrap:has(.context-rating-item) > .context-submenu {
   min-width:94px;
   width:94px;
@@ -2701,7 +2625,6 @@ body.legacy-art-scaling .album-year-grid > .inline-album-dropdown {
   pointer-events: auto;
   width: 178px;
 }
-
 
 .scan-failures-btn {
   flex: none;
@@ -2878,7 +2801,6 @@ body.legacy-art-scaling .album-year-grid > .inline-album-dropdown {
 
 .tab-content-host[style*="display: none"] { display: none !important; }
 
-
 /* MusicBee-inspired tag editor layout and frosted artwork browser. */
 .modal-tags { width:min(900px, calc(100vw - 40px)); max-height:90vh; }
 .musicbee-tag-layout { display:grid; grid-template-columns:155px minmax(0,1fr); gap:18px; align-items:start; }
@@ -2909,7 +2831,7 @@ body.legacy-art-scaling .album-year-grid > .inline-album-dropdown {
 .tag-wide-field input[readonly] { color:var(--text-dim); }
 .musicbee-artwork-editor { display:grid; grid-template-columns:185px minmax(0,1fr); gap:18px; align-items:start; }
 .musicbee-artwork-editor .tag-cover-preview.large { width:170px; height:170px; }
-.artwork-controls { display:flex; flex-direction:column; gap:10px; min-width:0; }
+
 .artwork-button-row { display:flex; gap:7px; flex-wrap:wrap; }
 .artwork-button-row .sidebar-add { width:auto; margin:0; }
 .itunes-results { display:grid; grid-template-columns:repeat(4, minmax(0,1fr)); gap:7px; max-height:250px; overflow:auto; padding:2px; }
@@ -2935,7 +2857,7 @@ body.legacy-art-scaling .album-year-grid > .inline-album-dropdown {
   .itunes-results { grid-template-columns:repeat(3,minmax(0,1fr)); }
 }
 @media (max-width:560px) {
-  .cover-picker-manual { grid-template-columns:1fr; }
+  
   .cover-picker-manual .sidebar-add { width:100%; }
   .tag-properties-grid,.musicbee-tag-grid,.musicbee-secondary-grid,.musicbee-sorting-grid,.replaygain-grid { grid-template-columns:1fr; }
   .tag-property-band { grid-template-columns:1fr 1fr; }
@@ -2952,15 +2874,7 @@ body.legacy-art-scaling .album-year-grid > .inline-album-dropdown {
   display: flex;
   flex-direction: column;
 }
-.cover-picker-manual {
-  display:grid;
-  grid-template-columns:minmax(0,1fr) minmax(0,1fr) auto;
-  gap:8px;
-  align-items:end;
-  padding-bottom:2px;
-}
-.cover-picker-manual label { display:flex; flex-direction:column; gap:4px; color:var(--text-dim); font-size:9px; min-width:0; }
-.cover-picker-manual input { width:100%; min-width:0; }
+
 .cover-picker-manual .sidebar-add { width:auto; margin:0; white-space:nowrap; }
 .cover-picker-body {
   min-height: 0;
@@ -3134,7 +3048,7 @@ body.legacy-art-scaling .album-year-grid > .inline-album-dropdown {
 .cover-picker-result-info strong { font-size:10px; font-weight:600; color:rgba(255,255,255,.92); }
 .cover-picker-result-info small { font-size:8.5px; color:rgba(255,255,255,.72); }
 .cover-picker-result-info em { font-size:8px; color:rgba(255,255,255,.58); font-style:normal; }
-.cover-picker-result-broken { opacity:.38; }
+
 .cover-picker-loading,.cover-picker-empty { grid-column:1/-1; min-height:260px; display:flex; flex-direction:column; align-items:center; justify-content:center; gap:8px; color:var(--text-dim); text-align:center; }
 .cover-picker-loading strong,.cover-picker-empty strong { color:var(--text); font-size:12px; font-weight:600; }
 .cover-picker-loading small,.cover-picker-empty span { max-width:370px; font-size:9px; line-height:1.5; color:var(--text-dimmer); }
@@ -3148,7 +3062,6 @@ body.legacy-art-scaling .album-year-grid > .inline-album-dropdown {
 @media(max-width:820px){ .cover-picker-results{grid-template-columns:repeat(4,minmax(0,1fr));} .cover-picker-source{display:none;} }
 @media(max-width:620px){ .cover-picker-results{grid-template-columns:repeat(3,minmax(0,1fr));} .cover-picker-toolbar{flex-wrap:wrap;} .cover-picker-toolbar-actions{margin-left:0;width:100%;} .cover-picker-tool{flex:1;} }
 @media(max-width:440px){ .cover-picker-results{grid-template-columns:repeat(2,minmax(0,1fr));} .cover-picker-hint{display:none;} }
-
 
 /* MusicBee-style embedded artwork collection editor. Keep each picture compact
    and vertically stacked, with a narrow control column rather than stretching
@@ -3232,19 +3145,16 @@ body.legacy-art-scaling .album-year-grid > .inline-album-dropdown {
 .beta-diagnostic-detail { margin:12px 0 0; padding:14px; max-height:360px; overflow:auto; border:1px solid var(--border); border-radius:12px; background:var(--panel); color:var(--text-dim); font:10px/1.5 ui-monospace,SFMono-Regular,Menlo,monospace; white-space:pre-wrap; }
 .diagnostics-crash-course { margin:10px 0 12px; border:1px solid var(--border); border-radius:10px; background:color-mix(in srgb,var(--panel) 72%,transparent); overflow:hidden; }
 .diagnostics-crash-course summary { cursor:pointer; padding:9px 11px; color:var(--text); font-size:10px; font-weight:700; }
-.diagnostics-course-copy { padding:0 11px 6px; color:var(--text-dim); font-size:9px; line-height:1.45; }
+
 .diagnostics-crash-course ol { margin:0; padding:4px 18px 11px 30px; color:var(--text-dim); font-size:9px; line-height:1.55; }
 .diagnostics-crash-course li + li { margin-top:4px; }
 .diagnostics-crash-course strong { color:var(--text); font-weight:650; }
 
-.diagnostics-card { margin:16px 0 18px; padding:14px; border:1px solid var(--border); border-radius:12px; background:var(--panel); }
-.diagnostics-actions { display:flex; flex-wrap:wrap; gap:8px; margin:10px 0 8px; }
-.diagnostics-card .settings-status { margin-top:6px; }
 .beta-card-top { display:flex; justify-content:space-between; align-items:center; gap:8px; }
 .beta-status { font-size:9px; font-weight:800; letter-spacing:.5px; text-transform:uppercase; padding:4px 7px; border-radius:999px; background:var(--control-bg); color:var(--text-dim); }
-.beta-status.critical-test { color:#ff9f9f; }
+
 .beta-status.implemented { color:#8fe2a5; }
-.beta-status.ready-to-test { color:var(--accent); }
+
 .beta-status.protected { color:#9cc8ff; }
 .beta-card h3 { margin:12px 0 6px; font-size:14px; }
 .beta-card p { margin:0; color:var(--text-dim); font-size:11px; line-height:1.5; flex:1; }
@@ -3259,14 +3169,6 @@ body.legacy-art-scaling .album-year-grid > .inline-album-dropdown {
 @media (max-width:1100px) { .beta-grid { grid-template-columns:repeat(2,minmax(0,1fr)); } .beta-summary { grid-template-columns:repeat(3,minmax(100px,1fr)); } .beta-rules { grid-template-columns:repeat(3,minmax(0,1fr)); } }
 @media (max-width:700px) { .beta-hero,.beta-section-head { flex-direction:column; align-items:flex-start; } .beta-grid,.beta-summary,.beta-rules { grid-template-columns:1fr; } .beta-lab-host { padding:14px; } }
 
-.beta-discord-panel { padding:18px; border:1px solid var(--border); border-radius:14px; background:linear-gradient(180deg,var(--panel),rgba(0,0,0,.06)); }
-.beta-discord-fields { display:grid; grid-template-columns:repeat(3,minmax(0,1fr)); gap:12px; }
-.beta-discord-fields label { display:flex; flex-direction:column; gap:6px; color:var(--text-dim); font-size:11px; }
-.beta-discord-fields input { width:100%; box-sizing:border-box; }
-.beta-discord-checks { display:flex; gap:18px; flex-wrap:wrap; margin-top:14px; color:var(--text-dim); font-size:11px; }
-.beta-discord-checks label { display:flex; gap:7px; align-items:center; }
-.beta-discord-note { margin:12px 0 0; color:var(--text-dimmer); font-size:10px; line-height:1.5; max-width:900px; }
-@media (max-width:700px) { .beta-discord-fields { grid-template-columns:1fr; } }
 
 .beta-settings-surface { width:100%; height:auto; min-height:0; margin:0; padding:0; overflow:visible; position:relative; box-sizing:border-box; }
 .tab.dragging { opacity: .5; cursor: grabbing; transform: scale(.98); }
@@ -3278,7 +3180,6 @@ body.legacy-art-scaling .album-year-grid > .inline-album-dropdown {
 .tab.drop-before::after { left:-9px; }
 .tab.drop-after::before { right:-9px; }
 .tab[draggable="true"] { cursor: grab; }
-
 
 /* ---------------- user navigation / drag-and-drop ---------------- */
 .navigation-editor { display:flex; flex-direction:column; gap:8px; min-height:0; }
@@ -3370,34 +3271,7 @@ input::placeholder, textarea::placeholder { color: var(--text-dimmer); opacity: 
 
 /* Lyrics editor: a deliberate toolbar + writing surface instead of loose native
    controls. */
-.lyrics-editor-toolbar {
-  display: grid;
-  grid-template-columns: minmax(150px, 1fr) auto auto;
-  gap: 8px;
-  align-items: end;
-  padding: 10px;
-  border: 1px solid var(--border);
-  border-radius: 10px;
-  background: var(--control-bg);
-  margin-bottom: 10px;
-}
-.lyrics-editor-toolbar > label:first-child { display:flex; flex-direction:column; gap:5px; color:var(--text-dim); font-size:10px; }
-.lyrics-editor-toolbar input[type="text"], .lyrics-editor-toolbar input:not([type]) { min-height:30px; }
-.lyrics-editor-toolbar label:not(:first-child) {
-  display:flex; align-items:center; gap:8px; min-height:34px; padding:0 9px;
-  border:1px solid var(--border); border-radius:8px; background:var(--control-bg);
-  color:var(--text-dim); cursor:pointer; white-space:nowrap;
-}
-.lyrics-editor-toolbar label:not(:first-child):hover { background:var(--control-bg-hover); border-color:var(--control-border); color:var(--text); }
-.lyrics-editor-toolbar input[type="radio"] {
-  appearance:none; -webkit-appearance:none; width:18px; height:18px; margin:0; flex:0 0 18px;
-  border:1px solid var(--border); border-radius:50%; background:var(--control-track); position:relative;
-}
-.lyrics-editor-toolbar input[type="radio"]::after {
-  content:''; position:absolute; inset:4px; border-radius:50%; background:transparent;
-}
-.lyrics-editor-toolbar input[type="radio"]:checked { border-color:var(--accent-soft); background:var(--accent); }
-.lyrics-editor-toolbar input[type="radio"]:checked::after { background:var(--text); }
+
 .lyrics-editor-text {
   display:block; width:100%; box-sizing:border-box; min-height:300px; padding:12px 13px;
   border:1px solid var(--border); border-radius:10px; background:rgba(0,0,0,.25);
@@ -3418,10 +3292,7 @@ input::placeholder, textarea::placeholder { color: var(--text-dimmer); opacity: 
 .settings-row input[type="checkbox"] { width:34px; min-width:34px; }
 
 /* Log viewer */
-.log-toolbar { display:flex; align-items:flex-end; justify-content:space-between; gap:12px; padding:10px; border:1px solid var(--border); border-radius:10px; background:var(--control-bg); }
-.log-source-label { display:flex; flex-direction:column; gap:5px; color:var(--text-dim); font-size:10px; flex:1; min-width:180px; }
-.log-source-label select { min-height:31px; }
-.log-actions { display:flex; gap:7px; flex-wrap:wrap; }
+
 .log-actions .sidebar-add { width:auto; margin:0; }
 .settings-log-output { width:100%; min-height:320px; max-height:48vh; resize:vertical; box-sizing:border-box; padding:10px 11px; border:1px solid var(--border); border-radius:10px; background:rgba(0,0,0,.28); color:var(--text-dim); font:10px/1.5 ui-monospace,SFMono-Regular,Menlo,monospace; white-space:pre; overflow:auto; user-select:text; }
 .settings-log-output:focus { border-color:var(--accent-soft); }
@@ -3448,15 +3319,11 @@ input::placeholder, textarea::placeholder { color: var(--text-dimmer); opacity: 
 .app-dialog-input:focus { border-color:var(--accent-soft); box-shadow:0 0 0 3px color-mix(in srgb, var(--accent) 10%, transparent); }
 .app-dialog-actions { display:flex; justify-content:flex-end; gap:8px; flex-wrap:wrap; }
 .app-dialog-actions button { min-width:86px; }
-.app-dialog-actions .dialog-danger { border-color:color-mix(in srgb, #ff6f7a 45%, var(--border)); color:#ffb0b7; }
-@media (max-width:650px) { .lyrics-editor-toolbar { grid-template-columns:1fr; } .log-toolbar { align-items:stretch; flex-direction:column; } }
 
 
 /* Podcasts */
 .podcasts-page { padding: 18px 20px 28px; max-width: 1100px; margin: 0 auto; }
-.podcasts-head { display:flex; justify-content:space-between; align-items:flex-end; gap:20px; margin-bottom:18px; }
-.podcasts-head h1 { margin:2px 0 5px; font-size:25px; letter-spacing:-.02em; }
-.podcasts-head p { margin:0; max-width:650px; }
+
 .podcast-search-form { display:flex; gap:7px; min-width:min(420px,45%); }
 .podcast-search-input { flex:1; min-height:34px; padding:8px 11px; border:1px solid var(--border); border-radius:8px; background:rgba(0,0,0,.24); color:var(--text); outline:none; font:inherit; }
 .podcast-search-input:focus { border-color:var(--accent-soft); box-shadow:0 0 0 3px color-mix(in srgb, var(--accent) 10%, transparent); }
@@ -3481,7 +3348,7 @@ input::placeholder, textarea::placeholder { color: var(--text-dimmer); opacity: 
 .podcast-episode-main p { margin:4px 0 0; color:var(--text-dim); font-size:10px; line-height:1.4; }
 .podcast-episode-actions { display:flex; gap:5px; }
 .podcast-episode-actions .sidebar-add { width:auto; margin:0; padding:5px 8px; font-size:10px; }
-@media (max-width:800px) { .podcasts-head { flex-direction:column; align-items:stretch; } .podcast-search-form { min-width:0; } .podcast-episode { grid-template-columns:42px minmax(0,1fr); } .podcast-episode-actions { grid-column:2; } }
+@media (max-width:800px) {  .podcast-search-form { min-width:0; } .podcast-episode { grid-template-columns:42px minmax(0,1fr); } .podcast-episode-actions { grid-column:2; } }
 
 /* Modal stack: each newly-opened Hive overlay receives a higher inline z-index
  * from openModal(), allowing dialogs spawned from another dialog to stay above
@@ -3535,15 +3402,13 @@ input::placeholder, textarea::placeholder { color: var(--text-dimmer); opacity: 
 }
 .navigation-editor-action:hover:not(:disabled) { color:var(--text); border-color:var(--accent-soft); background:var(--control-bg-hover); }
 .navigation-editor-action:disabled { opacity:.35; cursor:default; }
-.navigation-editor-move { font-size:13px; line-height:1; }
+
 .navigation-editor-action.danger:hover { color:var(--danger, #ff8d8d); }
 .navigation-add-divider { margin-top:8px; }
 @media (max-width:700px) {
   .navigation-editor-row { grid-template-columns:1fr; gap:9px; }
   .navigation-editor-actions { justify-content:flex-start; }
 }
-
-
 
 /* ---------------- Build 37: rich navigation labels ---------------- */
 .sidebar-nav-label, .tab-rich-label, .sidebar-divider-label { display:inline-flex; align-items:center; min-width:0; }
@@ -3599,7 +3464,7 @@ input::placeholder, textarea::placeholder { color: var(--text-dimmer); opacity: 
 .podcast-home-favorites { margin:4px 0 12px; padding:12px; border:1px solid var(--border); border-radius:10px; background:var(--control-bg); }
 .podcast-home-head { display:flex; align-items:center; justify-content:space-between; gap:12px; margin-bottom:9px; }
 .podcast-home-head h2 { margin:2px 0 0; font-size:13px; font-weight:700; }
-.podcast-home-kicker { color:var(--text-dimmer); font-size:9px; letter-spacing:.12em; font-weight:700; }
+
 .podcast-favorites { display:grid; grid-template-columns:repeat(auto-fill,minmax(220px,1fr)); gap:7px; }
 .podcast-favorites-empty { color:var(--text-dimmer); font-size:10.5px; padding:8px 2px; }
 .podcast-favorite-card { display:grid; grid-template-columns:34px minmax(0,1fr) auto auto; align-items:center; gap:8px; min-width:0; padding:7px; border:1px solid var(--border); border-radius:8px; background:var(--panel); }
@@ -3658,7 +3523,7 @@ input::placeholder, textarea::placeholder { color: var(--text-dimmer); opacity: 
   box-shadow:0 18px 45px -34px rgba(0,0,0,.9), inset 0 1px 0 rgba(255,255,255,.025);
 }
 .podcasts-hero-copy { min-width:0; }
-.podcast-eyebrow { color:var(--accent); font-size:9px; font-weight:800; letter-spacing:.16em; margin-bottom:6px; }
+
 .podcasts-hero h1 { margin:0 0 7px; font-size:30px; line-height:1; letter-spacing:-.035em; }
 .podcasts-hero p { max-width:650px; margin:0; color:var(--text-dim); font-size:12px; line-height:1.55; }
 .podcast-search-form { display:flex; align-items:center; gap:8px; min-width:0; }
@@ -3674,7 +3539,7 @@ input::placeholder, textarea::placeholder { color: var(--text-dimmer); opacity: 
 .podcast-home-favorites, .podcast-discovery { margin:0 0 12px; padding:15px; border:1px solid var(--border); border-radius:14px; background:var(--control-bg); }
 .podcast-home-head, .podcast-results-head { display:flex; align-items:center; justify-content:space-between; gap:14px; margin-bottom:11px; }
 .podcast-home-head h2, .podcast-results-head h2 { margin:3px 0 0; font-size:14px; font-weight:750; letter-spacing:-.01em; }
-.podcast-home-kicker { color:var(--text-dimmer); font-size:8px; letter-spacing:.14em; font-weight:800; }
+
 .podcast-section-note, .podcast-result-count { color:var(--text-dimmer); font-size:10px; }
 .podcast-favorites { display:grid; grid-template-columns:repeat(auto-fill,minmax(245px,1fr)); gap:8px; }
 .podcast-favorite-card { display:grid; grid-template-columns:46px minmax(0,1fr) auto auto; align-items:center; gap:9px; min-width:0; padding:8px; border:1px solid var(--border); border-radius:10px; background:var(--panel); transition:border-color 120ms ease,transform 120ms ease,background 120ms ease; }
@@ -3751,59 +3616,22 @@ input[type="checkbox"]::before {
 input[type="checkbox"]:checked { background:var(--accent) !important; border-color:var(--accent-soft) !important; box-shadow:0 0 0 2px color-mix(in srgb,var(--accent) 10%,transparent) !important; }
 input[type="checkbox"]:checked::before { transform:translateX(18px) !important; background:var(--text) !important; }
 
-.navigation-pin { min-width:30px; font-size:16px; line-height:1; padding:5px 7px; }
 .navigation-pin.active { color:var(--accent); border-color:var(--accent-soft); background:color-mix(in srgb,var(--accent) 12%,transparent); }
 
-.built-in-theme-grid { display:grid; grid-template-columns:repeat(5,minmax(0,1fr)); gap:8px; }
-.builtin-theme-card { min-width:0; display:flex; flex-direction:column; gap:8px; padding:9px; text-align:left; color:var(--text); background:var(--control-bg); border:1px solid var(--border); border-radius:11px; cursor:pointer; transition:transform 150ms ease,border-color 150ms ease,background 150ms ease,box-shadow 150ms ease; }
-.builtin-theme-card:hover { transform:translateY(-1px); border-color:var(--accent-soft); background:var(--control-bg-hover); }
 .builtin-theme-card.active { border-color:var(--accent); box-shadow:0 0 0 1px color-mix(in srgb,var(--accent) 25%,transparent); }
-.theme-swatch { height:42px; border-radius:8px; border:1px solid rgba(255,255,255,.10); position:relative; overflow:hidden; background:linear-gradient(135deg,var(--swatch-a),var(--swatch-b)); }
-.theme-swatch::after { content:""; position:absolute; left:9px; right:9px; bottom:8px; height:5px; border-radius:99px; background:var(--swatch-accent); box-shadow:0 -9px 0 color-mix(in srgb,var(--swatch-accent) 42%,transparent),0 -18px 0 color-mix(in srgb,var(--swatch-accent) 22%,transparent); }
-.theme-midnight { --swatch-a:#090a0d;--swatch-b:#252630;--swatch-accent:#b9bac2; }
-.theme-ember { --swatch-a:#100b0a;--swatch-b:#39231d;--swatch-accent:#e28b63; }
-.theme-forest { --swatch-a:#08100d;--swatch-b:#17372b;--swatch-accent:#79b79a; }
-.theme-ocean { --swatch-a:#070c12;--swatch-b:#16314b;--swatch-accent:#70a8d6; }
-.theme-violet { --swatch-a:#0d0911;--swatch-b:#342044;--swatch-accent:#a88bd0; }
-.builtin-theme-copy { display:flex; flex-direction:column; gap:3px; min-width:0; }
-.builtin-theme-copy strong { font-size:11px; }
-.builtin-theme-copy small { color:var(--text-dimmer); font-size:9px; line-height:1.35; }
-.theme-subtitle { margin-top:4px; }
-.visualizer-style-picker { display:grid; grid-template-columns:1fr 1fr; gap:8px; }
-.visualizer-style-btn { display:grid; grid-template-columns:54px 1fr; grid-template-rows:auto auto; column-gap:9px; padding:9px; text-align:left; border:1px solid var(--border); border-radius:10px; background:var(--control-bg); color:var(--text); }
+
 .visualizer-style-btn:hover,.visualizer-style-btn.active { border-color:var(--accent-soft); background:var(--control-bg-hover); }
 .visualizer-style-btn.active { box-shadow:0 0 0 1px color-mix(in srgb,var(--accent) 25%,transparent); }
-.visualizer-preview { grid-row:1 / span 2; align-self:center; height:34px; display:flex; align-items:flex-end; gap:3px; padding:5px; border-radius:7px; background:color-mix(in srgb,var(--accent) 7%,var(--panel)); }
-.visualizer-preview i { display:block; width:7px; background:var(--accent); border-radius:5px; }
-.visualizer-preview i:nth-child(1){height:10px}.visualizer-preview i:nth-child(2){height:21px}.visualizer-preview i:nth-child(3){height:16px}.visualizer-preview i:nth-child(4){height:27px}
-.visualizer-preview.edgy i { border-radius:0; transform:skew(-8deg); }
-.visualizer-style-btn strong { font-size:10.5px; align-self:end; }
-.visualizer-style-btn small { color:var(--text-dimmer); font-size:9px; align-self:start; }
 
 /* Full Now Playing visualizer: artwork remains the hero, while the spectrum-like
    animation gives the lower edge a living instrument-panel quality. */
-.np-visualizer-wrap { position:relative; width:100%; height:72px; margin:-2px 0 5px; overflow:hidden; border-radius:10px; background:linear-gradient(to top,color-mix(in srgb,var(--accent) 7%,transparent),transparent 80%); }
-.np-visualizer { position:absolute; inset:0; width:100%; height:100%; display:block; }
-.np-visualizer-glow { position:absolute; left:0; right:0; bottom:-28px; height:54px; pointer-events:none; background:radial-gradient(ellipse at center bottom,color-mix(in srgb,var(--accent) 18%,transparent),transparent 68%); filter:blur(10px); }
-[data-visualizer-style="edgy"] .np-visualizer-wrap { border-radius:5px; }
 
-@media (max-width: 1100px) { .built-in-theme-grid { grid-template-columns:repeat(3,minmax(0,1fr)); } }
-@media (max-width: 650px) { .built-in-theme-grid { grid-template-columns:repeat(2,minmax(0,1fr)); } .visualizer-style-picker { grid-template-columns:1fr; } }
-.np-visualizer-wrap { order:3; flex:0 0 92px; height:92px; margin:0 8px 4px; width:calc(100% - 16px); align-self:center; }
-.np-visualizer-wrap::before { content:""; position:absolute; left:8px; right:8px; bottom:8px; height:1px; background:color-mix(in srgb,var(--accent) 18%,transparent); }
 
 /* Live Now Playing spectrum: native GStreamer supplies the FFT magnitudes. */
-.now-playing-spectrum-page { width:100%; height:100%; min-height:0; display:flex; flex-direction:column; padding:28px 34px 24px; box-sizing:border-box; }
-.now-playing-spectrum-head { display:flex; align-items:flex-end; justify-content:space-between; gap:20px; margin-bottom:22px; }
-.np-spectrum-kicker { font-size:10px; letter-spacing:.14em; font-weight:800; color:var(--text-dimmer); margin-bottom:7px; }
-.now-playing-spectrum-head h1 { margin:0; font-size:30px; line-height:1.1; font-weight:850; }
-.now-playing-spectrum-head p { margin:7px 0 0; color:var(--text-dim); font-size:13px; }
-.np-spectrum-status { border:1px solid var(--border); border-radius:999px; padding:6px 10px; font-size:10px; color:var(--text-dim); background:var(--control-bg); white-space:nowrap; }
+
 .now-playing-spectrum-wrap { position:relative; flex:1 1 auto; min-height:220px; width:100%; overflow:hidden; border-radius:12px; background:color-mix(in srgb,var(--panel) 88%,var(--accent) 12%); border:1px solid var(--border); box-shadow:inset 0 -60px 80px color-mix(in srgb,var(--accent) 6%,transparent); }
 .now-playing-spectrum-wrap canvas { position:absolute; inset:0; width:100%; height:100%; display:block; }
-.now-playing-spectrum-baseline { position:absolute; left:0; right:0; bottom:16px; height:1px; background:color-mix(in srgb,var(--accent) 24%,transparent); pointer-events:none; }
-.now-playing-spectrum-note { margin-top:10px; font-size:10px; color:var(--text-dimmer); }
-@media (max-width:800px) { .now-playing-spectrum-page { padding:20px; } .now-playing-spectrum-head h1 { font-size:23px; } }
+
 
 /* ---------------- Build 49: playlist rich-label editor ---------------- */
 .playlist-label-style-field { display:flex; flex-direction:column; gap:9px; }
@@ -3872,10 +3700,9 @@ select option, select optgroup { background: var(--panel-strong); color: var(--t
 .modal-settings > .settings-tabs { grid-column:1; grid-row:2; }
 .modal-settings > .settings-body { grid-column:2; grid-row:2; min-width:0; }
 .modal-settings > .settings-footer { grid-column:1 / -1; grid-row:3; }
-.theme-control-card { display:flex; flex-direction:column; gap:9px; padding:12px; border:1px solid var(--border); border-radius:10px; background:var(--control-bg); }
-.settings-field-label { color:var(--text-dim); font-size:10px; font-weight:700; }
+
 .theme-description { margin:0; }
-.theme-multiselect { display:grid; grid-template-columns:repeat(3,minmax(0,1fr)); gap:7px; }
+
 .theme-option { display:flex; align-items:center; justify-content:space-between; gap:9px; min-width:0; padding:9px 10px; border:1px solid var(--border); border-radius:8px; background:var(--panel); cursor:pointer; }
 .theme-option:hover { background:var(--control-bg-hover); border-color:var(--accent-soft); }
 .theme-option > span { min-width:0; }
@@ -3889,7 +3716,7 @@ select option, select optgroup { background: var(--panel-strong); color: var(--t
   .settings-tab-btn { width:auto; white-space:nowrap; text-align:center; }
   .modal-settings > .settings-body { grid-column:1; grid-row:3; }
   .modal-settings > .settings-footer { grid-column:1; grid-row:4; }
-  .theme-multiselect { grid-template-columns:1fr; }
+  
 }
 /* Theme option presentation toggles */
 :root[data-hive-glass="off"] .glass,
@@ -3908,7 +3735,7 @@ select option, select optgroup { background: var(--panel-strong); color: var(--t
 .auto-tag-search-row input{width:100%;box-sizing:border-box}
 .auto-tag-search-row .sidebar-add{width:auto;margin:0;min-height:34px;padding:7px 14px;border-radius:8px}
 .auto-tag-status{font-size:12px;color:var(--text-dim);min-height:16px;margin-top:-4px}
-.auto-tag-results{display:flex;flex-direction:column;gap:6px;max-height:236px;overflow:auto;scrollbar-width:thin;flex-shrink:0}
+.auto-tag-results{display:flex;flex-direction:column;gap:6px;max-height:236px;overflow:auto;flex-shrink:0}
 .auto-tag-results:empty{display:none}
 .auto-tag-result{display:grid;grid-template-columns:44px minmax(0,1fr) auto;align-items:center;gap:12px;text-align:left;padding:7px 12px 7px 7px;border:1px solid var(--border);border-radius:10px;background:var(--control-bg);color:inherit;cursor:pointer;transition:border-color .12s,background .12s}
 .auto-tag-result:hover{background:var(--control-bg-hover)}
@@ -3950,7 +3777,6 @@ select option, select optgroup { background: var(--panel-strong); color: var(--t
 .auto-tag-track-note.warning{color:#e6ad62}
 @media(max-width:760px){.auto-tag-search-row{grid-template-columns:1fr}.auto-tag-track-row{grid-template-columns:36px minmax(0,1fr) auto}.auto-tag-track-local{display:none}.auto-tag-hero-cover{width:84px}}
 
-
 /* ---------------- Build 79: settings/navigation + light theme pass ---------------- */
 .settings-tabs { align-content:start; }
 .settings-tab-btn { min-height:36px; font-size:11px; font-weight:650; letter-spacing:.01em; }
@@ -3961,15 +3787,13 @@ select option, select optgroup { background: var(--panel-strong); color: var(--t
 .navigation-editor-name span { max-width:48ch; }
 .navigation-editor-actions { gap:4px; }
 .navigation-editor-action { min-width:30px; min-height:30px; padding:5px 8px; border-radius:8px; }
-.navigation-editor-move { font-size:12px; }
+
 .navigation-editor-switch { min-height:30px; padding:0 8px; border:1px solid var(--border); border-radius:8px; background:var(--control-bg); }
 .navigation-editor-switch input { width:14px; height:14px; }
 .plugin-list-card,.plugin-settings-card { padding:12px; margin-top:7px; border:1px solid var(--border); border-radius:11px; background:var(--control-bg); }
 .plugin-list-card strong { font-size:11px; }
 .plugin-list-meta { margin-top:4px; color:var(--text-dimmer); font-size:9px; }
-.plugin-settings-list { display:flex; flex-direction:column; gap:8px; }
-.plugin-settings-fields { display:flex; flex-direction:column; gap:4px; }
-.hive-plugin-now-playing-panels { display:flex; flex-direction:column; gap:10px; margin-top:12px; }
+
 .hive-plugin-panel { min-width:0; }
 
 html[data-hive-theme="light"] { color-scheme:light; --rating-star-filled: #000000; }
@@ -4018,28 +3842,22 @@ html[data-hive-theme="light"] ::-webkit-scrollbar-thumb { background:rgba(50,60,
 html[data-hive-theme="light"] ::-webkit-scrollbar-thumb:hover { background:rgba(50,60,80,.28); }
 
 /* Build 110 — settings/podcast information polish */
-.settings-tabs { scrollbar-width:thin; }
+
 .settings-tab-btn { position:relative; transition:background 140ms ease,border-color 140ms ease,color 140ms ease,transform 140ms ease; }
 .settings-tab-btn::before { content:""; position:absolute; left:-1px; top:8px; bottom:8px; width:2px; border-radius:2px; background:transparent; }
 .settings-tab-btn.active::before { background:var(--accent); }
 .settings-tab-btn:focus-visible { outline:2px solid color-mix(in srgb,var(--accent) 72%,transparent); outline-offset:2px; }
 .settings-tab-panel:focus-visible { outline:1px solid color-mix(in srgb,var(--accent) 28%,transparent); outline-offset:-1px; border-radius:10px; }
-.settings-card-grid { display:grid; grid-template-columns:repeat(2,minmax(0,1fr)); gap:10px; margin-top:10px; }
-.settings-card { min-width:0; padding:13px; border:1px solid var(--border); border-radius:11px; background:color-mix(in srgb,var(--control-bg) 78%,var(--panel)); }
-.settings-card-title { font-size:12px; font-weight:750; }
-.settings-card-copy { margin:5px 0 10px; color:var(--text-dimmer); font-size:10px; line-height:1.45; }
+
 .settings-primary-action { border-color:color-mix(in srgb,var(--accent) 42%,var(--border)); }
-.settings-subsection-title { margin-top:16px; }
+
 .plugin-list-card { margin-top:0; }
-.plugin-settings-card { margin-top:0; }
-.plugin-settings-card .settings-section-title { margin-bottom:2px; }
-.plugin-settings-card .settings-row { margin-top:2px; }
+
 .podcast-info { padding:12px 2px 18px; }
 .podcast-info-kicker { color:var(--text-dimmer); font-size:9px; font-weight:800; letter-spacing:.13em; margin-bottom:8px; }
 .podcast-info-title { display:block; color:var(--text); font-size:13px; line-height:1.35; }
 .podcast-info-meta { margin-top:4px; color:var(--text-dim); font-size:10px; }
 .podcast-info-description { margin:12px 0 0; color:var(--text-dim); font-size:10.5px; line-height:1.6; }
-@media (max-width:700px) { .settings-card-grid { grid-template-columns:1fr; } }
 
 /* Build 110 — cohesive Settings and Albums-like podcast hierarchy */
 .settings-body { background:color-mix(in srgb,var(--panel) 88%,transparent); }
@@ -4064,16 +3882,13 @@ html[data-hive-theme="light"] ::-webkit-scrollbar-thumb:hover { background:rgba(
 .podcast-episode-actions .sidebar-add { padding:5px 9px; }
 @media(max-width:700px){ .settings-tab-panel{padding:16px 14px 20px;} }
 
-.now-playing-visualizer-loading { width:100%; height:100%; min-height:220px; display:flex; align-items:center; justify-content:center; color:var(--text-dimmer); font-size:10px; letter-spacing:.02em; }
-.now-playing-spectrum-wrap .hive-plugin-now-playing-panels { position:absolute; inset:0; margin:0; }
 .now-playing-spectrum-wrap .hive-plugin-panel { height:100%; }
 
 /* Build 112: the live Spectrum plugin is the Now Playing canvas, not a card. */
-.now-playing-spectrum-page{width:100%;height:100%;min-height:0;display:flex;box-sizing:border-box;padding:10px 12px 12px}
+
 .now-playing-spectrum-wrap{position:relative;flex:1 1 auto;min-height:0;width:100%;overflow:hidden;border:1px solid var(--border);border-radius:14px;background:var(--panel)}
-.now-playing-spectrum-wrap .hive-plugin-now-playing-panels{position:absolute;inset:0;display:block;margin:0;height:100%}
+
 .now-playing-spectrum-wrap .hive-plugin-panel{height:100%;min-height:0}
-.now-playing-spectrum-wrap .hive-spectrum-full{height:100%;min-height:0}
 
 /* Build 113 — Now Playing is a dedicated full-screen visualizer workspace. */
 body.now-playing-mode #queue-panel { display:none; }
@@ -4082,34 +3897,7 @@ body.now-playing-mode #albums-grid,
 body.now-playing-mode #songs-table,
 body.now-playing-mode #artists-grid { display:none !important; }
 body.now-playing-mode #main { padding:0 18px 0; }
-body.now-playing-mode .tab-content-host { width:100%; padding:0; overflow:hidden; }
-.now-playing-visualizer-workspace { width:100%; height:100%; min-height:0; display:flex; flex-direction:column; padding:22px 20px 18px; box-sizing:border-box; overflow:hidden; }
-.now-playing-visualizer-header { flex:0 0 auto; padding:2px 4px 18px; }
-.now-playing-visualizer-kicker { color:var(--text-dimmer); font-size:9px; font-weight:850; letter-spacing:.18em; }
-.now-playing-visualizer-artist { margin-top:5px; color:var(--text); font-size:clamp(22px,2.3vw,34px); line-height:1.05; font-weight:850; letter-spacing:-.025em; }
-.now-playing-visualizer-title { margin-top:6px; color:var(--text-dim); font-size:clamp(13px,1.2vw,17px); line-height:1.2; }
-.now-playing-visualizer-album { margin-top:4px; color:var(--text-dimmer); font-size:10px; line-height:1.3; }
-.now-playing-visualizer-body { flex:1 1 auto; min-height:0; display:grid; grid-template-columns:minmax(0,1fr) clamp(210px,25vw,330px); gap:16px; }
-.now-playing-visualizer-spectrum { position:relative; min-width:0; min-height:0; overflow:hidden; border:1px solid var(--border); border-radius:16px; background:color-mix(in srgb,var(--panel) 94%,var(--accent) 6%); box-shadow:inset 0 -90px 120px color-mix(in srgb,var(--accent) 7%,transparent), 0 18px 55px -42px var(--accent-glow); }
-.now-playing-visualizer-spectrum .hive-plugin-now-playing-panels { position:absolute; inset:0; height:100%; margin:0; display:block; }
-.now-playing-visualizer-spectrum .hive-plugin-panel { height:100%; min-height:0; }
-.now-playing-visualizer-spectrum .hive-spectrum-full { height:100%; min-height:0; border-radius:inherit; background:transparent; }
-.now-playing-visualizer-artwork { min-width:0; display:flex; flex-direction:column; gap:10px; }
-.now-playing-visualizer-art-frame { flex:1 1 auto; min-height:0; overflow:hidden; border:1px solid var(--border); border-radius:16px; background:var(--panel); box-shadow:0 22px 60px -38px var(--accent-glow); }
-.now-playing-visualizer-art-frame img { width:100%; height:100%; min-height:0; display:block; object-fit:cover; background:var(--panel-strong); cursor:zoom-in; }
-.now-playing-visualizer-art-meta { flex:0 0 auto; padding:0 4px 2px; min-width:0; }
-.now-playing-visualizer-art-meta span { display:block; color:var(--text-dimmer); font-size:8px; font-weight:850; letter-spacing:.14em; }
-.now-playing-visualizer-art-meta strong { display:block; margin-top:4px; color:var(--text-dim); font-size:10px; overflow:hidden; text-overflow:ellipsis; white-space:nowrap; }
-@media (max-width:820px) {
-  .now-playing-visualizer-workspace { padding:14px 12px 12px; }
-  .now-playing-visualizer-body { grid-template-columns:minmax(0,1fr) 170px; gap:10px; }
-}
-@media (max-width:620px) {
-  .now-playing-visualizer-body { grid-template-columns:1fr; grid-template-rows:minmax(0,1fr) 150px; }
-  .now-playing-visualizer-artwork { flex-direction:row; min-height:0; }
-  .now-playing-visualizer-art-frame { width:150px; flex:0 0 150px; }
-  .now-playing-visualizer-art-meta { align-self:center; }
-}
+
 
 /* Build 114 — professional artwork editing workflow */
 .artwork-quick-actions{display:flex;gap:7px;align-items:center;flex-wrap:wrap;padding:0 0 8px;border-bottom:1px solid var(--border);margin-bottom:8px}
@@ -4120,7 +3908,7 @@ body.now-playing-mode .tab-content-host { width:100%; padding:0; overflow:hidden
 .artwork-library-blank-card .artwork-library-actions{gap:5px}
 
 /* First-party plugin catalog */
-.plugin-card-head{display:flex;align-items:flex-start;justify-content:space-between;gap:14px}.plugin-enable{display:flex;align-items:center;gap:7px;flex:0 0 auto;font-size:9px;color:var(--text-dim);font-weight:700}.plugin-enable input{margin:0}.plugin-list-card.disabled{opacity:.58}.plugin-list-card.enabled{box-shadow:inset 2px 0 0 var(--accent)}.hive-signal-rings,.hive-session-pulse{font-family:system-ui,sans-serif}
+.plugin-card-head{display:flex;align-items:flex-start;justify-content:space-between;gap:14px}.plugin-list-card.disabled{opacity:.58}.plugin-list-card.enabled{box-shadow:inset 2px 0 0 var(--accent)}
 
 /* Build 119 — restore Legacy album art scaling semantics across every album
    browser surface. The older fixed rules above remain the legacy mode; these
@@ -4169,7 +3957,7 @@ body:not(.legacy-art-scaling) .artist-inline-browser .artist-inline-album-grid >
   animation: metadataEmbedSpin .7s linear infinite;
 }
 @keyframes metadataEmbedSpin { to { transform: rotate(360deg); } }
-.audio-integrity-actions { display:flex; align-items:center; gap:8px; flex-wrap:wrap; margin:8px 0; }
+
 .audio-integrity-actions .sidebar-add { width:auto; margin:0; }
 .audio-integrity-actions .settings-inline-action {
   border:0;
@@ -4185,7 +3973,7 @@ body:not(.legacy-art-scaling) .artist-inline-browser .artist-inline-album-grid >
 .audio-integrity-progress { padding:10px; border:1px solid var(--border); border-radius:9px; background:var(--control-bg); margin:8px 0; }
 .audio-integrity-progress-head { display:flex; justify-content:space-between; gap:10px; font-size:11px; color:var(--text); margin-bottom:7px; }
 .audio-integrity-progress progress { width:100%; height:7px; }
-.audio-integrity-current { overflow-wrap:anywhere; }
+
 .audio-integrity-results { display:flex; flex-direction:column; gap:7px; padding:10px; border:1px solid var(--border); border-radius:9px; background:var(--control-bg); max-height:280px; overflow:auto; font-size:11px; }
 .audio-integrity-results > strong { color:var(--text); }
 .audio-integrity-results > span { color:var(--text-dim); }
@@ -4203,7 +3991,7 @@ body:not(.legacy-art-scaling) .artist-inline-browser .artist-inline-album-grid >
 /* ---------------- player glass controls / surface preferences ----------------
    Presentation only: these attributes never alter playback, queue, or layout
    ownership. The queue itself remains the clipping boundary. */
-.playbar-glass-controls { display:flex; align-items:center; gap:3px; flex:none; }
+
 .playbar-glass-settings { width:28px !important; height:28px !important; padding:5px !important; }
 .playbar-glass-settings svg { width:16px !important; height:16px !important; }
 .glass-toggle {
@@ -4212,23 +4000,11 @@ body:not(.legacy-art-scaling) .artist-inline-browser .artist-inline-album-grid >
   line-height:1.2; cursor:pointer; transition:background 160ms,border-color 160ms,color 160ms;
 }
 .glass-toggle.active { color:var(--text); background:color-mix(in srgb,var(--accent) 12%,transparent); border-color:color-mix(in srgb,var(--accent) 32%,var(--control-border)); }
-.playbar-glass-menu {
-  position:fixed; z-index:10000; width:230px; padding:12px;
-  border:1px solid color-mix(in srgb,var(--accent) 18%,var(--border));
-  border-radius:14px; background:color-mix(in srgb,var(--accent) 7%,var(--panel-strong));
-  backdrop-filter:blur(var(--blur)) saturate(140%); -webkit-backdrop-filter:blur(var(--blur)) saturate(140%);
-  box-shadow:0 18px 50px rgba(0,0,0,.35);
-}
+
 .playbar-glass-menu.hidden { display:none !important; }
-.playbar-glass-menu-header { display:flex; align-items:flex-start; justify-content:space-between; gap:10px; margin-bottom:8px; }
-.playbar-glass-menu-header strong { display:block; font-size:12px; }
-.playbar-glass-menu-header span { display:block; margin-top:3px; font-size:10px; color:var(--text-dimmer); }
-.playbar-glass-menu-options { display:flex; flex-direction:column; gap:3px; }
-.playbar-glass-menu-options label { display:flex; align-items:center; justify-content:space-between; padding:8px 7px; border-radius:8px; color:var(--text); font-size:11px; }
-.playbar-glass-menu-options label:hover { background:var(--control-track); }
+
 #queue-panel { overflow:hidden; clip-path:inset(0 round var(--radius)); }
 #queue-list { min-height:0; overflow-y:auto; }
-
 
 /* ---------------- Build 162 optional themed Electron window chrome ---------------- */
 #topbar {
@@ -4440,29 +4216,9 @@ html.theme-window-bar-enabled .window-titlebar-row .window-control { height: 24p
   backdrop-filter: none !important;
   -webkit-backdrop-filter: none !important;
 }
-.glass-settings-card {
-  margin:10px 0 16px;
-  padding:14px 16px;
-  border:1px solid var(--border);
-  border-radius:12px;
-  background:color-mix(in srgb,var(--panel-strong) 55%,transparent);
-}
-.glass-settings-title { margin-bottom:4px; }
-.settings-subsection-title {
-  margin:14px 0 4px;
-  font-size:10px;
-  font-weight:700;
-  text-transform:uppercase;
-  letter-spacing:.08em;
-  color:var(--text-dim);
-}
-.glass-settings-card .settings-row {
-  min-height:34px;
-  padding:6px 2px;
-}
+
 .glass-settings-card .sidebar-add { margin-top:9px; margin-bottom:0; }
 .glass-settings-card .sidebar-add:first-of-type { margin-top:4px; }
-.glass-settings-card > .settings-hint.settings-section-copy { margin:3px 2px 0; }
 
 /* ---------------- Build 163 themed window chrome polish ----------------
    Keep the empty space around the app controls draggable while every actual
@@ -4503,9 +4259,11 @@ html.theme-window-bar-enabled .topbar-tabs {
    center, without moving .topbar-right (search/status), which stays where it
    already was. */
 html.theme-window-bar-enabled .topbar-left,
-html.theme-window-bar-enabled .topbar-tabs {
+html.theme-window-bar-enabled .topbar-tabs,
+html.theme-window-bar-enabled .topbar-right .search-box {
   transform: translateY(-16px);
 }
+/* The search box is lifted with the brand and tabs, so all three share one line (it sat 16 px lower). */
 /* Build 244: the library search is part of the same navigation row as the
    brand and tabs. Keep it in normal flex flow so its vertical position follows
    the tabs when the user resizes the top bar, rather than pinning it to a fixed
@@ -4694,7 +4452,6 @@ html.theme-window-bar-enabled .window-control-close {
   .playlist-info-label-field .playlist-label-style-choice { min-width: 68px; }
 }
 
-
 /* ---------------- Build 177: Playlist Details compact controls ---------------- */
 .playlist-info-header-actions { display:flex; align-items:center; gap:6px; }
 .playlist-info-save-pill {
@@ -4739,17 +4496,14 @@ html.theme-window-bar-enabled .window-control-close {
 }
 
 /* Build 187 — compact plugin manager */
-.plugin-import-bar { display:flex; align-items:center; justify-content:space-between; gap:16px; margin-top:10px; padding:13px 14px; border:1px solid var(--border); border-radius:11px; background:color-mix(in srgb,var(--control-bg) 78%,var(--panel)); }
-.plugin-import-copy { display:flex; flex-direction:column; gap:4px; min-width:0; }
-.plugin-import-copy strong { font-size:12px; }
-.plugin-import-copy span { color:var(--text-dimmer); font-size:10px; line-height:1.45; }
+
 .plugin-card-actions { display:flex; align-items:center; gap:7px; flex:none; }
 .plugin-card-actions .sidebar-add { min-height:28px; }
 .plugin-settings-modal { width:min(620px,calc(100vw - 40px)); max-height:min(720px,calc(100vh - 40px)); overflow:hidden; }
 .plugin-settings-modal .modal-body { overflow:auto; }
 .plugin-settings-modal .settings-row { margin-top:2px; }
 .plugin-settings-empty { color:var(--text-dimmer); font-size:11px; padding:8px 0; }
-@media(max-width:720px){ .plugin-import-bar{align-items:flex-start;flex-direction:column;} .plugin-card-actions{width:100%;} }
+@media(max-width:720px){  .plugin-card-actions{width:100%;} }
 
 /* Build 199 tag-editor polish: one consistent control language. */
 .tag-editor-tabs { gap:6px; padding-left:14px; padding-right:14px; }
@@ -4789,11 +4543,11 @@ html.theme-window-bar-enabled .window-control-close {
 .lyrics-result-top span { color:var(--text-dimmer); font-size:9px; }
 .tag-lyrics-preview { max-height:185px; overflow:auto; padding:9px 11px; color:var(--text-dim); font-size:10px; line-height:1.55; }
 .tag-lyrics-preview pre { margin:0; white-space:pre-wrap; font:inherit; color:var(--text-dim); }
-.tag-lyrics-empty { color:var(--text-dimmer); padding:12px 2px; }
+
 .lyrics-edit-fields { display:grid; grid-template-columns:minmax(0,1fr) minmax(0,1fr); gap:10px 12px; margin-bottom:10px; }
 .lyrics-edit-fields > label { display:flex; flex-direction:column; gap:5px; color:var(--text-dim); font-size:10px; }
 .lyrics-edit-fields input[type="text"], .lyrics-edit-fields input:not([type]) { min-height:36px; box-sizing:border-box; }
-.lyrics-edit-label { display:flex; flex-direction:column; gap:5px; color:var(--text-dim); font-size:10px; }
+
 .lyrics-editor-text { min-height:250px; }
 .lyrics-edit-options { display:flex; align-items:flex-start; gap:10px; margin-top:10px; }
 .lyrics-edit-options .tag-check { flex:0 0 auto; }
@@ -4843,7 +4597,6 @@ body.plugin-view-mode #content-tools { width:100%; height:100%; margin:0; }
 .hive-plugin-view-missing strong { color:var(--text); font-size:15px; }
 @media(max-width:720px){ .sandbox-launcher{padding:20px 14px 24px}.sandbox-app-grid{grid-template-columns:repeat(2,minmax(0,1fr));gap:10px}.sandbox-app-card{min-height:155px;padding:15px}.sandbox-app-icon{width:58px;height:58px}.sandbox-plugin-view{padding:12px}.sandbox-plugin-head{grid-template-columns:1fr;gap:8px}.sandbox-plugin-head h1{font-size:23px} }
 
-
 /* ---------------- Build 225 — settings + context-menu cohesion ---------------- */
 .modal-settings { width:min(920px,calc(100vw - 40px)); height:min(760px,calc(100vh - 40px)); border-radius:14px; }
 .settings-tabs { flex-basis:142px; width:142px; padding:10px 8px; gap:2px; background:color-mix(in srgb,var(--panel-strong) 92%,transparent); }
@@ -4860,17 +4613,13 @@ body.plugin-view-mode #content-tools { width:100%; height:100%; margin:0; }
 .settings-row > span { font-size:11px; line-height:1.3; }
 .settings-hint { font-size:8.5px; line-height:1.3; }
 .settings-row input[type="checkbox"] { width:30px; min-width:30px; height:17px; }
-.settings-form-grid { gap:8px; }
-.settings-form-grid label { gap:5px; font-size:9.5px; }
-.settings-form-grid input, .settings-form-grid select { min-height:30px; }
-.settings-divider { margin:3px 0; }
+
 .settings-status { min-height:16px; padding:6px 8px; font-size:9.5px; }
 .settings-footer { padding:8px 14px; }
 .settings-footer .settings-save-status { margin-right:auto; color:var(--text-dimmer); font-size:9px; }
 .settings-footer .sidebar-add { min-width:78px; padding:6px 10px; }
 .theme-control-card, .glass-settings-card, .diagnostics-card, .plugin-list-card, .plugin-settings-card { padding:9px; border-radius:9px; }
-.theme-control-card { gap:7px; }
-.theme-multiselect { gap:6px; }
+
 .theme-option { padding:7px 8px; border-radius:7px; }
 .theme-option strong { font-size:9.5px; }
 .theme-option small { font-size:8px; }
@@ -4931,19 +4680,9 @@ html[data-hive-theme="light"] .inline-track-row.selected .inline-track-dur { col
 .device-card-main strong { overflow:hidden; text-overflow:ellipsis; white-space:nowrap; }
 .device-card-meta { color:var(--text-dim); font-size:12px; }
 .device-card-actions { display:flex; flex-wrap:wrap; gap:8px; justify-content:flex-end; }
-.settings-inline-value { color:var(--text-dim); font-size:13px; }
 
 /* Build 267 settings navigation: separate the editable sidebar from the pinned top bar. */
-.navigation-settings-layout{display:grid;gap:18px;}
-.navigation-settings-section{padding:14px;border:1px solid var(--border);border-radius:12px;background:color-mix(in srgb,var(--panel-strong) 72%,var(--control-bg));}
-.navigation-settings-head{display:flex;align-items:flex-start;justify-content:space-between;gap:12px;margin-bottom:10px;}
-.navigation-settings-head>div{display:flex;flex-direction:column;gap:3px;min-width:0;}
-.navigation-settings-head strong{font-size:13px;color:var(--text);}
-.navigation-settings-head span{font-size:10.5px;line-height:1.4;color:var(--text-dim);}
-.navigation-settings-section .navigation-editor{gap:6px;}
-.navigation-settings-section .navigation-editor-row{background:var(--control-bg);}
-.navigation-settings-section .navigation-editor-row:hover{background:var(--control-bg-hover);}
-.navigation-settings-section .navigation-editor-section-hint{margin:9px 2px 0;}
+
 .device-destination-row { display:grid; grid-template-columns:minmax(150px, .7fr) minmax(180px, 1.3fr) auto; gap:8px; align-items:center; margin-top:10px; }
 .device-destination-row .settings-select, .device-destination-row .settings-input { min-width:0; width:100%; box-sizing:border-box; }
 .settings-input { min-height:34px; padding:7px 10px; border:1px solid var(--border); border-radius:8px; background:var(--control-bg); color:var(--text); font:inherit; }
@@ -4966,16 +4705,14 @@ html[data-hive-theme="light"] .inline-track-row.selected .inline-track-dur { col
        .settings-row           text left, control right (min 52px tall)
    ====================================================================== */
 /* Every dialog (Settings, the tag editor, playlist info, smart playlists,
-   confirmations...) is a solid surface in the theme's own colors. It deliberately
-   does not follow the song: the cover palette overwrites --accent (and the
-   --control-* values derived from it) on <html>, and .glass adds a tinted,
-   see-through blur -- both made Settings change color track to track and
-   hurt readability. Re-derive everything here from --theme-accent (the
-   theme's own accent, recorded by syncThemeModeFromCss) and paint the panel
-   opaque over --bg. */
+   confirmations...) is a solid surface painted opaque over --bg, so it stays
+   readable whatever is behind it. 2026-11: dialogs follow the live accent (the
+   theme's, or the playing album's when covers colour the app) like the rest of
+   Hive; they used to be pinned to the theme's base accent (--theme-accent),
+   which left every dialog and Settings grey on a coloured app. The control
+   colours are re-derived here from that accent. */
 #settings-modal,
 .modal-overlay {
-  --accent: var(--theme-accent, #9aa0ad);
   --accent-soft: color-mix(in srgb, var(--accent) 30%, transparent);
   --accent-glow: color-mix(in srgb, var(--accent) 20%, transparent);
   --control-bg: color-mix(in srgb, var(--accent) 5%, var(--panel-strong));
@@ -4983,13 +4720,8 @@ html[data-hive-theme="light"] .inline-track-row.selected .inline-track-dur { col
   --control-bg-active: color-mix(in srgb, var(--accent) 20%, var(--panel-strong));
   --control-border: color-mix(in srgb, var(--accent) 16%, var(--border));
 }
-/* Light mode: Settings and the tag editor use an Apple-style cyan-blue
-   (system blue #0A84FF) instead of the Light theme's indigo accent.
-   #settings-modal is itself a .modal-overlay, so it is named here too: the ID
-   in the rule above outranked a plain .modal-overlay override, and Settings
-   kept the indigo while the other dialogs turned blue. */
-html[data-hive-theme="light"] #settings-modal,
-html[data-hive-theme="light"] .modal-overlay { --accent: #0A84FF; }
+/* Light mode: dialogs and Settings follow the live accent like the rest of
+   the app (the old fixed Apple-blue pin was removed at the user's request). */
 #settings-modal .modal-settings.glass,
 #settings-modal .modal-settings,
 .modal-overlay > .modal.glass,
@@ -5144,7 +4876,7 @@ html[data-hive-theme="light"] .modal-overlay { --accent: #0A84FF; }
 #settings-modal .settings-primary-action,
 #settings-modal .settings-save-primary {
   background: var(--accent) !important; border-color: var(--accent) !important;
-  color: var(--bg) !important; box-shadow: none;
+  color: var(--accent-contrast, var(--bg)) !important; box-shadow: none;
 }
 #settings-modal .settings-primary-action:hover:not(:disabled),
 #settings-modal .settings-save-primary:hover { filter: brightness(1.08); }
@@ -5271,7 +5003,6 @@ html[data-hive-theme="light"] .modal-overlay { --accent: #0A84FF; }
 .tag-time-summary.is-error { color: #ff7b72; }
 @media (max-width: 700px) { .tag-time-row { flex-direction: column; align-items: stretch; } }
 
-
 /* ======================================================================
    Dialogs -- shared design (2026-09 dialog audit)
    Every right-click edit page and confirmation follows the Settings rules:
@@ -5324,7 +5055,7 @@ html[data-hive-theme="light"] .modal-overlay { --accent: #0A84FF; }
   border: 1px solid var(--accent) !important; border-radius: 9px;
   /* Text in the theme background color: dark on Dark's silver accent, light
      on Light's blue -- fixed white was unreadable on the silver. */
-  background: var(--accent) !important; color: var(--bg) !important;
+  background: var(--accent) !important; color: var(--accent-contrast, var(--bg)) !important;
   font-size: 12.5px; font-weight: 600; box-shadow: none;
 }
 .modal-overlay .modal :is(.settings-primary-action, .settings-save-primary, .playlist-info-save-pill, .cover-picker-apply):hover:not(:disabled) { filter: brightness(1.08); }
@@ -5433,7 +5164,7 @@ html[data-hive-theme="light"] .inline-track-row.selected .inline-track-artist { 
 .column-browser.hidden{display:none}
 .column-browser-pane{display:flex;flex-direction:column;min-height:0;border:1px solid var(--border);border-radius:10px;background:var(--control-bg);overflow:hidden}
 .column-browser-head{padding:7px 10px;font-size:11px;font-weight:600;letter-spacing:.06em;text-transform:uppercase;color:var(--text-dim);border-bottom:1px solid var(--border)}
-.column-browser-list{flex:1;min-height:0;overflow:auto;scrollbar-width:thin;padding:3px}
+.column-browser-list{flex:1;min-height:0;overflow:auto;padding:3px}
 .column-browser-item{display:flex;align-items:center;justify-content:space-between;gap:8px;width:100%;text-align:left;border:0;border-radius:6px;background:transparent;color:var(--text);padding:4px 8px;font-size:12.5px;cursor:pointer}
 .column-browser-item span{min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
 .column-browser-item small{flex-shrink:0;color:var(--text-dimmer);font-variant-numeric:tabular-nums;font-size:11px}
@@ -5600,7 +5331,7 @@ html.hb-hide-pb-eq #btn-eq, html.hb-hide-pb-mini #btn-mini, html.hb-hide-pb-thea
 .radio-empty{font-size:13px;color:var(--text-dim);padding:6px 8px}
 
 /* ---------------- Apple Music browser ---------------- */
-.apple-modal{width:min(900px,95vw)}
+
 .apple-grid{display:grid;grid-template-columns:repeat(auto-fill,minmax(140px,1fr));gap:12px;margin-bottom:8px}
 .apple-card{display:flex;flex-direction:column;gap:4px;padding:8px;border:0;border-radius:10px;background:transparent;color:var(--text);text-align:left;cursor:pointer;min-width:0}
 .apple-card:hover{background:var(--control-bg)}
@@ -5638,12 +5369,12 @@ html.hb-hide-pb-eq #btn-eq, html.hb-hide-pb-mini #btn-mini, html.hb-hide-pb-thea
    to use the full width instead of being boxed to a fixed max-width. */
 .streaming-page { width:100%; min-height:100%; box-sizing:border-box; padding:30px 34px 34px; max-width:none; }
 .streaming-page-head { display:flex; align-items:flex-end; margin-bottom:18px; }
-.streaming-kicker { color:var(--text-dimmer); font-size:9px; font-weight:850; letter-spacing:.18em; }
+
 .streaming-page h1 { margin:6px 0 0; font-size:30px; line-height:1.05; font-weight:850; letter-spacing:-.025em; }
 .streaming-page-head p { margin:7px 0 0; color:var(--text-dim); font-size:12px; max-width:720px; line-height:1.5; }
 .streaming-page-bar { display:flex; align-items:center; gap:12px; min-height:28px; margin:4px 0 6px; }
 .streaming-page-bar .organise-status { margin:0; }
-.streaming-setting { display:flex; align-items:center; gap:10px; font-size:13px; color:var(--text-dim); margin:6px 0 4px; }
+
 .spotify-page-list { display:flex; flex-direction:column; gap:2px; }
 .spotify-page-list .radio-row { cursor:pointer; }
 .spotify-page-list .radio-logo { object-fit:cover; }
@@ -5657,7 +5388,7 @@ html.hb-hide-pb-eq #btn-eq, html.hb-hide-pb-mini #btn-mini, html.hb-hide-pb-thea
 .sidebar-nav-cover{width:18px;height:18px;border-radius:4px;object-fit:cover;margin-right:8px;flex:0 0 18px;vertical-align:middle}
 /* A picture beside a label (Favorites, a playlist with its own image): both on the row's centre line, not the text baseline. */
 .sidebar-nav-cover + .sidebar-nav-label{vertical-align:middle}
-.apple-shelf{display:grid;grid-auto-flow:column;grid-auto-columns:150px;gap:10px;overflow-x:auto;padding-bottom:8px;margin-bottom:6px;scrollbar-width:thin}
+.apple-shelf{display:grid;grid-auto-flow:column;grid-auto-columns:150px;gap:10px;overflow-x:auto;padding-bottom:8px;margin-bottom:6px}
 .apple-song-shelf .apple-track{grid-template-columns:36px minmax(0,1fr) 48px 32px 32px}
 .apple-track-art{width:36px;height:36px;border-radius:5px;object-fit:cover}
 .spotify-library-card{cursor:default}
@@ -5682,7 +5413,7 @@ html.hb-hide-pb-eq #btn-eq, html.hb-hide-pb-mini #btn-mini, html.hb-hide-pb-thea
 .streaming-search-btn:active{transform:scale(.97)}
 .streaming-page .streaming-search-input:focus,.streaming-page .streaming-search-input:focus-visible{background:transparent!important;box-shadow:none!important;outline:none!important;border:0!important}
 .spotify-page-list .radio-row{grid-template-columns:36px minmax(0,1fr) auto auto auto}
-.spotify-library-grid > .spotify-library-actions{grid-column:1/-1}
+
 .apple-tracks:not(.apple-song-shelf) .apple-track{grid-template-columns:28px 36px minmax(0,1fr) auto 48px 32px}
 span.apple-track-art{display:block;background:rgba(255,255,255,.06)}
 
@@ -5740,7 +5471,7 @@ span.apple-track-art{display:block;background:rgba(255,255,255,.06)}
 .theme-select-group .settings-select{flex:1 1 auto;min-width:180px;width:auto}
 
 /* Spotify page: your Spotify playlists as cards like the Playlists tab */
-.spotify-library-grid.spotify-library-ready { display:grid; grid-template-columns:repeat(auto-fill, minmax(168px, 1fr)); gap:14px; margin-bottom:10px; }
+
 .spotify-library-card { display:flex; flex-direction:column; gap:6px; min-width:0; padding:9px; border-radius:12px; border:1px solid transparent; transition:background .15s ease, border-color .15s ease; }
 .spotify-library-card:hover { background:color-mix(in srgb, var(--control-bg) 80%, transparent); border-color:var(--border); }
 .spotify-library-art { width:100%; aspect-ratio:1; object-fit:cover; border-radius:9px; display:block; box-shadow:0 8px 22px rgba(0,0,0,.28); }
@@ -5780,7 +5511,6 @@ span.apple-track-art{display:block;background:rgba(255,255,255,.06)}
 .search-box .search-online:hover { color: var(--accent); background: color-mix(in srgb, var(--accent) 12%, transparent); }
 .search-box .search-online:focus-visible { outline: 2px solid var(--accent); outline-offset: 1px; }
 
-
 /* Soulseek downloads: a pill above the player bar, opening the Downloads list */
 .soulseek-pill{position:fixed;left:50%;bottom:104px;transform:translateX(-50%);z-index:301;display:flex;align-items:center;gap:9px;max-width:min(520px,calc(100vw - 32px));height:34px;padding:0 15px 0 8px;border-radius:999px;
   background:linear-gradient(color-mix(in srgb,var(--accent) 6%,var(--panel-strong,var(--panel))),color-mix(in srgb,var(--accent) 6%,var(--panel-strong,var(--panel)))),var(--bg);border:1px solid var(--border);color:var(--text);font:inherit;font-size:12.5px;cursor:pointer;
@@ -5800,7 +5530,7 @@ span.apple-track-art{display:block;background:rgba(255,255,255,.06)}
   box-shadow:0 26px 56px -24px rgba(0,0,0,.7),0 0 26px -18px var(--accent-glow);color:var(--text);overflow:hidden}
 .soulseek-panel-head{display:flex;align-items:center;justify-content:space-between;gap:12px;padding:14px 16px 10px}
 .soulseek-panel-head h3{margin:0;font-size:15px;font-weight:650}
-.soulseek-panel-list{overflow:auto;padding:0 8px 10px;scrollbar-width:thin}
+.soulseek-panel-list{overflow:auto;padding:0 8px 10px}
 .soulseek-empty{margin:4px 8px 10px;color:var(--text-dim);font-size:13px;line-height:1.45}
 .soulseek-job{border-radius:10px;padding:2px 0}
 .soulseek-job+.soulseek-job{border-top:1px solid color-mix(in srgb,var(--border) 70%,transparent)}
@@ -5842,3 +5572,648 @@ span.apple-track-art{display:block;background:rgba(255,255,255,.06)}
 #queue-list.is-empty::before { content: 'Songs you play line up here. Use Play next or Add to queue to add more.'; display: block; padding: 18px 14px; color: var(--text-dim); font-size: 12px; line-height: 1.5; text-align: center; }
 #lyrics-text:empty::before { content: 'Lyrics for the playing song show here.'; display: block; padding: 14px 10px; color: var(--text-dim); font-size: 12px; line-height: 1.5; text-align: center; }
 .empty-state[data-collection-empty] { margin-top: 64px; }
+
+/* While a panel is being resized: transitions and hover effects pause (they were redone on every
+   frame of the drag), and the panels under the pointer don't react to it. The glass stays as it is. */
+html.panel-resizing * { transition: none !important; }
+html.panel-resizing #main, html.panel-resizing #sidebar, html.panel-resizing #queue-panel { pointer-events: none; }
+
+/* =====================================================================================
+   Settings, 2026-11 redesign: a desktop settings window in the manner of current macOS and
+   Windows settings. One block, last in the file, so it is easy to read and to take out.
+   - The window sits on a darkened, blurred backdrop, not over the busy library.
+   - No separate title bar or footer: the section list has the title, Close floats top right,
+     changes save as they are made (Escape or Close to leave).
+   - Sections have icons; the active one is an accent pill.
+   - Cards are roomier and readable; every control lines up in the right-hand column.
+   ===================================================================================== */
+#settings-modal.modal-overlay { background: color-mix(in srgb, #000 58%, transparent) !important; backdrop-filter: blur(14px) saturate(1.1); -webkit-backdrop-filter: blur(14px) saturate(1.1); }
+#settings-modal .modal-settings {
+  width: min(1120px, calc(100vw - 48px)) !important;
+  height: min(820px, calc(100vh - 48px)) !important;
+  grid-template-columns: 236px minmax(0, 1fr) !important;
+  grid-template-rows: auto minmax(0, 1fr) !important;
+  border-radius: 18px !important;
+  border: 1px solid color-mix(in srgb, var(--text) 10%, transparent) !important;
+  box-shadow: 0 30px 90px rgba(0, 0, 0, .55), 0 0 0 1px rgba(0, 0, 0, .25) !important;
+  overflow: hidden;
+  position: relative;
+  background: color-mix(in srgb, var(--bg) 92%, var(--text) 2%) !important;
+}
+/* The title sits over the section list; Close floats over the page. */
+#settings-modal .modal-settings > .modal-header {
+  grid-column: 1 !important; grid-row: 1 !important;
+  padding: 22px 20px 10px 22px !important; border: 0 !important; background: transparent !important;
+}
+#settings-modal .modal-settings > .modal-header h3 { font-size: 20px !important; font-weight: 700 !important; letter-spacing: -0.01em; }
+#settings-modal .modal-settings > .modal-header .modal-close {
+  position: absolute; top: 14px; right: 14px; z-index: 5;
+  width: 34px; height: 34px; border-radius: 50%; display: grid; place-items: center;
+  background: color-mix(in srgb, var(--text) 7%, transparent) !important; border: 0 !important; color: var(--text-dim);
+}
+#settings-modal .modal-settings > .modal-header .modal-close:hover { background: color-mix(in srgb, var(--text) 14%, transparent) !important; color: var(--text); }
+#settings-modal .settings-footer { display: none !important; }
+
+/* The section list: the window's left column, a shade apart, from the title down. */
+#settings-modal .modal-settings::before {
+  content: ""; position: absolute; inset: 0 auto 0 0; width: 236px;
+  background: color-mix(in srgb, var(--text) 3.5%, transparent);
+  border-right: 1px solid color-mix(in srgb, var(--text) 7%, transparent);
+  pointer-events: none;
+}
+#settings-modal .settings-tabs {
+  grid-column: 1 !important; grid-row: 2 !important;
+  padding: 6px 12px 16px !important; gap: 2px !important; border: 0 !important; background: transparent !important;
+  flex-wrap: nowrap !important; overflow-y: auto; position: relative; z-index: 1;
+}
+/* The header stays in the flow (static), so Close is placed against the window, top right. */
+#settings-modal .modal-settings > .modal-header { position: static !important; }
+#settings-modal .settings-tabs input[type="search"], #settings-modal .settings-tabs .settings-search, #settings-modal .settings-tabs input {
+  height: 34px !important; border-radius: 10px !important; margin-bottom: 8px !important; padding: 0 12px !important;
+  background: color-mix(in srgb, var(--text) 6%, transparent) !important; border: 1px solid transparent !important; font-size: 13px !important;
+}
+#settings-modal .settings-tabs input:focus { border-color: var(--accent) !important; outline: none !important; }
+#settings-modal .settings-tab-btn {
+  display: flex !important; align-items: center; gap: 11px;
+  height: 36px !important; padding: 0 12px !important; border-radius: 10px !important;
+  font-size: 13.5px !important; font-weight: 500 !important; color: var(--text-dim) !important;
+  background: transparent !important; border: 0 !important; box-shadow: none !important; text-align: left;
+}
+#settings-modal .settings-tab-btn::before {
+  content: ""; display: block !important; position: static !important; flex: none; width: 17px; height: 17px; background: currentColor;
+  -webkit-mask-size: contain; mask-size: contain; -webkit-mask-repeat: no-repeat; mask-repeat: no-repeat; opacity: .85;
+}
+#settings-modal .settings-tab-btn:hover { background: color-mix(in srgb, var(--text) 6%, transparent) !important; color: var(--text) !important; }
+#settings-modal .settings-tab-btn.active {
+  background: color-mix(in srgb, var(--accent) 22%, transparent) !important; color: var(--text) !important;
+}
+#settings-modal .settings-tab-btn.active::before { opacity: 1; background: var(--accent); }
+#settings-modal .settings-tab-btn:focus-visible { outline: 2px solid var(--accent) !important; outline-offset: 1px; }
+
+/* The page. */
+#settings-modal .settings-body { grid-column: 2 !important; grid-row: 1 / -1 !important; overflow-y: auto; scroll-padding-top: 20px; }
+#settings-modal .settings-tab-panel { padding: 34px 44px 48px 40px !important; max-width: 820px; }
+#settings-modal .settings-tab-panel > h2, #settings-modal .settings-panel-title, #settings-modal .settings-tab-panel > header h2 {
+  font-size: 26px !important; font-weight: 700 !important; letter-spacing: -0.015em; margin: 0 0 4px !important;
+}
+#settings-modal .settings-panel-desc, #settings-modal .settings-tab-panel > header p { font-size: 13.5px !important; color: var(--text-dim) !important; margin-bottom: 22px !important; }
+
+/* Cards. */
+#settings-modal .settings-section {
+  background: color-mix(in srgb, var(--text) 3.5%, transparent) !important;
+  border: 1px solid color-mix(in srgb, var(--text) 8%, transparent) !important;
+  border-radius: 14px !important; padding: 6px 20px 8px !important; margin: 0 0 18px !important; box-shadow: none !important;
+}
+#settings-modal .settings-section-head { padding: 16px 0 10px !important; border: 0 !important; margin: 0 !important; }
+#settings-modal .settings-section-title { font-size: 15px !important; font-weight: 650 !important; color: var(--text) !important; letter-spacing: 0; text-transform: none !important; }
+#settings-modal .settings-section-desc { font-size: 12.5px !important; color: var(--text-dim) !important; line-height: 1.45; margin-top: 3px !important; }
+
+/* Rows: label and hint on the left, the control in a right-hand column. */
+#settings-modal .settings-row {
+  display: flex !important; align-items: center !important; justify-content: space-between; gap: 24px !important;
+  min-height: 56px; padding: 12px 0 !important;
+  border-top: 1px solid color-mix(in srgb, var(--text) 7%, transparent) !important;
+}
+#settings-modal .settings-row-text { flex: 1 1 auto; min-width: 0; }
+#settings-modal .settings-row-label { font-size: 13.5px !important; font-weight: 550 !important; color: var(--text) !important; }
+#settings-modal .settings-hint { font-size: 12.25px !important; line-height: 1.45 !important; color: var(--text-dim) !important; margin-top: 2px; display: block; max-width: 56ch; }
+#settings-modal .settings-row > :last-child:not(.settings-row-text) { flex: none; }
+
+/* Controls: one height, one shape. */
+#settings-modal select, #settings-modal .settings-select {
+  height: 34px !important; min-width: 180px; max-width: 260px; border-radius: 9px !important; padding: 0 30px 0 12px !important; font-size: 13px !important;
+}
+#settings-modal .theme-select-group { display: flex; align-items: center; gap: 8px; min-width: 0; }
+#settings-modal .theme-select-group select { width: 220px !important; }
+#settings-modal .sidebar-add, #settings-modal .settings-row button:not(.theme-shuffle-btn):not(.settings-icon-btn):not([role="switch"]) {
+  height: 34px !important; padding: 0 14px !important; border-radius: 9px !important; font-size: 13px !important; font-weight: 550 !important;
+  background: color-mix(in srgb, var(--text) 8%, transparent) !important; border: 1px solid color-mix(in srgb, var(--text) 10%, transparent) !important; color: var(--text) !important;
+}
+#settings-modal .sidebar-add:hover, #settings-modal .settings-row button:not(.theme-shuffle-btn):hover { background: color-mix(in srgb, var(--text) 13%, transparent) !important; }
+#settings-modal input[type="text"], #settings-modal input[type="password"], #settings-modal input[type="number"], #settings-modal input[type="url"] {
+  height: 34px !important; border-radius: 9px !important; font-size: 13px !important;
+}
+/* Switches: one knob (the old .tag-check knob doubled the global one), and a visible focus ring. */
+#settings-modal input[type="checkbox"]:focus-visible, input[type="checkbox"]:focus-visible { outline: 2px solid var(--accent) !important; outline-offset: 2px !important; }
+.tag-check::after { content: none !important; display: none !important; }
+
+/* Section icons. */
+#settings-modal .settings-tab-btn[data-settings-tab="general"]::before { -webkit-mask-image: url("data:image/svg+xml,%3Csvg%20xmlns%3D%22http%3A//www.w3.org/2000/svg%22%20viewBox%3D%220%200%2024%2024%22%20fill%3D%22none%22%20stroke%3D%22black%22%20stroke-width%3D%222%22%20stroke-linecap%3D%22round%22%20stroke-linejoin%3D%22round%22%3E%3Cpath%20d%3D%22M9%2018V5l12-2v13%22/%3E%3Ccircle%20cx%3D%226%22%20cy%3D%2218%22%20r%3D%223%22/%3E%3Ccircle%20cx%3D%2218%22%20cy%3D%2216%22%20r%3D%223%22/%3E%3C/svg%3E"); mask-image: url("data:image/svg+xml,%3Csvg%20xmlns%3D%22http%3A//www.w3.org/2000/svg%22%20viewBox%3D%220%200%2024%2024%22%20fill%3D%22none%22%20stroke%3D%22black%22%20stroke-width%3D%222%22%20stroke-linecap%3D%22round%22%20stroke-linejoin%3D%22round%22%3E%3Cpath%20d%3D%22M9%2018V5l12-2v13%22/%3E%3Ccircle%20cx%3D%226%22%20cy%3D%2218%22%20r%3D%223%22/%3E%3Ccircle%20cx%3D%2218%22%20cy%3D%2216%22%20r%3D%223%22/%3E%3C/svg%3E"); }
+#settings-modal .settings-tab-btn[data-settings-tab="library"]::before { -webkit-mask-image: url("data:image/svg+xml,%3Csvg%20xmlns%3D%22http%3A//www.w3.org/2000/svg%22%20viewBox%3D%220%200%2024%2024%22%20fill%3D%22none%22%20stroke%3D%22black%22%20stroke-width%3D%222%22%20stroke-linecap%3D%22round%22%20stroke-linejoin%3D%22round%22%3E%3Cpath%20d%3D%22M4%204v16M8%204v16M12%204l4%2016M17%204l3%2016%22/%3E%3C/svg%3E"); mask-image: url("data:image/svg+xml,%3Csvg%20xmlns%3D%22http%3A//www.w3.org/2000/svg%22%20viewBox%3D%220%200%2024%2024%22%20fill%3D%22none%22%20stroke%3D%22black%22%20stroke-width%3D%222%22%20stroke-linecap%3D%22round%22%20stroke-linejoin%3D%22round%22%3E%3Cpath%20d%3D%22M4%204v16M8%204v16M12%204l4%2016M17%204l3%2016%22/%3E%3C/svg%3E"); }
+#settings-modal .settings-tab-btn[data-settings-tab="tags"]::before { -webkit-mask-image: url("data:image/svg+xml,%3Csvg%20xmlns%3D%22http%3A//www.w3.org/2000/svg%22%20viewBox%3D%220%200%2024%2024%22%20fill%3D%22none%22%20stroke%3D%22black%22%20stroke-width%3D%222%22%20stroke-linecap%3D%22round%22%20stroke-linejoin%3D%22round%22%3E%3Cpath%20d%3D%22M3%2012V4h8l9%209-8%208z%22/%3E%3Ccircle%20cx%3D%227.5%22%20cy%3D%227.5%22%20r%3D%221.5%22/%3E%3C/svg%3E"); mask-image: url("data:image/svg+xml,%3Csvg%20xmlns%3D%22http%3A//www.w3.org/2000/svg%22%20viewBox%3D%220%200%2024%2024%22%20fill%3D%22none%22%20stroke%3D%22black%22%20stroke-width%3D%222%22%20stroke-linecap%3D%22round%22%20stroke-linejoin%3D%22round%22%3E%3Cpath%20d%3D%22M3%2012V4h8l9%209-8%208z%22/%3E%3Ccircle%20cx%3D%227.5%22%20cy%3D%227.5%22%20r%3D%221.5%22/%3E%3C/svg%3E"); }
+#settings-modal .settings-tab-btn[data-settings-tab="organise"]::before { -webkit-mask-image: url("data:image/svg+xml,%3Csvg%20xmlns%3D%22http%3A//www.w3.org/2000/svg%22%20viewBox%3D%220%200%2024%2024%22%20fill%3D%22none%22%20stroke%3D%22black%22%20stroke-width%3D%222%22%20stroke-linecap%3D%22round%22%20stroke-linejoin%3D%22round%22%3E%3Cpath%20d%3D%22M3%207h6l2%202h10v10H3z%22/%3E%3Cpath%20d%3D%22M3%207V5h6l2%202%22/%3E%3C/svg%3E"); mask-image: url("data:image/svg+xml,%3Csvg%20xmlns%3D%22http%3A//www.w3.org/2000/svg%22%20viewBox%3D%220%200%2024%2024%22%20fill%3D%22none%22%20stroke%3D%22black%22%20stroke-width%3D%222%22%20stroke-linecap%3D%22round%22%20stroke-linejoin%3D%22round%22%3E%3Cpath%20d%3D%22M3%207h6l2%202h10v10H3z%22/%3E%3Cpath%20d%3D%22M3%207V5h6l2%202%22/%3E%3C/svg%3E"); }
+#settings-modal .settings-tab-btn[data-settings-tab="layout"]::before { -webkit-mask-image: url("data:image/svg+xml,%3Csvg%20xmlns%3D%22http%3A//www.w3.org/2000/svg%22%20viewBox%3D%220%200%2024%2024%22%20fill%3D%22none%22%20stroke%3D%22black%22%20stroke-width%3D%222%22%20stroke-linecap%3D%22round%22%20stroke-linejoin%3D%22round%22%3E%3Crect%20x%3D%223%22%20y%3D%224%22%20width%3D%2218%22%20height%3D%2216%22%20rx%3D%222%22/%3E%3Cpath%20d%3D%22M9%204v16M3%209h6%22/%3E%3C/svg%3E"); mask-image: url("data:image/svg+xml,%3Csvg%20xmlns%3D%22http%3A//www.w3.org/2000/svg%22%20viewBox%3D%220%200%2024%2024%22%20fill%3D%22none%22%20stroke%3D%22black%22%20stroke-width%3D%222%22%20stroke-linecap%3D%22round%22%20stroke-linejoin%3D%22round%22%3E%3Crect%20x%3D%223%22%20y%3D%224%22%20width%3D%2218%22%20height%3D%2216%22%20rx%3D%222%22/%3E%3Cpath%20d%3D%22M9%204v16M3%209h6%22/%3E%3C/svg%3E"); }
+#settings-modal .settings-tab-btn[data-settings-tab="hotkeys"]::before { -webkit-mask-image: url("data:image/svg+xml,%3Csvg%20xmlns%3D%22http%3A//www.w3.org/2000/svg%22%20viewBox%3D%220%200%2024%2024%22%20fill%3D%22none%22%20stroke%3D%22black%22%20stroke-width%3D%222%22%20stroke-linecap%3D%22round%22%20stroke-linejoin%3D%22round%22%3E%3Crect%20x%3D%222%22%20y%3D%226%22%20width%3D%2220%22%20height%3D%2212%22%20rx%3D%222%22/%3E%3Cpath%20d%3D%22M6%2010h.01M10%2010h.01M14%2010h.01M18%2010h.01M7%2014h10%22/%3E%3C/svg%3E"); mask-image: url("data:image/svg+xml,%3Csvg%20xmlns%3D%22http%3A//www.w3.org/2000/svg%22%20viewBox%3D%220%200%2024%2024%22%20fill%3D%22none%22%20stroke%3D%22black%22%20stroke-width%3D%222%22%20stroke-linecap%3D%22round%22%20stroke-linejoin%3D%22round%22%3E%3Crect%20x%3D%222%22%20y%3D%226%22%20width%3D%2220%22%20height%3D%2212%22%20rx%3D%222%22/%3E%3Cpath%20d%3D%22M6%2010h.01M10%2010h.01M14%2010h.01M18%2010h.01M7%2014h10%22/%3E%3C/svg%3E"); }
+#settings-modal .settings-tab-btn[data-settings-tab="appearance"]::before { -webkit-mask-image: url("data:image/svg+xml,%3Csvg%20xmlns%3D%22http%3A//www.w3.org/2000/svg%22%20viewBox%3D%220%200%2024%2024%22%20fill%3D%22none%22%20stroke%3D%22black%22%20stroke-width%3D%222%22%20stroke-linecap%3D%22round%22%20stroke-linejoin%3D%22round%22%3E%3Ccircle%20cx%3D%2212%22%20cy%3D%2212%22%20r%3D%229%22/%3E%3Cpath%20d%3D%22M12%203a9%209%200%200%200%200%2018z%22%20fill%3D%22black%22/%3E%3C/svg%3E"); mask-image: url("data:image/svg+xml,%3Csvg%20xmlns%3D%22http%3A//www.w3.org/2000/svg%22%20viewBox%3D%220%200%2024%2024%22%20fill%3D%22none%22%20stroke%3D%22black%22%20stroke-width%3D%222%22%20stroke-linecap%3D%22round%22%20stroke-linejoin%3D%22round%22%3E%3Ccircle%20cx%3D%2212%22%20cy%3D%2212%22%20r%3D%229%22/%3E%3Cpath%20d%3D%22M12%203a9%209%200%200%200%200%2018z%22%20fill%3D%22black%22/%3E%3C/svg%3E"); }
+#settings-modal .settings-tab-btn[data-settings-tab="navigation"]::before { -webkit-mask-image: url("data:image/svg+xml,%3Csvg%20xmlns%3D%22http%3A//www.w3.org/2000/svg%22%20viewBox%3D%220%200%2024%2024%22%20fill%3D%22none%22%20stroke%3D%22black%22%20stroke-width%3D%222%22%20stroke-linecap%3D%22round%22%20stroke-linejoin%3D%22round%22%3E%3Crect%20x%3D%223%22%20y%3D%224%22%20width%3D%2218%22%20height%3D%2216%22%20rx%3D%222%22/%3E%3Cpath%20d%3D%22M8%204v16%22/%3E%3C/svg%3E"); mask-image: url("data:image/svg+xml,%3Csvg%20xmlns%3D%22http%3A//www.w3.org/2000/svg%22%20viewBox%3D%220%200%2024%2024%22%20fill%3D%22none%22%20stroke%3D%22black%22%20stroke-width%3D%222%22%20stroke-linecap%3D%22round%22%20stroke-linejoin%3D%22round%22%3E%3Crect%20x%3D%223%22%20y%3D%224%22%20width%3D%2218%22%20height%3D%2216%22%20rx%3D%222%22/%3E%3Cpath%20d%3D%22M8%204v16%22/%3E%3C/svg%3E"); }
+#settings-modal .settings-tab-btn[data-settings-tab="connections"]::before { -webkit-mask-image: url("data:image/svg+xml,%3Csvg%20xmlns%3D%22http%3A//www.w3.org/2000/svg%22%20viewBox%3D%220%200%2024%2024%22%20fill%3D%22none%22%20stroke%3D%22black%22%20stroke-width%3D%222%22%20stroke-linecap%3D%22round%22%20stroke-linejoin%3D%22round%22%3E%3Cpath%20d%3D%22M10%2014a4%204%200%200%200%205.66%200l3-3a4%204%200%200%200-5.66-5.66l-1%201%22/%3E%3Cpath%20d%3D%22M14%2010a4%204%200%200%200-5.66%200l-3%203a4%204%200%200%200%205.66%205.66l1-1%22/%3E%3C/svg%3E"); mask-image: url("data:image/svg+xml,%3Csvg%20xmlns%3D%22http%3A//www.w3.org/2000/svg%22%20viewBox%3D%220%200%2024%2024%22%20fill%3D%22none%22%20stroke%3D%22black%22%20stroke-width%3D%222%22%20stroke-linecap%3D%22round%22%20stroke-linejoin%3D%22round%22%3E%3Cpath%20d%3D%22M10%2014a4%204%200%200%200%205.66%200l3-3a4%204%200%200%200-5.66-5.66l-1%201%22/%3E%3Cpath%20d%3D%22M14%2010a4%204%200%200%200-5.66%200l-3%203a4%204%200%200%200%205.66%205.66l1-1%22/%3E%3C/svg%3E"); }
+#settings-modal .settings-tab-btn[data-settings-tab="plugins"]::before { -webkit-mask-image: url("data:image/svg+xml,%3Csvg%20xmlns%3D%22http%3A//www.w3.org/2000/svg%22%20viewBox%3D%220%200%2024%2024%22%20fill%3D%22none%22%20stroke%3D%22black%22%20stroke-width%3D%222%22%20stroke-linecap%3D%22round%22%20stroke-linejoin%3D%22round%22%3E%3Cpath%20d%3D%22M9%203v4M15%203v4M7%207h10v5a5%205%200%200%201-10%200zM12%2017v4%22/%3E%3C/svg%3E"); mask-image: url("data:image/svg+xml,%3Csvg%20xmlns%3D%22http%3A//www.w3.org/2000/svg%22%20viewBox%3D%220%200%2024%2024%22%20fill%3D%22none%22%20stroke%3D%22black%22%20stroke-width%3D%222%22%20stroke-linecap%3D%22round%22%20stroke-linejoin%3D%22round%22%3E%3Cpath%20d%3D%22M9%203v4M15%203v4M7%207h10v5a5%205%200%200%201-10%200zM12%2017v4%22/%3E%3C/svg%3E"); }
+#settings-modal .settings-tab-btn[data-settings-tab="logs"]::before { -webkit-mask-image: url("data:image/svg+xml,%3Csvg%20xmlns%3D%22http%3A//www.w3.org/2000/svg%22%20viewBox%3D%220%200%2024%2024%22%20fill%3D%22none%22%20stroke%3D%22black%22%20stroke-width%3D%222%22%20stroke-linecap%3D%22round%22%20stroke-linejoin%3D%22round%22%3E%3Cpath%20d%3D%22M3%2012h4l3-8%204%2016%203-8h4%22/%3E%3C/svg%3E"); mask-image: url("data:image/svg+xml,%3Csvg%20xmlns%3D%22http%3A//www.w3.org/2000/svg%22%20viewBox%3D%220%200%2024%2024%22%20fill%3D%22none%22%20stroke%3D%22black%22%20stroke-width%3D%222%22%20stroke-linecap%3D%22round%22%20stroke-linejoin%3D%22round%22%3E%3Cpath%20d%3D%22M3%2012h4l3-8%204%2016%203-8h4%22/%3E%3C/svg%3E"); }
+/* Icon-only buttons in Settings (refresh devices, random theme): a 34 px square, the icon centred. */
+#settings-modal .settings-icon-btn, #settings-modal .theme-shuffle-btn {
+  width: 34px !important; height: 34px !important; padding: 0 !important; display: grid !important; place-items: center; flex: none;
+  border-radius: 9px !important; background: color-mix(in srgb, var(--text) 8%, transparent) !important; border: 1px solid color-mix(in srgb, var(--text) 10%, transparent) !important; color: var(--text) !important;
+}
+#settings-modal .settings-icon-btn:hover, #settings-modal .theme-shuffle-btn:hover { background: color-mix(in srgb, var(--text) 13%, transparent) !important; }
+
+/* =====================================================================================
+   Main window, 2026-11 redesign. The same desktop layout (tabs, sidebar, library, queue, player
+   bar), finished like a current desktop app: quieter panel edges, sentence-case labels, a clear
+   view switch, and a player bar with a real play button and readable text. One block, last.
+   ===================================================================================== */
+/* Panels: one radius, a hairline edge instead of a bordered box. */
+#sidebar, #main, #queue-panel {
+  border-radius: 16px !important;
+  border: 1px solid color-mix(in srgb, var(--text) 7%, transparent) !important;
+  box-shadow: 0 1px 0 color-mix(in srgb, var(--text) 4%, transparent) inset, 0 12px 32px rgba(0, 0, 0, .18) !important;
+}
+/* Labels: sentence case, a touch larger and dimmer, never shouting. */
+.sidebar-heading, .queue-header {
+  text-transform: none !important; letter-spacing: 0 !important;
+  font-size: 12px !important; font-weight: 650 !important; color: var(--text-dim) !important;
+}
+.queue-header { padding: 2px 6px 10px !important; }
+#lyrics-section .sidebar-heading { text-align: left !important; padding-left: 8px; }
+/* Lyrics read straight on the sidebar (the box inside the box went). */
+#lyrics-section .sidebar-lyrics { border: 0 !important; background: transparent !important; box-shadow: none !important; }
+#lyrics-section .lyrics-scroll { font-size: 13px; line-height: 1.6; color: var(--text-dim); padding: 4px 8px !important; }
+/* Sidebar entries: the open one is an accent pill, as in Settings. */
+#sidebar .sidebar-item { border-radius: 10px !important; }
+#sidebar .sidebar-item.active {
+  background: color-mix(in srgb, var(--accent) 20%, transparent) !important; box-shadow: none !important; color: var(--text) !important;
+}
+
+/* The view switch: Albums | Tracks | Artists as one segmented control; Years a separate chip. */
+.view-btn {
+  height: 30px !important; padding: 0 13px !important; border-radius: 8px !important; font-size: 12.5px !important; font-weight: 550 !important;
+  border: 0 !important; background: transparent !important; color: var(--text-dim) !important;
+}
+.view-btn:hover { color: var(--text) !important; background: color-mix(in srgb, var(--text) 6%, transparent) !important; }
+.view-btn.active { background: color-mix(in srgb, var(--text) 12%, transparent) !important; color: var(--text) !important; box-shadow: 0 1px 2px rgba(0,0,0,.25) !important; }
+.view-btn[data-mode] { margin: 0 !important; }
+.view-btn[data-mode="albums"] { margin-left: 6px !important; }
+.view-btn.years-toggle { border: 1px solid color-mix(in srgb, var(--text) 10%, transparent) !important; }
+.view-btn.years-toggle[aria-pressed="true"] { color: var(--text) !important; border-color: color-mix(in srgb, var(--accent) 45%, transparent) !important; }
+
+/* Player bar: taller, a filled play button, readable title, a progress line you can see. */
+#playbar { height: 84px !important; min-height: 84px !important; }
+#playbar .pb-cover { width: 54px !important; height: 54px !important; border-radius: 9px !important; box-shadow: 0 6px 18px rgba(0,0,0,.35); }
+#playbar .pb-title { font-size: 14px !important; font-weight: 650 !important; max-width: 240px !important; }
+#playbar #pb-artist { font-size: 12.5px !important; color: var(--text-dim) !important; }
+#btn-play {
+  width: 42px !important; height: 42px !important; border-radius: 50% !important;
+  background: var(--accent) !important; color: var(--accent-contrast, var(--bg)) !important; border: 0 !important;
+  box-shadow: 0 4px 16px var(--accent-glow) !important;
+}
+#btn-play:hover { filter: brightness(1.08); transform: scale(1.04); }
+#btn-play:active { transform: scale(.96); }
+#btn-play svg, #btn-play img { width: 18px; height: 18px; }
+#btn-prev, #btn-next { opacity: .85; }
+#btn-prev:hover, #btn-next:hover { opacity: 1; }
+.time { font-size: 11.5px !important; color: var(--text-dim) !important; font-variant-numeric: tabular-nums; width: 40px !important; }
+#pb-seek::-webkit-slider-runnable-track { height: 5px !important; }
+#pb-seek::-webkit-slider-thumb { opacity: 0; transition: opacity .12s; margin-top: -4px !important; }
+#playbar:hover #pb-seek::-webkit-slider-thumb, #pb-seek:focus-visible::-webkit-slider-thumb { opacity: 1; }
+
+/* Scrollbars: Hive's own everywhere (a standard scrollbar-width switched Chromium to the native one,
+   with arrow buttons), slim and rounded, the thumb inset from the edge, no buttons. */
+::-webkit-scrollbar { width: 11px !important; height: 11px !important; }
+::-webkit-scrollbar-button { display: none !important; width: 0; height: 0; }
+::-webkit-scrollbar-thumb { border-radius: 999px !important; border: 3px solid transparent !important; background-clip: padding-box !important; background-color: color-mix(in srgb, var(--text) 18%, transparent) !important; }
+::-webkit-scrollbar-thumb:hover { background-color: color-mix(in srgb, var(--text) 32%, transparent) !important; }
+::-webkit-scrollbar-track, ::-webkit-scrollbar-corner { background: transparent !important; }
+/* "N selected": a pill floating centred just above the player bar (it sat at the sidebar's foot). */
+#selection-status:not(.hidden) {
+  position: fixed !important; left: 50% !important; bottom: 100px !important; transform: translateX(-50%); z-index: 60;
+  margin: 0 !important; width: auto !important; max-width: 60vw; padding: 7px 16px !important; border-radius: 999px !important;
+  background: color-mix(in srgb, var(--accent) 88%, var(--bg)) !important; color: var(--accent-contrast, var(--bg)) !important; border: 0 !important;
+  font-size: 12.5px !important; font-weight: 650 !important; box-shadow: 0 10px 30px rgba(0,0,0,.4) !important; pointer-events: auto;
+}
+
+/* An open album: its panel tinted from the album's own cover, a clear title, the cover with depth. */
+.inline-album-dropdown {
+  border-radius: 16px !important; padding: 20px !important;
+  border: 1px solid color-mix(in srgb, var(--album-tint, var(--accent)) 22%, transparent) !important;
+  background:
+    radial-gradient(120% 140% at 0% 0%, color-mix(in srgb, var(--album-tint, var(--accent)) 30%, transparent), transparent 60%),
+    color-mix(in srgb, var(--album-tint, var(--accent)) 9%, var(--panel-strong)) !important;
+  box-shadow: 0 24px 60px -28px rgba(0,0,0,.55) !important;
+  transition: background .35s ease, border-color .35s ease;
+}
+.inline-album-content { grid-template-columns: 196px minmax(0,1fr) !important; gap: 24px !important; }
+.inline-album-cover { width: 196px !important; border-radius: 10px !important; box-shadow: 0 16px 36px rgba(0,0,0,.45); }
+.inline-album-head strong { font-size: 20px !important; font-weight: 750 !important; letter-spacing: -0.01em; line-height: 1.2; }
+.inline-album-head span { font-size: 12.5px !important; color: var(--text-dim) !important; margin-top: 2px; }
+.inline-album-head { padding: 2px 4px 12px !important; border-bottom: 1px solid color-mix(in srgb, var(--text) 9%, transparent); margin-bottom: 6px; }
+.inline-track-row { border-radius: 8px !important; }
+.inline-track-row:hover { background: color-mix(in srgb, var(--text) 7%, transparent) !important; }
+
+/* =====================================================================================
+   Dialogs, 2026-11 redesign: every dialog (tag editor, playlists, smart playlists, imports) in
+   the same shape as Settings: 16 px corners, a hairline edge and a soft shadow, a clear title,
+   buttons of one height with the main action filled in the accent colour.
+   ===================================================================================== */
+.modal-overlay:not(#settings-modal) > .modal {
+  border-radius: 16px !important;
+  border: 1px solid color-mix(in srgb, var(--text) 10%, transparent) !important;
+  box-shadow: 0 30px 80px rgba(0, 0, 0, .5), 0 0 0 1px rgba(0, 0, 0, .2) !important;
+}
+.modal-overlay:not(#settings-modal) > .modal > .modal-header h3 { font-size: 17px !important; font-weight: 700 !important; letter-spacing: -0.01em; }
+.modal-overlay:not(#settings-modal) > .modal > .modal-header .modal-close {
+  width: 32px; height: 32px; border-radius: 50% !important; display: grid; place-items: center;
+  background: color-mix(in srgb, var(--text) 7%, transparent) !important; border: 0 !important;
+}
+.tag-actions { display: flex !important; align-items: center !important; justify-content: flex-end; gap: 8px !important; }
+.tag-actions .tag-status-line { margin-right: auto; font-size: 12px; color: var(--text-dim); min-width: 0; }
+.tag-actions .sidebar-add {
+  height: 34px !important; padding: 0 16px !important; border-radius: 9px !important; font-size: 13px !important; font-weight: 600 !important;
+  background: color-mix(in srgb, var(--text) 8%, transparent) !important; border: 1px solid color-mix(in srgb, var(--text) 10%, transparent) !important; color: var(--text) !important;
+}
+.tag-actions .settings-primary-action, .tag-actions .settings-save-primary {
+  background: var(--accent) !important; color: var(--accent-contrast, var(--bg)) !important; border-color: transparent !important;
+}
+/* Tag editor fields: labels in sentence case, one step clearer. */
+#tag-modal .musicbee-field-row > label, #tag-modal label { font-size: 12px; color: var(--text-dim); font-weight: 600; }
+#tag-modal .musicbee-field-row > label::first-letter { text-transform: uppercase; }
+#tag-modal input:not([type="checkbox"]), #tag-modal textarea, #tag-modal select { border-radius: 9px !important; font-size: 13px !important; }
+#tag-modal input:not([type="checkbox"]):focus, #tag-modal textarea:focus { border-color: var(--accent) !important; box-shadow: 0 0 0 3px color-mix(in srgb, var(--accent) 22%, transparent) !important; outline: none !important; }
+
+/* Right-click menus: solid enough that what's behind never shows through the text, frosted, rounder;
+   a destructive item (Delete from disk) reads as one, in red, before you hover it. */
+#context-menu {
+  background: color-mix(in srgb, var(--panel-strong) 94%, var(--bg)) !important;
+  backdrop-filter: blur(22px) saturate(1.2) !important; -webkit-backdrop-filter: blur(22px) saturate(1.2) !important;
+  border: 1px solid color-mix(in srgb, var(--text) 11%, transparent) !important;
+  border-radius: 12px !important; padding: 5px !important;
+  box-shadow: 0 18px 50px rgba(0,0,0,.45), 0 0 0 1px rgba(0,0,0,.2) !important;
+}
+#context-menu .context-item { border-radius: 8px !important; min-height: 32px; }
+#context-menu .context-item:hover { background: color-mix(in srgb, var(--accent) 18%, transparent) !important; }
+#context-menu .context-item.danger, #context-menu .context-item.danger * { color: #ff8a8a !important; }
+#context-menu .context-item.danger:hover { background: rgba(255, 90, 90, .14) !important; }
+html[data-hive-theme="light"] #context-menu .context-item.danger, html[data-hive-theme="light"] #context-menu .context-item.danger * { color: #c62828 !important; }
+
+/* The Playlists page: no all-caps eyebrow; its buttons as the toolbar's, New playlist the main one;
+   source tags in sentence case. */
+.playlist-manager-title { font-size: 26px !important; font-weight: 750 !important; letter-spacing: -0.015em; }
+.playlist-manager-create { gap: 8px !important; }
+.playlist-manager-create .sidebar-add {
+  height: 32px !important; padding: 0 14px !important; border-radius: 9px !important; font-size: 13px !important; font-weight: 600 !important;
+  background: color-mix(in srgb, var(--text) 8%, transparent) !important; border: 1px solid color-mix(in srgb, var(--text) 10%, transparent) !important; color: var(--text) !important;
+}
+.playlist-manager-create .playlist-new-primary { background: var(--accent) !important; color: var(--accent-contrast, var(--bg)) !important; border-color: transparent !important; }
+.smart-badge { text-transform: none !important; letter-spacing: 0 !important; font-size: 11px !important; font-weight: 600 !important; border-radius: 6px !important; }
+
+/* ===== Desktop redesign 7 (2026-11): Podcasts, Apple Music, Spotify, History ===== */
+/* Section headings read as quiet sentence-case titles, not tracked-out caps. */
+.radio-heading { margin:26px 0 10px !important; font-size:15px !important; font-weight:700 !important; letter-spacing:-.005em !important; text-transform:none !important; color:var(--text) !important; }
+.radio-heading:first-child { margin-top:8px !important; }
+/* Page titles share one size and weight across the streaming pages and Podcasts. */
+.streaming-page-head h1, .podcasts-hero h1 { font-size:26px !important; font-weight:750 !important; letter-spacing:-.02em !important; line-height:1.1 !important; margin:0 0 6px !important; }
+.streaming-page-head p, .podcasts-hero-copy p { font-size:12.5px !important; line-height:1.5 !important; color:var(--text-dim) !important; max-width:62ch; }
+.podcast-home-head h2, .podcast-results-head h2 { font-size:15px !important; font-weight:700 !important; margin:0 !important; }
+.podcasts-hero, .podcast-home-favorites, .podcast-discovery { border-radius:14px !important; }
+/* Column headers in song lists: sentence case, readable size. */
+.song-header-btn { text-transform:none !important; letter-spacing:0 !important; font-size:11.5px !important; font-weight:600 !important; color:var(--text-dim) !important; }
+.song-header-btn:hover { color:var(--text) !important; background:color-mix(in srgb, var(--text) 6%, transparent) !important; }
+/* The Podcasts header stacks its search under the title when the page is narrow,
+   instead of squeezing the description to one word per line. */
+.podcasts-hero { grid-template-columns:repeat(auto-fit, minmax(min(100%, 300px), 1fr)) !important; row-gap:16px !important; }
+/* Small helper notes on the Podcasts page were 10px at 3.8:1; readable now. */
+.podcast-section-note, .podcast-favorites-empty, .podcast-empty-state span { font-size:11.5px !important; color:var(--text-dim) !important; }
+/* Keyboard focus on Settings' dropdowns and search field (they had none). */
+#settings-modal select:focus-visible, #settings-modal input:not([type=checkbox]):not([type=radio]):not([type=range]):focus-visible, #settings-modal textarea:focus-visible {
+  outline: 2px solid var(--accent) !important; outline-offset: 2px !important; border-color: transparent !important;
+}
+/* Theater mode panel headings in sentence case, like the rest of the app. */
+.theater-mode h4 { text-transform:none !important; letter-spacing:-.005em !important; font-size:14px !important; font-weight:700 !important; color:var(--text) !important; }
+/* Now-playing cover on the right: sharp corners when chosen in its right-click menu. */
+html.np-cover-sharp .np-cover-stage, html.np-cover-sharp .np-cover-stage img, html.np-cover-sharp .np-cover-stage::before, html.np-cover-sharp .np-cover-stage::after { border-radius: 0px !important; }
+
+/* ===== Right-click menus, round 2 (2026-11): one themed surface for the menu and every
+   submenu (the main menu was neutral black while its submenus were accent-tinted). ===== */
+:root { --menu-tint: color-mix(in srgb, var(--accent) 12%, var(--panel-strong)); }
+#context-menu, #context-menu .context-submenu,
+#context-menu .context-submenu-wrap:has(.context-rating-item) > .context-submenu {
+  background: linear-gradient(var(--menu-tint), var(--menu-tint)), var(--bg) !important;
+  backdrop-filter: blur(22px) saturate(1.2) !important; -webkit-backdrop-filter: blur(22px) saturate(1.2) !important;
+  border: 1px solid color-mix(in srgb, var(--accent) 22%, color-mix(in srgb, var(--text) 10%, transparent)) !important;
+  border-radius: 12px !important;
+  box-shadow: 0 18px 50px rgba(0,0,0,.42), 0 0 0 1px rgba(0,0,0,.18) !important;
+}
+#context-menu .context-submenu { padding: 5px !important; }
+#context-menu .context-item:hover, #context-menu .context-submenu-wrap:hover > .context-submenu-trigger,
+#context-menu .context-submenu-wrap.keyboard-open > .context-submenu-trigger {
+  background: color-mix(in srgb, var(--accent) 20%, transparent) !important;
+}
+#context-menu .context-submenu-trigger .context-arrow { color: var(--text-dim) !important; }
+#context-menu .context-submenu-wrap:hover > .context-submenu-trigger .context-arrow { color: var(--accent) !important; }
+/* A menu opened with the mouse shows no focus box on its first item; keyboard use still does. */
+#context-menu[data-opened-by="pointer"] .context-item:focus-visible,
+#context-menu[data-opened-by="pointer"] .context-item:focus { outline: none !important; box-shadow: none !important; }
+#context-menu[data-opened-by="keyboard"] .context-item:focus-visible { outline: 2px solid var(--accent) !important; outline-offset: -2px !important; }
+
+/* Rating submenu: Love, five star rows and "No rating", left-aligned, the stars filled in
+   the accent colour and empty ones dim; the chosen row gets a soft accent fill and a dot. */
+#context-menu .context-submenu-wrap:has(.context-rating-item) > .context-submenu { width: 150px !important; min-width: 150px !important; padding: 5px !important; }
+#context-menu .context-rating-item {
+  justify-content: flex-start !important; gap: 8px; min-height: 32px; padding: 6px 10px !important;
+  border: 0 !important; border-radius: 8px !important; box-shadow: none !important; position: relative;
+}
+#context-menu .context-rating-item:hover { background: color-mix(in srgb, var(--accent) 20%, transparent) !important; }
+#context-menu .context-rating-item.active { background: color-mix(in srgb, var(--accent) 14%, transparent) !important; box-shadow: none !important; }
+#context-menu .context-rating-item.active::after {
+  content: ""; position: absolute; right: 10px; top: 50%; width: 6px; height: 6px; margin-top: -3px;
+  border-radius: 50%; background: var(--accent);
+}
+#context-menu .context-rating-item.loved.active { background: rgba(255, 79, 120, .14) !important; }
+#context-menu .context-rating-item.loved.active::after { background: #ff4f78; }
+#context-menu .context-rating-stars { display: inline-flex; gap: 1px; font-size: 14px; line-height: 1; text-shadow: none !important; }
+#context-menu .context-rating-stars .star-on { color: var(--accent); }
+#context-menu .context-rating-stars .star-off { color: color-mix(in srgb, var(--text) 22%, transparent); }
+#context-menu .context-rating-item:hover .star-off { color: color-mix(in srgb, var(--text) 34%, transparent); }
+#context-menu .context-rating-text-label { font-size: 12.5px; color: var(--text); }
+#context-menu .context-rating-item.loved .context-rating-icon { order: -1; width: 16px; text-align: center; font-size: 15px; }
+#context-menu .context-rating-clear { border-top: 0 !important; margin-top: 4px; }
+#context-menu .context-rating-clear::before {
+  content: ""; position: absolute; left: 8px; right: 8px; top: -3px; height: 1px;
+  background: color-mix(in srgb, var(--text) 10%, transparent);
+}
+#context-menu .context-rating-clear .context-rating-text-label { color: var(--text-dim); }
+#context-menu .context-rating-clear:hover .context-rating-text-label { color: var(--text); }
+/* With several songs selected, the hint ("Set 12 selected tracks to 4 stars") sits inside the
+   submenu as its first line instead of floating above it. */
+#context-menu .context-rating-help {
+  position: static !important; transform: none !important; width: auto !important; max-width: none !important;
+  margin: 2px 4px 6px; padding: 0 6px 6px !important; border: 0 !important; border-bottom: 1px solid color-mix(in srgb, var(--text) 10%, transparent) !important;
+  border-radius: 0px !important; background: none !important; box-shadow: none !important; backdrop-filter: none !important;
+  color: var(--text-dim) !important; font-size: 11px !important; text-align: left !important; line-height: 1.35 !important;
+}
+
+/* ===== Lyrics, round 2 (2026-11): lines fade out at the panel's top and bottom instead of being
+   cut off under the heading; the current line is simply brighter and bolder (no box or bar);
+   the scrollbar shows only while the pointer is over the lyrics. ===== */
+#lyrics-section .sidebar-heading { margin-bottom: 2px !important; }
+#lyrics-section .sidebar-lyrics {
+  padding: 0 !important; margin: 0 6px 8px !important;
+  -webkit-mask-image: linear-gradient(to bottom, transparent 0, #000 22px, #000 calc(100% - 26px), transparent 100%);
+  mask-image: linear-gradient(to bottom, transparent 0, #000 22px, #000 calc(100% - 26px), transparent 100%);
+  scrollbar-gutter: stable;
+}
+#lyrics-section .sidebar-lyrics::-webkit-scrollbar-thumb { background-color: transparent !important; }
+#lyrics-section .sidebar-lyrics:hover::-webkit-scrollbar-thumb { background-color: color-mix(in srgb, var(--text) 18%, transparent) !important; }
+#lyrics-section .lyrics-scroll { padding: 18px 8px 26px !important; font-size: 13px !important; line-height: 1.45 !important; color: color-mix(in srgb, var(--text) 52%, transparent) !important; }
+#lyrics-section .lyrics-scroll.lyrics-synced .lyrics-line { display: block; padding: 3px 0 !important; margin: 0 !important; transition: color .25s ease, opacity .25s ease; }
+#lyrics-section .lyrics-scroll.lyrics-synced .lyrics-line.current {
+  background: none !important; border: 0 !important; border-radius: 0px !important;
+  padding: 3px 0 !important; margin: 0 !important;
+  color: var(--text) !important; font-size: 13px !important; font-weight: 700 !important;
+}
+/* Top bar: a little more room between the window buttons (minimise/maximise/close) and the
+   search box under them. The brand, tabs and search stay on one line, sitting 6 px lower,
+   and the window buttons hug the top edge. */
+html.theme-window-bar-enabled .topbar-left,
+html.theme-window-bar-enabled .topbar-tabs,
+html.theme-window-bar-enabled .topbar-right .search-box { transform: translateY(-10px) !important; }
+html.theme-window-bar-enabled .window-titlebar-row { align-items: flex-start !important; padding-top: 2px !important; }
+html.theme-window-bar-enabled .window-titlebar-row > .window-controls { height: 22px !important; }
+html.theme-window-bar-enabled .window-titlebar-row .window-control { height: 22px !important; }
+
+/* ===== Theater mode for a TV (2026-11): readable from across the room. A huge cover with big
+   type beside it, a thick progress bar, large controls, "Up next" as a shelf of covers along
+   the bottom. Sizes scale with the screen (vmin), so a 4K TV and a laptop look the same.
+   Controls and the pointer fade out after a few idle seconds (.theater-idle). ===== */
+.theater-mode:not(.hidden) {
+  display: grid !important; grid-template-columns: 1fr !important; grid-template-rows: minmax(0, 1fr) auto !important;
+  gap: 4vmin !important; padding: 7vmin 7vmin 5vmin !important; background: #000 !important;
+}
+.theater-backdrop { inset: -8vmin !important; filter: blur(70px) saturate(1.35) brightness(.5) !important; opacity: 1 !important; transform: scale(1.05); transition: background-image .6s ease; }
+.theater-vignette { position: absolute !important; inset: 0; z-index: 0 !important; pointer-events: none;
+  background: radial-gradient(120% 90% at 30% 40%, transparent 30%, rgba(0,0,0,.55) 100%), linear-gradient(to top, rgba(0,0,0,.6), transparent 40%); }
+.theater-stage { display: flex; align-items: center; gap: 6vmin; min-height: 0; }
+.theater-mode .theater-cover {
+  flex: none; width: min(56vmin, 46vw) !important; height: auto; aspect-ratio: 1; object-fit: cover;
+  border-radius: 1.6vmin !important; box-shadow: 0 4vmin 10vmin rgba(0,0,0,.6), 0 0 0 1px rgba(255,255,255,.06) !important;
+}
+.theater-info { flex: 1 1 auto; min-width: 0; display: flex; flex-direction: column; gap: 3.4vmin; max-width: 78vmin; }
+.theater-mode .theater-meta { text-align: left !important; max-width: none !important; }
+.theater-mode .theater-title {
+  font-size: clamp(30px, 6.4vmin, 120px) !important; font-weight: 800 !important; line-height: 1.04 !important; letter-spacing: -.025em;
+  color: #fff !important; display: -webkit-box; -webkit-line-clamp: 3; -webkit-box-orient: vertical; overflow: hidden; text-wrap: balance;
+}
+.theater-mode .theater-artist { font-size: clamp(18px, 3.3vmin, 60px) !important; font-weight: 600; color: rgba(255,255,255,.86) !important; margin-top: 1.4vmin !important; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.theater-mode .theater-album { font-size: clamp(14px, 2.2vmin, 40px) !important; color: rgba(255,255,255,.6) !important; margin-top: .8vmin !important; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.theater-mode .theater-progress { width: 100% !important; gap: 2vmin !important; font-size: clamp(13px, 1.9vmin, 34px) !important; color: rgba(255,255,255,.75) !important; }
+.theater-mode .theater-bar { height: clamp(5px, .9vmin, 14px) !important; border-radius: 99px !important; background: rgba(255,255,255,.2) !important; }
+.theater-mode .theater-bar > div { background: #fff !important; border-radius: inherit; }
+.theater-mode .theater-controls { gap: 2.6vmin !important; justify-content: flex-start; }
+.theater-mode .theater-controls button {
+  width: clamp(44px, 7.4vmin, 120px) !important; height: clamp(44px, 7.4vmin, 120px) !important;
+  background: rgba(255,255,255,.12) !important; color: #fff !important; transition: transform .15s ease, background .15s ease;
+}
+.theater-mode .theater-controls button svg { width: 42% !important; height: 42% !important; }
+.theater-mode .theater-controls .theater-play { width: clamp(60px, 10vmin, 160px) !important; height: clamp(60px, 10vmin, 160px) !important; background: #fff !important; color: #000 !important; }
+.theater-mode .theater-controls button:hover { transform: scale(1.06); background: rgba(255,255,255,.2) !important; }
+.theater-mode .theater-controls .theater-play:hover { background: #fff !important; }
+.theater-mode .theater-controls button:focus-visible, .theater-mode .theater-close:focus-visible { outline: .5vmin solid #fff !important; outline-offset: .5vmin !important; }
+.theater-mode .theater-controls button.loved { color: #ff5c86 !important; }
+.theater-mode .theater-close {
+  top: 3.4vmin !important; right: 3.4vmin !important; width: clamp(36px, 5.4vmin, 90px) !important; height: clamp(36px, 5.4vmin, 90px) !important;
+  font-size: clamp(14px, 2.2vmin, 36px) !important; background: rgba(255,255,255,.1) !important; border: 0 !important; color: #fff !important;
+}
+/* About the artist: a short blurb, not a wall of text. */
+.theater-mode .theater-artist-info { display: flex; gap: 2.2vmin; align-items: flex-start; background: none !important; border: 0 !important; padding: 0 !important; backdrop-filter: none !important; }
+.theater-mode .theater-artist-info.hidden { display: none !important; }
+.theater-mode .theater-artist-img { float: none !important; flex: none; width: 9vmin !important; height: 9vmin !important; border-radius: 50% !important; margin: 0 !important; }
+.theater-mode .theater-artist-info h4 { font-size: clamp(13px, 1.9vmin, 32px) !important; margin: 0 0 .6vmin !important; color: #fff !important; }
+.theater-mode .theater-artist-info p { font-size: clamp(12px, 1.8vmin, 30px) !important; line-height: 1.45 !important; color: rgba(255,255,255,.7) !important; -webkit-line-clamp: 3 !important; margin: 0 0 .6vmin !important; }
+.theater-mode .theater-artist-info a { font-size: clamp(11px, 1.6vmin, 26px) !important; color: rgba(255,255,255,.85) !important; }
+/* Up next shelf. */
+.theater-shelf { min-width: 0; }
+.theater-shelf h4 { margin: 0 0 1.6vmin !important; font-size: clamp(14px, 2.1vmin, 36px) !important; color: rgba(255,255,255,.8) !important; }
+.theater-mode .theater-upnext { display: grid !important; grid-template-columns: repeat(5, minmax(0, 1fr)); gap: 2.4vmin !important; padding: 0 !important; margin: 0 !important; }
+.theater-tile { display: flex; align-items: center; gap: 1.6vmin; min-width: 0; padding: 1.2vmin; border-radius: 1.4vmin; background: rgba(255,255,255,.07); }
+.theater-tile img, .theater-tile-blank { flex: none; width: 7.5vmin; height: 7.5vmin; border-radius: .9vmin; object-fit: cover; background: rgba(255,255,255,.08); }
+.theater-tile > div { min-width: 0; }
+.theater-tile span { display: block; font-size: clamp(12px, 1.9vmin, 32px); font-weight: 650; color: #fff; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.theater-tile small { display: block; margin-top: .4vmin; font-size: clamp(11px, 1.6vmin, 28px); color: rgba(255,255,255,.6); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.theater-tile-empty { grid-column: 1 / -1; font-size: clamp(12px, 1.8vmin, 30px); color: rgba(255,255,255,.6); }
+/* Idle: controls, close button and pointer fade; cover, title and progress stay. */
+.theater-mode .theater-chrome, .theater-mode .theater-shelf { transition: opacity .6s ease; }
+.theater-mode.theater-idle { cursor: none; }
+.theater-mode.theater-idle .theater-chrome { opacity: 0; }
+.theater-mode.theater-idle .theater-shelf { opacity: .55; }
+/* Narrow or portrait windows: stack the cover above the text. */
+@media (max-aspect-ratio: 5/4) {
+  .theater-stage { flex-direction: column; justify-content: center; text-align: center; }
+  .theater-info { align-items: center; max-width: 90vw; }
+  .theater-mode .theater-meta { text-align: center !important; }
+  .theater-mode .theater-controls { justify-content: center; }
+  .theater-mode .theater-upnext { grid-template-columns: repeat(3, minmax(0, 1fr)); }
+  .theater-mode .theater-upnext > :nth-child(n+4) { display: none; }
+}
+@media (prefers-reduced-motion: reduce) { .theater-mode .theater-chrome, .theater-mode .theater-shelf, .theater-mode .theater-controls button { transition: none; } }
+/* Playlist cards without their own picture: a 2x2 mosaic of their songs' covers (as on Hive Mobile). */
+.playlist-mosaic { position:absolute; inset:0; display:grid; grid-template-columns:1fr 1fr; grid-template-rows:1fr 1fr; }
+.playlist-mosaic img { width:100%; height:100%; object-fit:cover; display:block; transition:opacity .35s ease; }
+.playlist-mosaic img.swapping { opacity:0; }
+@media (prefers-reduced-motion: reduce) { .playlist-mosaic img { transition:none; } }
+/* Playlists header: the three buttons stay on one row beside the title; when the page is too
+   narrow for both, the row moves under the title instead of squeezing the description. */
+.playlist-manager-head { flex-wrap: wrap; row-gap: 14px !important; }
+.playlist-manager-head > :first-child { min-width: 0; flex: 1 1 340px; }
+.playlist-manager-create { flex: none; flex-wrap: wrap !important; }
+
+/* =====================================================================================
+   Themed surfaces, 2026-11: dialogs, Settings, the Hive menu and right-click menus all share
+   one solid surface tinted with the live accent, so a coloured theme reaches every window.
+   ===================================================================================== */
+:root { --surface-tint: color-mix(in srgb, var(--accent) 10%, var(--panel-strong)); }
+.modal-overlay:not(#settings-modal) > .modal,
+.modal-overlay:not(#settings-modal) > .modal.glass,
+#settings-modal .modal-settings {
+  background: linear-gradient(var(--surface-tint), var(--surface-tint)), var(--bg) !important;
+  border: 1px solid color-mix(in srgb, var(--accent) 20%, color-mix(in srgb, var(--text) 9%, transparent)) !important;
+}
+/* Settings: the section rail a shade deeper in the same tint; cards a touch lighter. */
+#settings-modal .modal-settings::before {
+  background: color-mix(in srgb, var(--accent) 7%, rgba(0, 0, 0, .18)) !important;
+  border-right: 1px solid color-mix(in srgb, var(--accent) 16%, transparent) !important;
+}
+#settings-modal .settings-card, #settings-modal .settings-section, #settings-modal .settings-group {
+  background: color-mix(in srgb, var(--accent) 6%, color-mix(in srgb, var(--text) 3%, transparent)) !important;
+  border-color: color-mix(in srgb, var(--accent) 14%, color-mix(in srgb, var(--text) 7%, transparent)) !important;
+}
+/* Dialog inputs and selects pick up the tint too. */
+.modal-overlay .modal :is(input:not([type=checkbox]):not([type=radio]):not([type=range]), select, textarea) {
+  background-color: color-mix(in srgb, var(--accent) 6%, rgba(0, 0, 0, .22)) !important;
+  border-color: color-mix(in srgb, var(--accent) 14%, color-mix(in srgb, var(--text) 10%, transparent)) !important;
+}
+.modal-overlay .modal :is(input:not([type=checkbox]):not([type=radio]):not([type=range]), select, textarea):focus {
+  border-color: var(--accent) !important; outline: none !important;
+  box-shadow: 0 0 0 3px color-mix(in srgb, var(--accent) 22%, transparent) !important;
+}
+html[data-hive-theme="light"] .modal-overlay .modal :is(input:not([type=checkbox]):not([type=radio]):not([type=range]), select, textarea) {
+  background-color: color-mix(in srgb, var(--accent) 4%, #fff) !important;
+}
+/* Secondary buttons in dialogs: tinted, one height. */
+.modal-overlay:not(#settings-modal) .modal .sidebar-add:not(.settings-primary-action):not(.settings-save-primary):not(.danger) {
+  background: color-mix(in srgb, var(--accent) 10%, color-mix(in srgb, var(--text) 6%, transparent)) !important;
+  border: 1px solid color-mix(in srgb, var(--accent) 16%, color-mix(in srgb, var(--text) 8%, transparent)) !important;
+}
+.modal-overlay:not(#settings-modal) .modal .sidebar-add:not(.settings-primary-action):not(.settings-save-primary):not(.danger):hover {
+  background: color-mix(in srgb, var(--accent) 20%, transparent) !important;
+}
+
+/* Field labels in tools dialogs (Equaliser, Convert, Organise, Tag tools, Auto-tag, Duplicates):
+   sentence case instead of tracked-out capitals. */
+.equaliser-select, .organise-template, .tag-tools-grid label, .auto-tag-search-row label,
+.tag-tools-row small, .duplicates-item b, .playlist-label-preview-wrap > span, .tag-editor-kicker,
+.audio-integrity-result-row strong, .column-browser-head {
+  text-transform: none !important; letter-spacing: 0 !important; font-size: 12px !important; font-weight: 600 !important;
+  color: var(--text-dim) !important;
+}
+/* Edit track: labels were forced to lowercase ("track title"); they read as written ("Track title"). */
+.musicbee-main-fields label { text-transform: none !important; font-size: 12px !important; font-weight: 600 !important; }
+/* Edit track > Artwork: the small action buttons were 9px. */
+#tag-modal .artwork-card button, #tag-modal [class*="artwork"] .sidebar-add, #tag-modal [class*="artwork"] button {
+  font-size: 12px !important; min-height: 28px; padding: 4px 10px !important; border-radius: 8px !important;
+}
+
+/* The Hive menu: the same solid themed surface and icons as the right-click menus. */
+#brand-dropdown.dropdown-menu {
+  background: linear-gradient(var(--menu-tint), var(--menu-tint)), var(--bg) !important;
+  backdrop-filter: none !important; -webkit-backdrop-filter: none !important;
+  border: 1px solid color-mix(in srgb, var(--accent) 22%, color-mix(in srgb, var(--text) 10%, transparent)) !important;
+  border-radius: 12px !important; padding: 5px !important; min-width: 220px;
+  box-shadow: 0 18px 50px rgba(0,0,0,.42), 0 0 0 1px rgba(0,0,0,.18) !important;
+}
+#brand-dropdown .dropdown-item {
+  display: flex !important; align-items: center; gap: 10px; min-height: 32px; padding: 6px 10px !important;
+  border-radius: 8px !important; font-size: 12.5px !important; color: var(--text) !important; background: transparent !important;
+}
+#brand-dropdown .dropdown-item:hover, #brand-dropdown .dropdown-item:focus-visible { background: color-mix(in srgb, var(--accent) 20%, transparent) !important; outline: none; }
+#brand-dropdown .dropdown-item-icon { width: 16px; height: 16px; flex: none; display: inline-flex; color: var(--text-dim); }
+#brand-dropdown .dropdown-item-icon svg { width: 16px; height: 16px; }
+#brand-dropdown .dropdown-item:hover .dropdown-item-icon { color: var(--accent); }
+#brand-dropdown .dropdown-divider { margin: 4px 8px !important; height: 1px; background: color-mix(in srgb, var(--text) 10%, transparent) !important; }
+/* Its button's tooltip no longer sits on top of the open menu. */
+body:has(#brand-dropdown:not(.hidden)) .beehive-global-tooltip { display: none !important; }
+
+/* ===== Playlist info, 2026-11: the playlist's picture (own photo, else the four-cover mosaic,
+   else its icon) beside its name and one line of facts; then two plain sections ("Playlist",
+   "In the sidebar") and a preview, separated by hairlines instead of boxes inside boxes. ===== */
+#playlist-info-modal .playlist-info-modal { width: min(640px, calc(100vw - 40px)) !important; }
+#playlist-info-modal .playlist-info-body { padding: 4px 22px 22px !important; gap: 0 !important; display: flex; flex-direction: column; }
+#playlist-info-modal .playlist-info-header {
+  display: flex !important; align-items: center !important; gap: 20px !important;
+  padding: 6px 0 20px !important; margin: 0 !important; background: none !important; border: 0 !important; box-shadow: none !important;
+}
+#playlist-info-modal .playlist-info-art {
+  position: relative; flex: none; width: 112px; height: 112px; border-radius: 12px; overflow: hidden;
+  background: linear-gradient(135deg, color-mix(in srgb, var(--accent) 35%, #1a1a1f), #111116);
+  box-shadow: 0 12px 30px rgba(0,0,0,.4); display: grid; place-items: center;
+}
+#playlist-info-modal .playlist-info-art > img { width: 100%; height: 100%; object-fit: cover; display: block; }
+#playlist-info-modal .playlist-info-art-icon { font-size: 40px; color: color-mix(in srgb, var(--text) 75%, transparent); }
+#playlist-info-modal .playlist-info-hero-copy { min-width: 0; display: flex; flex-direction: column; gap: 6px; }
+#playlist-info-modal .playlist-info-hero-label { font-size: 24px !important; font-weight: 750 !important; letter-spacing: -.015em; line-height: 1.15; overflow: hidden; text-overflow: ellipsis; }
+#playlist-info-modal .playlist-info-stat-grid {
+  display: flex !important; flex-wrap: wrap; gap: 0 !important; grid-template-columns: none !important;
+  font-size: 13px; color: var(--text-dim); background: none !important; border: 0 !important; padding: 0 !important;
+}
+#playlist-info-modal .playlist-info-stat-grid > span + span::before { content: "·"; margin: 0 7px; color: var(--text-dimmer, var(--text-dim)); }
+#playlist-info-modal .playlist-info-hero-subtitle { font-size: 12.5px; color: var(--text-dim); }
+#playlist-info-modal .playlist-info-hero-subtitle:empty { display: none; }
+#playlist-info-modal :is(.playlist-info-appearance, .playlist-info-live-preview) {
+  margin: 0 !important; padding: 18px 0 !important; background: none !important; border: 0 !important; border-radius: 0px !important; box-shadow: none !important;
+  border-top: 1px solid color-mix(in srgb, var(--text) 9%, transparent) !important;
+}
+#playlist-info-modal .playlist-info-section-heading { margin-bottom: 12px !important; }
+#playlist-info-modal .playlist-info-section-heading strong { font-size: 14px !important; font-weight: 700 !important; }
+#playlist-info-modal .playlist-info-form-grid { display: grid !important; grid-template-columns: 1fr 1fr !important; gap: 14px !important; margin-bottom: 12px; }
+#playlist-info-modal .playlist-info-form-grid label { display: flex !important; flex-direction: column !important; gap: 6px !important; font-size: 12px !important; font-weight: 600; color: var(--text-dim) !important; }
+#playlist-info-modal .playlist-info-form-grid :is(input, select) { width: 100% !important; height: 36px !important; border-radius: 9px !important; font-size: 13px !important; }
+#playlist-info-modal .playlist-info-switch-row {
+  display: flex !important; align-items: center; justify-content: space-between; gap: 18px; padding: 10px 0 0 !important;
+  background: none !important; border: 0 !important;
+}
+#playlist-info-modal .playlist-info-switch-row strong { font-size: 13px !important; font-weight: 600; }
+#playlist-info-modal .playlist-info-switch-row small, #playlist-info-modal .playlist-info-control-label span { display: block; margin-top: 2px; font-size: 12px !important; color: var(--text-dim) !important; }
+#playlist-info-modal .playlist-info-icon-row { display: flex; align-items: center; justify-content: space-between; gap: 18px; margin-bottom: 16px; }
+#playlist-info-modal .playlist-info-control-label strong { font-size: 13px !important; font-weight: 600; }
+#playlist-info-modal .playlist-info-hero-icon {
+  width: auto !important; height: 36px !important; min-width: 64px; padding: 0 10px !important; border-radius: 9px !important;
+  display: inline-flex !important; align-items: center; gap: 8px; font-size: 16px;
+  background: color-mix(in srgb, var(--accent) 10%, rgba(0,0,0,.2)) !important; border: 1px solid color-mix(in srgb, var(--accent) 16%, transparent) !important;
+}
+#playlist-info-modal .playlist-label-styles { display: flex; flex-wrap: wrap; gap: 6px; margin: 10px 0 8px; }
+#playlist-info-modal .playlist-label-styles > * { border-radius: 999px !important; min-height: 30px; padding: 4px 14px !important; font-size: 12.5px !important; }
+#playlist-info-modal .playlist-info-advanced summary { font-size: 12px; color: var(--text-dim); cursor: pointer; margin-top: 4px; }
+#playlist-info-modal .playlist-info-preview-card {
+  display: flex !important; align-items: center; gap: 10px; padding: 8px 12px !important; border-radius: 10px !important;
+  background: color-mix(in srgb, var(--accent) 16%, transparent) !important; border: 0 !important; max-width: 260px;
+}
+#playlist-info-modal .playlist-info-preview-icon { width: 20px !important; height: 20px !important; font-size: 14px !important; background: none !important; border: 0 !important; }
+#playlist-info-modal .playlist-info-save-status { font-size: 12px; color: var(--text-dim); min-height: 0; }
+#playlist-info-modal .playlist-info-save-status:empty { display: none; }
+/* Name-style choices (New playlist, Playlist info): pill chips, the chosen one in the accent. */
+.playlist-label-styles { display: flex !important; flex-wrap: wrap; gap: 6px !important; grid-template-columns: none !important; }
+.playlist-label-style-choice {
+  min-height: 30px !important; height: auto !important; padding: 5px 14px !important; border-radius: 999px !important;
+  display: inline-flex !important; align-items: center; justify-content: center;
+  background: color-mix(in srgb, var(--accent) 8%, color-mix(in srgb, var(--text) 5%, transparent)) !important;
+  border: 1px solid color-mix(in srgb, var(--accent) 14%, color-mix(in srgb, var(--text) 8%, transparent)) !important;
+  color: var(--text) !important; box-shadow: none !important;
+}
+.playlist-label-style-choice small { display: none !important; }
+.playlist-label-style-choice strong { font-size: 12.5px !important; font-weight: 600 !important; }
+.playlist-label-style-choice:hover { background: color-mix(in srgb, var(--accent) 18%, transparent) !important; }
+.playlist-label-style-choice.selected { background: var(--accent) !important; border-color: transparent !important; color: var(--accent-contrast, var(--bg)) !important; }
+.playlist-label-style-heading span { font-size: 13px !important; font-weight: 600 !important; text-transform: none !important; letter-spacing: 0 !important; }
+.playlist-label-style-heading small { font-size: 12px !important; color: var(--text-dim) !important; }
+.musicbee-rating-label { text-transform: none !important; font-size: 12px !important; font-weight: 600; color: var(--text-dim); }
+
+/* Browser toggle takes the Years slot in Tracks: same outlined switch look. */
+.view-btn.column-browser-toggle { border: 1px solid color-mix(in srgb, var(--text) 10%, transparent) !important; }
+.view-btn.column-browser-toggle[aria-pressed="true"] { color: var(--text) !important; background: transparent !important; border-color: color-mix(in srgb, var(--accent) 45%, transparent) !important; }

@@ -46,7 +46,9 @@ test('Playlist Details uses a cleaner inspector hierarchy with preview and compa
   assert.match(html, /class="playlist-info-live-preview"/);
   assert.match(html, /class="playlist-info-preview-card"/);
   const info = block(renderer, 'function showPlaylistInfo(pl)', 'async function savePlaylistInfoChanges');
-  assert.match(info, /playlist-info-stat-grid/);
+  // The facts line is built by playlistInfoStats(), which renders .playlist-info-stat-grid.
+  assert.match(info, /playlistInfoStats\(/);
+  assert.match(renderer, /function playlistInfoStats[\s\S]{0,200}playlist-info-stat-grid/);
   assert.match(info, /renderPlaylistInfoIcons/);
   assert.match(info, /setPlaylistInfoLabelEditor/);
   const sectionCss = block(styles, '.playlist-info-appearance', '.playlist-info-actions');

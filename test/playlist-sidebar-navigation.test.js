@@ -448,3 +448,14 @@ test('the tag editor follows the selection, keeps its tab, and guards unsaved ed
   assert.match(status, /scheduleTagEditorFollowSelection\(\)/);
   assert.match(renderer, /if \(event\.isTrusted\) tagEditorDirty = true;/);
 });
+
+test('playlist cards without their own picture show a 2x2 mosaic of their songs\' covers, one per album', () => {
+  const fs = require('node:fs');
+  const src = fs.readFileSync(require.resolve('../app/renderer/renderer.js'), 'utf8');
+  const start = src.indexOf('function playlistMosaicCovers(');
+  const block = src.slice(start, src.indexOf('function playlistArtHtml(', start));
+  assert.ok(start > 0, 'playlistMosaicCovers exists');
+  assert.match(block, /seenAlbums\.has\(album\)/, 'one cover per album');
+  assert.match(src, /covers\.length >= 4 \? |if \(covers\.length >= 4\)/, 'four covers make a mosaic, fewer show one cover');
+  assert.match(src, /const ownImage = playlistImageSrc\(pl\);[\s\S]{0,200}playlistMosaicCovers\(pl/, 'the playlist\'s own picture wins over the mosaic');
+});

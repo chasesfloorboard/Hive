@@ -48,7 +48,7 @@ test('Smart playlist rows expose editing and renaming through the same Auto Play
   const rowEnd = renderer.indexOf('function updatePlaylistVirtualRows', rowStart);
   const rowBlock = renderer.slice(rowStart, rowEnd);
   assert.match(rowBlock, /openSmartPlaylistModal\(pl\)/);
-  assert.match(rowBlock, /AUTO PLAYLIST/);
+  assert.match(rowBlock, /'Smart playlist'/); // a smart playlist says so under its name
   assert.match(renderer, /showPlaylistContextMenu[\s\S]*label:'Edit smart playlist'/);
 });
 

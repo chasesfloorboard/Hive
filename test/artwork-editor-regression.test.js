@@ -155,7 +155,7 @@ test('album tag editor derives album scope from canonical album identity instead
 });
 
 test('album cover context menu opens the tag editor for every track in the album', () => {
-  const start = renderer.indexOf('function showCoverContextMenu(e,file,model=null)');
+  const start = renderer.indexOf('function showCoverContextMenu(e,file,model=null');
   const end = renderer.indexOf('\n  function prepareTrackContextSelection', start);
   assert.ok(start >= 0 && end > start);
   const block = renderer.slice(start, end);

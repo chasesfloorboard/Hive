@@ -1548,23 +1548,26 @@
     if (!theaterEl) {
       theaterEl = document.createElement('div');
       theaterEl.id = 'theater-mode'; theaterEl.className = 'theater-mode hidden';
-      theaterEl.innerHTML = `<div class="theater-backdrop"></div>
-        <button type="button" class="theater-close" title="Leave theater mode (Esc)" aria-label="Leave theater mode">✕</button>
-        <div class="theater-main">
+      // Laid out for a TV across the room: a huge cover with big type beside it, large controls,
+      // and "Up next" as a shelf of covers along the bottom. Controls and the pointer fade out
+      // after a few idle seconds and come back on any mouse move or key press.
+      theaterEl.innerHTML = `<div class="theater-backdrop"></div><div class="theater-vignette"></div>
+        <button type="button" class="theater-close theater-chrome" title="Leave theater mode (Esc)" aria-label="Leave theater mode">✕</button>
+        <div class="theater-stage">
           <img class="theater-cover" alt="">
-          <div class="theater-meta"><div class="theater-title"></div><div class="theater-artist"></div><div class="theater-album"></div></div>
-          <div class="theater-progress"><span class="theater-elapsed">0:00</span><div class="theater-bar"><div></div></div><span class="theater-duration">0:00</span></div>
-          <div class="theater-controls">
-            <button type="button" data-tm="prev" title="Previous">${theaterIcon('prev')}</button>
-            <button type="button" data-tm="play" class="theater-play" title="Play/Pause"></button>
-            <button type="button" data-tm="next" title="Next">${theaterIcon('next')}</button>
-            <button type="button" data-tm="love" title="Love"></button>
+          <div class="theater-info">
+            <div class="theater-meta"><div class="theater-title"></div><div class="theater-artist"></div><div class="theater-album"></div></div>
+            <div class="theater-progress"><span class="theater-elapsed">0:00</span><div class="theater-bar"><div></div></div><span class="theater-duration">0:00</span></div>
+            <div class="theater-controls theater-chrome">
+              <button type="button" data-tm="prev" title="Previous" aria-label="Previous">${theaterIcon('prev')}</button>
+              <button type="button" data-tm="play" class="theater-play" title="Play/Pause" aria-label="Play or pause"></button>
+              <button type="button" data-tm="next" title="Next" aria-label="Next">${theaterIcon('next')}</button>
+              <button type="button" data-tm="love" title="Love" aria-label="Love"></button>
+            </div>
+            <section class="theater-artist-info hidden"><img class="theater-artist-img" alt=""><div><h4>About the artist</h4><p></p><a target="_blank" rel="noopener">Read more on Wikipedia</a></div></section>
           </div>
         </div>
-        <aside class="theater-side">
-          <section><h4>Up next</h4><ol class="theater-upnext"></ol></section>
-          <section class="theater-artist-info hidden"><h4>About the artist</h4><img class="theater-artist-img" alt=""><p></p><a target="_blank" rel="noopener">Read more on Wikipedia</a></section>
-        </aside>`;
+        <section class="theater-shelf"><h4>Up next</h4><div class="theater-upnext"></div></section>`;
       document.body.appendChild(theaterEl);
       theaterEl.querySelector('.theater-close').addEventListener('click', () => toggleTheaterMode(false));
       theaterEl.querySelectorAll('[data-tm]').forEach(b => b.addEventListener('click', () => {
@@ -1577,11 +1580,36 @@
         try { audioEngine.currentTime = ((e.clientX - r.left) / r.width) * d; } catch {}
       });
       document.addEventListener('keydown', e => { if (e.key === 'Escape' && theaterEl && !theaterEl.classList.contains('hidden')) { e.preventDefault(); toggleTheaterMode(false); } });
+      // Remote-style keys while theater mode is open: ← / → seek 10 s.
+      document.addEventListener('keydown', e => {
+        if (!theaterEl || theaterEl.classList.contains('hidden')) return;
+        wakeTheater();
+        if ((e.key === 'ArrowLeft' || e.key === 'ArrowRight') && !e.ctrlKey && !e.shiftKey && !e.altKey && !e.metaKey) {
+          e.preventDefault(); e.stopPropagation();
+          const d = Number(audioEngine.duration) || 0, p = Number(audioEngine.currentTime) || 0;
+          if (d) { try { audioEngine.currentTime = Math.max(0, Math.min(d - 1, p + (e.key === 'ArrowRight' ? 10 : -10))); } catch {} }
+          renderTheaterProgress();
+        }
+      }, true);
+      theaterEl.addEventListener('pointermove', wakeTheater);
+      theaterEl.addEventListener('pointerdown', wakeTheater);
     }
     theaterEl.classList.toggle('hidden', !open);
     document.documentElement.classList.toggle('hb-theater-open', open);
     clearInterval(theaterTimer); theaterTimer = 0;
-    if (open) { renderTheaterMode(); theaterTimer = setInterval(renderTheaterProgress, 500); }
+    if (open) { renderTheaterMode(); theaterTimer = setInterval(renderTheaterProgress, 500); wakeTheater(); }
+    else { clearTimeout(theaterIdleTimer); theaterEl.classList.remove('theater-idle'); }
+  }
+  let theaterIdleTimer = 0;
+  function wakeTheater() {
+    if (!theaterEl) return;
+    theaterEl.classList.remove('theater-idle');
+    clearTimeout(theaterIdleTimer);
+    theaterIdleTimer = setTimeout(() => {
+      // Stay awake while a control has keyboard focus or the pointer is over one.
+      if (theaterEl.querySelector('.theater-chrome:hover, .theater-chrome :focus-visible, .theater-bar:hover')) { wakeTheater(); return; }
+      theaterEl.classList.add('theater-idle');
+    }, 3500);
   }
   function renderTheaterProgress() {
     if (!theaterEl || theaterEl.classList.contains('hidden')) return;
@@ -1607,9 +1635,10 @@
     theaterEl.querySelector('[data-tm="love"]').classList.toggle('loved', !!t?.loved);
     const upcoming = [];
     for (let i = currentIndex + 1; i < currentQueue.length && upcoming.length < 5; i++) upcoming.push(currentQueue[i]);
+    const tileCover = u => { try { return u?.cover ? coverSrc(u.cover) : (u?.artworkUrl || ''); } catch { return ''; } };
     theaterEl.querySelector('.theater-upnext').innerHTML = upcoming.length
-      ? upcoming.map(u => `<li><span>${escapeHtml(u?.title || '')}</span><small>${escapeHtml(u?.artist || '')}</small></li>`).join('')
-      : `<li class="dim">${autoDjEnabled() ? 'Auto-DJ will add more' : 'End of the queue'}</li>`;
+      ? upcoming.map(u => { const c = tileCover(u); return `<div class="theater-tile">${c ? `<img src="${escapeHtml(c)}" alt="" loading="lazy">` : '<span class="theater-tile-blank"></span>'}<div><span>${escapeHtml(u?.title || '')}</span><small>${escapeHtml(u?.artist || '')}</small></div></div>`; }).join('')
+      : `<div class="theater-tile-empty">${autoDjEnabled() ? 'Auto-DJ will add more' : 'End of the queue'}</div>`;
     renderTheaterProgress();
     const artist = isRadioTrack(t) ? '' : String(t?.albumArtist || t?.artist || '').trim();
     if (isRadioTrack(t) && radioNowPlayingText) theaterEl.querySelector('.theater-artist').textContent = `♪ ${radioNowPlayingText}`;
@@ -1869,7 +1898,7 @@
       appleMusicModal = document.createElement('section');
       appleMusicModal.className = 'streaming-page apple-page';
       appleMusicModal.setAttribute('aria-label', 'Apple Music');
-      appleMusicModal.innerHTML = `<header class="streaming-page-head"><div><div class="streaming-kicker">BROWSE</div><h1>Apple Music</h1>
+      appleMusicModal.innerHTML = `<header class="streaming-page-head"><div><h1>Apple Music</h1>
           <p>Search Apple Music for anything, or paste a music.apple.com link. Songs in your library play from your files; the rest stream in full.</p></div></header>
           <form class="radio-search streaming-search" id="apple-search-form"><span class="streaming-search-icon" aria-hidden="true">${theaterIcon('search')}</span><input type="search" class="streaming-search-input" id="apple-query" placeholder="Search artists, songs, albums and playlists, or paste a link" spellcheck="false" aria-label="Search Apple Music"><button type="submit" class="streaming-search-btn">Search</button></form>
           <div class="streaming-page-bar"><button type="button" class="sidebar-add hidden" id="apple-back">← Back</button><button type="button" class="sidebar-add hidden" id="apple-home">Browse</button><div class="organise-status" id="apple-status"></div></div>
@@ -2091,7 +2120,7 @@
     spotifyPage = document.createElement('section');
     spotifyPage.className = 'streaming-page spotify-page apple-page';
     spotifyPage.setAttribute('aria-label', 'Spotify');
-    spotifyPage.innerHTML = `<header class="streaming-page-head"><div><div class="streaming-kicker">BROWSE</div><h1>Spotify</h1>
+    spotifyPage.innerHTML = `<header class="streaming-page-head"><div><h1>Spotify</h1>
         <p>Spotify's playlists and charts, and search for anything. Songs in your library play from your files; the rest stream in full.</p></div></header>
       <form class="radio-search streaming-search" id="spotify-page-form"><span class="streaming-search-icon" aria-hidden="true">${theaterIcon('search')}</span><input type="search" class="streaming-search-input" id="spotify-page-url" placeholder="Paste a Spotify link, or search songs and albums" spellcheck="false" aria-label="Search Spotify"><button type="submit" class="streaming-search-btn">Search</button></form>
       <div class="streaming-page-bar"><button type="button" class="sidebar-add hidden" id="spotify-back">← Back</button><button type="button" class="sidebar-add hidden" id="spotify-home-btn">Browse</button><div class="organise-status" id="spotify-page-status"></div></div>
@@ -3431,6 +3460,19 @@
       closeBrandDropdown();
     }
   });
+  // The Hive menu's items get the same line icons as the right-click menus.
+  (() => {
+    const INFO_ICON = '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="9"/><path d="M12 11v5"/><path d="M12 7.5h.01"/></svg>';
+    const icons = { settings: 'settings', about: null, equaliser: 'equaliser', 'mini-player': 'device', 'find-duplicates': 'similar', 'internet-radio': 'radio', 'import-musicbee': 'folderOpen' };
+    el.brandDropdown?.querySelectorAll('.dropdown-item[data-action]').forEach(item => {
+      if (item.querySelector('.dropdown-item-icon')) return;
+      const key = item.dataset.action;
+      const svg = key === 'about' ? INFO_ICON : (window.BeehiveIcons?.[icons[key]] || '');
+      if (!svg) return;
+      const span = document.createElement('span'); span.className = 'dropdown-item-icon'; span.setAttribute('aria-hidden', 'true'); span.innerHTML = svg;
+      item.prepend(span);
+    });
+  })();
 
 
   // Modal surfaces share one stacking manager. A child dialog opened from a
@@ -3992,11 +4034,19 @@
     const node = el.selectionStatus;
     if (!node) return;
     let count = 0;
+    // What was picked (albums, songs or queue rows): the pill shows from two up. Opening an album picks
+    // it, and a pill on every album click was noise.
+    let picked = 0;
+    let pickedNoun = 'song';
     if (activeSelectionScope === 'queue') {
       count = selectedQueueIndices.size;
+      picked = count;
     } else if (activeSelectionScope === 'albums') {
       const paths = new Set();
-      for (const album of selectedAlbumModelsInOrder()) {
+      const pickedAlbums = selectedAlbumModelsInOrder();
+      picked = pickedAlbums.length;
+      pickedNoun = 'album';
+      for (const album of pickedAlbums) {
         for (const track of (album?.tracks || [])) {
           const path = String(track?.path || '');
           if (path) paths.add(path);
@@ -4005,12 +4055,19 @@
       count = paths.size;
     } else {
       count = selectedSongPaths.size;
+      picked = count;
     }
     scheduleTagEditorFollowSelection();
-    // Just "N selected": Ctrl+A selects everything, and a plain click on another album or song deselects.
-    if (count) node.innerHTML = `<span class="selection-status-count">${count.toLocaleString()} selected</span>`;
-    else node.textContent = '';
-    node.classList.toggle('hidden', count === 0);
+    // "3 albums · 41 songs" or "12 songs selected": Ctrl+A selects everything, and a plain click on
+    // another album or song deselects.
+    const showPill = picked >= 2;
+    if (showPill) {
+      const label = pickedNoun === 'album'
+        ? `${picked.toLocaleString()} albums · ${count.toLocaleString()} song${count === 1 ? '' : 's'}`
+        : `${count.toLocaleString()} ${activeSelectionScope === 'queue' ? 'in the queue' : 'songs'} selected`;
+      node.innerHTML = `<span class="selection-status-count">${escapeHtml(label)}</span>`;
+    } else node.textContent = '';
+    node.classList.toggle('hidden', !showPill);
     if (count) {
       const tracks = selectedTracksForStatus();
       const totalSeconds = tracks.reduce((sum, t) => sum + (Number(t?.duration) || 0), 0);
@@ -5731,7 +5788,6 @@
       const card=document.createElement('div');
       card.className='album-card'+(a.key===playingKey?' now-playing':'')+(String(a.key)===String(highlightedAlbumKey)?' album-highlighted':'')+(selectedAlbumKeys.has(String(a.key))?' album-selected':'');
       card.dataset.key=a.key;
-      card.dataset.tooltip = 'Click to show tracks';
       card.innerHTML=`<div class="art-wrap">${lazyCoverImg(coverSrc(a.cover))}</div><div class="title">${escapeHtml(a.title)}</div><div class="artist">${escapeHtml(a.artist)} · ${a.tracks.length} track${a.tracks.length===1?'':'s'}</div>`;
       attachCoverInteractions(card,a);
       card.addEventListener('contextmenu',e=>{e.preventDefault();showAlbumContextMenu(e,a);});
@@ -7293,6 +7349,16 @@
     renderTabs();
     updateActiveTabLabel();
   }
+  // Playlist info: one line of facts ("7 tracks · 24m · Last added Nov 4"), and the playlist's
+  // picture (its own, else the four-cover mosaic, else its icon) at the top.
+  function playlistInfoStats(parts) {
+    return `<div class="playlist-info-stat-grid">${parts.filter(Boolean).map(p => `<span>${escapeHtml(p)}</span>`).join('')}</div>`;
+  }
+  function setPlaylistInfoArt(ownImage, covers) {
+    const box = document.getElementById('playlist-info-art');
+    if (!box) return;
+    box.innerHTML = ownImage ? `<img class="playlist-row-cover" src="${escapeHtml(ownImage)}" alt="">` : (playlistArtHtml(covers) || '<span class="playlist-info-art-icon">♫</span>');
+  }
   function showSidebarListInfo({key,name,description='',tracks=[],folder=''}) {
     if(!el.playlistInfoModal)return;
     playlistInfoEditingId=null;
@@ -7300,11 +7366,13 @@
     playlistInfoEditingTarget={key,folder};
     const runtime=tracks.reduce((sum,t)=>sum+(Number(t.duration)||0),0),meta=sidebarNavigation?.meta?.[key]||{},labelKey=sidebarInfoLabelKey(key);
     const isPodcastInfo = String(key).replace(/^nav:/,'') === 'podcasts';
-    setRichLabel(el.playlistInfoTitle, String((labelKey&&sidebarNavigation?.labels?.[labelKey])||name||'Playlist'));
-    if(el.playlistInfoHeroSubtitle) el.playlistInfoHeroSubtitle.textContent = isPodcastInfo ? 'Saved podcast shows and discovery settings.' : 'Customize how this collection appears in Hive.';
+    if (el.playlistInfoTitle) el.playlistInfoTitle.textContent = isPodcastInfo ? 'Podcasts info' : 'Info';
+    if(el.playlistInfoHeroSubtitle) el.playlistInfoHeroSubtitle.textContent = '';
+    const n=Number(tracks.length||0);
     el.playlistInfoBody.innerHTML=isPodcastInfo
-      ? `<div class="playlist-info-stat-grid playlist-info-grid"><div><span>Favorite shows</span><strong>${Number(tracks.length||0).toLocaleString()}</strong></div><div><span>Source</span><strong>Podcast directory and saved shows</strong></div><div><span>Location</span><strong>${escapeHtml(description||'Podcasts')}</strong></div></div>`
-      : `<div class="playlist-info-stat-grid playlist-info-grid"><div><span>Tracks</span><strong>${Number(tracks.length||0).toLocaleString()}</strong></div><div><span>Length</span><strong>${escapeHtml(formatPlaylistRuntime(runtime))}</strong></div><div><span>Location</span><strong>${escapeHtml(description||'Sidebar collection')}</strong></div></div>`;
+      ? playlistInfoStats([`${n.toLocaleString()} favorite show${n===1?'':'s'}`])
+      : playlistInfoStats([`${n.toLocaleString()} track${n===1?'':'s'}`, n ? formatPlaylistRuntime(runtime) : '', description && description !== 'Sidebar collection' ? description : '']);
+    setPlaylistInfoArt('', isPodcastInfo ? [] : mosaicCoversFromTracks(tracks));
     if(el.playlistInfoName){el.playlistInfoName.value=richLabelText(String(name||'Playlist'));el.playlistInfoName.disabled=!!folder;}
     const shortKey=String(key).startsWith('nav:')?String(key).slice(4):String(key);
     const savedView=sidebarDisplayView(shortKey, 'albums');
@@ -7320,9 +7388,10 @@
   function showPlaylistInfo(pl){
     if(!pl||!el.playlistInfoModal)return;
     const tracks=tracksForPlaylist(pl),runtime=tracks.reduce((sum,t)=>sum+(Number(t.duration)||0),0),added=(pl.trackAddedAt&&typeof pl.trackAddedAt==='object')?Object.values(pl.trackAddedAt).map(Number).filter(Number.isFinite):[],lastAdded=added.length?Math.max(...added):0,missing=Math.max(0,(pl.tracks||[]).length-tracks.length);
-    playlistInfoEditingId=pl.id;playlistInfoEditingDynamicNav=null;playlistInfoEditingTarget={key:`playlist:${pl.id}`,playlistId:pl.id};setRichLabel(el.playlistInfoTitle, String(pl.label||pl.name||'Untitled Playlist'));
-    if(el.playlistInfoHeroSubtitle) el.playlistInfoHeroSubtitle.textContent = pl.smart ? 'Dynamic membership is generated from its Auto Playlist rules.' : 'Customize how this playlist appears in Hive.';
-    el.playlistInfoBody.innerHTML=`<div class="playlist-info-stat-grid playlist-info-grid"><div><span>Tracks</span><strong>${tracks.length.toLocaleString()}${missing?` (${missing.toLocaleString()} missing locally)`:''}</strong></div><div><span>Length</span><strong>${escapeHtml(formatPlaylistRuntime(runtime))}</strong></div><div><span>Last track added</span><strong>${escapeHtml(pl.smart?'Dynamic playlist — membership is generated from its rules.':formatPlaylistDate(lastAdded))}</strong></div></div>`;if(el.playlistInfoName){el.playlistInfoName.value=pl.name||'Untitled Playlist';el.playlistInfoName.disabled=false;}if(el.playlistInfoDisplayView){el.playlistInfoDisplayView.value=['albums','songs','artists'].includes(pl.displayView)?pl.displayView:'albums';el.playlistInfoDisplayView.disabled=false;}if(el.playlistInfoShuffle){el.playlistInfoShuffle.checked=pl.shuffleOnEnter===true;el.playlistInfoShuffle.disabled=false;}renderPlaylistInfoIcons(String(pl.icon||''));setPlaylistInfoLabelEditor(String(pl.label||pl.name||''));if(el.playlistInfoSaveStatus)el.playlistInfoSaveStatus.textContent='';openModal(el.playlistInfoModal);
+    playlistInfoEditingId=pl.id;playlistInfoEditingDynamicNav=null;playlistInfoEditingTarget={key:`playlist:${pl.id}`,playlistId:pl.id};if (el.playlistInfoTitle) el.playlistInfoTitle.textContent = 'Playlist info';
+    if(el.playlistInfoHeroSubtitle) el.playlistInfoHeroSubtitle.textContent = pl.smart ? 'Smart playlist: it fills itself from its rules as your library changes.' : (missing ? `${missing.toLocaleString()} song${missing===1?' isn\'t':'s aren\'t'} on this computer.` : '');
+    el.playlistInfoBody.innerHTML=playlistInfoStats([`${tracks.length.toLocaleString()} track${tracks.length===1?'':'s'}`, tracks.length ? formatPlaylistRuntime(runtime) : '', !pl.smart && lastAdded ? `Last added ${formatPlaylistDate(lastAdded)}` : '']);
+    setPlaylistInfoArt(playlistImageSrc(pl), mosaicCoversFromTracks(tracks));if(el.playlistInfoName){el.playlistInfoName.value=pl.name||'Untitled Playlist';el.playlistInfoName.disabled=false;}if(el.playlistInfoDisplayView){el.playlistInfoDisplayView.value=['albums','songs','artists'].includes(pl.displayView)?pl.displayView:'albums';el.playlistInfoDisplayView.disabled=false;}if(el.playlistInfoShuffle){el.playlistInfoShuffle.checked=pl.shuffleOnEnter===true;el.playlistInfoShuffle.disabled=false;}renderPlaylistInfoIcons(String(pl.icon||''));setPlaylistInfoLabelEditor(String(pl.label||pl.name||''));if(el.playlistInfoSaveStatus)el.playlistInfoSaveStatus.textContent='';openModal(el.playlistInfoModal);
   }
   async function savePlaylistInfoChanges(){
     const displayView=['albums','songs','artists'].includes(el.playlistInfoDisplayView?.value)?el.playlistInfoDisplayView.value:'albums';const shuffleOnEnter=!!el.playlistInfoShuffle?.checked;const icon=selectedPlaylistInfoIcon();const label=selectedPlaylistInfoLabel();
@@ -7897,6 +7966,7 @@
   function openPlaylistInNewMusicTab(pl) { return openOrReusePlaylistMusicTab(pl); }
 
   async function renderPlaylistManager(tab = getActiveTab()){
+    playlistMosaicCache.clear(); // the Playlists page always shows current mosaics
     // Playlist Manager owns the DOM surface of the canonical Playlists context.
     // Never resolve its nodes through document-global ids: hidden canonical
     // contexts remain mounted, so a global lookup can target the wrong surface.
@@ -7905,7 +7975,7 @@
     if (!placeholder) return false;
     hideContentViews();
     placeholder.classList.remove('hidden');
-    placeholder.innerHTML='<div class="playlist-manager"><div class="playlist-manager-head"><div><p class="playlist-manager-kicker">YOUR MUSIC</p><h1 class="playlist-manager-title">Playlists</h1><p class="playlist-manager-desc">Your playlists and smart playlists, plus everything imported from Spotify and Apple Music.</p></div><div class="playlist-manager-create"><button type="button" data-role="playlist-import" class="sidebar-add">Import Playlist</button><button type="button" data-role="playlist-new" class="sidebar-add">+ New playlist</button><button type="button" data-role="playlist-smart" class="sidebar-add">✦ Smart playlist</button></div></div><div data-role="playlist-manager-list"></div></div>';
+    placeholder.innerHTML='<div class="playlist-manager"><div class="playlist-manager-head"><div><h1 class="playlist-manager-title">Playlists</h1><p class="playlist-manager-desc">Your playlists and smart playlists, plus everything imported from Spotify and Apple Music.</p></div><div class="playlist-manager-create"><button type="button" data-role="playlist-import" class="sidebar-add">Import</button><button type="button" data-role="playlist-smart" class="sidebar-add">Smart playlist</button><button type="button" data-role="playlist-new" class="sidebar-add playlist-new-primary">New playlist</button></div></div><div data-role="playlist-manager-list"></div></div>';
     const list=placeholder.querySelector('[data-role="playlist-manager-list"]');
 
     // Bind through the stable placeholder so a playlist-manager rerender cannot
@@ -7939,15 +8009,17 @@
       row.className='playlist-row';
       row.dataset.index=String(index);
       const count = pl.smart ? null : (Array.isArray(pl.tracks) ? pl.tracks.length : 0);
-      const rowImage = isStarFavoritesPlaylist(pl) && !pl.customCover ? favoritesRandomCover(pl) : playlistImageSrc(pl);
+      const ownImage = playlistImageSrc(pl);
+      const artHtml = ownImage ? `<img class="playlist-row-cover" src="${escapeHtml(ownImage)}" alt="" loading="lazy" decoding="async" />`
+        : playlistArtHtml(playlistMosaicCovers(pl, { shuffle: isStarFavoritesPlaylist(pl) }));
       if (isStarFavoritesPlaylist(pl)) row.dataset.favorites = '1';
       const plIcon = String(pl.icon || '');
       // The icon (e.g. Favorites' star) only shows when there's no picture.
       // Card: big cover (or icon), play button over it, name + badges + count.
-      const countText = pl.smart ? 'Updates automatically' : pl.source==='spotify' ? `${Array.isArray(pl.spotifyTracks)?pl.spotifyTracks.length:0} Spotify track${(Array.isArray(pl.spotifyTracks)?pl.spotifyTracks.length:0)===1?'':'s'}` : `${count} track${count===1?'':'s'}`;
-      const badges = `${pl.smart?'<span class="smart-badge">AUTO PLAYLIST</span>':''}${pl.source==='spotify' || /^From Spotify: /.test(String(pl.description||''))?'<span class="smart-badge smart-badge-spotify">SPOTIFY</span>':''}${pl.source==='applemusic' || /^From Apple Music/.test(String(pl.description||''))?'<span class="smart-badge smart-badge-apple">APPLE MUSIC</span>':''}`;
+      const countText = pl.smart ? 'Smart playlist' : pl.source==='spotify' ? `${Array.isArray(pl.spotifyTracks)?pl.spotifyTracks.length:0} Spotify track${(Array.isArray(pl.spotifyTracks)?pl.spotifyTracks.length:0)===1?'':'s'}` : `${count} track${count===1?'':'s'}`;
+      const badges = `${pl.source==='spotify' || /^From Spotify: /.test(String(pl.description||''))?'<span class="smart-badge smart-badge-spotify">Spotify</span>':''}${pl.source==='applemusic' || /^From Apple Music/.test(String(pl.description||''))?'<span class="smart-badge smart-badge-apple">Apple Music</span>':''}`;
       row.classList.add('playlist-card');
-      row.innerHTML=`<div class="playlist-card-art">${rowImage ? `<img class="playlist-row-cover" src="${escapeHtml(rowImage)}" alt="" loading="lazy" decoding="async" />` : `<span class="playlist-card-icon">${escapeHtml(plIcon || '♪')}</span>`}<button type="button" class="playlist-card-play play-pl" title="Play" aria-label="Play ${escapeHtml(pl.name || 'playlist')}">${theaterIcon('play')}</button></div><div class="playlist-card-text"><strong class="playlist-row-rich-name"></strong><div class="playlist-card-meta">${badges}<span class="playlist-card-count">${escapeHtml(countText)}</span></div></div><button type="button" class="playlist-card-delete del-pl" title="Delete playlist" aria-label="Delete playlist">✕</button>`;
+      row.innerHTML=`<div class="playlist-card-art">${artHtml || `<span class="playlist-card-icon">${escapeHtml(plIcon || '♪')}</span>`}<button type="button" class="playlist-card-play play-pl" title="Play" aria-label="Play ${escapeHtml(pl.name || 'playlist')}">${theaterIcon('play')}</button></div><div class="playlist-card-text"><strong class="playlist-row-rich-name"></strong><div class="playlist-card-meta">${badges}<span class="playlist-card-count">${escapeHtml(countText)}</span></div></div><button type="button" class="playlist-card-delete del-pl" title="Delete playlist" aria-label="Delete playlist">✕</button>`;
       setRichLabel(row.querySelector('.playlist-row-rich-name'), playlistLabel(pl));
       row.querySelector('.play-pl').onclick=e=>{e.stopPropagation();playPlaylist(pl);};
       row.querySelector('.del-pl').onclick=async e=>{e.stopPropagation();if(!(await themedDialog({title:'Delete playlist',mode:'confirm',message:`Delete “${pl.name || 'this playlist'}”? The songs themselves are not deleted.`})))return;await window.beehive.deletePlaylist(pl.id);playlists=playlists.filter(x=>x.id!==pl.id);if(activePlaylistId===pl.id){activePlaylistId=null;specialView=null;}renderPlaylistManager();};
@@ -8735,7 +8807,7 @@
         it.submenu.forEach(si=>{
           const sb=document.createElement('button');
           const isRatingItem = !!si.ratingSymbol;
-          sb.className='context-item' + (isRatingItem ? ' context-rating-item' : '') + (isRatingItem && si.textLabel ? ' context-rating-item-labeled' : '') + (si.active ? ' active' : '') + (si.loved ? ' loved' : '');
+          sb.className='context-item' + (isRatingItem ? ' context-rating-item' : '') + (isRatingItem && si.textLabel ? ' context-rating-item-labeled' : '') + (si.active ? ' active' : '') + (si.loved ? ' loved' : '') + (si.clearRating ? ' context-rating-clear' : '');
           if (isRatingItem && si.textLabel) {
             const textLabel=document.createElement('span'); textLabel.className='context-rating-text-label'; textLabel.textContent=si.label || '';
             sb.append(textLabel);
@@ -8747,7 +8819,13 @@
             // dark) always, never accent-tinted when active.
             if (isRatingItem && si.icon === '×') icon.classList.add('context-rating-clear-icon');
             icon.innerHTML=window.BeehiveIcons?.[si.icon] || '';
-            if (!window.BeehiveIcons?.[si.icon]) icon.textContent=si.icon;
+            if (!window.BeehiveIcons?.[si.icon]) {
+              if (isRatingItem && /^[★☆]+$/.test(si.icon)) {
+                // Filled stars take the accent colour, empty ones stay dim.
+                icon.classList.add('context-rating-stars');
+                for (const ch of si.icon) { const star=document.createElement('span'); star.className = ch === '★' ? 'star-on' : 'star-off'; star.textContent='★'; icon.append(star); }
+              } else icon.textContent=si.icon;
+            }
             sb.append(icon);
           } else if (!isRatingItem) {
             const icon=document.createElement('span'); icon.className='context-item-icon'; sb.append(icon);
@@ -8853,7 +8931,22 @@
     const m=document.getElementById('context-menu');
     if(m?.classList.contains('visible') && !m.contains(e.target)) hideContextMenu();
   }, true);
-  function showCoverContextMenu(e,file,model=null){
+  // The large cover on the right (now playing) can have sharp or rounded
+  // corners; the choice is in its right-click menu and is remembered.
+  const NP_COVER_CORNERS_KEY = 'hive:np-cover-corners';
+  function npCoverSharp() {
+    try { return localStorage.getItem(NP_COVER_CORNERS_KEY) === 'sharp'; } catch { return false; }
+  }
+  function applyNpCoverCorners() {
+    document.documentElement.classList.toggle('np-cover-sharp', npCoverSharp());
+  }
+  function setNpCoverSharp(sharp) {
+    try { localStorage.setItem(NP_COVER_CORNERS_KEY, sharp ? 'sharp' : 'rounded'); } catch {}
+    applyNpCoverCorners();
+  }
+  applyNpCoverCorners();
+
+  function showCoverContextMenu(e,file,model=null,options={}){
     if(!file)return;
     const albumTracks = Array.isArray(model?.tracks) ? model.tracks.filter(track => track?.path) : [];
     const isAlbumSurface = albumTracks.length > 1;
@@ -8879,6 +8972,10 @@
     }
     menu.push({label:'Copy cover to clipboard',action:()=>window.beehive.copyCover(file)});
     menu.push({label:'Save cover to disk…',action:()=>window.beehive.saveCover(file)});
+    if (options.corners) {
+      const sharp = npCoverSharp();
+      menu.push({label: sharp ? 'Rounded corners' : 'Sharp corners', action:()=>setNpCoverSharp(!sharp)});
+    }
     showContextMenu(e.clientX,e.clientY,menu);
   }
 
@@ -9590,14 +9687,14 @@
         ...(bulk ? [
           {label:`${allLoved ? 'Loved' : 'Love'} ${selected.length} tracks`, icon:allLoved ? '♥' : '♡', loved:true, active:allLoved, ratingSymbol:true, textLabel:true, help:`Set all ${selected.length} selected tracks to Loved`, action:()=>applyLove(true)}
         ] : [
-          {label:t.loved ? 'Loved' : 'Love', icon:t.loved ? '♥' : '♡', loved:true, active:!!t.loved, ratingSymbol:true, textLabel:true, help:t.loved ? 'Remove Love' : 'Add Love', action:()=>applyLove(!t.loved)}
+          {label:t.loved ? 'Loved' : 'Love', icon:t.loved ? '♥' : '♡', loved:true, active:!!t.loved, ratingSymbol:true, textLabel:true, help:'', action:()=>applyLove(!t.loved)}
         ]),
-        {label:'5 stars', icon:'★★★★★', active:ratingIs(5), ratingSymbol:true, help:bulk ? `Set ${selected.length} selected tracks to 5 stars` : 'Set rating to 5 stars', action:()=>applyRating(5)},
-        {label:'4 stars', icon:'★★★★☆', active:ratingIs(4), ratingSymbol:true, help:bulk ? `Set ${selected.length} selected tracks to 4 stars` : 'Set rating to 4 stars', action:()=>applyRating(4)},
-        {label:'3 stars', icon:'★★★☆☆', active:ratingIs(3), ratingSymbol:true, help:bulk ? `Set ${selected.length} selected tracks to 3 stars` : 'Set rating to 3 stars', action:()=>applyRating(3)},
-        {label:'2 stars', icon:'★★☆☆☆', active:ratingIs(2), ratingSymbol:true, help:bulk ? `Set ${selected.length} selected tracks to 2 stars` : 'Set rating to 2 stars', action:()=>applyRating(2)},
-        {label:'1 star', icon:'★☆☆☆☆', active:ratingIs(1), ratingSymbol:true, help:bulk ? `Set ${selected.length} selected tracks to 1 star` : 'Set rating to 1 star', action:()=>applyRating(1)},
-        {label:'Clear', icon:'×', active:ratingIs(0), ratingSymbol:true, help:bulk ? `Clear ratings from ${selected.length} selected tracks` : 'Clear the star rating', action:()=>applyRating(0)}
+        {label:'5 stars', icon:'★★★★★', active:ratingIs(5), ratingSymbol:true, help:bulk ? `Set ${selected.length} selected tracks to 5 stars` : '', action:()=>applyRating(5)},
+        {label:'4 stars', icon:'★★★★☆', active:ratingIs(4), ratingSymbol:true, help:bulk ? `Set ${selected.length} selected tracks to 4 stars` : '', action:()=>applyRating(4)},
+        {label:'3 stars', icon:'★★★☆☆', active:ratingIs(3), ratingSymbol:true, help:bulk ? `Set ${selected.length} selected tracks to 3 stars` : '', action:()=>applyRating(3)},
+        {label:'2 stars', icon:'★★☆☆☆', active:ratingIs(2), ratingSymbol:true, help:bulk ? `Set ${selected.length} selected tracks to 2 stars` : '', action:()=>applyRating(2)},
+        {label:'1 star', icon:'★☆☆☆☆', active:ratingIs(1), ratingSymbol:true, help:bulk ? `Set ${selected.length} selected tracks to 1 star` : '', action:()=>applyRating(1)},
+        {label:'No rating', active:ratingIs(0), ratingSymbol:true, textLabel:true, clearRating:true, help:bulk ? `Clear ratings from ${selected.length} selected tracks` : '', action:()=>applyRating(0)}
       ]}] : []),
       {label:'Add to',icon:'plus',menuKey:'addTo',submenu:buildAddToPlaylistSubmenu(queueTracks)},
       ...(isLocal && androidDevices.length ? [{label:'Send to',icon:'device',menuKey:'send',submenu:androidDevices.map(device => ({label:`${device.name || 'Android device'}${device.mounted ? '' : ' (not mounted)'}`,icon:'device',active:false,action:()=>sendTracksToAndroidDevice(device, queueTracks)}))}] : []),
@@ -11952,6 +12049,26 @@
     return trackArtist;
   }
 
+  // An open album's panel takes its own cover's colour (as the app takes the playing song's), so
+  // each album reads as itself. The colour is kept per cover.
+  const albumTintCache = new Map();
+  function tintAlbumPanel(panel, src) {
+    if (!panel || !src || !window.BeehiveColor?.extractPaletteFromImage) return;
+    const light = document.documentElement.dataset.hiveTheme === 'light';
+    const key = `${src}|${light ? 'light' : 'dark'}`;
+    const apply = tint => { if (tint) panel.style.setProperty('--album-tint', tint); };
+    if (albumTintCache.has(key)) { apply(albumTintCache.get(key)); return; }
+    const img = new Image();
+    img.onload = async () => {
+      try {
+        const palette = await window.BeehiveColor.extractPaletteFromImage(img, { light });
+        albumTintCache.set(key, palette?.accent || '');
+        apply(palette?.accent);
+      } catch {}
+    };
+    img.src = src;
+  }
+
   function makeInlineTrackDropdown(album, host) {
     const panel = document.createElement('div');
     panel.className = 'inline-album-dropdown';
@@ -11968,6 +12085,7 @@
         </div>
       </div>`;
     const expandedCover = panel.querySelector('.inline-album-cover');
+    tintAlbumPanel(panel, coverSrc(album.cover));
     expandedCover?.addEventListener('dblclick', e => {
       e.preventDefault();
       e.stopPropagation();
@@ -12193,7 +12311,6 @@
     const card = document.createElement('div');
     card.className = 'album-card' + (a.key === playingKey ? ' now-playing' : '') + (String(a.key) === String(highlightedAlbumKey) ? ' album-highlighted' : '') + (selectedAlbumKeys.has(String(a.key)) ? ' album-selected' : '');
     card.dataset.key = a.key;
-    card.dataset.tooltip = 'Click to show tracks';
     card.tabIndex = 0;
     card.setAttribute('role', 'button');
     card.setAttribute('aria-label', window.HiveKeyboardAccess?.albumLabel(a) || String(a.title || ''));
@@ -12901,6 +13018,19 @@
   setInterval(() => {
     const fav = starFavoritesPlaylist();
     if (!fav || fav.customCover) return;
+    const mosaic = document.querySelector('.playlist-row[data-favorites="1"] .playlist-mosaic');
+    if (mosaic && mosaic.offsetParent) {
+      // One tile at a time changes to another loved album, fading over.
+      const tiles = [...mosaic.querySelectorAll('img')];
+      const shown = new Set(tiles.map(t => t.getAttribute('src')));
+      const next = playlistMosaicCovers(fav, { limit: 12, shuffle: true }).find(c => !shown.has(c));
+      if (!next || !tiles.length) return;
+      const tile = tiles[Math.floor(Math.random() * tiles.length)];
+      const pre = new Image();
+      pre.onload = () => { tile.classList.add('swapping'); setTimeout(() => { tile.src = next; tile.classList.remove('swapping'); }, 350); };
+      pre.src = next;
+      return;
+    }
     const img = document.querySelector('.playlist-row[data-favorites="1"] .playlist-row-cover');
     if (!img || !img.offsetParent) return;
     const next = favoritesRandomCover(fav);
@@ -12911,6 +13041,48 @@
   function playlistImageSrc(pl) {
     const raw = normalizeSpotifyArtworkSource(pl?.customCover || pl?.cover || pl?.artworkUrl || '');
     return raw ? coverSrc(raw) : '';
+  }
+  // A playlist without its own picture shows a 2x2 mosaic of its songs' covers, like Hive
+  // Mobile: one cover per album, in playlist order (fewer than four albums: one cover).
+  // It follows the playlist, so adding or removing songs changes it. Smart playlists are
+  // evaluated once per library/playlist change (they scan the whole library).
+  const playlistMosaicCache = new Map();
+  function playlistMosaicTracks(pl) {
+    if (pl?.smart) {
+      const key = `${library.tracks.length}|${JSON.stringify(pl)}`;
+      const hit = playlistMosaicCache.get(String(pl.id));
+      if (hit && hit.key === key) return hit.tracks;
+      let tracks = [];
+      try { tracks = evaluateSmartPlaylist(pl) || []; } catch {}
+      playlistMosaicCache.set(String(pl.id), { key, tracks });
+      return tracks;
+    }
+    if (pl?.source === 'spotify' && Array.isArray(pl?.spotifyTracks)) return pl.spotifyTracks.map(normalizeSpotifyTrackRecord);
+    const episodes = pl?.podcastEpisodes && typeof pl.podcastEpisodes === 'object' ? pl.podcastEpisodes : null;
+    const out = [];
+    for (const x of (Array.isArray(pl?.tracks) ? pl.tracks : [])) {
+      const t = libraryTrackByPath.get(String(x)) || (episodes ? episodes[String(x)] : null);
+      if (t) out.push(t);
+    }
+    return out;
+  }
+  function playlistMosaicCovers(pl, opts = {}) { return mosaicCoversFromTracks(playlistMosaicTracks(pl), opts); }
+  function mosaicCoversFromTracks(tracks, { limit = 4, shuffle = false } = {}) {
+    const order = shuffle ? [...tracks].sort(() => Math.random() - 0.5) : tracks;
+    const seenAlbums = new Set(), covers = [];
+    for (const t of order) {
+      const album = (() => { try { return String(albumKey(t)); } catch { return String(t?.album || ''); } })();
+      if (seenAlbums.has(album)) continue;
+      const c = coverSrc(visualCoverForTrack(t) || '');
+      if (!c || /^data:/.test(c) || covers.includes(c)) continue;
+      seenAlbums.add(album); covers.push(c);
+      if (covers.length >= limit) break;
+    }
+    return covers;
+  }
+  function playlistArtHtml(covers) {
+    if (covers.length >= 4) return `<div class="playlist-mosaic">${covers.slice(0, 4).map(c => `<img src="${escapeHtml(c)}" alt="" loading="lazy" decoding="async">`).join('')}</div>`;
+    return covers.length ? `<img class="playlist-row-cover" src="${escapeHtml(covers[0])}" alt="" loading="lazy" decoding="async" />` : '';
   }
   // Use a song's cover as a playlist's picture (cached locally when it's a
   // web image).
@@ -14401,7 +14573,7 @@
 
     el.npCover.title = 'Double-click for cover art';
     el.npCover.ondblclick = () => openCoverLightbox(t);
-    el.npCover.oncontextmenu = e => { e.preventDefault(); showCoverContextMenu(e, t.covers?.[0]?.file || t.cover, t); };
+    el.npCover.oncontextmenu = e => { e.preventDefault(); showCoverContextMenu(e, t.covers?.[0]?.file || t.cover, t, { corners: true }); };
     const visualizerArtist = document.getElementById('sandbox-visualizer-artist');
     const visualizerTitle = document.getElementById('sandbox-visualizer-title');
     const visualizerAlbum = document.getElementById('sandbox-visualizer-album');
@@ -16421,8 +16593,10 @@
     albumTooltipCard = null;
     albumTooltip?.classList.remove('visible');
   }
+  // Album cards carry no hint any more (two tooltips used to pop up together, this one and the
+  // app-wide one): this only ever hides a leftover.
   document.addEventListener('mousemove', e => {
-    const card = e.target?.closest?.('.album-card[data-tooltip]');
+    const card = null && e.target?.closest?.('.album-card[data-tooltip]');
     if (!card) {
       if (albumTooltipCard) hideAlbumTooltip();
       return;
@@ -18019,7 +18193,6 @@
     contentTools.innerHTML=`<section class="podcasts-page">
       <header class="podcasts-hero">
         <div class="podcasts-hero-copy">
-          <div class="podcast-eyebrow">INTERNET AUDIO</div>
           <h1>Podcasts</h1>
           <p>Find shows, open their latest episodes, and keep your favorite channels one click away.</p>
         </div>
@@ -18034,14 +18207,14 @@
       </header>
       <section class="podcast-home-favorites">
         <div class="podcast-home-head">
-          <div><div class="podcast-home-kicker">QUICK ACCESS</div><h2>Favorite shows</h2></div>
+          <div><h2>Favorite shows</h2></div>
           <span class="podcast-section-note">Saved channels stay here for fast access.</span>
         </div>
         <div class="podcast-favorites"></div>
       </section>
       <section class="podcast-discovery">
         <div class="podcast-results-head">
-          <div><div class="podcast-home-kicker">DISCOVER</div><h2>Search results</h2></div>
+          <div><h2>Search results</h2></div>
           <span class="podcast-result-count" aria-live="polite"></span>
         </div>
         <div class="podcast-results"><div class="podcast-empty-state"><strong>Search for a podcast</strong><span>Try a show name, creator, subject, or broad topic.</span></div></div>
@@ -21360,7 +21533,7 @@
       const minArt = MIN_COVER_AREA;
       const maxQueue = Math.max(minQueue, available - minArt);
       const next = Math.max(minQueue, Math.min(maxQueue, startHeight + (e.clientY - startY)));
-      queueList.style.flexBasis = next + 'px';
+      applyOncePerFrame(queueList, 'flexBasis', next + 'px');
     };
 
     const onUp = () => {
@@ -21751,6 +21924,21 @@ Open Yearly Wrap to browse the imported years.`, 'Yearly Wrap');
     searchBox.style.flex = '0 0 ' + searchWidth + 'px';
   }
 
+  // A resize drag's new size, set once per screen frame (the last one wins): mouse events come faster
+  // than frames, and each size change lays the window out again, which made drags step.
+  const pendingStyle = new Map();
+  let pendingStyleFrame = 0;
+  function applyOncePerFrame(node, prop, value) {
+    if (!node) return;
+    pendingStyle.set(node, [prop, value]);
+    if (pendingStyleFrame) return;
+    pendingStyleFrame = requestAnimationFrame(() => {
+      pendingStyleFrame = 0;
+      for (const [n, [p, v]] of pendingStyle) n.style[p] = v;
+      pendingStyle.clear();
+    });
+  }
+
   const panelEls = {
     topbar: document.getElementById('topbar'),
     playbar: document.getElementById('playbar'),
@@ -21764,16 +21952,18 @@ Open Yearly Wrap to browse the imported years.`, 'Yearly Wrap');
     // cover art, play/pause controls, and other playback controls remain safely
     // inside the bar instead of touching/overlapping its border when resized.
     playbar: [71, () => Math.max(100, window.innerHeight - 120)],
-    sidebar: [120, () => Math.max(260, window.innerWidth - 320)],
-    'queue-panel': [120, () => Math.max(280, window.innerWidth - 260)]
+    // A side panel goes as wide as the user drags it: only the music in the middle keeps a little room
+    // (240 px beside the other panel). They used to stop at 20% and 32% of the window.
+    sidebar: [120, () => Math.max(260, window.innerWidth - otherPanelWidth('sidebar') - 240)],
+    'queue-panel': [120, () => Math.max(260, window.innerWidth - otherPanelWidth('queue-panel') - 240)]
   };
+  function otherPanelWidth(key) {
+    const other = panelEls[key === 'sidebar' ? 'queue-panel' : 'sidebar'];
+    return other ? other.getBoundingClientRect().width : 0;
+  }
 
-  // A side panel keeps the width it was dragged to, but never more than this
-  // share of the window: on a smaller window the music in the middle keeps
-  // its room (the queue panel dragged wide on a big screen used to squeeze
-  // the album grid to one column).
-  const widthCap = { sidebar: 20, 'queue-panel': 32 };
-  const sizeStyle = (key, px) => widthCap[key] ? `min(${px}px, ${widthCap[key]}vw)` : px + 'px';
+  const widthCap = {};
+  const sizeStyle = (key, px) => px + 'px';
 
   function applySavedSizes() {
     for (const key of Object.keys(panelEls)) {
@@ -21803,19 +21993,28 @@ Open Yearly Wrap to browse the imported years.`, 'Yearly Wrap');
     const invertNow = () => (handle.dataset.invert === 'true') !== (axis === 'x' && document.documentElement.classList.contains('hb-swap-panels'));
     const [min, maxValue] = limits[key];
     const max = () => typeof maxValue === 'function' ? maxValue() : maxValue;
-    let startPos = 0, startSize = 0, dragging = false, dragged = 0;
+    let startPos = 0, startSize = 0, dragging = false, dragged = 0, frame = 0;
 
+    // The size is applied once per screen frame, not once per mouse event (a mouse reports far more
+    // often than the screen draws, and each change lays the whole window out again): the panel follows
+    // the pointer smoothly instead of stepping.
+    function applyFrame() {
+      frame = 0;
+      if (dragged) targetEl.style[sizeProp[key]] = dragged + 'px';
+    }
     function onMove(e) {
       const pos = axis === 'x' ? e.clientX : e.clientY;
       let delta = pos - startPos;
       if (invertNow()) delta = -delta;
-      // The sidebar and queue stop at their share of the window, so letting go doesn't snap them narrower.
       const cap = widthCap[key] ? window.innerWidth * widthCap[key] / 100 : Infinity;
       dragged = clamp(startSize + delta, min, Math.max(min, Math.min(max(), cap)));
-      targetEl.style[sizeProp[key]] = dragged + 'px';
+      if (!frame) frame = requestAnimationFrame(applyFrame);
     }
     function onUp() {
       dragging = false;
+      if (frame) { cancelAnimationFrame(frame); frame = 0; applyFrame(); }
+      document.documentElement.classList.remove('panel-resizing');
+      document.documentElement.style.cursor = '';
       handle.classList.remove('dragging');
       document.removeEventListener('mousemove', onMove);
       document.removeEventListener('mouseup', onUp);
@@ -21828,6 +22027,9 @@ Open Yearly Wrap to browse the imported years.`, 'Yearly Wrap');
       e.preventDefault();
       dragging = true;
       handle.classList.add('dragging');
+      // While dragging: no glass blur, transitions or hover effects to redo each frame (styles.css).
+      document.documentElement.classList.add('panel-resizing');
+      document.documentElement.style.cursor = axis === 'x' ? 'col-resize' : 'row-resize';
       startPos = axis === 'x' ? e.clientX : e.clientY;
       startSize = targetEl.getBoundingClientRect()[axis === 'x' ? 'width' : 'height'];
       dragged = 0;
@@ -21900,7 +22102,7 @@ Open Yearly Wrap to browse the imported years.`, 'Yearly Wrap');
       const min = 105;
       const max = Math.max(min + 20, sidebarHeight - 120);
       const next = Math.max(min, Math.min(max, startHeight + delta));
-      lyricsSection.style.flex = '0 1 ' + next + 'px';
+      applyOncePerFrame(lyricsSection, 'flex', '0 1 ' + next + 'px');
     };
     const onLyricsUp = () => {
       if (!draggingLyrics) return;

@@ -39,8 +39,8 @@
           <span class="brand"><img class="brand-logo" id="hive-brand-logo" alt="Hive" aria-hidden="true"><span>Hive</span> <span class="brand-caret">▾</span></span>
         </button>
         <div id="brand-dropdown" class="dropdown-menu hidden">
-          <button class="dropdown-item" data-action="settings">⚙ Settings</button>
-          <button class="dropdown-item" data-action="about">ℹ About Hive</button>
+          <button class="dropdown-item" data-action="settings">Settings</button>
+          <button class="dropdown-item" data-action="about">About Hive</button>
           <div class="dropdown-divider"></div>
           <button class="dropdown-item" data-action="equaliser">Equaliser…</button>
           <button class="dropdown-item" data-action="mini-player">Mini player</button>
@@ -91,7 +91,6 @@
         <!-- This boundary is deliberately outside the Lyrics panel. Its entire block
              moves with the Lyrics divider, while the Lyrics panel keeps its own fixed height. -->
         <div id="sidebar-status-boundary">
-          <div id="selection-status" class="selection-status hidden" aria-live="polite"></div>
           <div id="scan-progress" class="scan-progress hidden">
             <div class="scan-progress-head"><div class="scan-progress-title" id="scan-progress-title">Library scan</div><button id="scan-cancel-btn" class="scan-progress-cancel" type="button" hidden>Stop</button></div>
             <div class="scan-progress-bar"><div class="scan-progress-fill" id="scan-progress-fill"></div></div>
@@ -128,11 +127,11 @@
         <div id="albums-toolbar">
           <h1 id="section-title"><button id="artist-back-btn" class="artist-back-btn hidden" type="button" title="Back" aria-label="Back"><img class="artist-back-icon" src="assets/back-chevron.svg" alt="" aria-hidden="true" draggable="false"></button><span id="section-title-text">Albums</span></h1>
           <div class="view-toggle">
+            <button class="view-btn column-browser-toggle hidden" type="button" aria-pressed="false" title="MusicBee-style column browser: filter by genre, artist and album">Browser</button>
             <button class="view-btn years-toggle" data-action="toggle-years" type="button" aria-pressed="true">Years: ON</button>
             <button class="view-btn active" data-mode="albums">Albums</button>
             <button class="view-btn" data-mode="songs">Tracks</button>
             <button class="view-btn" data-mode="artists">Artists</button>
-            <button class="view-btn column-browser-toggle hidden" type="button" aria-pressed="false" title="MusicBee-style column browser: filter by genre, artist and album">Browser</button>
           </div>
           <div class="column-browser hidden" aria-label="Column browser"></div>
         </div>
@@ -172,6 +171,8 @@
     <div id="playbar-resize" class="resize-handle resize-h" data-target="playbar" data-invert="true"></div>
 
     <!-- ============ BOTTOM PLAYBACK BAR ============ -->
+    <!-- "N selected": floats above the player bar (outside the blurred panels, so it can). -->
+    <div id="selection-status" class="selection-status hidden" aria-live="polite"></div>
     <footer id="playbar" class="glass">
       <div class="playbar-left">
         <img id="pb-cover" class="pb-cover" src="" alt="" />
@@ -917,9 +918,9 @@
       <div class="modal-body playlist-form">
         <label>Playlist name<input id="playlist-name" autocomplete="off" placeholder="My Playlist"></label>
         <div class="playlist-label-style-field">
-          <div class="playlist-label-style-heading"><span>HTML label style</span><small>Optional animated styling. The same safe HTML system used by navigation labels.</small></div>
-          <div id="playlist-label-styles" class="playlist-label-styles" role="radiogroup" aria-label="HTML label style"></div>
-          <input id="playlist-label-html" class="playlist-label-html" autocomplete="off" placeholder="Custom HTML, e.g. &lt;span class='hive-glow'&gt;Mixtape&lt;/span&gt;">
+          <div class="playlist-label-style-heading"><span>Name style</span><small>Plain, or with a little colour and motion.</small></div>
+          <div id="playlist-label-styles" class="playlist-label-styles" role="radiogroup" aria-label="Name style"></div>
+          <input id="playlist-label-html" class="playlist-label-html" autocomplete="off" placeholder="Custom label (HTML), e.g. &lt;span class='hive-glow'&gt;Mixtape&lt;/span&gt;">
           <div class="playlist-label-preview-wrap"><span>Preview</span><strong id="playlist-label-preview" class="playlist-label-preview"></strong></div>
         </div>
         <label>Open playlist using<select id="playlist-display-view"><option value="albums">Albums</option><option value="songs">Tracks</option><option value="artists">Artists</option></select></label>
@@ -974,41 +975,41 @@
   <!-- ============ PLAYLIST INFO ============ -->
   <div id="playlist-info-modal" class="modal-overlay hidden">
     <div class="modal glass playlist-info-modal" role="dialog" aria-modal="true" aria-labelledby="playlist-info-title">
-      <div class="modal-header"><div><div class="modal-kicker">PLAYLIST DETAILS</div><h3 id="playlist-info-title">Playlist</h3></div><div class="playlist-info-header-actions"><button id="playlist-info-save" class="playlist-info-save-pill" type="button">Save changes</button><button class="modal-close" data-close aria-label="Close">✕</button></div></div>
+      <div class="modal-header"><div><h3 id="playlist-info-title">Playlist</h3></div><div class="playlist-info-header-actions"><button id="playlist-info-save" class="playlist-info-save-pill" type="button">Save changes</button><button class="modal-close" data-close aria-label="Close">✕</button></div></div>
       <div class="modal-body playlist-info-body">
         <section class="playlist-info-header">
-          <div class="playlist-info-icon-picker"><button id="playlist-info-hero-icon" class="playlist-info-hero-icon" type="button" aria-haspopup="menu" aria-expanded="false" aria-label="Choose playlist icon"><span class="playlist-info-hero-icon-glyph">♫</span><span class="playlist-info-hero-icon-chevron" aria-hidden="true">⌄</span></button><div id="playlist-info-icon-menu" class="playlist-info-icon-menu hidden" role="menu" aria-label="Playlist icons"></div></div>
+          <div id="playlist-info-art" class="playlist-info-art" aria-hidden="true"></div>
           <div class="playlist-info-hero-copy">
-            <div class="playlist-info-eyebrow">LIBRARY COLLECTION</div>
             <div id="playlist-info-hero-label" class="playlist-info-hero-label">Playlist</div>
-            <div id="playlist-info-hero-subtitle" class="playlist-info-hero-subtitle">Customize how this playlist appears in Hive.</div>
+            <div id="playlist-info-body"></div>
+            <div id="playlist-info-hero-subtitle" class="playlist-info-hero-subtitle"></div>
           </div>
         </section>
-        <div id="playlist-info-body"></div>
         <section class="playlist-info-appearance">
-          <div class="playlist-info-section-heading"><div><strong>Playlist settings</strong><small>Control how the playlist opens and appears throughout Hive.</small></div></div>
+          <div class="playlist-info-section-heading"><div><strong>Playlist</strong></div></div>
           <div class="playlist-info-form-grid">
             <label>Playlist name<input id="playlist-info-name" autocomplete="off" placeholder="My Playlist"></label>
             <label>Open playlist using<select id="playlist-info-display-view"><option value="albums">Albums</option><option value="songs">Tracks</option><option value="artists">Artists</option></select></label>
           </div>
-          <label class="playlist-info-switch-row"><span><strong>Shuffle automatically when opened</strong><small>Randomize this collection when opened; player Shuffle stays independent.</small></span><input id="playlist-info-shuffle" type="checkbox"></label>
+          <label class="playlist-info-switch-row"><span><strong>Shuffle automatically when opened</strong><small>Plays in a random order when you open it. The player's Shuffle button isn't changed.</small></span><input id="playlist-info-shuffle" type="checkbox"></label>
         </section>
         <section class="playlist-info-appearance playlist-info-appearance-clean">
-          <div class="playlist-info-section-heading"><div><strong>Sidebar appearance</strong><small>Choose how this collection is represented in Hive.</small></div></div>
+          <div class="playlist-info-section-heading"><div><strong>In the sidebar</strong></div></div>
+          <div class="playlist-info-icon-row"><div class="playlist-info-control-label"><strong>Icon</strong><span>Shown beside the name when there's no picture.</span></div><div class="playlist-info-icon-picker"><button id="playlist-info-hero-icon" class="playlist-info-hero-icon" type="button" aria-haspopup="menu" aria-expanded="false" aria-label="Choose playlist icon"><span class="playlist-info-hero-icon-glyph">♫</span><span class="playlist-info-hero-icon-chevron" aria-hidden="true">⌄</span></button><div id="playlist-info-icon-menu" class="playlist-info-icon-menu hidden" role="menu" aria-label="Playlist icons"></div></div></div>
           <div class="playlist-info-label-field">
-            <div class="playlist-info-control-label"><strong>Name style</strong><span>Keep the label quiet or give it a little motion.</span></div>
+            <div class="playlist-info-control-label"><strong>Name style</strong><span>Plain, or with a little colour and motion.</span></div>
             <div id="playlist-info-label-styles" class="playlist-label-styles" role="radiogroup" aria-label="Playlist name style"></div>
             <details class="playlist-info-advanced">
-              <summary>Advanced label markup</summary>
+              <summary>Custom label (HTML)</summary>
               <label class="playlist-info-markup-label">Custom display markup<input id="playlist-info-label-html" class="playlist-label-html" autocomplete="off" placeholder="&lt;span class='hive-glow'&gt;My Playlist&lt;/span&gt;"></label>
             </details>
           </div>
         </section>
         <section class="playlist-info-live-preview">
-          <div class="playlist-info-section-heading"><div><strong>Live preview</strong><small>This is the same rich label renderer used by the playlist UI.</small></div><span>LIVE</span></div>
+          <div class="playlist-info-section-heading"><div><strong>Preview</strong></div></div>
           <div class="playlist-info-preview-card">
             <div id="playlist-info-preview-icon" class="playlist-info-preview-icon">♫</div>
-            <div class="playlist-info-preview-copy"><div id="playlist-info-label-preview" class="playlist-label-preview">Playlist</div><small>Sidebar appearance</small></div>
+            <div class="playlist-info-preview-copy"><div id="playlist-info-label-preview" class="playlist-label-preview">Playlist</div></div>
           </div>
         </section>
         <div id="playlist-info-save-status" class="playlist-info-save-status" aria-live="polite"></div>
@@ -1116,7 +1117,7 @@
             <div><span>album size</span><strong id="tag-prop-album-size">—</strong></div>
             <div><span>formats</span><strong id="tag-prop-formats">—</strong></div>
           </div>
-          <label class="tag-wide-field">location<input id="tag-prop-location" readonly></label>
+          <label class="tag-wide-field">Location<input id="tag-prop-location" readonly></label>
         </section>
 
         <section class="tag-editor-panel" data-tag-panel="tags">
@@ -1124,17 +1125,17 @@
             <div class="musicbee-cover-column">
               <div class="tag-cover-preview musicbee-cover-box" id="tag-cover-editor" title="Right-click for cover options"><img id="tag-art-preview" src="" alt="Album cover"></div>
               <div class="musicbee-rating-block">
-                <div class="musicbee-rating-label">rating</div><div id="tag-track-rating-display" class="musicbee-rating-stars">☆☆☆☆☆</div>
+                <div class="musicbee-rating-label">Rating</div><div id="tag-track-rating-display" class="musicbee-rating-stars">☆☆☆☆☆</div>
               </div>
             </div>
             <div class="musicbee-main-fields">
-              <div class="musicbee-field-row"><label>track title<input id="tag-title"></label><label>artist<input id="tag-artist"></label></div>
-              <div class="musicbee-field-row"><label>album artist<input id="tag-albumArtist"></label><label>album<input id="tag-album"></label></div>
-              <div class="musicbee-field-row"><label>year<input id="tag-year" type="number"></label><div class="musicbee-number-pair"><label>track #<input id="tag-track"></label><span>of</span><input id="tag-track-total" aria-label="track total"></div></div>
-              <div class="musicbee-field-row"><label>publisher<input id="tag-publisher"></label><div class="musicbee-number-pair"><label>disc #<input id="tag-disk"></label><span>of</span><input id="tag-disc-total" aria-label="disc total"></div></div>
-              <div class="musicbee-field-row"><label>composer<input id="tag-composer"></label><label>conductor<input id="tag-conductor"></label></div>
-              <div class="musicbee-field-row"><label>genre<input id="tag-genre"></label><label>grouping<input id="tag-grouping"></label></div>
-              <label class="musicbee-comments-field">comments<textarea id="tag-comment" rows="4"></textarea></label>
+              <div class="musicbee-field-row"><label>Track title<input id="tag-title"></label><label>Artist<input id="tag-artist"></label></div>
+              <div class="musicbee-field-row"><label>Album artist<input id="tag-albumArtist"></label><label>Album<input id="tag-album"></label></div>
+              <div class="musicbee-field-row"><label>Year<input id="tag-year" type="number"></label><div class="musicbee-number-pair"><label>Track #<input id="tag-track"></label><span>of</span><input id="tag-track-total" aria-label="track total"></div></div>
+              <div class="musicbee-field-row"><label>Publisher<input id="tag-publisher"></label><div class="musicbee-number-pair"><label>Disc #<input id="tag-disk"></label><span>of</span><input id="tag-disc-total" aria-label="disc total"></div></div>
+              <div class="musicbee-field-row"><label>Composer<input id="tag-composer"></label><label>Conductor<input id="tag-conductor"></label></div>
+              <div class="musicbee-field-row"><label>Genre<input id="tag-genre"></label><label>Grouping<input id="tag-grouping"></label></div>
+              <label class="musicbee-comments-field">Comments<textarea id="tag-comment" rows="4"></textarea></label>
             </div>
           </div>
         </section>
@@ -1144,15 +1145,15 @@
           <div class="tag-editor-note">A standard set of tags every track can carry, shown in a plain readable form. Fields that could corrupt the file if edited incorrectly (raw native frame IDs and values) are intentionally not exposed here.</div>
           <div class="musicbee-main-fields">
             <div class="musicbee-field-row">
-              <label>play count<input id="tag-pcount" type="number" min="0" inputmode="numeric"></label>
+              <label>Play count<input id="tag-pcount" type="number" min="0" inputmode="numeric"></label>
               <label class="tag-check"><input id="tag-compilation" type="checkbox"> part of a compilation</label>
             </div>
-            <div class="musicbee-field-row"><label>BPM<input id="tag-bpm" type="number" min="0" inputmode="numeric"></label><label>tempo<input id="tag-tempo" placeholder="e.g. Fast"></label></div>
-            <div class="musicbee-field-row"><label>mood<input id="tag-mood"></label><label>occasion<input id="tag-occasion"></label></div>
-            <div class="musicbee-field-row"><label>quality<input id="tag-quality"></label><label>language<input id="tag-language"></label></div>
-            <div class="musicbee-field-row"><label>original artist<input id="tag-originalArtist"></label><label>original album<input id="tag-originalAlbum"></label></div>
-            <div class="musicbee-field-row"><label>original year<input id="tag-originalYear" type="number" inputmode="numeric"></label><label>copyright<input id="tag-copyright"></label></div>
-            <label class="musicbee-comments-field">keywords<textarea id="tag-keywords" rows="2"></textarea></label>
+            <div class="musicbee-field-row"><label>BPM<input id="tag-bpm" type="number" min="0" inputmode="numeric"></label><label>Tempo<input id="tag-tempo" placeholder="e.g. Fast"></label></div>
+            <div class="musicbee-field-row"><label>Mood<input id="tag-mood"></label><label>Occasion<input id="tag-occasion"></label></div>
+            <div class="musicbee-field-row"><label>Quality<input id="tag-quality"></label><label>Language<input id="tag-language"></label></div>
+            <div class="musicbee-field-row"><label>Original artist<input id="tag-originalArtist"></label><label>Original album<input id="tag-originalAlbum"></label></div>
+            <div class="musicbee-field-row"><label>Original year<input id="tag-originalYear" type="number" inputmode="numeric"></label><label>Copyright<input id="tag-copyright"></label></div>
+            <label class="musicbee-comments-field">Keywords<textarea id="tag-keywords" rows="2"></textarea></label>
           </div>
         </section>
 
@@ -1233,7 +1234,7 @@
             </div>
             <div id="tag-time-summary" class="tag-time-summary" aria-live="polite"></div>
           </div>
-          <label class="tag-time-offset lyrics-offset-field">lyrics offset<input id="tag-lyrics-offset" placeholder="+0.00" inputmode="decimal"><span class="settings-hint">Seconds to move synchronized lyrics. Positive delays them; add <strong>−</strong> to move them earlier. Example: <strong>-0.50</strong>.</span></label>
+          <label class="tag-time-offset lyrics-offset-field">Lyrics offset<input id="tag-lyrics-offset" placeholder="+0.00" inputmode="decimal"><span class="settings-hint">Seconds to move synchronized lyrics. Positive delays them; add <strong>−</strong> to move them earlier. Example: <strong>-0.50</strong>.</span></label>
           <div class="tag-editor-section-head compact"><div><span class="tag-editor-kicker">LOUDNESS METADATA</span><h4>ReplayGain</h4></div><span class="tag-editor-muted">Read from / written to the audio file</span></div>
           <div class="replaygain-grid">
             <label>Track gain<input id="tag-replaygain-track-gain" placeholder="-7.21 dB"></label>
@@ -1249,8 +1250,7 @@
           <summary>Advanced compatibility fields <span class="settings-hint">Legacy custom fields and uncommon metadata are preserved here for power users.</span></summary>
           <label>Raw custom tag map<textarea id="tag-advanced" rows="4" spellcheck="false"></textarea></label>
         </details>
-        <div class="tag-actions"><button id="tag-cancel" class="sidebar-add">Cancel</button><button id="tag-save" class="sidebar-add settings-primary-action">Save</button></div>
-        <div id="tag-status" class="settings-hint"></div>
+        <div class="tag-actions"><div id="tag-status" class="settings-hint tag-status-line"></div><button id="tag-cancel" class="sidebar-add">Cancel</button><button id="tag-save" class="sidebar-add settings-primary-action">Save</button></div>
       </div>
     </div>
   </div>
@@ -1310,6 +1310,7 @@
   <script src="duplicates.js"></script>
   <script src="../main/file-organiser.js"></script>
   <script src="colorExtract.js"></script>
+  <script src="accent-contrast.js"></script>
   <script src="drag-out.js"></script>
   <script src="keyboard-access.js"></script>
   <script src="plugin-frame.js"></script>

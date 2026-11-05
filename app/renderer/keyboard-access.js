@@ -118,6 +118,14 @@
   }
 
   // ---- The right-click menu ----
+  // Whether the last input was the mouse or the keyboard: a menu opened with
+  // the mouse focuses its first item (so arrows work) without showing a focus
+  // box on it; any key press inside the menu shows it again.
+  let lastInputWasKeyboard = false;
+  if (typeof window !== 'undefined' && window.addEventListener) {
+    window.addEventListener('keydown', () => { lastInputWasKeyboard = true; }, true);
+    window.addEventListener('pointerdown', () => { lastInputWasKeyboard = false; }, true);
+  }
   let menuReturnFocus = null;
   const menuItems = menu => Array.from(menu.querySelectorAll(':scope > .context-item, :scope > .context-submenu-wrap > .context-submenu-trigger')).filter(b => b.offsetParent !== null && !b.disabled);
   const subItems = sub => Array.from(sub.querySelectorAll(':scope > .context-item')).filter(b => !b.disabled);
@@ -131,7 +139,12 @@
     menu.querySelectorAll('.context-rating-help').forEach(h => h.setAttribute('role', 'presentation'));
     const active = document.activeElement;
     if (active && active !== document.body && !menu.contains(active)) menuReturnFocus = active;
-    if (!menu._hiveKeys) { menu.addEventListener('keydown', onMenuKeydown); menu._hiveKeys = true; }
+    menu.dataset.openedBy = lastInputWasKeyboard ? 'keyboard' : 'pointer';
+    if (!menu._hiveKeys) {
+      menu.addEventListener('keydown', onMenuKeydown);
+      menu.addEventListener('keydown', () => { menu.dataset.openedBy = 'keyboard'; }, true);
+      menu._hiveKeys = true;
+    }
     if (focusFirst) menuItems(menu)[0]?.focus({ preventScroll: true });
   }
   function openSub(trigger, focus = true) {
