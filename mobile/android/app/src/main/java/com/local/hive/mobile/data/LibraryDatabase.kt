@@ -202,6 +202,13 @@ data class PcCopy(val pcId: String, @androidx.room.Embedded val track: Track)
 data class PcMatch(
     @PrimaryKey val trackId: Long,
     val pcId: String,
+    /**
+     * The song's play count as Hive on the PC last said (its own plays, this phone's it counted,
+     * imported history); -1 not known yet. The phone shows this plus its plays Hive hasn't counted.
+     */
+    @androidx.room.ColumnInfo(defaultValue = "-1") val pcPlays: Int = -1,
+    /** How many of this phone's plays of the song Hive had counted when [pcPlays] was read. */
+    @androidx.room.ColumnInfo(defaultValue = "0") val pcBaseline: Int = 0,
 )
 
 /** A play counted on the phone, kept for Wrapped and play-count sync. */
@@ -224,6 +231,14 @@ data class RatingToSend(val trackId: Long, val stars: Float, val changedAt: Long
 
 /** See [LibraryDao.relink]: above any number Android gives a song. */
 const val RELINK_STAGE = 1L shl 42
+
+/**
+ * A song's play count (SQL, for a song `t.id`): one Hive on the PC has a count for is that count
+ * plus this phone's plays Hive hadn't counted when it was read; any other, the plays kept here.
+ * So one play on the PC and two on the phone read 3 on both.
+ */
+const val PLAYS_OF_T = "COALESCE((SELECT m.pcPlays + (SELECT COUNT(*) FROM plays o WHERE o.trackId = m.trackId AND o.fromPc = 0) - m.pcBaseline " +
+    "FROM pc_match m WHERE m.trackId = t.id AND m.pcPlays >= 0), (SELECT COUNT(*) FROM plays a WHERE a.trackId = t.id))"
 
 /**
  * A song that has things kept for it (plays, Love, a rating, playlist places, Recently played) but
@@ -740,17 +755,23 @@ interface LibraryDao {
     suspend fun firstPlay(): Long?
 
     /** Every song's play count, for Auto DJ. */
-    @Query("SELECT trackId, COUNT(*) AS plays FROM plays GROUP BY trackId")
+    @Query("SELECT t.id AS trackId, " + PLAYS_OF_T + " AS plays FROM tracks t WHERE t.id IN (SELECT trackId FROM plays UNION SELECT trackId FROM pc_match WHERE pcPlays > 0)")
     suspend fun playCounts(): List<TrackPlays>
 
-    @Query("SELECT COUNT(*) AS plays, MAX(playedAt) AS lastPlayed FROM plays WHERE trackId = :trackId")
+    @Query("SELECT (SELECT " + PLAYS_OF_T + " FROM (SELECT :trackId AS id) t) AS plays, (SELECT MAX(playedAt) FROM plays WHERE trackId = :trackId) AS lastPlayed")
     suspend fun playStats(trackId: Long): PlayStats
 
     @Query(
-        "SELECT tracks.* FROM tracks JOIN (SELECT trackId, COUNT(*) AS c, MAX(playedAt) AS lastPlayed FROM plays GROUP BY trackId) p " +
-            "ON p.trackId = tracks.id ORDER BY p.c DESC, p.lastPlayed DESC LIMIT :limit"
+        "SELECT tracks.* FROM tracks JOIN (SELECT t.id AS trackId, " + PLAYS_OF_T + " AS c FROM tracks t " +
+            "WHERE t.id IN (SELECT trackId FROM plays UNION SELECT trackId FROM pc_match WHERE pcPlays > 0)) p ON p.trackId = tracks.id " +
+            "LEFT JOIN (SELECT trackId, MAX(playedAt) AS lastPlayed FROM plays GROUP BY trackId) l ON l.trackId = tracks.id " +
+            "WHERE p.c > 0 ORDER BY p.c DESC, l.lastPlayed DESC LIMIT :limit"
     )
     fun mostPlayed(limit: Int): Flow<List<Track>>
+
+    /** Hive's play count for a song and how many of this phone's plays it had counted then. */
+    @Query("UPDATE pc_match SET pcPlays = :plays, pcBaseline = (SELECT COUNT(*) FROM plays WHERE trackId = :trackId AND fromPc = 0 AND synced = 1) WHERE trackId = :trackId")
+    suspend fun setPcPlays(trackId: Long, plays: Int)
 
     @Query(
         "SELECT tracks.* FROM tracks JOIN (SELECT trackId, MAX(playedAt) AS lastPlayed FROM plays GROUP BY trackId) p " +
@@ -773,9 +794,9 @@ interface LibraryDao {
 
 @Database(
     entities = [Track::class, LoveState::class, PcMatch::class, Play::class, FavoriteAlbum::class, Playlist::class, PlaylistEntry::class, StreamTrack::class, Rating::class, SyncedSong::class, HistoryEntry::class, FavoriteItem::class, LostTrack::class],
-    version = 12,
+    version = 13,
     exportSchema = true,
-    autoMigrations = [AutoMigration(from = 1, to = 2), AutoMigration(from = 2, to = 3), AutoMigration(from = 3, to = 4), AutoMigration(from = 4, to = 5), AutoMigration(from = 5, to = 6), AutoMigration(from = 6, to = 7), AutoMigration(from = 7, to = 8, spec = LibraryDatabase.SeedHistory::class), AutoMigration(from = 8, to = 9), AutoMigration(from = 9, to = 10), AutoMigration(from = 10, to = 11, spec = LibraryDatabase.SendOwnRatings::class), AutoMigration(from = 11, to = 12)],
+    autoMigrations = [AutoMigration(from = 1, to = 2), AutoMigration(from = 2, to = 3), AutoMigration(from = 3, to = 4), AutoMigration(from = 4, to = 5), AutoMigration(from = 5, to = 6), AutoMigration(from = 6, to = 7), AutoMigration(from = 7, to = 8, spec = LibraryDatabase.SeedHistory::class), AutoMigration(from = 8, to = 9), AutoMigration(from = 9, to = 10), AutoMigration(from = 10, to = 11, spec = LibraryDatabase.SendOwnRatings::class), AutoMigration(from = 11, to = 12), AutoMigration(from = 12, to = 13)],
 )
 abstract class LibraryDatabase : RoomDatabase() {
     abstract fun dao(): LibraryDao

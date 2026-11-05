@@ -112,8 +112,16 @@ function createMetadataWriter(deps) {
     }
   }
 
-  async function commitMetadataTemp(temp, trackPath, background = false) {
+  /**
+   * Puts the edited temp copy in place of the file, flushed to disk first. [keepMtime]: the write is
+   * bookkeeping (Love, rating, play count), not a change to the song: the file keeps its modified
+   * time, so Hive Mobile's song sync doesn't copy the whole song across again for it.
+   */
+  async function commitMetadataTemp(temp, trackPath, background = false, keepMtime = false) {
+    const before = keepMtime ? await fsp.stat(trackPath).catch(() => null) : null;
+    try { const fd = await fsp.open(temp, 'r+'); try { await fd.sync(); } finally { await fd.close(); } } catch {}
     await replaceFile(temp, trackPath, { copyOver: async (a, b) => { await copyMetadataFile(a, b, background); await fsp.unlink(a); } });
+    if (before) await fsp.utimes(trackPath, before.atime, before.mtime).catch(() => {});
   }
 
   async function embedRatingInFile(trackPath, stars) {
@@ -148,7 +156,7 @@ function createMetadataWriter(deps) {
         if (artworkBefore?.fingerprint !== artworkAfter?.fingerprint) {
           throw new Error('Rating write changed embedded artwork unexpectedly; the original file was left untouched.');
         }
-        await commitMetadataTemp(temp, trackPath, false);
+        await commitMetadataTemp(temp, trackPath, false, true);
         return true;
       } catch (err) {
         try { await fsp.unlink(temp); } catch {}

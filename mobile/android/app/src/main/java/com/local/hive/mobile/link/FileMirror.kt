@@ -162,11 +162,12 @@ class FileMirror(private val context: Context) {
     fun root(): File? {
         if (!available(context)) return null
         val kept = prefs.getString("root", null)
-        kept?.let { File(it) }?.takeIf { it.isDirectory }?.let { return it }
+        // The folder chosen before is away (an SD card not mounted yet, mid-restart): no sync until
+        // it's back. Picking another folder meanwhile copied the whole PC library into the phone's
+        // own storage and forgot everything agreed about the real one.
+        if (kept != null) return File(kept).takeIf { it.isDirectory }
         val chosen = chooseRoot() ?: return null
         prefs.edit().putString("root", chosen.path).apply()
-        // A different folder from before (the old one is gone): what was agreed about it doesn't apply.
-        if (kept != null && kept != chosen.path) ledgerFile.delete()
         return chosen
     }
 
@@ -189,11 +190,23 @@ class FileMirror(private val context: Context) {
         return ledger().keys.mapTo(HashSet()) { File(root, MirrorPlanner.phonePath(it)).path.lowercase() }
     }
 
-    fun ledger(): Map<String, Agreed> = runCatching { json.decodeFromString(ledgerSerializer, ledgerFile.readText()) }.getOrDefault(emptyMap())
+    /**
+     * What both sides last agreed on. A ledger that's there but can't be read stops the sync (the
+     * last good copy is tried first): read as empty, every difference would look new, deletions would
+     * come back and the safety check on mass copies would be skipped.
+     */
+    fun ledger(): Map<String, Agreed> {
+        if (!ledgerFile.exists()) return emptyMap()
+        return runCatching { json.decodeFromString(ledgerSerializer, ledgerFile.readText()) }.getOrElse {
+            runCatching { json.decodeFromString(ledgerSerializer, File(ledgerFile.path + ".bak").readText()) }
+                .getOrElse { throw IOException("Song sync stopped: its record of what's on both sides couldn't be read. Nothing was copied.") }
+        }
+    }
 
     private fun saveLedger(ledger: Map<String, Agreed>) {
         val tmp = File(ledgerFile.path + ".tmp")
-        tmp.writeText(json.encodeToString(ledgerSerializer, ledger))
+        java.io.FileOutputStream(tmp).use { out -> out.write(json.encodeToString(ledgerSerializer, ledger).toByteArray()); out.fd.sync() }
+        if (ledgerFile.exists()) ledgerFile.copyTo(File(ledgerFile.path + ".bak"), overwrite = true)
         if (!tmp.renameTo(ledgerFile)) { ledgerFile.delete(); tmp.renameTo(ledgerFile) }
     }
 
@@ -202,6 +215,9 @@ class FileMirror(private val context: Context) {
 
 
     data class Result(val plan: MirrorPlan, val copied: Int, val failed: Int)
+
+    /** Whether a music folder was chosen for the mirror before (it may be away now). */
+    fun rootChosen(): Boolean = prefs.getString("root", null) != null
 
     /** Works out the plan without copying anything. */
     suspend fun check(client: HiveLinkClient, conn: HiveLinkClient.Connection, left: Set<String>): MirrorPlan {
@@ -260,24 +276,33 @@ class FileMirror(private val context: Context) {
                     part.outputStream().use { client.downloadFile(conn, path, it) }
                 } catch (e: Exception) { part.delete(); throw e }
                 if (part.length() != size) { part.delete(); throw IOException("The copy of $path was cut off.") }
-                if (target.exists() && !target.delete()) { part.delete(); throw IOException("Couldn't replace $path on the phone.") }
-                if (!part.renameTo(target)) { part.delete(); throw IOException("Couldn't save $path on the phone.") }
+                // A copy that doesn't play never replaces one that does.
+                if (!SongCheck.playable(part, target.takeIf { it.isFile })) { part.delete(); throw IOException("The PC's copy of $path doesn't look like a whole song; the phone's was kept.") }
+                // Renamed straight over the old copy (one step): deleting first left nothing if the rename failed.
+                if (!part.renameTo(target)) {
+                    if (target.exists() && !target.delete()) { part.delete(); throw IOException("Couldn't replace $path on the phone.") }
+                    if (!part.renameTo(target)) { part.delete(); throw IOException("Couldn't save $path on the phone.") }
+                }
                 if (modified > 0) target.setLastModified(modified)
                 ledger[path] = Agreed(FileStat(target.length(), target.lastModified()), pc.getValue(path))
                 scan += target.path
             }
-            if (ok) { copied++; room -= size } else failed++
-            if (copied % 50 == 0) saveLedger(ledger)
+            if (ok) { copied++; room -= size; if (copied % 50 == 0) saveLedger(ledger) } else failed++
         }
         for (path in plan.toPc) {
             val ok = step(path.substringAfterLast('/')) {
                 val source = phoneFile(path)
-                val saved = client.uploadFile(conn, path, source.lastModified(), source.length()) { source.inputStream() }
+                // A broken or cut-off file on the phone (a tag write the app didn't finish) never goes over the PC's copy.
+                val agreedSize = ledger[path]?.phone?.size
+                if (!SongCheck.playable(source, null) || (agreedSize != null && SongCheck.shrunk(agreedSize, source.length())))
+                    throw IOException("The phone's copy of $path doesn't look like a whole song; the PC's was kept.")
+                val before = FileStat(source.length(), source.lastModified())
+                val saved = client.uploadFile(conn, path, before.modified, before.size) { source.inputStream() }
                 if (saved.status != "saved") throw IOException("Hive didn't take $path.")
-                ledger[path] = Agreed(FileStat(source.length(), source.lastModified()), FileStat(saved.s, saved.m))
+                // Changed while it was being sent: what was sent isn't what's here now, so the next run sends it again.
+                if (FileStat(source.length(), source.lastModified()).same(before)) ledger[path] = Agreed(before, FileStat(saved.s, saved.m))
             }
-            if (ok) copied++ else failed++
-            if (copied % 50 == 0) saveLedger(ledger)
+            if (ok) { copied++; if (copied % 50 == 0) saveLedger(ledger) } else failed++
         }
         saveLedger(ledger)
         // Android's music library learns of the new and changed files.
@@ -319,9 +344,35 @@ class FileMirror(private val context: Context) {
             if (f.name.endsWith(".hive-mirror-part", ignoreCase = true) && System.currentTimeMillis() - f.lastModified() > 60_000L) f.delete()
         }
 
-        private val SKIPPED_FILE = Regex("""^\.(pending|trashed)-|\.hive-mirror-part$|\.hivelink-part$|\.beehive-[a-z-]+-[0-9a-f]{6,}(\.[a-z0-9]+)?$""", RegexOption.IGNORE_CASE)
+        private val SKIPPED_FILE = Regex("""^\.(pending|trashed)-|\.hive-mirror-part$|\.hive-edit$|\.hivelink-part$|\.beehive-[a-z-]+-[0-9a-f]{6,}(\.[a-z0-9]+)?$""", RegexOption.IGNORE_CASE)
 
         /** Whether Hive may write anywhere in the phone's storage (All files access): the mirror needs it. */
         fun available(context: Context): Boolean = android.os.Build.VERSION.SDK_INT >= 30 && Environment.isExternalStorageManager()
     }
+}
+
+/** Whether a song file is whole, before it replaces another copy. */
+internal object SongCheck {
+    /**
+     * [file] has audio Android can read, and (with [old]) isn't clearly shorter than the copy it replaces:
+     * a tag or cover change never shortens a song; a copy cut off part-way does.
+     */
+    fun playable(file: File, old: File?): Boolean {
+        if (file.length() <= 0) return false
+        val ms = duration(file) ?: return isUnreadableKind(file)
+        if (ms <= 0) return false
+        val was = old?.let(::duration) ?: return true
+        return ms >= was - maxOf(3_000L, was / 20)
+    }
+
+    /** Far smaller than the copy both sides agreed on: a cut-off write, not an edit (a cover is a few MB at most). */
+    fun shrunk(agreed: Long, now: Long) = now < agreed / 2 && agreed - now > 2L * 1024 * 1024
+
+    private fun duration(file: File): Long? = runCatching {
+        val r = android.media.MediaMetadataRetriever()
+        try { r.setDataSource(file.path); r.extractMetadata(android.media.MediaMetadataRetriever.METADATA_KEY_DURATION)?.toLongOrNull() } finally { r.release() }
+    }.getOrNull()
+
+    /** Kinds Android can't read the length of (not songs, or rare formats): not judged, only their size. */
+    private fun isUnreadableKind(file: File) = file.extension.lowercase() !in setOf("mp3", "m4a", "mp4", "flac", "ogg", "opus", "wav", "aac")
 }

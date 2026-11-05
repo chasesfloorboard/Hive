@@ -40,7 +40,7 @@ test('rating and Love writes use the bundled metadata backend', () => {
   assert.match(helper, /def write_rating\(/);
   assert.match(helper, /def write_love\(/);
   const rating = metadataWriter.match(/async function embedRatingInFile\(trackPath, stars\) \{([\s\S]*?)\n  \}/)?.[1] || '';
-  const love = main.match(/async function embedLoveInFile\(trackPath, loved\) \{([\s\S]*?)\n\}/)?.[1] || '';
+  const love = main.match(/async function embedLoveInFileLocked\(trackPath, loved\) \{([\s\S]*?)\n\}/)?.[1] || '';
   assert.match(rating, /op:'write_rating'/);
   assert.match(love, /op:'write_love'/);
   assert.doesNotMatch(rating, /runFfmpeg|runMetaflac|writeMp4RatingTag/);

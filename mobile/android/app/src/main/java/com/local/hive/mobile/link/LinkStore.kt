@@ -83,6 +83,11 @@ class LinkStore(context: Context) {
         get() = prefs.getInt("pcPlaysVersion", 0)
         set(value) = prefs.edit { putInt("pcPlaysVersion", value) }
 
+    /** Hive's clock at the last ratings and play counts fetched (GET /api/track-stats). */
+    var trackStatsSince: Long
+        get() = prefs.getLong("trackStatsSince", 0)
+        set(value) = prefs.edit { putLong("trackStatsSince", value) }
+
     var lastPcPlayAt: Long
         get() = prefs.getLong("lastPcPlayAt", 0)
         set(value) = prefs.edit { putLong("lastPcPlayAt", value) }

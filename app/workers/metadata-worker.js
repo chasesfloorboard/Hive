@@ -39,10 +39,14 @@ async function writeAndSyncReplacement(temp, target, data) {
 // Shared tail of writeAndSyncReplacement, for a writer (like metaflac) that
 // already produced the final content directly at `temp` itself rather than
 // handing us an in-memory buffer to write.
-async function syncAndRenameExistingTemp(temp, target) {
+// Love is bookkeeping, not a change to the song: the file keeps its modified time, so Hive
+// Mobile's song sync doesn't copy the whole song across again for it.
+async function syncAndRenameExistingTemp(temp, target, keepMtime = true) {
+  const before = keepMtime ? await fsp.stat(target).catch(() => null) : null;
   const fd = await fsp.open(temp, 'r+');
   try { await fd.sync(); } finally { await fd.close(); }
   await replaceFile(temp, target);
+  if (before) await fsp.utimes(target, before.atime, before.mtime).catch(() => {});
 }
 
 const musicBeeWriteLocks = new Map();
@@ -347,6 +351,9 @@ async function updateWavMusicBeeTags(trackPath, { stars = null, loved = null } =
     const frames = parsed.frames;
     const trailing = parsed.trailing;
     const isPadding = trailing.length === 0 || trailing.every(byte => byte === 0);
+    // A tag this reader can't walk to the end (an extended header, unsynchronisation, ID3v2.2, a frame
+    // it can't parse) would lose every frame after that point if rebuilt: leave the file alone.
+    if (!isPadding || (tag[5] & 0xC0) || tag[3] < 3) throw new Error('This WAV file\'s tag is in a form Hive can\'t rewrite safely; it was left as it is.');
     const outputFrames = [];
     let counter = 0;
 
@@ -435,6 +442,8 @@ async function updateMp3MusicBeeTagsUnlocked(trackPath, { stars = null, loved = 
   const frames = parsed.frames;
   const trailing = parsed.trailing;
   const isPadding = trailing.length === 0 || trailing.every(byte => byte === 0);
+  // See the WAV writer: a tag this reader can't walk to the end is never rebuilt.
+  if (payload.length && (!isPadding || (flags & 0xC0) || input[3] < 3)) throw new Error('This MP3\'s tag is in a form Hive can\'t rewrite safely; it was left as it is.');
   const outputFrames = [];
   let existingMusicBeeCounter = 0;
 
@@ -701,7 +710,9 @@ async function verifyLoveTag(trackPath, expected) {
 async function embedLoveInFile(trackPath, loved) {
   if (!trackPath || !fs.existsSync(trackPath)) throw new Error('Track file not found.');
   const ext = path.extname(trackPath).toLowerCase();
-  if (ext === '.mp3') { await writeMp3MusicBeeLove(trackPath, !!loved); if (!await verifyLoveTag(trackPath, !!loved)) throw new Error('MP3 Love tag verification failed after writing.'); return true; }
+  // MP3 and MP4/M4A go through Mutagen like FLAC (below): its writers keep the audio's offsets,
+  // reuse the tag's padding and keep frames the handwritten writers couldn't read. The handwritten
+  // MP4 writer moved loved songs' audio away from their chunk offsets (they wouldn't play).
   if (ext === '.wav') { await updateWavMusicBeeTags(trackPath, { loved: !!loved }); if (!await verifyLoveTag(trackPath, !!loved)) throw new Error('WAV Love tag verification failed after writing.'); return true; }
   if (ext === '.flac') {
     // Edit a temp copy on the same filesystem via the bundled Mutagen backend,
@@ -722,7 +733,7 @@ async function embedLoveInFile(trackPath, loved) {
       }
     });
   }
-  if (ext === '.m4a' || ext === '.m4b' || ext === '.mp4') { await writeMp4LoveTag(trackPath,!!loved); if(!await verifyLoveTag(trackPath,!!loved)) throw new Error('MP4/M4A Love tag verification failed after writing.'); return true; }
+
   // Any other format (ogg, opus, wma, ...) without a handwritten container
   // writer above: same temp-copy/verify/atomic-rename pattern via the
   // bundled Mutagen backend, which has a generic mutagen.File(...) fallback

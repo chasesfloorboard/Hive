@@ -13,6 +13,8 @@ const path = require('path');
 const { replaceFile } = require('./replace-file');
 
 // Hive's own half-written files (tag writes, song uploads, mirror copies): never mirrored.
+// Hive's in-place repair copies (".Song.flac.hive-repair-<hex>.flac") and the phone's staged tag edits.
+const HIVE_SCRATCH = /^\..*\.hive-repair-[0-9a-f]+(\.[a-z0-9]+)?$|\.hive-edit$/i;
 const HIVE_TEMP = /(\.beehive-[a-z-]+-[0-9a-f]{6,}(\.[a-z0-9]+)?|\.hivelink-part|\.hive-mirror-part)$/i;
 
 // Names Windows can't hold: it would save "Song ." as "Song", the two sides would never match,
@@ -41,8 +43,11 @@ async function list(root) {
     for (const e of entries) {
       const rel = prefix ? `${prefix}/${e.name}` : e.name;
       const abs = path.join(dir, e.name);
-      if (e.isDirectory()) { await walk(abs, rel); continue; }
-      if (!e.isFile() || HIVE_TEMP.test(e.name)) continue;
+      // Hidden folders (Hive's own .beehive-tmp edits in progress, other apps' .stfolder and the like)
+      // hold no songs: half-written files in them would be copied as music. Hidden FILES can be songs
+      // (".Exe.mp3", "...And So It Was.mp3"), so only Hive's own scratch files are left out.
+      if (e.isDirectory()) { if (!e.name.startsWith('.')) await walk(abs, rel); continue; }
+      if (!e.isFile() || HIVE_TEMP.test(e.name) || HIVE_SCRATCH.test(e.name)) continue;
       try {
         const st = await fs.promises.stat(abs);
         out.push({ p: rel, s: st.size, m: Math.floor(st.mtimeMs) });
@@ -103,6 +108,8 @@ async function write(root, keepDir, rel, stream, size, mtimeMs) {
       stream.pipe(out);
     });
     if (received !== size) throw new Error('The transfer was cut off.');
+    // An empty file is never a song: it never replaces one.
+    if (size <= 0) throw new Error('An empty file was not saved over a song.');
     // The file there now is copied aside (not moved: Windows can't move a file that's open,
     // the song playing, say), then replaced, waiting while Windows has it locked.
     if (fs.existsSync(target)) {

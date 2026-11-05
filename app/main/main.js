@@ -3442,6 +3442,8 @@ async function repairLoveMetadataFiles(items, sender) {
       // LOVE RATING value. L always wins because inspectLoveMetadata already
       // resolves any L/U (or equivalent) conflict to Loved.
       await embedLoveInFile(trackPath, audit.loved);
+      // Hive's own write: the watcher mustn't take it for an outside change and rescan.
+      try { markLibraryInternalWrite(trackPath); } catch {}
       audioIntegrityLoveCache.clear();
       await updateCachedLoved([trackPath], audit.loved).catch(() => {});
       results.repaired.push({ path: trackPath, loved: audit.loved, tags: audit.tags });
@@ -4348,6 +4350,7 @@ ipcMain.handle('library:scanChanged', async (evt, changedPaths = []) => {
       // real 0 as "missing" and silently resurrects the old cached value, so
       // this has to check presence with `??`, not truthiness.
       playCount: Number(stats[info.path]?.playCount ?? old?.playCount ?? track.playCount ?? 0),
+      ratedAt: Number(stats[info.path]?.ratedAt ?? old?.ratedAt ?? 0),
       skipCount: Number(stats[info.path]?.skipCount ?? old?.skipCount ?? track.skipCount ?? 0),
       lastPlayedAt: Number(stats[info.path]?.lastPlayedAt ?? old?.lastPlayedAt ?? track.lastPlayedAt ?? 0),
       loved: !!track.loved,
@@ -4586,6 +4589,7 @@ ipcMain.handle('library:scan', async (evt, options = {}) => {
       // "no value" and overwritten by a stale cached count.
       playCount: Number(stats[t.path]?.playCount ?? old?.playCount ?? 0),
       skipCount: Number(stats[t.path]?.skipCount ?? old?.skipCount ?? 0),
+      ratedAt: Number(stats[t.path]?.ratedAt ?? old?.ratedAt ?? 0),
       lastPlayedAt: Number(stats[t.path]?.lastPlayedAt ?? old?.lastPlayedAt ?? 0),
       loved: !!t.loved,
       loveHydrated: true,
@@ -5121,12 +5125,12 @@ ipcMain.handle('yearly-wrap:replacePlayCounts', async () => withStatsMutation(as
     if (matches.length !== 1) { if (matches.length > 1) ambiguous++; continue; }
     const track = matches[0];
     if (!track?.path) continue;
-    nextStats[track.path] = { ...(stats[track.path] || {}), playCount: Math.max(0, Math.floor(count)), lastPlayedAt: Number(stats[track.path]?.lastPlayedAt || 0) };
+    nextStats[track.path] = { ...(stats[track.path] || {}), playCount: Math.max(0, Math.floor(count)), lastPlayedAt: Number(stats[track.path]?.lastPlayedAt || 0), statsAt: Date.now() };
     matchedPaths.add(track.path); matchedTracks++;
   }
   for (const track of tracks) {
     if (!track?.path || matchedPaths.has(track.path)) continue;
-    nextStats[track.path] = { ...(stats[track.path] || {}), playCount: 0, lastPlayedAt: Number(stats[track.path]?.lastPlayedAt || 0) };
+    nextStats[track.path] = { ...(stats[track.path] || {}), playCount: 0, lastPlayedAt: Number(stats[track.path]?.lastPlayedAt || 0), statsAt: Date.now() };
   }
   await writeJsonSafe(STATS_PATH(), nextStats);
   const updatedPlayCounts = {};
@@ -5387,6 +5391,7 @@ async function recordPhonePlays(plays) {
       const entry = stats[trackPath] || { playCount: 0, lastPlayedAt: 0 };
       entry.playCount = Number(entry.playCount || 0) + c.n;
       entry.lastPlayedAt = Math.max(Number(entry.lastPlayedAt || 0), c.last);
+      entry.statsAt = Date.now();
       // Phone plays go into the file's P_count too, as Hive's own plays do (see track:recordPlay),
       // so a fresh install reading the files counts them.
       if (config.embedPlayCounts === true) {
@@ -5503,7 +5508,7 @@ async function writeEmbeddedPlayCount(trackPath, value) {
     if (artworkBefore?.fingerprint !== artworkAfter?.fingerprint) {
       throw new Error('P_count write changed embedded artwork unexpectedly; the original file was left untouched.');
     }
-    await commitMetadataTemp(temp, trackPath, false);
+    await commitMetadataTemp(temp, trackPath, false, true);
     return nextValue;
   } catch (err) {
     try { await fsp.unlink(temp); } catch {}
@@ -5518,6 +5523,8 @@ async function embedPlayCountDelta(trackPath, delta) {
   return withMusicBeeWriteLock(trackPath, async () => {
     const current = await readEmbeddedPlayCount(trackPath);
     const next = Math.min(0xFFFFFFFF, current + amount);
+    // A play count is bookkeeping, not a change to the song: writeEmbeddedPlayCount keeps the file's
+    // modified time (see commitMetadataTemp), so Hive Mobile's song sync doesn't copy it again.
     await writeEmbeddedPlayCount(trackPath, next);
     return { embedded: true, pCount: next };
   });
@@ -5528,6 +5535,7 @@ ipcMain.handle('track:recordPlay', async (_evt, trackPath, meta = {}) => withSta
   const entry = stats[trackPath] || { playCount: 0, lastPlayedAt: 0 };
   entry.playCount = Number(entry.playCount || 0) + 1;
   entry.lastPlayedAt = Date.now();
+  entry.statsAt = Date.now();
   stats[trackPath] = entry;
 
   // If enabled, embed only the new local plays since the last successful
@@ -5870,6 +5878,7 @@ ipcMain.handle('tracks:setRatings', async (evt, trackPaths = [], rating) => with
         await embedRatingInFile(trackPath, value);
         const entry = stats[trackPath] || { playCount: 0, lastPlayedAt: 0 };
         entry.rating = value;
+        entry.ratedAt = Date.now(); entry.statsAt = Date.now();
         entry.ratingSource = 'beehive';
         stats[trackPath] = entry;
         results.updated += 1;
@@ -5895,7 +5904,7 @@ ipcMain.handle('tracks:setRatings', async (evt, trackPaths = [], rating) => with
 }));
 
 /** A song's star rating, into its file and Hive's stats (call inside withStatsMutation). */
-async function setTrackRating(trackPath, rating) {
+async function setTrackRating(trackPath, rating, at = Date.now()) {
   const stats = await readJsonSafe(STATS_PATH(), {});
   const value = Math.max(0, Math.min(5, Number(rating) || 0));
   const entry = stats[trackPath] || { playCount: 0, lastPlayedAt: 0 };
@@ -5910,6 +5919,10 @@ async function setTrackRating(trackPath, rating) {
   }
   entry.rating = value;
   entry.ratingSource = 'beehive';
+  // When it was set (the newer rating wins between the phone and Hive), and that this song's
+  // numbers changed (GET /api/track-stats sends the phone what changed).
+  entry.ratedAt = Number(at) || Date.now();
+  entry.statsAt = Date.now();
   stats[trackPath] = entry;
   await writeJsonSafe(STATS_PATH(), stats);
   return value;
@@ -7802,7 +7815,12 @@ function mp4LoveValuesFromBuffer(input) {
 }
 
 
-async function embedLoveInFile(trackPath, loved) {
+// Under the per-path write lock every other writer holds, so a queued Love and a rating from the
+// phone landing on the same file can't each rename their own copy over the other's.
+function embedLoveInFile(trackPath, loved) {
+  return withMusicBeeWriteLock(trackPath, () => embedLoveInFileLocked(trackPath, loved));
+}
+async function embedLoveInFileLocked(trackPath, loved) {
   if (!trackPath || !fs.existsSync(trackPath)) throw new Error('Track file not found.');
   const temp = await createMetadataTempPath(trackPath, 'love');
   const artworkBefore = await runTagHelper({ op:'artwork_fingerprint', path:trackPath });
@@ -7818,7 +7836,7 @@ async function embedLoveInFile(trackPath, loved) {
     if (artworkBefore?.fingerprint !== artworkAfter?.fingerprint) {
       throw new Error('Love write changed embedded artwork unexpectedly; the original file was left untouched.');
     }
-    await commitMetadataTemp(temp, trackPath, false);
+    await commitMetadataTemp(temp, trackPath, false, true);
     return true;
   } catch(err) {
     try { await fsp.unlink(temp); } catch {}
@@ -7892,12 +7910,13 @@ function startHiveLink() {
     // window is told, the same way the metadata job queue reports Love.
     // A rating made on the phone: into the file and stats as a rating made here, then the
     // library cache and the open window.
-    setRating: async (trackPath, stars) => {
+    trackStats: () => readJsonSafe(STATS_PATH(), {}),
+    setRating: async (trackPath, stars, at) => {
       markLibraryInternalWrite(trackPath);
-      const value = await withStatsMutation(() => setTrackRating(trackPath, stars));
+      const value = await withStatsMutation(() => setTrackRating(trackPath, stars, at));
       const cache = (await libraryCacheStore.get()) || { tracks: [] };
       const t = (cache.tracks || []).find(x => x?.path === trackPath);
-      if (t) { t.rating = value; t.ratingRaw = value >= 5 ? 255 : 0; t.ratingHydrated = true; libraryCacheStore.set(cache); }
+      if (t) { t.rating = value; t.ratedAt = Number(at) || Date.now(); t.ratingRaw = value >= 5 ? 255 : 0; t.ratingHydrated = true; libraryCacheStore.set(cache); }
       const sender = mainWindow && !mainWindow.isDestroyed() ? mainWindow.webContents : null;
       try { sender?.send('library:scanTrack', [{ path: trackPath, rating: value, ratingHydrated: true }]); } catch {}
     },

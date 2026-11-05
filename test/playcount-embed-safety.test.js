@@ -102,7 +102,7 @@ test('force-embedding play counts writes the absolute local count (not a delta) 
   // exercised end to end in test/metadata-writer-module.test.js.
   const writerMatch = MAIN_JS.match(/async function writeEmbeddedPlayCount\([\s\S]*?\n\}/);
   assert.ok(writerMatch, 'expected to find writeEmbeddedPlayCount');
-  assert.match(writerMatch[0], /await commitMetadataTemp\(temp, trackPath, false\)/, 'writeEmbeddedPlayCount must commit through the shared backed-up atomic-rename path');
+  assert.match(writerMatch[0], /await commitMetadataTemp\(temp, trackPath, false, true\)/, 'writeEmbeddedPlayCount must commit through the shared backed-up atomic-rename path');
   // The baseline must be reset to the new value so a later ordinary Embed
   // resumes as a normal incremental delta on top of this new starting point.
   assert.match(block, /entry\.pCountEmbeddedLocal = localCount/);

@@ -355,7 +355,15 @@ class SongSync(
     }
 
     /** Whether this sync keeps the music folders one to one, file for file (see FileMirror). */
-    private fun mirrors(info: InfoResponse) = info.files && FileMirror.available(context) && mirror.root() != null
+    private fun mirrors(info: InfoResponse): Boolean {
+        if (!info.files || !FileMirror.available(context)) return false
+        if (mirror.root() != null) return true
+        // The mirror's folder is away (an SD card not mounted yet): no sync until it's back. The older
+        // song sync can't stand in: it doesn't know what the mirror agreed on, so it would copy
+        // the whole PC library into the phone's own storage.
+        if (mirror.rootChosen()) throw IOException("Song sync is waiting: the phone's music folder can't be reached right now (is the SD card in?).")
+        return false
+    }
 
     private suspend fun mirrorPlan(conn: HiveLinkClient.Connection, info: InfoResponse, note: Boolean = true): MirrorPlan {
         val plan = mirror.check(client, conn, leftFiles())

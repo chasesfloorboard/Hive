@@ -75,8 +75,18 @@ object CarLog {
     @Volatile private var carControllers = 0
 
     /** The phone is in the car: Android Auto connected to Hive, or the phone in car mode. */
-    fun inCar(context: Context) = carConnected ||
+    fun inCar(context: Context) = (carConnected && pluggedIn(context)) ||
         (context.getSystemService(android.app.UiModeManager::class.java)?.currentModeType == android.content.res.Configuration.UI_MODE_TYPE_CAR)
+
+    /**
+     * Android Auto (wired) is only there while the phone is plugged in. Its connection to Hive can
+     * outlive the drive (Android Auto stays running after the cable comes out), and taking that for
+     * "in the car" kept the lock player from going when Home was pressed at home.
+     */
+    private fun pluggedIn(context: Context): Boolean {
+        val battery = context.registerReceiver(null, android.content.IntentFilter(android.content.Intent.ACTION_BATTERY_CHANGED)) ?: return false
+        return battery.getIntExtra(android.os.BatteryManager.EXTRA_PLUGGED, 0) != 0
+    }
 
     /** Android Auto came or went (its controller connected to or left Hive's session). */
     fun car(context: Context, caller: String, connected: Boolean) {

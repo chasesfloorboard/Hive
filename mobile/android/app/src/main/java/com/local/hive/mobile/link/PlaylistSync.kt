@@ -42,7 +42,8 @@ class PlaylistSync(context: Context, private val dao: LibraryDao, private val cl
 
     /** Brings the two sets of playlists into step; [log] says what changed. */
     suspend fun run(conn: HiveLinkClient.Connection, log: (String) -> Unit = {}) = lock.withLock {
-        if (!client.info(conn).playlistSync) return@withLock
+        val info = client.info(conn)
+        if (!info.playlistSync) return@withLock
         if (!_active.value) { prefs.edit().putBoolean("active", true).apply(); _active.value = true }
         val pcLists = client.playlists(conn)
         val pcById = pcLists.associateBy { it.id }
@@ -50,10 +51,24 @@ class PlaylistSync(context: Context, private val dao: LibraryDao, private val cl
         val matches = dao.allMatches()
         val trackForPc = HashMap<String, Long>().apply { matches.forEach { putIfAbsent(it.pcId, it.trackId) } }
         val pcForTrack = matches.associate { it.trackId to it.pcId }
+        // Before the phone's songs are matched to Hive's (a new pairing), a playlist sent now would
+        // reach Hive without its songs.
+        if (matches.isEmpty()) return@withLock
         // Hive's song list, so a song the phone has no copy of is still known by its name.
         runCatching { pcLibrary.refresh() }
         val pcTracks = pcLibrary.tracks.value.associateBy { it.id }
-        val links = load()
+        // Links are with one Hive. Another one (Hive reinstalled, a new PC) starts afresh: nothing on the
+        // phone is deleted because that Hive lacks it; the phone's playlists go to it instead.
+        val knownServer = prefs.getString("server", null)
+        // (Links made before the Hive was noted down are its: kept.)
+        val links = if (knownServer == null || knownServer == info.serverId) load() else mutableListOf<Link>().also {
+            log("playlists: a different Hive on the PC; the phone's playlists go to it")
+        }
+        if (knownServer != info.serverId) prefs.edit().putString("server", info.serverId).apply()
+        // Linked playlists all (or mostly) missing from Hive at once is Hive's list read wrong or
+        // lost, not the user deleting them: the phone's are sent back rather than deleted.
+        val goneOnPc = links.count { phone[it.phoneId] != null && pcById[it.pcId] == null }
+        val bulkGone = goneOnPc > 0 && (pcLists.isEmpty() || (goneOnPc > 3 && goneOnPc * 2 > links.size))
         // Playlists taken before pictures came along get theirs now.
         for (l in links) {
             val p = phone[l.phoneId] ?: continue
@@ -128,7 +143,7 @@ class PlaylistSync(context: Context, private val dao: LibraryDao, private val cl
                 // Deleted on the phone: deleted on the PC too, unless it changed there since.
                 p == null && pc != null -> if (pcChanged) { kept += take(pc, null); linkedPc += pc.id } else { client.deletePlaylist(conn, pc.id); deleted++ }
                 // Deleted on the PC: deleted here too, unless it changed here since.
-                p != null && pc == null -> if (phoneChanged) { kept += push(p, ""); linkedPhone += p.id } else { dao.deletePlaylist(p.id); deleted++ }
+                p != null && pc == null -> if (phoneChanged || bulkGone) { kept += push(p, ""); linkedPhone += p.id } else { dao.deletePlaylist(p.id); deleted++ }
                 p == null || pc == null -> Unit
                 else -> {
                     linkedPhone += p.id; linkedPc += pc.id

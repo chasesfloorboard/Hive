@@ -149,11 +149,12 @@ class LockPlayerActivity : ComponentActivity() {
         val awake = (getSystemService(POWER_SERVICE) as android.os.PowerManager).isInteractive
         CarLog.lockPlayer(this, "pushed away")
         if (!locked || !awake || !CarLog.inCar(this)) return
+        // Only Android Auto's takeover as the phone wakes is undone. Anything later (Home, whether or
+        // not Android reported it as Home, or an app the user opened) is the user's choice and stands.
+        if (System.currentTimeMillis() - screenChangedAt > CAR_TAKEOVER_MS) return
         val now = System.currentTimeMillis()
         broughtBack.removeAll { now - it > 60_000 }
-        // Android Auto pushes the player away each time the phone wakes; a few a minute is still a
-        // screen the user opened (the camera), more than that is a fight.
-        if (broughtBack.size >= 6) return
+        if (broughtBack.size >= 3) return
         broughtBack += now
         window.decorView.postDelayed({ CarLog.lockPlayer(this, "comes back"); showIfWanted(this) }, 400)
     }
@@ -179,7 +180,11 @@ class LockPlayerActivity : ComponentActivity() {
         @Volatile private var sentAway = false
 
         /** The screen went off or came on: a player sent away with Home may show again. */
-        fun screenChanged() { sentAway = false }
+        fun screenChanged() { sentAway = false; screenChangedAt = System.currentTimeMillis() }
+        /** When the screen last went off or came on. */
+        @Volatile private var screenChangedAt = 0L
+        /** Android Auto takes the screen over as the phone wakes; later than this, what pushed the player away was the user. */
+        private const val CAR_TAKEOVER_MS = 5_000L
         private const val PREF = "lock-player"
         private const val HOME_AFTER_MS = 2_000L
         /** The lock screen's own screen timeout. */

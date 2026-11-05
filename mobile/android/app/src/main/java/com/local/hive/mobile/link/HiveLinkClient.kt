@@ -36,6 +36,8 @@ import java.util.concurrent.TimeUnit
     val duration: Long = 0,
     val loved: Boolean = false,
     val rating: Double = 0.0,
+    /** When the rating was set (0: before Hive kept that). */
+    val ratedAt: Long = 0,
     val playCount: Long = 0,
     val track: Int = 0,
     val disc: Int = 0,
@@ -63,7 +65,7 @@ import java.util.concurrent.TimeUnit
 /** Song sync on the PC: whether Hive takes song files from the phone. */
 @Serializable data class SongCaps(val receive: Boolean = false)
 @Serializable data class AppUpdate(val versionCode: Long, val versionName: String, val size: Long, val sha256: String)
-@Serializable data class InfoResponse(val serverId: String, val name: String, val port: Int, val seq: Long, val addresses: List<HiveAddress> = emptyList(), val streams: StreamCaps = StreamCaps(), val remote: Boolean = false, val plays: Boolean = false, val playsVersion: Int = 0, val inbox: InboxSummary = InboxSummary(), val songs: SongCaps = SongCaps(), val wrap: Boolean = false, val listening: Boolean = false, val files: Boolean = false, val themes: Boolean = false, val playlistSync: Boolean = false, val ratings: Boolean = false, val phoneKeys: Boolean = false)
+@Serializable data class InfoResponse(val serverId: String, val name: String, val port: Int, val seq: Long, val addresses: List<HiveAddress> = emptyList(), val streams: StreamCaps = StreamCaps(), val remote: Boolean = false, val plays: Boolean = false, val playsVersion: Int = 0, val inbox: InboxSummary = InboxSummary(), val songs: SongCaps = SongCaps(), val wrap: Boolean = false, val listening: Boolean = false, val files: Boolean = false, val themes: Boolean = false, val playlistSync: Boolean = false, val ratings: Boolean = false, val phoneKeys: Boolean = false, val trackStats: Boolean = false)
 /** One year's Yearly Wrap as Hive on the PC counts it (its plays, imports and this phone's). */
 @Serializable data class PcWrap(
     val year: Int,
@@ -131,6 +133,9 @@ import java.util.concurrent.TimeUnit
 @Serializable private data class ConnectRequest(val deviceName: String, val phoneKey: String = "")
 @Serializable private data class PhoneKey(val phoneKey: String)
 @Serializable private data class DeleteSongs(val ids: List<String>)
+/** A song's rating (and when it was set, on Hive's clock or the phone's that sent it) and play count, from Hive. */
+@Serializable data class TrackStat(val id: String, val rating: Double = 0.0, val ratedAt: Long = 0, val playCount: Int = 0)
+@Serializable data class TrackStats(val now: Long = 0, val tracks: List<TrackStat> = emptyList())
 @Serializable data class RatingOut(val id: String, val stars: Float, val at: Long)
 @Serializable private data class RatingsOut(val changes: List<RatingOut>)
 @Serializable private data class RatingResult(val id: String = "", val status: String = "")
@@ -276,6 +281,9 @@ class HiveLinkClient(private val http: OkHttpClient = defaultHttp()) {
         val body = json.encodeToString(PlaysRequest.serializer(), PlaysRequest(plays)).toRequestBody(jsonType)
         http.newCall(authed(conn, "/api/plays").post(body).build()).execute().use { json.decodeFromString(PlaysStaged.serializer(), read(it)) }
     }
+
+    /** Songs whose rating or play count changed in Hive after [since] (Hive's clock). */
+    suspend fun trackStats(conn: Connection, since: Long): TrackStats = get(conn, "/api/track-stats?since=$since", TrackStats.serializer())
 
     suspend fun plays(conn: Connection, since: Long): List<PlayIn> = get(conn, "/api/plays?since=$since", PlaysResponse.serializer()).plays
 

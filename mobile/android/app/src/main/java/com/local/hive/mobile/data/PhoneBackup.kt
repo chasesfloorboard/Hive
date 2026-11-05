@@ -266,6 +266,12 @@ class PhoneBackup(
         ZipOutputStream(out.outputStream().buffered()).use { zip ->
             fun add(name: String, f: File) {
                 zip.putNextEntry(ZipEntry(name))
+                // The pairing with the PC (its key for this phone) never goes into a copy: it belongs to
+                // this install, and a copy that carried it would let another phone act as this one.
+                if (f.name == LINK_PREFS) {
+                    val bytes = Pairing.strip(f.readText()).toByteArray()
+                    zip.write(bytes); digest.update(bytes); digest.update(name.toByteArray()); zip.closeEntry(); return
+                }
                 f.inputStream().use { input ->
                     val buf = ByteArray(1 shl 16)
                     while (true) { val n = input.read(buf); if (n < 0) break; zip.write(buf, 0, n); digest.update(buf, 0, n) }
@@ -311,6 +317,7 @@ class PhoneBackup(
         private const val META = "meta.json"
         private const val DB = "hive-library.db"
         private const val MAX_FILE = 200L * 1024 * 1024
+        private const val LINK_PREFS = "hive-link.xml"
         private const val CLOUD_EVERY_MS = 15 * 60_000L
         /** This install's own answers, and what Android's job scheduler keeps, stay this install's. */
         private val SKIP_PREFS = setOf("$PREFS.xml", "androidx.work.util.preferences.xml", "WebViewChromiumPrefs.xml")
@@ -324,6 +331,9 @@ class PhoneBackup(
             if (!pending.isFile) return
             runCatching {
                 val prefsDir = File(context.applicationInfo.dataDir, "shared_prefs")
+                // This install's own pairing stays: the copy's (an older install's, or none) would be
+                // refused by the PC, and the phone would unpair itself.
+                val ownPairing = File(prefsDir, LINK_PREFS).takeIf { it.isFile }?.readText()?.let(Pairing::entries).orEmpty()
                 ZipFile(pending).use { zip ->
                     // Only what the copy has replaces what's here; nothing outside the app's folders is written.
                     context.getDatabasePath(DB).let { db -> listOf(db, File(db.path + "-wal"), File(db.path + "-shm")).forEach { it.delete() } }
@@ -342,9 +352,25 @@ class PhoneBackup(
                         zip.getInputStream(e).use { input -> target.outputStream().use { input.copyTo(it) } }
                     }
                 }
+                File(prefsDir, LINK_PREFS).takeIf { it.isFile }?.let { f -> f.writeText(Pairing.put(f.readText(), ownPairing)) }
                 Log.i(TAG, "Restored Hive Mobile from its backup")
             }.onFailure { Log.e(TAG, "Restore failed: ${it.message}", it) }
             pending.delete()
         }
+    }
+}
+
+/** The PC pairing's entries in Hive Link's settings file (Android's shared-preferences XML). */
+internal object Pairing {
+    private val KEYS = listOf("token", "serverId", "name", "port", "deviceId", "hosts", "keyGivenFor")
+    private val ENTRY = Regex("""<(\w+) name="(${KEYS.joinToString("|")})"(?: value="[^"]*" />|>[\s\S]*?</\1>)""")
+
+    fun entries(xml: String): List<String> = ENTRY.findAll(xml).map { it.value }.toList()
+    fun strip(xml: String): String = ENTRY.replace(xml, "")
+    /** [xml] with its own pairing taken out and [own] put in. */
+    fun put(xml: String, own: List<String>): String {
+        val bare = strip(xml)
+        val end = bare.lastIndexOf("</map>")
+        return if (end < 0) bare else bare.substring(0, end) + own.joinToString("") { "$it\n" } + bare.substring(end)
     }
 }

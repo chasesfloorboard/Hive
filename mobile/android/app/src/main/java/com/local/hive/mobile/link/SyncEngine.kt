@@ -278,6 +278,8 @@ class SyncEngine(
         }
         step("match ${phone.size} phone tracks -> ${matches.size}")
         dao.replaceMatches(matches)
+        // Each song's play count as Hive has it, so both show the same number.
+        for (m in matches) pcById[m.pcId]?.let { dao.setPcPlays(m.trackId, it.playCount.toInt()) }
         step("save matches")
 
         // Favorites on either side become favorites on both: a song loved in Hive is loved here, and
@@ -295,14 +297,9 @@ class SyncEngine(
             }
         }
         dao.upsertLove(adopt)
-        // PC ratings come to the phone's copies; a rating made on the phone stays.
+        // Ratings: the newer one wins, on either side.
         val mine = dao.allRatings().associateBy { it.trackId }
-        val now = System.currentTimeMillis()
-        dao.upsertRatings(matches.mapNotNull { m ->
-            val stars = (pcById[m.pcId]?.rating ?: 0.0).toFloat()
-            val current = mine[m.trackId]
-            if (stars <= 0f || (current != null && (!current.fromPc || current.stars == stars))) null else Rating(m.trackId, stars, now, fromPc = true)
-        })
+        adoptRatings(matches.mapNotNull { m -> pcById[m.pcId]?.let { Triple(m.trackId, it.rating.toFloat(), it.ratedAt) } }, mine)
         step("favorites: ${adopt.count { !it.pending }} loved from Hive, ${adopt.count { it.pending }} to send to Hive, ${matches.size} of ${phone.size} songs matched")
         store.lastSeq = library.seq
         store.fullSyncDone = true
@@ -351,6 +348,8 @@ class SyncEngine(
         if (info.listening) runCatchingNotCancelled {
             client.listening(conn, store.listeningVersion)?.let { (version, bytes) -> saveListening(bytes); store.listeningVersion = version }
         }.onFailure { android.util.Log.w("HiveSync", "listening history not saved", it) }
+        // After this phone's plays and ratings went: Hive's numbers, which now include them.
+        if (info.trackStats) runCatchingNotCancelled { pullTrackStats(conn) }.onFailure { android.util.Log.w("HiveSync", "ratings and play counts: ${it.message}") }
         _status.update { it.copy(waitingOnPc = info.inbox.loves + info.inbox.plays) }
     }
 
@@ -375,12 +374,52 @@ class SyncEngine(
      * Ratings made here go to Hive on the PC. A song Hive has, rated there as here, or not in Hive at
      * all is settled; one waiting for the user to trust this phone, or that failed, goes again next time.
      */
+    /**
+     * Hive's ratings ([trackId], stars, when set) taken where they're newer than the phone's: a
+     * rating changed on the phone and not yet sent stays (it goes to Hive, which keeps the newer).
+     * 0 stars from Hive takes the phone's rating off when Hive recorded taking it off.
+     */
+    private suspend fun adoptRatings(pc: List<Triple<Long, Float, Long>>, mine: Map<Long, Rating>) {
+        val now = System.currentTimeMillis()
+        val changes = pc.mapNotNull { (trackId, stars, ratedAt) ->
+            val current = mine[trackId]
+            when {
+                current?.pending == true && (ratedAt <= 0 || current.changedAt >= ratedAt) -> null
+                // Only a rating Hive itself took off (it knows when): 0 can also be a rating Hive hasn't read from the file yet.
+                stars <= 0f -> current?.takeIf { it.stars > 0f && ratedAt > 0 }?.let { Rating(trackId, 0f, ratedAt, fromPc = true) }
+                current == null || current.stars != stars || current.pending -> Rating(trackId, stars, ratedAt.takeIf { it > 0 } ?: now, fromPc = true)
+                else -> null
+            }
+        }
+        if (changes.isEmpty()) return
+        dao.upsertRatings(changes)
+        dao.forgetClearedRatings()
+    }
+
+    /** Ratings and play counts changed in Hive since the last look: the phone shows the same. */
+    private suspend fun pullTrackStats(conn: HiveLinkClient.Connection) {
+        val stats = client.trackStats(conn, store.trackStatsSince)
+        if (stats.tracks.isNotEmpty()) {
+            val tracksFor = dao.allMatches().groupBy({ it.pcId }, { it.trackId })
+            val mine = dao.allRatings().associateBy { it.trackId }
+            val ratings = ArrayList<Triple<Long, Float, Long>>()
+            for (s in stats.tracks) for (trackId in tracksFor[s.id].orEmpty()) {
+                dao.setPcPlays(trackId, s.playCount)
+                ratings += Triple(trackId, s.rating.toFloat(), s.ratedAt)
+            }
+            adoptRatings(ratings, mine)
+        }
+        if (stats.now > 0) store.trackStatsSince = stats.now
+    }
+
     private suspend fun pushRatings(conn: HiveLinkClient.Connection) {
         val pending = dao.ratingsToSend()
         if (pending.isEmpty()) return
         for (chunk in pending.chunked(500)) {
             val answer = client.sendRatings(conn, chunk.map { com.local.hive.mobile.link.RatingOut(it.pcId, it.stars, it.changedAt) })
-            for (r in chunk) if (answer[r.pcId] in setOf("applied", "unchanged", "not-found")) dao.ratingSent(r.trackId, r.changedAt)
+            // "stale": Hive has a newer rating, which comes here with the next look at its numbers.
+            for (r in chunk) if (answer[r.pcId] in setOf("applied", "unchanged", "not-found", "stale")) dao.ratingSent(r.trackId, r.changedAt)
+            if (chunk.any { answer[it.pcId] == "stale" }) store.trackStatsSince = 0
         }
         dao.forgetClearedRatings()
     }

@@ -42,7 +42,7 @@ test('Build 256: MP4 FullBox meta header is preserved during native rating/Love 
 test('metadata commits are staged via an atomic rename, with no full-file backup step', () => {
   assert.doesNotMatch(metadataWriter, /function backupFileBeforeMetadataCommit/);
   assert.doesNotMatch(metadataWriter, /Tag Backups/);
-  const start = metadataWriter.indexOf('async function commitMetadataTemp(temp, trackPath, background = false) {');
+  const start = metadataWriter.indexOf('async function commitMetadataTemp(temp, trackPath, background = false, keepMtime = false) {');
   const end = metadataWriter.indexOf('\n  }', start);
   assert.ok(start >= 0 && end > start, 'expected to find commitMetadataTemp()');
   const block = metadataWriter.slice(start, end);
@@ -61,7 +61,7 @@ test('Build 256: ordinary tag writes verify embedded artwork was not changed', (
 test('Build 256: rating and Love writes stage changes before committing them', () => {
   assert.match(metadataWriter, /const temp = await createMetadataTempPath\(trackPath, 'rating'\);/);
   assert.match(metadataWriter, /await copyMetadataFile\(trackPath, temp, false\);/);
-  assert.match(metadataWriter, /await commitMetadataTemp\(temp, trackPath, false\);/);
+  assert.match(metadataWriter, /await commitMetadataTemp\(temp, trackPath, false(, true)?\);/);
   // The main Love write path uses app/workers/metadata-worker.js's
   // format-specific writers (MP3/WAV/M4A hand-rolled atom surgery, FLAC and
   // any other format via the bundled Mutagen backend); main.js's own

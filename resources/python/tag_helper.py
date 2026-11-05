@@ -1117,6 +1117,20 @@ def _remove_freeform_mp4(tags, names):
         name=str(key).split(':',3)[-1].strip().upper()
         if name in wanted: tags.pop(key, None)
 
+def save_id3_as_found(tag, path):
+    """Save an MP3's ID3 tag in the version it was found in (a new tag: v2.4), keeping any ID3v1.
+
+    Love, rating and play-count writes are one-field bookkeeping: they must not
+    convert a v2.3 tag to v2.4 or delete the ID3v1 tag each time (the JS Love
+    writer keeps v2.3, so the version used to flip back and forth).
+    """
+    version = tuple(getattr(tag, 'version', (2, 4, 0)) or (2, 4, 0))
+    if version[:2] == (2, 3):
+        tag.update_to_v23()
+        tag.save(path, v2_version=3, v1=1)
+    else:
+        tag.save(path, v2_version=4, v1=1)
+
 def write_rating(path, stars):
     """Write Hive's portable rating using Mutagen only.
 
@@ -1140,15 +1154,18 @@ def write_rating(path, stars):
             f=WAVE(path)
             tag=f.tags or f.add_tags() or f.tags
         # Replace only Hive's portable rating fields; unrelated POPM/TXXX data survives.
+        # MusicBee keeps its play counter in the same POPM frame: it survives a rating change.
+        popm_count=0
         for frame in list(tag.getall('POPM')):
             if str(getattr(frame,'email','')).strip().lower() == 'musicbee':
+                popm_count=max(popm_count, int(getattr(frame,'count',0) or 0))
                 try: tag.delall(frame.HashKey)
                 except Exception: pass
         remove_txxx(tag,'FMPS_Rating')
         if not clear:
-            tag.add(__import__('mutagen.id3', fromlist=['POPM']).POPM(email='musicbee', rating=_rating_255(value), count=0))
+            tag.add(__import__('mutagen.id3', fromlist=['POPM']).POPM(email='musicbee', rating=_rating_255(value), count=popm_count))
             set_txxx(tag,'FMPS_Rating',str(value/5.0))
-        if ext=='.mp3': tag.save(path, v2_version=4, v1=0)
+        if ext=='.mp3': save_id3_as_found(tag, path)
         else: f.save()
         return
     if ext=='.flac':
@@ -1196,7 +1213,7 @@ def write_pcount(path, count):
             tag = f.tags or f.add_tags() or f.tags
         remove_txxx(tag, 'P_COUNT')
         set_txxx(tag, 'P_COUNT', str(value))
-        if ext == '.mp3': tag.save(path, v2_version=4, v1=0)
+        if ext == '.mp3': save_id3_as_found(tag, path)
         else: f.save()
         return
     if ext == '.flac':
@@ -1308,7 +1325,7 @@ def write_love(path, loved):
                 try: tag.delall(frame.HashKey)
                 except Exception: pass
         if loved: set_txxx(tag,'LOVE RATING','L')
-        if ext=='.mp3': tag.save(path, v2_version=4, v1=0)
+        if ext=='.mp3': save_id3_as_found(tag, path)
         else: f.save()
         return
     if ext=='.flac':

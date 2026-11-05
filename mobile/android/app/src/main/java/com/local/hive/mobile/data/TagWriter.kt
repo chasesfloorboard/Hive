@@ -115,6 +115,10 @@ object TagWriter {
             if (kotlin.math.abs(check.audioHeader.trackLength - file.audioHeader.trackLength) > 1) throw IOException("The edited copy of ${track.fileName} didn't read back")
             edit.title?.let { if (check.tag?.getFirst(FieldKey.TITLE).orEmpty() != it) throw IOException("The new title didn't stick in ${track.fileName}") }
             edit.loved?.let { if (LoveTag.read(check.tag) != it) throw IOException("Love didn't stick in ${track.fileName}") }
+            // With All files access, the edited copy is put next to the song and renamed over it in one
+            // step: the song is never half written, even if the app is stopped mid-way (an
+            // unfinished write went to the PC with song sync, over its good copy).
+            if (replaceAtomically(context, track, work)) { rescan(context, track); return@withContext }
             try {
                 resolver.openOutputStream(track.uri, "wt")?.use { out -> work.inputStream().use { it.copyTo(out) } } ?: throw IOException("Can't write ${track.fileName}")
             } catch (e: Exception) {
@@ -126,6 +130,20 @@ object TagWriter {
         } finally {
             work.delete(); backup.delete()
         }
+    }
+
+    /** Puts [work] in place of the song's file by a rename in its own folder. False when that can't be done here. */
+    private fun replaceAtomically(context: Context, track: Track, work: File): Boolean {
+        if (android.os.Build.VERSION.SDK_INT < 30 || !android.os.Environment.isExternalStorageManager()) return false
+        val path = runCatching {
+            context.contentResolver.query(track.uri, arrayOf(android.provider.MediaStore.MediaColumns.DATA), null, null, null)?.use { c -> if (c.moveToFirst()) c.getString(0) else null }
+        }.getOrNull() ?: return false
+        val target = File(path).takeIf { it.isFile } ?: return false
+        val staged = File(target.parentFile, ".${target.name}.hive-edit")
+        return try {
+            java.io.FileOutputStream(staged).use { out -> work.inputStream().use { it.copyTo(out) }; out.fd.sync() }
+            if (staged.length() != work.length() || !staged.renameTo(target)) { staged.delete(); false } else true
+        } catch (e: Exception) { staged.delete(); false }
     }
 
     private fun apply(tag: Tag, e: TagEdit) {

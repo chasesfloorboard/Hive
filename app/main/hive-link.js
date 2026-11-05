@@ -184,7 +184,7 @@ function lanAddresses() {
   return out;
 }
 
-function createHiveLink({ dataDir, getTracks, setLove, onPaired, streamSong = null, coversDir = null, remote = null, getPlaylists = null, savePlaylist = null, deletePlaylist = null, getPlays = null, recordPlays = null, spotifySearch = null, songTarget = null, onSongAdded = () => {}, acceptPhonePlays = false, getWrap = null, getWrapYears = null, getListening = null, files = null, onFileChanged = () => {}, getThemes = null, getCurrentTheme = null, onPairRequest = null, deleteSongs = null, editSongs = null, setRating = null, getStreamLoves = null, applyStreamLoves = null, mobileApp = null, onInbox = () => {}, log = () => {}, port = DEFAULT_PORT, discoveryPort = DISCOVERY_PORT, acceptPhoneChanges = false }) {
+function createHiveLink({ dataDir, getTracks, setLove, onPaired, streamSong = null, coversDir = null, remote = null, getPlaylists = null, savePlaylist = null, deletePlaylist = null, getPlays = null, recordPlays = null, spotifySearch = null, songTarget = null, onSongAdded = () => {}, acceptPhonePlays = false, getWrap = null, getWrapYears = null, getListening = null, files = null, onFileChanged = () => {}, getThemes = null, getCurrentTheme = null, onPairRequest = null, deleteSongs = null, editSongs = null, setRating = null, trackStats = null, getStreamLoves = null, applyStreamLoves = null, mobileApp = null, onInbox = () => {}, log = () => {}, port = DEFAULT_PORT, discoveryPort = DISCOVERY_PORT, acceptPhoneChanges = false }) {
   const statePath = path.join(dataDir, 'hive-link.json');
   let state = loadState();
   let server = null;
@@ -250,6 +250,9 @@ function createHiveLink({ dataDir, getTracks, setLove, onPaired, streamSong = nu
       playsVersion: 3,
       // Star ratings made on the phone come here (a trusted phone's, applied at once).
       ratings: !!setRating,
+      // Each song's rating (with when it was set) and play count, as changed since a moment: the
+      // phone shows the same numbers, and the newer rating wins either way (GET /api/track-stats).
+      trackStats: !!trackStats,
       // Phones give a key so a reinstall comes back without asking (POST /api/phone-key).
       phoneKeys: true,
       spotifySearch: !!spotifySearch,
@@ -678,6 +681,7 @@ function createHiveLink({ dataDir, getTracks, setLove, onPaired, streamSong = nu
         genre: text(t.genre),
         loved: t.loved === true || t.loved === 'True',
         rating: num(t.rating),
+        ratedAt: num(t.ratedAt),
         playCount: num(t.playCount),
         file: path.basename(String(t.path)),
         size: num(t.fileSize),
@@ -780,10 +784,15 @@ function createHiveLink({ dataDir, getTracks, setLove, onPaired, streamSong = nu
         return res.end(payload.gzip);
       }
       // Hive Mobile as it is (its database, settings and files), one copy per phone, so a reinstalled
-      // phone comes back exactly as it was. Any paired phone may fetch them: it was let in at this PC.
+      // phone comes back exactly as it was. Only a trusted phone (the user's own) may list or fetch
+      // them: a backup holds that phone's whole library state.
       case 'PUT /api/phone-backup': return receivePhoneBackup(req, res, device);
-      case 'GET /api/phone-backups': return send(res, 200, { backups: listPhoneBackups() });
-      case 'GET /api/phone-backup': return sendPhoneBackup(res, String(url.searchParams.get('device') || ''));
+      case 'GET /api/phone-backups':
+        if (!trusted(device)) return send(res, 403, { error: 'Only your own phones can see their backups.' });
+        return send(res, 200, { backups: listPhoneBackups() });
+      case 'GET /api/phone-backup':
+        if (!trusted(device)) return send(res, 403, { error: 'Only your own phones can see their backups.' });
+        return sendPhoneBackup(res, String(url.searchParams.get('device') || ''));
       // A trusted phone may update Hive Mobile from here, at home or over Tailscale.
       case 'GET /api/app': {
         const found = trusted(device) ? await mobileAppInfo() : null;
@@ -832,6 +841,7 @@ function createHiveLink({ dataDir, getTracks, setLove, onPaired, streamSong = nu
         const list = Array.isArray(changes) ? changes.slice(0, 500) : [];
         if (!trusted(device)) return send(res, 200, { results: list.map(c => ({ id: String(c?.id || ''), status: 'waiting' })) });
         const byId = new Map((await getTracks()).filter(t => t?.path && !/^[a-z]+:/i.test(String(t.path))).map(t => [trackIdFor(t), t]));
+        const stats = trackStats ? await trackStats() : {};
         const results = [];
         for (const c of list) {
           const id = String(c?.id || '');
@@ -839,12 +849,30 @@ function createHiveLink({ dataDir, getTracks, setLove, onPaired, streamSong = nu
           if (!t) { results.push({ id, status: 'not-found' }); continue; }
           const stars = Math.max(0, Math.min(5, Math.round((Number(c?.stars) || 0) * 2) / 2));
           if (Math.abs((Number(t.rating) || 0) - stars) < 0.01) { results.push({ id, status: 'unchanged' }); continue; }
-          try { await setRating(path.resolve(String(t.path)), stars); results.push({ id, status: 'applied' }); }
+          // The newer rating wins: one set here after the phone's stays (the phone takes it next sync).
+          const ratedAt = Number(stats?.[path.resolve(String(t.path))]?.ratedAt ?? stats?.[t.path]?.ratedAt) || 0;
+          if (ratedAt > 0 && num(c?.at) > 0 && num(c?.at) < ratedAt) { results.push({ id, status: 'stale' }); continue; }
+          try { await setRating(path.resolve(String(t.path)), stars, num(c?.at) || Date.now()); results.push({ id, status: 'applied' }); }
           catch (err) { results.push({ id, status: 'failed', error: err?.message || String(err) }); }
         }
         const applied = results.filter(r => r.status === 'applied').length;
         if (applied) log('Hive Link: phone rated songs', device.name, applied);
         return send(res, 200, { results });
+      }
+      case 'GET /api/track-stats': {
+        // Songs whose rating or play count changed after [since] (Hive's clock; [now] is the next since).
+        if (!trackStats) return send(res, 404, { error: "This Hive doesn't share ratings and play counts." });
+        const since = num(url.searchParams.get('since'));
+        const now = Date.now();
+        const stats = await trackStats();
+        const tracks = [];
+        for (const t of await getTracks()) {
+          if (!t?.path || /^[a-z]+:/i.test(String(t.path))) continue;
+          const e = stats[t.path] || stats[path.resolve(String(t.path))];
+          if (!e || num(e.statsAt) <= since) continue;
+          tracks.push({ id: trackIdFor(t), rating: num(e.rating ?? t.rating), ratedAt: num(e.ratedAt), playCount: num(e.playCount) });
+        }
+        return send(res, 200, { now, tracks });
       }
       case 'POST /api/plays': {
         const plays = (await readJson(req))?.plays;
