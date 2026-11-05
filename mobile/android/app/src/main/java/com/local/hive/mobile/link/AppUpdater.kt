@@ -43,6 +43,8 @@ class AppUpdater(
         data object UpToDate : State
         data class Downloading(val versionName: String) : State
         data class Ready(val versionName: String, val file: File) : State
+        /** Handed to Android to install: further taps wait for it (it says when it's done, or that it was cancelled). */
+        data class Installing(val versionName: String, val file: File) : State
         data class Failed(val message: String) : State
     }
 
@@ -132,15 +134,19 @@ class AppUpdater(
      * (2.14.18 goes straight to 2.14.20, not through 2.14.19); away from the PC, the one fetched installs.
      */
     fun install(from: Context) {
-        if (_state.value !is State.Ready) return
+        val asked = _state.value as? State.Ready ?: return
         // The first time, Android wants the user to let Hive install apps.
         if (!context.packageManager.canRequestPackageInstalls()) {
             from.startActivity(Intent(Settings.ACTION_MANAGE_UNKNOWN_APP_SOURCES, Uri.parse("package:${context.packageName}")).addFlags(Intent.FLAG_ACTIVITY_NEW_TASK))
             return
         }
+        // At once, so the button shows it's installing and a second tap does nothing.
+        _state.value = State.Installing(asked.versionName, asked.file)
+        notifyInstalling(asked.versionName)
         scope.launch(Dispatchers.IO) {
             lock.withLock { runCatching { connection()?.let { fetch(pc(it)) } } }
-            val ready = _state.value as? State.Ready ?: return@launch
+            val ready = (_state.value as? State.Ready) ?: (_state.value as? State.Installing)?.let { State.Ready(it.versionName, it.file) } ?: return@launch
+            _state.value = State.Installing(ready.versionName, ready.file)
             runCatching {
                 val installer = context.packageManager.packageInstaller
                 val params = PackageInstaller.SessionParams(PackageInstaller.SessionParams.MODE_FULL_INSTALL).apply {
@@ -153,8 +159,30 @@ class AppUpdater(
                     val callback = PendingIntent.getBroadcast(context, id, Intent(context, InstallResult::class.java), PendingIntent.FLAG_MUTABLE or PendingIntent.FLAG_UPDATE_CURRENT)
                     session.commit(callback.intentSender)
                 }
-            }.onFailure { withContext(Dispatchers.Main) { _state.value = State.Failed(it.message ?: "The update couldn't be installed") } }
+            }.onFailure { withContext(Dispatchers.Main) { installEnded(false, it.message ?: "The update couldn't be installed") } }
         }
+    }
+
+    /** What Android said: cancelled at its prompt (the update stays ready), or failed. Success replaces the app. */
+    fun installEnded(cancelled: Boolean, message: String? = null) {
+        val at = _state.value as? State.Installing ?: return
+        context.getSystemService(NotificationManager::class.java).cancel(INSTALLING_ID)
+        _state.value = if (cancelled) State.Ready(at.versionName, at.file) else State.Failed(message?.takeIf { it.isNotBlank() } ?: "The update couldn't be installed")
+    }
+
+    private fun notifyInstalling(versionName: String) {
+        val nm = context.getSystemService(NotificationManager::class.java)
+        nm.createNotificationChannel(NotificationChannel(CHANNEL, "App updates", NotificationManager.IMPORTANCE_DEFAULT).apply { setShowBadge(false) })
+        nm.cancel(NOTIFICATION_ID)
+        nm.notify(INSTALLING_ID, NotificationCompat.Builder(context, CHANNEL)
+            .setSmallIcon(R.drawable.ic_stat_hive)
+            .setContentTitle("Installing Hive Mobile $versionName")
+            .setContentText("Hive restarts when it's done.")
+            .setProgress(0, 0, true)
+            .setOngoing(true)
+            .setSilent(true)
+            .setTimeoutAfter(120_000)
+            .build())
     }
 
     private fun notifyReady(versionName: String) {
@@ -179,8 +207,13 @@ class AppUpdater(
                     val confirm = (if (Build.VERSION.SDK_INT >= 33) intent.getParcelableExtra(Intent.EXTRA_INTENT, Intent::class.java) else intent.getParcelableExtra(Intent.EXTRA_INTENT)) ?: return
                     context.startActivity(confirm.addFlags(Intent.FLAG_ACTIVITY_NEW_TASK))
                 }
-                PackageInstaller.STATUS_SUCCESS -> context.getSystemService(NotificationManager::class.java).cancel(NOTIFICATION_ID)
-                else -> android.util.Log.w("HiveUpdate", "install: ${intent.getStringExtra(PackageInstaller.EXTRA_STATUS_MESSAGE)}")
+                PackageInstaller.STATUS_SUCCESS -> context.getSystemService(NotificationManager::class.java).run { cancel(NOTIFICATION_ID); cancel(INSTALLING_ID) }
+                else -> {
+                    val status = intent.getIntExtra(PackageInstaller.EXTRA_STATUS, PackageInstaller.STATUS_FAILURE)
+                    val message = intent.getStringExtra(PackageInstaller.EXTRA_STATUS_MESSAGE)
+                    android.util.Log.w("HiveUpdate", "install: $status $message")
+                    (context.applicationContext as? com.local.hive.mobile.HiveApp)?.appUpdater?.installEnded(status == PackageInstaller.STATUS_FAILURE_ABORTED, message)
+                }
             }
         }
     }
@@ -188,6 +221,7 @@ class AppUpdater(
     companion object {
         private const val CHANNEL = "hive-updates"
         private const val NOTIFICATION_ID = 4711
+        private const val INSTALLING_ID = 4714
         private const val CHECK_EVERY_MS = 10 * 60_000L
         /** Hive Mobile's own release on GitHub (tag "hive-mobile"): HiveMobile.json and HiveMobile.apk, replaced on each update. */
         const val ONLINE = "https://github.com/chasesfloorboard/Hive/releases/download/hive-mobile"

@@ -1,6 +1,6 @@
 const test = require('node:test');
 const assert = require('node:assert/strict');
-const { normalise, similarity, containment, scoreCandidate, acceptable, urlExpiry } = require('../app/main/youtube-music');
+const { create, normalise, similarity, containment, scoreCandidate, acceptable, urlExpiry } = require('../app/main/youtube-music');
 
 test('titles are compared without featuring credits and edition notes', () => {
   assert.equal(normalise('Melody Day (Four Tet Remix) [feat. Luke Lalonde, Adem & One Little Plane] [Mixed]'), 'melody day four tet remix');
@@ -30,4 +30,44 @@ test('video titles lose the "Artist - " prefix before matching', () => {
   assert.equal(videoTitleWithoutArtist('Bullet For My Valentine - Hand Of Blood (Official Audio)', 'Bullet For My Valentine'), 'Hand Of Blood (Official Audio)');
   assert.equal(videoTitleWithoutArtist('Hand Of Blood', 'Bullet For My Valentine'), 'Hand Of Blood');
   assert.equal(videoTitleWithoutArtist('Someone Else - Hand Of Blood', 'Bullet For My Valentine'), 'Someone Else - Hand Of Blood');
+});
+
+test('full songs come straight from YouTube (no yt-dlp): matched from Music search, preparing only what plays next', async () => {
+  const os = require('os'), fs = require('fs'), path = require('path');
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'hive-ytm-'));
+  const prevYtDlp = process.env.HIVE_YTDLP, prevHome = process.env.HOME;
+  process.env.HIVE_YTDLP = ''; process.env.HOME = dir; // no yt-dlp anywhere
+  const row = (id, title, sub) => ({ musicResponsiveListItemRenderer: { playlistItemData: { videoId: id }, flexColumns: [title, sub].map(t => ({ musicResponsiveListItemFlexColumnRenderer: { text: { runs: [{ text: t }] } } })) } });
+  const calls = [];
+  const fetch = async (url, opts = {}) => {
+    calls.push(url);
+    const json = o => ({ ok: true, status: 200, json: async () => o });
+    if (url.includes('/search')) return json({ responseContext: { visitorData: 'V1' }, contents: [row('live1', 'Roxanne (Live)', 'The Police • Live! • 4:10'), row('orig1', 'Roxanne', "The Police • Outlandos d'Amour • 3:12")] });
+    if (url.includes('/player')) {
+      const id = JSON.parse(opts.body).videoId;
+      return json({ playabilityStatus: { status: 'OK' }, videoDetails: { videoId: id, title: 'Roxanne', author: 'The Police - Topic', lengthSeconds: '192' },
+        streamingData: { adaptiveFormats: [{ mimeType: 'audio/mp4', bitrate: 130000, url: 'https://rr.googlevideo.com/a?expire=9999999999' }, { mimeType: 'audio/webm; codecs="opus"', bitrate: 140000, url: 'https://rr.googlevideo.com/b?expire=9999999999' }] } });
+    }
+    throw new Error('unexpected ' + url);
+  };
+  try {
+    const m = create({ userDataDir: dir, net: { fetch } });
+    const r = await m.resolve({ path: 'ytm:apple:1', title: 'Roxanne', artist: 'The Police', album: "Outlandos d'Amour", duration: 192 });
+    assert.equal(r.videoId, 'orig1', 'the studio recording, not the live one');
+    assert.equal(r.youtube.album, "Outlandos d'Amour");
+    assert.match(r.streamUrl, /\/b\?/, 'Opus is preferred');
+    assert.equal((await m.status()).installed, true);
+    // Already matched: no search again.
+    const before = calls.filter(u => u.includes('/search')).length;
+    await m.resolve({ path: 'ytm:apple:1', title: 'Roxanne', artist: 'The Police', duration: 192 });
+    assert.equal(calls.filter(u => u.includes('/search')).length, before);
+    // A queue of 40 streamed songs prepares just the next two.
+    calls.length = 0;
+    await m.prefetch(Array.from({ length: 40 }, (_, i) => ({ path: `ytm:apple:x${i}`, title: 'Roxanne', artist: 'The Police', duration: 192 })));
+    await new Promise(res => setTimeout(res, 1800));
+    assert.ok(calls.filter(u => u.includes('/player')).length <= 2, `prepared ${calls.filter(u => u.includes('/player')).length} songs`);
+  } finally {
+    process.env.HIVE_YTDLP = prevYtDlp ?? ''; if (prevYtDlp === undefined) delete process.env.HIVE_YTDLP; process.env.HOME = prevHome;
+    fs.rmSync(dir, { recursive: true, force: true });
+  }
 });

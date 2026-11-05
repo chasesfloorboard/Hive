@@ -8274,6 +8274,19 @@ async function librarySongFolder() {
   if (!folder) throw new Error('Add a music folder in Hive (Settings › Library) first.');
   return folder;
 }
+// Google Drive: a shared folder's songs into the music folder, for a playlist (drive-import.js).
+let driveImporting = false;
+ipcMain.handle('drive:import', async (evt, link) => {
+  if (driveImporting) throw new Error('A Google Drive import is already running.');
+  driveImporting = true;
+  try {
+    const folder = await librarySongFolder();
+    const drive = require('./drive-import').createDriveImport({ fetch: (url, opts) => net.fetch(url, opts), log: line => console.log('[Google Drive]', line) });
+    const result = await drive.importLink(link, folder, p => { try { evt.sender.send('drive:progress', p); } catch {} });
+    return result;
+  } finally { driveImporting = false; }
+});
+
 let soulseekDownloads = null;
 function soulseekQueue() {
   if (soulseekDownloads) return soulseekDownloads;

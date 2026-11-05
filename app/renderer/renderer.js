@@ -1802,9 +1802,9 @@
       year: at.year || '', duration: 30, cover: '', artworkUrl: at.artwork || '', podcastId: '', podcastFeedUrl: at.url || '',
       podcastDescription: `30-second Apple Music preview from “${collection?.name || at.album}”. The full song is on Apple Music.`, pubDate: '' };
   }
-  // Songs not in the library stream from YouTube Music when yt-dlp is
-  // available; otherwise Apple's preview is the fallback.
-  let youtubeMusicReady = null;
+  // Songs not in the library stream in full from YouTube Music (straight from
+  // YouTube; yt-dlp isn't needed). Never a 30-second preview.
+  let youtubeMusicReady = true;
   async function youtubeMusicAvailable(refresh = false) {
     if (youtubeMusicReady === null || refresh) {
       try { youtubeMusicReady = !!(await window.beehive.getYouTubeMusicStatus?.())?.installed; } catch { youtubeMusicReady = false; }
@@ -7839,6 +7839,29 @@
       playlists=await window.beehive.getPlaylists(); closeModal(el.playlistImportModal); renderPlaylistManager();
       showAppNotice(`Imported “${pl.name}” with ${unique.length} local tracks${unmatched.length?` (${unmatched.length} not found in the library)`:''}.`);
     }catch(err){ showAppNotice(err.message||'Could not import playlist.'); }
+  }
+  // A Google Drive folder shared as "Anyone with the link": its songs are downloaded into the
+  // music folder under the folder's name, then become a playlist in Drive's order.
+  async function importGoogleDrive(link){
+    const input = typeof link === 'string' && link ? link : await themedPrompt('Paste the link to a Google Drive folder (or one song). It must be shared as “Anyone with the link”.', '', 'Import from Google Drive');
+    if(!input || !window.beehive.importGoogleDrive) return false;
+    closeModal(el.playlistImportModal);
+    const stop = window.beehive.onDriveProgress?.(p => showDownloadStatus(p.total && p.done < p.total ? `Google Drive: ${p.done + 1} of ${p.total}${p.name ? ` · ${p.name}` : ''}` : 'Google Drive: adding to your library…'));
+    showDownloadStatus('Google Drive: looking in the folder…');
+    try{
+      const r = await window.beehive.importGoogleDrive(input);
+      showDownloadStatus('Google Drive: adding to your library…');
+      if (r.paths.length) { try { await runScan(false, r.paths); } catch (err) { console.warn('[Google Drive] library update failed:', err?.message || err); } }
+      const tracks = r.paths.filter(p => libraryTrackByPath.has(p));
+      if (!tracks.length) { showAppNotice(r.failed.length ? `Couldn't download the songs from Google Drive (${r.failed.slice(0, 3).join(', ')}${r.failed.length > 3 ? '…' : ''}).` : 'No songs came from that Google Drive link.'); return false; }
+      const pl = await window.beehive.savePlaylist({ name: r.title, tracks, smart: false, source: 'google-drive', sourceUrl: input });
+      playlists = await window.beehive.getPlaylists(); renderPlaylistManager();
+      showAppNotice(`Imported “${pl.name}” from Google Drive: ${tracks.length} song${tracks.length === 1 ? '' : 's'}${r.failed.length ? `; ${r.failed.length} couldn't be downloaded (${r.failed.slice(0, 3).join(', ')}${r.failed.length > 3 ? '…' : ''})` : ''}.`);
+      return true;
+    }catch(err){
+      showAppNotice(String(err?.message || err).replace(/^Error invoking remote method '[^']+': (Error: )?/, ''), 'Google Drive');
+      return false;
+    }finally{ stop?.(); showDownloadStatus(''); }
   }
   function spotifyDurationSeconds(value) {
     const n = Number(value);
@@ -18848,6 +18871,7 @@
   el.playlistCancel.addEventListener('click',()=>closeModal(el.playlistModal));
   el.playlistImportCancel.addEventListener('click',()=>closeModal(el.playlistImportModal));
   el.playlistImportFile.addEventListener('click',importPlaylistFile);
+  document.getElementById('playlist-import-drive')?.addEventListener('click',()=>void importGoogleDrive());
   el.playlistImportSpotify?.addEventListener('click',()=>importSpotifyPlaylist());
   el.playlistName.addEventListener('input',()=>{
     if(playlistLabelStyleGenerated && el.playlistLabelHtml){

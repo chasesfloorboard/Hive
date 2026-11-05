@@ -141,7 +141,8 @@ function create({ userDataDir, net }) {
     const bin = ytDlpPath();
     let version = '';
     if (bin) { try { version = String(await ytDlp(['--version'], 15000)).trim(); } catch {} }
-    return { installed: !!bin, path: bin, version };
+    // Full songs stream straight from YouTube; yt-dlp (when there) is the fallback and saves downloads.
+    return { installed: true, direct: true, ytDlp: !!bin, path: bin, version };
   }
 
   async function loadMatches() {
@@ -156,9 +157,78 @@ function create({ userDataDir, net }) {
     }, 1000);
   }
 
+  // ---- Straight to YouTube, as Hive Mobile does it (no yt-dlp, which takes
+  // seconds a song): Music search as YouTube Music's web app, the audio link as
+  // YouTube's visionOS app, which needs no sign-in, with the visitor id YouTube
+  // Music hands out. About 0.2 s a song once matched; yt-dlp is the fallback.
+  const WEB_UA = 'Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/130.0 Safari/537.36';
+  const VISION_UA = 'Mozilla/5.0 (Macintosh; Intel Mac OS X 15_7_3) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/26.0 Safari/605.1.15';
+  const MUSIC_VERSION = '1.20260707.12.00';
+  const SONGS = 'EgWKAQIIAWoMEA4QChADEAQQCRAF', VIDEOS = 'EgWKAQIQAWoMEA4QChADEAQQCRAF';
+  let visitor = { id: '', at: 0 };
+  async function innertube(url, body, headers) {
+    const res = await net.fetch(url, { method: 'POST', headers: { 'Content-Type': 'application/json', ...headers }, body: JSON.stringify(body) });
+    if (!res.ok) throw new Error(`YouTube answered ${res.status}`);
+    return res.json();
+  }
+  function listItems(o, out = []) {
+    if (Array.isArray(o)) { for (const x of o) listItems(x, out); return out; }
+    if (!o || typeof o !== 'object') return out;
+    if (o.musicResponsiveListItemRenderer) { out.push(o.musicResponsiveListItemRenderer); return out; }
+    for (const v of Object.values(o)) if (v && typeof v === 'object') listItems(v, out);
+    return out;
+  }
+  const clock = t => { const p = String(t || '').trim().split(':').map(Number); return p.length > 1 && p.every(Number.isFinite) ? p.reduce((a, b) => a * 60 + b, 0) : 0; };
+  // "Artist, Artist • Album • 3:45" (songs) or "Artist • 1.2M views • 3:45" (videos).
+  async function musicSearch(query, params) {
+    const o = await innertube('https://music.youtube.com/youtubei/v1/search?prettyPrint=false',
+      { context: { client: { clientName: 'WEB_REMIX', clientVersion: MUSIC_VERSION, hl: 'en' } }, query, params },
+      { 'User-Agent': WEB_UA, Origin: 'https://music.youtube.com' });
+    const v = o?.responseContext?.visitorData;
+    if (v) visitor = { id: v, at: Date.now() };
+    return listItems(o).map(r => {
+      const id = r.playlistItemData?.videoId;
+      if (!id) return null;
+      const cols = (r.flexColumns || []).map(c => (c?.musicResponsiveListItemFlexColumnRenderer?.text?.runs || []).map(x => x.text || '').join(''));
+      const parts = String(cols[1] || '').split(' • ');
+      return { id: String(id), title: cols[0] || '', artist: parts[0] || '', album: parts.length >= 3 && params === SONGS ? parts[1] : '', duration: clock(parts[parts.length - 1]) };
+    }).filter(Boolean).slice(0, 6);
+  }
+  async function visitorId() {
+    if (visitor.id && Date.now() - visitor.at < 24 * 3600 * 1000) return visitor.id;
+    await musicSearch('music', SONGS).catch(() => {});
+    return visitor.id;
+  }
+  async function directInfo(videoId, again = false) {
+    const id = await visitorId();
+    const o = await innertube('https://www.youtube.com/youtubei/v1/player?prettyPrint=false', {
+      context: { client: { clientName: 'VISIONOS', clientVersion: '1.02', deviceMake: 'Apple', deviceModel: 'RealityDevice17,1', userAgent: VISION_UA, osName: 'visionOS', osVersion: '26.5.23O471', hl: 'en', ...(id ? { visitorData: id } : {}) } },
+      videoId, contentCheckOk: true, racyCheckOk: true,
+    }, { 'User-Agent': VISION_UA, Origin: 'https://www.youtube.com', 'X-YouTube-Client-Name': '101', 'X-YouTube-Client-Version': '1.02', ...(id ? { 'X-Goog-Visitor-Id': id } : {}) });
+    const status = o?.playabilityStatus?.status;
+    if (status !== 'OK') {
+      // A refused visitor id is dropped and a new one asked for, once.
+      if (status === 'LOGIN_REQUIRED' && !again) { visitor = { id: '', at: 0 }; return directInfo(videoId, true); }
+      throw new Error(o?.playabilityStatus?.reason || "This song can't be played in full right now.");
+    }
+    const formats = (o.streamingData?.adaptiveFormats || []).filter(f => String(f.mimeType || '').startsWith('audio/') && /^https:\/\//.test(String(f.url || '')));
+    // Opus first (the best YouTube offers), then AAC; the highest bitrate of the kind.
+    const best = formats.sort((a, b) => (String(b.mimeType).includes('webm') - String(a.mimeType).includes('webm')) || ((b.bitrate || 0) - (a.bitrate || 0)))[0];
+    if (!best) throw new Error('No audio came for this song.');
+    const d = o.videoDetails || {};
+    return { id: String(d.videoId || videoId), title: String(d.title || ''), artist: String(d.author || '').replace(/\s+-\s+Topic$/, ''), channel: String(d.author || ''),
+      duration: Number(d.lengthSeconds) || 0, url: best.url, ext: String(best.mimeType).includes('webm') ? 'webm' : 'm4a',
+      thumbnail: (d.thumbnail?.thumbnails || []).slice(-1)[0]?.url || '' };
+  }
+
   async function videoInfo(videoId) {
     const cached = streams.get(videoId);
     if (cached && cached.expires - Date.now() > 5 * 60 * 1000) return cached.info;
+    try {
+      const info = await directInfo(videoId);
+      streams.set(videoId, { url: info.url, expires: urlExpiry(info.url), info });
+      return info;
+    } catch (err) { if (!ytDlpPath()) throw err; }
     const raw = await ytDlp(['-j', '-f', 'bestaudio[ext=webm]/bestaudio[ext=m4a]/bestaudio', `https://music.youtube.com/watch?v=${videoId}`]);
     const info = JSON.parse(raw);
     if (!/^https:\/\//.test(String(info.url || ''))) throw new Error('No audio came for this song.');
@@ -184,6 +254,20 @@ function create({ userDataDir, net }) {
   // Find the YouTube Music song for { title, artist, album, duration }.
   async function findMatch(want) {
     const query = `${firstArtist(want.artist)} ${normalise(want.title)}`.trim();
+    try { return await findMatchDirect(want, query); } catch (err) { if (!ytDlpPath()) throw err; }
+    return findMatchYtDlp(want, query);
+  }
+  async function findMatchDirect(want, query) {
+    const pick = (list, ok) => list.map(c => ({ c, s: scoreCandidate(want, { title: c.title, artist: c.artist, duration: c.duration }) })).filter(x => ok(x.s)).sort((a, b) => b.s.score - a.s.score)[0]?.c;
+    const song = pick(await musicSearch(query, SONGS), acceptable);
+    // Some songs are only on YouTube as videos ("Artist - Title (Official Video)"): the length must match.
+    const found = song || pick((await musicSearch(query, VIDEOS)).map(v => ({ ...v, artist: `${v.artist} ${v.title}`, title: videoTitleWithoutArtist(v.title, want.artist) })),
+      s => s.durationOk && s.titleScore >= 0.6 && s.artistScore >= 0.5);
+    if (!found) return null;
+    const info = await videoInfo(found.id);
+    return { ...info, track: song ? found.title : info.title, artist: song ? found.artist : info.artist, album: found.album || '' };
+  }
+  async function findMatchYtDlp(want, query) {
     const results = await searchSongs(query);
     const ranked = results.map(r => ({ ...r, pre: similarity(want.title, r.title) })).sort((a, b) => b.pre - a.pre).slice(0, 3);
     let best = null;
@@ -257,7 +341,7 @@ function create({ userDataDir, net }) {
         const track = prefetchList.shift();
         if (isReady(track)) continue;
         try { await resolve(track); } catch { /* not on YouTube Music: it'll say so when played */ }
-        await new Promise(r => setTimeout(r, 250)); // stay gentle with YouTube
+        await new Promise(r => setTimeout(r, 600)); // stay gentle with YouTube
       }
     } finally { prefetchRunning--; }
   }
@@ -265,17 +349,19 @@ function create({ userDataDir, net }) {
   // adds a browsed playlist's first songs after whatever is waiting.
   async function prefetch(tracks, { mode = 'queue' } = {}) {
     await loadMatches();
-    const wanted = (Array.isArray(tracks) ? tracks : []).filter(t => String(t?.path || '').startsWith('ytm:')).slice(0, 60).filter(t => !isReady(t));
+    // Gentle with YouTube: only what's about to play (the next two in the queue, a browsed
+    // playlist's first song), never a whole list at once.
+    const wanted = (Array.isArray(tracks) ? tracks : []).filter(t => String(t?.path || '').startsWith('ytm:')).slice(0, mode === 'append' ? 1 : 2).filter(t => !isReady(t));
     if (mode === 'append') {
       const have = new Set(prefetchList.map(t => t.path));
       prefetchList.push(...wanted.filter(t => !have.has(t.path)));
-      prefetchList = prefetchList.slice(0, 80);
-      if (prefetchRunning < 2) for (let i = prefetchRunning; i < 2; i++) void prefetchWorker(prefetchGeneration);
+      prefetchList = prefetchList.slice(0, 3);
+      if (prefetchRunning < 1) void prefetchWorker(prefetchGeneration);
       return prefetchList.length;
     }
     const generation = ++prefetchGeneration;
     prefetchList = wanted;
-    for (let i = 0; i < 2; i++) void prefetchWorker(generation);
+    void prefetchWorker(generation);
     return prefetchList.length;
   }
 
@@ -342,7 +428,7 @@ function create({ userDataDir, net }) {
     for (let attempt = 0; attempt < 2; attempt++) {
       if (attempt) streams.delete(videoId);
       const info = await videoInfo(videoId);
-      const res = await net.fetch(info.url, { headers: { Range: `bytes=${from}-${to}` } });
+      const res = await net.fetch(info.url, { headers: { Range: `bytes=${from}-${to}`, 'User-Agent': VISION_UA } });
       if (res.status === 403 || res.status === 410) continue;
       if (!res.ok) throw new Error(`The song server answered ${res.status}`);
       return res;

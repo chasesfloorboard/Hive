@@ -14,7 +14,7 @@ class PlaybackMemory(
     context: Context,
     private val dao: LibraryDao,
     /** Where a streamed song plays from: in full when it can be, else its preview; null when it can't play. */
-    private val streamUri: (com.local.hive.mobile.data.StreamTrack) -> String? = { it.previewUrl.ifBlank { null } },
+    private val streamUri: (com.local.hive.mobile.data.StreamTrack) -> String? = { null },
     private val pcItems: suspend (List<String>) -> Map<String, MediaItem> = { emptyMap() },
 ) {
     private val prefs = context.getSharedPreferences("playback-state", Context.MODE_PRIVATE)

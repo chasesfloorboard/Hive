@@ -248,14 +248,15 @@ class PlaybackService : MediaLibraryService() {
             // A restored Apple Music or Spotify song plays in full again, not as its preview.
             streamUri = { s ->
                 if (app.youTubeMusic.enabled.value) com.local.hive.mobile.stream.YouTubeMusic.uriFor(com.local.hive.mobile.stream.WantedSong(s.key, s.title, s.artist, s.album, s.durationMs))
-                else s.previewUrl.ifBlank { null }
+                else null
             },
         ) { ids -> app.pcLibrary.mediaItems(ids) }
         player.addListener(object : Player.Listener {
             private var retried: String? = null
 
             // A full song that fails tries again: through the PC, then YouTube Music
-            // directly (once with a fresh link), and last its preview.
+            // directly (once with a fresh link). Never a 30-second preview: a song that still
+            // won't play is skipped.
             override fun onPlayerError(error: androidx.media3.common.PlaybackException) {
                 val item = player.currentMediaItem ?: return
                 val uri = item.localConfiguration?.uri ?: return
@@ -278,9 +279,7 @@ class PlaybackService : MediaLibraryService() {
                     val song = com.local.hive.mobile.stream.WantedSong(item.mediaId, m.title?.toString().orEmpty(), m.artist?.toString().orEmpty(), m.albumTitle?.toString().orEmpty(), m.durationMs ?: 0)
                     return retry(android.net.Uri.parse(com.local.hive.mobile.stream.YouTubeMusic.uriFor(song)))
                 }
-                val preview = item.requestMetadata.extras?.getString(EXTRA_PREVIEW)?.takeIf { it.isNotBlank() } ?: return
-                if (uri.toString() == preview) return
-                retry(android.net.Uri.parse(preview), 0)
+                if (ytm != null && player.hasNextMediaItem()) { player.seekToNextMediaItem(); player.prepare(); player.play() }
             }
             override fun onMediaMetadataChanged(mediaMetadata: androidx.media3.common.MediaMetadata) { genre.value = mediaMetadata.genre?.toString().orEmpty() }
             override fun onTracksChanged(tracks: androidx.media3.common.Tracks) { replayGainTags.value = ReplayGain.tagsOf(tracks); queueTick.value++ }

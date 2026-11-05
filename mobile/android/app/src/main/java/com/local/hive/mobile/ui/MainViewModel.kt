@@ -448,13 +448,13 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
     /** Whether songs the phone lacks play in full: through the PC, or from YouTube Music directly. */
     val fullSongs = combine(app.sync.streams, app.youTubeMusic.enabled) { pc, yt -> pc?.songs == true || yt }.state(false)
 
-    /** A streamed song plays in full through the PC when it can, else from YouTube Music, else its preview. */
+    /** A streamed song plays in full through the PC when it can, else from YouTube Music (never a preview). */
     private fun streamUri(s: StreamTrack): String? = when {
         // A library song of Hive's own, kept in a copied playlist, streams as itself.
         s.key.startsWith("pc:") -> app.pcLibrary.trackUrl(s.key.removePrefix("pc:"))
         pcStreams.value?.songs == true -> pcStreams.value!!.songUrl(s)
         app.youTubeMusic.enabled.value -> com.local.hive.mobile.stream.YouTubeMusic.uriFor(com.local.hive.mobile.stream.WantedSong(s.key, s.title, s.artist, s.album, s.durationMs))
-        else -> s.previewUrl.ifBlank { null }
+        else -> null
     }
     private var matchIndex: Triple<List<Track>, TrackMatcher.Index, Map<String, Track>>? = null
 
@@ -494,8 +494,7 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
             slots, streams,
         )
         val inLibrary = matched.count { it.first != null }
-        val previews = streams.count { it.previewUrl.isNotBlank() }
-        onDone(id, listOfNotNull("$inLibrary from your library", previews.takeIf { it > 0 }?.let { "$it previews" }, (streams.size - previews).takeIf { it > 0 }?.let { "$it $source only" }).joinToString(", "))
+        onDone(id, listOfNotNull("$inLibrary from your library", streams.size.takeIf { it > 0 }?.let { "$it streamed in full" }).joinToString(", "))
     }
 
     val equaliser get() = app.equaliser

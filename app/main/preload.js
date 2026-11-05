@@ -63,6 +63,8 @@ contextBridge.exposeInMainWorld('beehive', {
   soulseekSignIn: (account) => ipcRenderer.invoke('soulseek:signIn', account || {}),
   soulseekSignOut: () => ipcRenderer.invoke('soulseek:signOut'),
   soulseekDownload: (request) => ipcRenderer.invoke('soulseek:download', request || {}),
+  importGoogleDrive: (link) => ipcRenderer.invoke('drive:import', String(link || '')),
+  onDriveProgress: (cb) => { const h = (_e, p) => cb(p); ipcRenderer.on('drive:progress', h); return () => ipcRenderer.removeListener('drive:progress', h); },
   soulseekJobs: () => ipcRenderer.invoke('soulseek:jobs'),
   soulseekCancel: (id) => ipcRenderer.invoke('soulseek:cancel', id),
   soulseekClearFinished: () => ipcRenderer.invoke('soulseek:clearFinished'),
