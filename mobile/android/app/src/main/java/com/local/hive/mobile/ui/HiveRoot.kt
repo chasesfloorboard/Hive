@@ -73,7 +73,9 @@ fun HiveThemed(vm: MainViewModel, content: @Composable () -> Unit) {
     // In one step, not a fade: every screen reads the accent, so fading it redrew
     // the whole app every frame for most of a second after each skip.
     val accent = if (fromCover) accentFor(aura, theme.accent) else theme.accent
-    val colors = theme.withAccent(accent)
+    // The theme's own accent stays exactly as the theme has it (a Custom theme's neon stays neon); only a
+    // cover's colour is adjusted to read on the theme's background.
+    val colors = if (accent == theme.accent) theme else theme.withAccent(accent)
     val scheme = darkColorScheme(
         primary = colors.accent, background = colors.bg, onBackground = colors.text,
         surface = colors.bg, onSurface = colors.text, surfaceVariant = colors.panelStrong,

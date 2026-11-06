@@ -37,6 +37,8 @@ data class HiveColors(
     val ambientB: Color,
     val radius: Dp,
     val blur: Dp,
+    /** The accent exactly as the theme (or cover) picked it, before it's made readable: Hive's logo uses it. */
+    val logo: Color = accent,
 ) {
     companion object {
         /** Hive's built-in look (app/renderer/styles.css :root). */

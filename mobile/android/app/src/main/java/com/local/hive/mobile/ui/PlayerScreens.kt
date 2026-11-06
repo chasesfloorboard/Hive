@@ -580,6 +580,17 @@ private fun FullPlayerContent(
                                 HiveMenuItem("Share", Icons.Rounded.Share) { menu = false; current?.let { Share.tracks(context, listOf(it)) } }
                                 HiveMenuItem("Go to album", Icons.Rounded.Album) { menu = false; current?.let(onOpenAlbum) }
                                 HiveMenuItem("Go to artist", Icons.Rounded.Person) { menu = false; current?.let(onOpenArtist) }
+                                // Songs like this one after it, in the queue: the song keeps playing.
+                                HiveMenuItem("Auto DJ", Icons.Rounded.Radio) {
+                                    menu = false
+                                    val seed = current ?: return@HiveMenuItem
+                                    scope.launch {
+                                        val inQueue = now.queue.drop(now.queueIndex.coerceAtLeast(0)).mapNotNullTo(HashSet()) { it.trackId } // what's still to come
+                                        val mix = vm.autoDj(listOf(seed)).filter { it.id !in inQueue }
+                                        if (mix.isEmpty()) onToast("Nothing on this phone like ${seed.title} yet")
+                                        else { vm.addToQueue(mix); onToast("Auto DJ added ${countOf(mix.size, "song")} like ${seed.title}") }
+                                    }
+                                }
                                 HiveMenuDivider()
                             }
                             // A song from Apple Music or Spotify that isn't on the phone can be saved to it.

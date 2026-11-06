@@ -190,4 +190,5 @@ fun HiveColors.withAccent(accent: Color): HiveColors = copy(
     accent = HiveColors.contrasted(accent, bg, 3f),
     accentSoft = accent.copy(alpha = 0.38f),
     accentGlow = accent.copy(alpha = 0.28f),
+    logo = accent,
 )

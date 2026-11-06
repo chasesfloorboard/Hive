@@ -1032,8 +1032,14 @@ fun HiveMenu(expanded: Boolean, onDismiss: () -> Unit, above: Dp? = null, settin
     if (!state.currentState && !state.targetState) return
     val c = Hive.colors
     // Below its button, or ([above], the button's height) rising from it, for buttons at the screen's foot.
-    val rise = above?.let { with(androidx.compose.ui.platform.LocalDensity.current) { (it + 8.dp).roundToPx() } }
-    Popup(alignment = if (rise != null) Alignment.BottomEnd else Alignment.TopEnd, offset = IntOffset(0, if (rise != null) -rise else 8), onDismissRequest = onDismiss, properties = PopupProperties(focusable = true)) {
+    val density = androidx.compose.ui.platform.LocalDensity.current
+    val rise = above?.let { with(density) { (it + 8.dp).roundToPx() } }
+    // The popup window is drawn larger than the menu by [room] on every side, so the shadow fades out
+    // inside it instead of being cut off at the window's edge; the offsets keep the menu where it was.
+    val room = 28.dp
+    val roomPx = with(density) { room.roundToPx() }
+    Popup(alignment = if (rise != null) Alignment.BottomEnd else Alignment.TopEnd, offset = IntOffset(roomPx, if (rise != null) -rise + roomPx else 8 - roomPx), onDismissRequest = onDismiss, properties = PopupProperties(focusable = true)) {
+        Box(Modifier.pointerInput(Unit) { detectTapGestures { onDismiss() } }.padding(room)) {
         AnimatedVisibility(
             state,
             enter = fadeIn(tween(140)) + slideInVertically(tween(160)) { -it / 40 } + scaleIn(tween(160), initialScale = 0.985f),
@@ -1056,6 +1062,7 @@ fun HiveMenu(expanded: Boolean, onDismiss: () -> Unit, above: Dp? = null, settin
                     HiveMenuItem("Settings", Icons.Rounded.Settings) { onDismiss(); openSettings() }
                 }
             }
+        }
         }
     }
 }
@@ -1154,8 +1161,9 @@ fun <T> rememberComputed(initial: T, vararg keys: Any?, compute: () -> T): andro
 @Composable
 fun HiveMark(modifier: Modifier = Modifier) {
     val c = Hive.colors
-    val hex = c.accent
-    val letter = readableOn(c.accent)
+    // The accent as picked (a bright neon stays neon), not the darker one text uses on light themes.
+    val hex = c.logo
+    val letter = readableOn(hex)
     androidx.compose.foundation.Canvas(modifier) {
         // The icon's paths are drawn about the origin in a ±700 box.
         val k = size.minDimension / 1400f
