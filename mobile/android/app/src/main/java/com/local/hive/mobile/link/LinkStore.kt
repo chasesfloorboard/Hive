@@ -32,6 +32,33 @@ class LinkStore(context: Context) {
         get() = prefs.getString("keyGivenFor", null)
         set(v) { prefs.edit().putString("keyGivenFor", v).apply() }
 
+    /**
+     * The paired Hive has proved it holds the pairing (see HiveLinkClient.hello) at least once: from then
+     * on, a host that can't prove it never gets the token, even one claiming to be an older Hive.
+     */
+    /**
+     * The paired Hive's encrypted port and certificate (SHA-256), as it proved them (signed with the pairing),
+     * for [tlsFor] (its server id). Once known, the token only ever goes there.
+     */
+    var tlsPin: String?
+        get() = prefs.getString("tlsPin", null)
+        set(v) { prefs.edit().putString("tlsPin", v).apply() }
+    var tlsPort: Int
+        get() = prefs.getInt("tlsPort", 0)
+        set(v) { prefs.edit().putInt("tlsPort", v).apply() }
+    var tlsFor: String?
+        get() = prefs.getString("tlsFor", null)
+        set(v) { prefs.edit().putString("tlsFor", v).apply() }
+
+    /** Hive's covers-only key for this phone: cover links use it, never the token. */
+    var coverKey: String?
+        get() = prefs.getString("coverKey", null)
+        set(v) { prefs.edit().putString("coverKey", v).apply() }
+
+    var helloSeenFor: String?
+        get() = prefs.getString("helloSeenFor", null)
+        set(v) { prefs.edit().putString("helloSeenFor", v).apply() }
+
     var pairing: Pairing?
         get() {
             val token = prefs.getString("token", null) ?: return null
@@ -46,7 +73,7 @@ class LinkStore(context: Context) {
         }
         set(value) = prefs.edit {
             if (value == null) {
-                remove("token"); remove("serverId"); remove("name"); remove("port"); remove("deviceId"); remove("hosts")
+                remove("token"); remove("serverId"); remove("name"); remove("port"); remove("deviceId"); remove("hosts"); remove("coverKey"); remove("helloSeenFor"); remove("tlsPin"); remove("tlsPort"); remove("tlsFor")
                 remove("lastSeq"); remove("lastSyncAt"); remove("fullSyncDone"); remove("lastFullSyncAt"); remove("lastPcPlayAt"); remove("pcPlaysVersion"); remove("listeningVersion"); remove("songSync")
             } else {
                 putString("token", value.token)

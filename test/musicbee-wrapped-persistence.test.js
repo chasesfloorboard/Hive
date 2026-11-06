@@ -1,4 +1,5 @@
 'use strict';
+const { tempDir } = require('./temp-dirs');
 const test = require('node:test');
 const assert = require('node:assert/strict');
 const fs = require('fs');
@@ -7,7 +8,7 @@ const os = require('os');
 const path = require('path');
 const { mergeImportedYear, readStoredYear, appendHiveEvent, exportArchive, trackKey } = require('../app/main/musicbee-wrapped-store');
 
-async function tmpDir() { return fsp.mkdtemp(path.join(os.tmpdir(), 'hive-mb-wrap-')); }
+async function tmpDir() { return tempDir('hive-mb-wrap-'); }
 
 test('MusicBee Wrapped history is persisted locally, updated, and exportable', async () => {
   const userData = await tmpDir();

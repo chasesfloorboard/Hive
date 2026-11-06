@@ -4,6 +4,7 @@
 // authentication, the library listing, phone Love changes going through the
 // injected setLove (the heart button's path in main.js), newer-change-wins
 // conflict handling, the change log, and live server-sent events.
+const { tempDir } = require('./temp-dirs');
 const test = require('node:test');
 const assert = require('node:assert/strict');
 const dgram = require('node:dgram');
@@ -21,7 +22,7 @@ const { createHiveLink, trackIdFor } = require('../app/main/hive-link');
 let nextPort = 20000 + Math.floor(Math.random() * 6000) * 2;
 
 function setup({ acceptPhoneChanges = true, streamSong = null, coversDir = null, remote = null, getPlaylists = null, savePlaylist = null, deletePlaylist = null, getPlays = null, spotifySearch = null, songTarget = null, onSongAdded = undefined, acceptPhonePlays = false, getWrap = null, getWrapYears = null, getListening = null, files = null, getThemes = null, getCurrentTheme = null, onPairRequest = null, deleteSongs = null, editSongs = null, setRating = null, getStreamLoves = null, applyStreamLoves = null, mobileApp = null } = {}) {
-  const dataDir = fs.mkdtempSync(path.join(os.tmpdir(), 'hive-link-'));
+  const dataDir = tempDir('hive-link-');
   const tracks = [
     { id: 'a1', path: '/music/Pearl Jam - Black.mp3', title: 'Black', artist: 'Pearl Jam', album: 'Ten', duration: '343.2', loved: false },
     { id: 'b2', path: '/music/Huge.mp3', title: 'Huge', artist: 'Boris', album: 'Heavy Rocks', duration: '201.0', loved: true },
@@ -29,7 +30,7 @@ function setup({ acceptPhoneChanges = true, streamSong = null, coversDir = null,
   ];
   const setLoveCalls = [];
   const recorded = [];
-  const port = nextPort; nextPort += 2;
+  const port = nextPort; nextPort += 3;
   const link = createHiveLink({
     dataDir,
     port,
@@ -124,7 +125,7 @@ test('only a trusted phone may ask Hive to send songs it deleted to the Trash', 
   const asked = [];
   const ctx = setup({ acceptPhoneChanges: false, deleteSongs: async paths => { asked.push(...paths); return { deleted: paths, errors: [] }; } });
   t.after(() => ctx.link.stop());
-  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'hive-link-del-'));
+  const dir = tempDir('hive-link-del-');
   t.after(() => fs.rmSync(dir, { recursive: true, force: true }));
   const file = (name, daysOld) => {
     const p = path.join(dir, name); fs.writeFileSync(p, 'same bytes');
@@ -288,6 +289,31 @@ test('a phone Love goes through setLove and is logged with the phone as origin',
   assert.deepEqual(changes.body.changes.map(c => [c.id, c.loved, c.at, c.origin]), [['a1', true, 1000, deviceId]]);
 });
 
+test('Love changed in a file outside Hive becomes a change once it has stayed so; a moment\'s lag never does', async t => {
+  process.env.HIVE_FILE_LOVE_SETTLE_MS = '300';
+  const ctx = setup();
+  delete process.env.HIVE_FILE_LOVE_SETTLE_MS;
+  t.after(() => ctx.link.stop());
+  await waitListening(ctx.port);
+  const token = await pair(ctx);
+  await request(ctx.port, 'POST', '/api/love', { token, body: { changes: [{ clientChangeId: 1, id: 'a1', loved: true, at: 1000 }] } });
+  const changes = async () => (await request(ctx.port, 'GET', '/api/love/changes?since=0', { token })).body.changes.map(c => [c.id, c.loved, c.origin]);
+  // Another player un-loves the song in its file; Hive's scan reads it in.
+  ctx.tracks[0].loved = false;
+  assert.equal((await changes()).length, 1, 'not at once: it may be Hive\'s list trailing a Love just made');
+  await new Promise(r => setTimeout(r, 350));
+  assert.deepEqual((await changes()).at(-1), ['a1', false, 'file']);
+  assert.equal((await changes()).length, 2, 'recorded once');
+  // A difference that goes away (the list caught up) is never recorded.
+  ctx.tracks[1].loved = true;
+  await request(ctx.port, 'POST', '/api/love', { token, body: { changes: [{ clientChangeId: 2, id: 'b2', loved: false, at: Date.now() }] } });
+  ctx.tracks[1].loved = true; // the list still says loved for a moment
+  await changes();
+  ctx.tracks[1].loved = false; // caught up
+  await new Promise(r => setTimeout(r, 350));
+  assert.ok(!(await changes()).some(c => c[0] === 'b2' && c[2] === 'file'));
+});
+
 test('while phone changes are off, phone Love waits in the inbox and nothing is written', async t => {
   const ctx = setup({ acceptPhoneChanges: false });
   t.after(() => ctx.link.stop());
@@ -304,7 +330,7 @@ test('while phone changes are off, phone Love waits in the inbox and nothing is 
 });
 
 test('a library song streams with Range support, and only listed files are served', async t => {
-  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'hive-link-audio-'));
+  const dir = tempDir('hive-link-audio-');
   const file = path.join(dir, 'song.mp3');
   fs.writeFileSync(file, Buffer.from('0123456789'));
   const ctx = setup();
@@ -325,7 +351,7 @@ test('a library song streams with Range support, and only listed files are serve
 });
 
 test('covers come only from the covers folder, with the token in the address allowed', async t => {
-  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'hive-link-covers-'));
+  const dir = tempDir('hive-link-covers-');
   const name = 'a'.repeat(40) + '.jpg';
   fs.writeFileSync(path.join(dir, name), Buffer.from('JPEG'));
   const ctx = setup({ coversDir: dir });
@@ -661,7 +687,7 @@ function putSong(port, token, query, data, { length = data.length } = {}) {
 }
 
 function songSetup({ deleteSongs = null, acceptPhoneChanges = true } = {}) {
-  const music = fs.mkdtempSync(path.join(os.tmpdir(), 'hive-link-music-'));
+  const music = tempDir('hive-link-music-');
   const added = [];
   const ctx = setup({
     songTarget: async meta => path.join(music, meta.artist || 'Unknown Artist', meta.album || 'Unknown Album', `${meta.title}.${meta.ext}`),
@@ -785,6 +811,27 @@ test('counted play ids survive a restart', async t => {
   assert.equal(ctx.recorded.length, 1);
 });
 
+test('a resend that arrives while the first send is still counting never counts twice', async t => {
+  const ctx = setup({ acceptPhonePlays: true });
+  await waitListening(ctx.port);
+  const token = await pair(ctx);
+  ctx.link.stop();
+  await new Promise(r => setTimeout(r, 700));
+  // Counting is slow (a big library): the phone times out and sends the same plays again meanwhile.
+  const slow = createHiveLink({ dataDir: ctx.dataDir, port: ctx.port, discoveryPort: ctx.port + 1, getTracks: async () => ctx.tracks, setLove: async () => {}, acceptPhonePlays: true,
+    recordPlays: async p => { await new Promise(r => setTimeout(r, 300)); ctx.recorded.push(...p); } });
+  slow.start();
+  t.after(() => slow.stop());
+  await waitListening(ctx.port);
+  const plays = [{ clientId: '41', id: 'a1', playedAt: 9000, listenedMs: 1000 }, { clientId: '41', id: 'a1', playedAt: 9000, listenedMs: 1000 }];
+  const [a, b] = await Promise.all([
+    request(ctx.port, 'POST', '/api/plays', { token, body: { plays } }),
+    new Promise(r => setTimeout(r, 50)).then(() => request(ctx.port, 'POST', '/api/plays', { token, body: { plays } })),
+  ]);
+  assert.equal(a.body.counted + b.body.counted, 1);
+  assert.equal(ctx.recorded.length, 1, 'counted once, not once per send (or per copy in one send)');
+});
+
 test("the phone gets Hive's own Wrap, with covers it can fetch and no recent-plays list", async t => {
   const wrap = {
     year: 2026, totalSeconds: 3600, totalPlays: 12, uniqueArtists: 3, uniqueAlbums: 4, longestStreak: 2,
@@ -838,8 +885,8 @@ function putBytes(port, urlPath, token, bytes) {
 }
 
 test('the file mirror lists, sends and takes files, keeping every one it replaces or deletes', async t => {
-  const root = fs.mkdtempSync(path.join(os.tmpdir(), 'hive-mirror-root-'));
-  const keepDir = fs.mkdtempSync(path.join(os.tmpdir(), 'hive-mirror-keep-'));
+  const root = tempDir('hive-mirror-root-');
+  const keepDir = tempDir('hive-mirror-keep-');
   t.after(() => { fs.rmSync(root, { recursive: true, force: true }); fs.rmSync(keepDir, { recursive: true, force: true }); });
   fs.mkdirSync(path.join(root, 'Artist', 'Album'), { recursive: true });
   fs.writeFileSync(path.join(root, 'Artist', 'Album', 'Song.mp3'), 'old song');
@@ -882,8 +929,8 @@ test('the file mirror lists, sends and takes files, keeping every one it replace
 });
 
 test('the file mirror survives cut-off and overlapping transfers, and big files arrive whole', async t => {
-  const root = fs.mkdtempSync(path.join(os.tmpdir(), 'hive-mirror-root-'));
-  const keepDir = fs.mkdtempSync(path.join(os.tmpdir(), 'hive-mirror-keep-'));
+  const root = tempDir('hive-mirror-root-');
+  const keepDir = tempDir('hive-mirror-keep-');
   t.after(() => { fs.rmSync(root, { recursive: true, force: true }); fs.rmSync(keepDir, { recursive: true, force: true }); });
   fs.writeFileSync(path.join(root, 'Song.mp3'), 'the original');
   const ctx = setup({ files: { root: async () => root, keepDir } });
@@ -923,6 +970,22 @@ test('the file mirror survives cut-off and overlapping transfers, and big files 
   assert.equal((await rawGet(ctx.port, '/api/files/get?p=Gone.mp3', token)).status, 404);
 });
 
+test('a library folder that can\'t be read is named, never listed as empty; a missing drive is refused', async t => {
+  const { list } = require('../app/main/file-mirror');
+  const root = tempDir('hive-mirror-unreadable-');
+  t.after(() => { try { fs.chmodSync(path.join(root, 'Locked'), 0o755); } catch {} fs.rmSync(root, { recursive: true, force: true }); });
+  fs.mkdirSync(path.join(root, 'Open'));
+  fs.writeFileSync(path.join(root, 'Open', 'a.mp3'), 'a');
+  fs.mkdirSync(path.join(root, 'Locked'));
+  fs.writeFileSync(path.join(root, 'Locked', 'b.mp3'), 'b');
+  fs.chmodSync(path.join(root, 'Locked'), 0);
+  const out = await list(root);
+  assert.deepEqual(out.files.map(f => f.p), ['Open/a.mp3']);
+  // Root can read anything: then the folder is simply listed.
+  if (process.getuid?.() !== 0) assert.deepEqual(out.unreadable, ['Locked']);
+  await assert.rejects(list(path.join(root, 'not-mounted')), err => err.code === 'LIBRARY_AWAY');
+});
+
 test('on Windows, the file mirror refuses names Windows would change', () => {
   const { safeRel } = require('../app/main/file-mirror');
   const root = path.resolve('/music');
@@ -933,7 +996,7 @@ test('on Windows, the file mirror refuses names Windows would change', () => {
 });
 
 test('only a trusted phone may use the file mirror', async t => {
-  const root = fs.mkdtempSync(path.join(os.tmpdir(), 'hive-mirror-root-'));
+  const root = tempDir('hive-mirror-root-');
   t.after(() => fs.rmSync(root, { recursive: true, force: true }));
   const ctx = setup({ acceptPhoneChanges: false, files: { root: async () => root, keepDir: root } });
   t.after(() => ctx.link.stop());
@@ -1080,7 +1143,7 @@ test('a trusted phone\'s tag and cover edits are written into Hive\'s files; not
 });
 
 test('a trusted phone can fetch Hive Mobile updates; an untrusted one, or an APK without its version file, gets none', async t => {
-  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'hive-link-app-'));
+  const dir = tempDir('hive-link-app-');
   t.after(() => fs.rmSync(dir, { recursive: true, force: true }));
   const apk = path.join(dir, 'HiveMobile.apk');
   const bytes = crypto.randomBytes(300000);
@@ -1148,36 +1211,48 @@ test('a trusted phone\'s star ratings are written in Hive; an untrusted one\'s w
   assert.deepEqual(rated, [[path.resolve('/music/Pearl Jam - Black.mp3'), 4.5], [rated[1][0], 5]]);
 });
 
-test('a trusted phone reinstalled comes back by its key without anyone asked; a stranger is still asked', async t => {
+test('a phone paired before is still asked about (its key alone proves nothing); once allowed it comes back trusted, its old pairing gone', async t => {
   const asked = [];
-  const ctx = setup({ acceptPhoneChanges: false, onPairRequest: ({ name }) => { asked.push(name); return new Promise(() => {}); } });
+  let answer = null;
+  const ctx = setup({ acceptPhoneChanges: false, onPairRequest: ({ name, returning }) => { asked.push([name, !!returning]); return new Promise(r => { answer = r; }); } });
   t.after(() => ctx.link.stop());
   await waitListening(ctx.port);
   const key = 'k'.repeat(43);
-  // Paired before keys: it gives its key afterwards, and is trusted by the user.
   const oldToken = await pair(ctx);
-  assert.equal((await request(ctx.port, 'GET', '/api/info', { token: oldToken })).body.phoneKeys, true);
   assert.equal((await request(ctx.port, 'POST', '/api/phone-key', { token: oldToken, body: { phoneKey: key } })).status, 200);
   ctx.link.setTrusted(ctx.link.devices()[0].id, true);
   const oldId = ctx.link.devices()[0].id;
 
-  // Reinstalled: it asks with its key and is let in at once, trusted, as a new device.
+  // Reinstalled (or someone who saw its key): the PC is asked, and told it's a returning phone.
   const req = await request(ctx.port, 'POST', '/api/pair/request', { body: { deviceName: 'Galaxy A55', phoneKey: key } });
   assert.equal(req.status, 202);
-  const ok = await request(ctx.port, 'GET', `/api/pair/request?id=${req.body.requestId}&secret=${encodeURIComponent(req.body.secret)}`);
+  const poll = () => request(ctx.port, 'GET', `/api/pair/request?id=${req.body.requestId}&secret=${encodeURIComponent(req.body.secret)}`);
+  assert.equal((await poll()).body.status, 'pending');
+  assert.deepEqual(asked, [['Galaxy A55', true]]);
+  assert.equal((await request(ctx.port, 'GET', '/api/info', { token: oldToken })).status, 200, 'nothing changes before the answer');
+  answer(true);
+  await new Promise(r => setTimeout(r, 20));
+  const ok = await poll();
   assert.equal(ok.body.status, 'allowed');
-  assert.deepEqual(asked, []);
   const devices = ctx.link.devices();
   assert.equal(devices.length, 1);
   assert.notEqual(devices[0].id, oldId);
   assert.equal(devices[0].trusted, true);
-  // The old install's pairing is gone; the new one works.
   assert.equal((await request(ctx.port, 'GET', '/api/info', { token: oldToken })).status, 401);
   assert.equal((await request(ctx.port, 'GET', '/api/info', { token: ok.body.token })).status, 200);
+});
 
-  // Another key (another phone): the PC is asked, as before.
-  await request(ctx.port, 'POST', '/api/pair/request', { body: { deviceName: 'Stranger', phoneKey: 's'.repeat(43) } });
-  assert.deepEqual(asked, ['Stranger']);
+test('pairing questions can\'t be used to flood the PC: one at a time, a refused device waits, a few per ten minutes', async t => {
+  const answers = [];
+  const ctx = setup({ acceptPhoneChanges: false, onPairRequest: () => new Promise(r => answers.push(r)) });
+  t.after(() => ctx.link.stop());
+  await waitListening(ctx.port);
+  const ask = () => request(ctx.port, 'POST', '/api/pair/request', { body: { deviceName: 'Phone' } });
+  assert.equal((await ask()).status, 202);
+  assert.equal((await ask()).status, 429, 'one question at a time');
+  answers.shift()(false);
+  await new Promise(r => setTimeout(r, 20));
+  assert.equal((await ask()).status, 429, 'refused a moment ago: it waits');
 });
 
 test('a phone allowed ahead on the PC (hive-link-allow-next) is let in and trusted, once', async t => {
@@ -1194,4 +1269,128 @@ test('a phone allowed ahead on the PC (hive-link-allow-next) is let in and trust
   // Once only: the next one is asked about.
   await request(ctx.port, 'POST', '/api/pair/request', { body: { deviceName: 'Stranger' } });
   assert.deepEqual(asked, ['Stranger']);
+});
+
+test('a Windows song path is a song, not a link (every phone feature skipped Windows songs before)', () => {
+  const { isLinkRef } = require('../app/main/hive-link');
+  for (const song of ['C:\\Music\\Song.mp3', 'D:/Music/Song.flac', '/home/u/Music/a.mp3', 'Song.mp3']) assert.equal(isLinkRef(song), false, song);
+  for (const link of ['ytm:apple:1', 'radio:abc', 'podcast:https://x', 'spotify:track:1']) assert.equal(isLinkRef(link), true, link);
+});
+
+test('a newly paired phone stays untrusted across restarts until the user trusts it', async t => {
+  const ctx = setup({ acceptPhoneChanges: false });
+  await waitListening(ctx.port);
+  await pair(ctx);
+  ctx.link.stop();
+  await new Promise(r => setTimeout(r, 700));
+  // The phone has been syncing for a while (seen two minutes after it paired).
+  const file = path.join(ctx.dataDir, 'hive-link.json');
+  const state = JSON.parse(fs.readFileSync(file, 'utf8'));
+  for (const d of state.devices) d.lastSeen = d.pairedAt + 120000;
+  fs.writeFileSync(file, JSON.stringify(state));
+  const again = createHiveLink({ dataDir: ctx.dataDir, port: ctx.port, discoveryPort: ctx.port + 1, getTracks: async () => ctx.tracks, setLove: async () => {} });
+  again.start();
+  t.after(() => again.stop());
+  await waitListening(ctx.port);
+  assert.ok(again.devices().length >= 1);
+  assert.ok(again.devices().every(d => d.trusted === false), JSON.stringify(again.devices()));
+});
+
+test('web pages can\'t reach Hive Link: requests a browser sends, or for a public domain (DNS rebinding), are refused', async t => {
+  const ctx = setup();
+  t.after(() => ctx.link.stop());
+  await waitListening(ctx.port);
+  const raw = headers => new Promise((resolve, reject) => {
+    const req = http.request({ host: '127.0.0.1', port: ctx.port, method: 'POST', path: '/api/pair/request', headers: { 'Content-Type': 'text/plain', ...headers } }, res => { res.resume(); res.on('end', () => resolve(res.statusCode)); });
+    req.on('error', reject); req.end('{"deviceName":"Galaxy A55"}');
+  });
+  assert.equal(await raw({ Origin: 'https://evil.example' }), 403, 'a page\'s fetch()');
+  assert.equal(await raw({ 'Sec-Fetch-Mode': 'no-cors' }), 403, 'a no-cors fetch');
+  assert.equal(await raw({ Host: 'rebind.evil.example:47800' }), 403, 'a rebinding domain');
+  // The phone's own requests (an address, or the PC's local name) still work.
+  for (const host of ['10.0.0.20:47800', 'mypc:47800', 'mypc.tail1234.ts.net', 'localhost', '[::1]:47800'])
+    assert.notEqual(await raw({ Host: host }), 403, host);
+  assert.equal((await request(ctx.port, 'GET', '/api/ping')).status, 200);
+});
+
+test('the PC proves it holds the pairing before the phone sends its token (no secret crosses the network)', async t => {
+  const crypto = require('crypto');
+  const ctx = setup();
+  t.after(() => ctx.link.stop());
+  await waitListening(ctx.port);
+  const token = await pair(ctx);
+  const id = ctx.link.devices().find(d => d.name !== 'e2e harness')?.id || ctx.link.devices()[0].id;
+  const nonce = crypto.randomBytes(24).toString('base64url');
+  const r = await request(ctx.port, 'GET', `/api/hello?device=${id}&nonce=${nonce}`);
+  assert.equal(r.status, 200);
+  const key = crypto.createHash('sha256').update(token).digest('hex');
+  const expected = crypto.createHmac('sha256', key).update(`hive-hello\n${nonce}\n${r.body.serverId}`).digest('hex');
+  assert.equal(r.body.proof, expected);
+  assert.ok(!JSON.stringify(r.body).includes(token) && !JSON.stringify(r.body).includes(key));
+  // A phone this Hive doesn't know is told it was unpaired (with the Hive's id, and no proof).
+  const gone = await request(ctx.port, 'GET', `/api/hello?device=nope&nonce=${nonce}`);
+  assert.equal(gone.status, 410);
+  assert.equal(gone.body.serverId, r.body.serverId);
+  assert.equal(gone.body.proof, undefined);
+  assert.equal((await request(ctx.port, 'GET', `/api/hello?device=${id}&nonce=short`)).status, 404);
+});
+
+test('cover links use a covers-only key: it fetches covers and nothing else, and never shows in the device list', async t => {
+  const coversDir = tempDir('hive-covers-key-');
+  t.after(() => fs.rmSync(coversDir, { recursive: true, force: true }));
+  const name = 'a'.repeat(40) + '.jpg';
+  fs.writeFileSync(path.join(coversDir, name), Buffer.from([0xff, 0xd8, 0xff, 0xd9]));
+  const ctx = setup({ coversDir });
+  t.after(() => ctx.link.stop());
+  await waitListening(ctx.port);
+  const token = await pair(ctx);
+  const key = (await request(ctx.port, 'GET', '/api/info', { token })).body.coverKey;
+  assert.ok(key && key !== token);
+  assert.equal((await rawGet(ctx.port, `/api/cover?name=${name}&c=${encodeURIComponent(key)}`)).status, 200);
+  assert.equal((await rawGet(ctx.port, `/api/cover?name=${name}&c=wrong`)).status, 401);
+  // Anywhere else it's no key at all.
+  assert.equal((await rawGet(ctx.port, `/api/library?c=${encodeURIComponent(key)}`)).status, 401);
+  assert.ok(!JSON.stringify(ctx.link.devices()).includes(key));
+});
+
+test('Hive Link also answers over TLS with its own certificate, and /api/hello signs that certificate with the pairing', async t => {
+  const crypto = require('crypto');
+  const https = require('https');
+  const ctx = setup();
+  t.after(() => ctx.link.stop());
+  await waitListening(ctx.port);
+  const token = await pair(ctx);
+  const id = ctx.link.devices()[0].id;
+  const nonce = crypto.randomBytes(24).toString('base64url');
+  let hello;
+  for (let i = 0; i < 20; i++) { hello = (await request(ctx.port, 'GET', `/api/hello?device=${id}&nonce=${nonce}`)).body; if (hello.tls) break; await new Promise(r => setTimeout(r, 100)); }
+  assert.ok(hello.tls && hello.tls.port === ctx.port + 2 && /^[0-9a-f]{64}$/.test(hello.tls.pin), JSON.stringify(hello));
+  const key = crypto.createHash('sha256').update(token).digest('hex');
+  assert.equal(hello.tlsProof, crypto.createHmac('sha256', key).update(`hive-hello-tls\n${nonce}\n${hello.serverId}\n${hello.tls.pin}\n${hello.tls.port}`).digest('hex'));
+  // Over TLS, pinned to that certificate: the same API, the token accepted.
+  const got = await new Promise((resolve, reject) => {
+    const req = https.request({ host: '127.0.0.1', port: hello.tls.port, path: '/api/info', headers: { Authorization: `Bearer ${token}` }, rejectUnauthorized: false, checkServerIdentity: () => undefined }, res => {
+      const fp = res.socket.getPeerCertificate().fingerprint256.replace(/:/g, '').toLowerCase();
+      let body = ''; res.on('data', c => body += c); res.on('end', () => resolve({ status: res.statusCode, fp, body }));
+    });
+    req.on('error', reject); req.end();
+  });
+  assert.equal(got.status, 200);
+  assert.equal(got.fp, hello.tls.pin, 'the certificate the phone pins');
+  // The certificate stays the same across restarts (the phone keeps its pin).
+  const again = require('../app/main/tls-cert').loadOrCreate(ctx.dataDir);
+  assert.equal(again.pin, hello.tls.pin);
+});
+
+test('the media key opens covers and song streams (read only), and nothing that changes anything', async t => {
+  const ctx = setup();
+  t.after(() => ctx.link.stop());
+  await waitListening(ctx.port);
+  const token = await pair(ctx);
+  const key = (await request(ctx.port, 'GET', '/api/info', { token })).body.coverKey;
+  // A stream with the key in a header: authenticated (404/other for a song the fixture can't stream, never 401).
+  const stream = await rawGet(ctx.port, '/api/stream/track?id=a1', null, { 'X-Hive-Media': key });
+  assert.notEqual(stream.status, 401);
+  for (const p of ['/api/library', '/api/love/changes?since=0', '/api/files', '/api/phone-backups'])
+    assert.equal((await rawGet(ctx.port, p, null, { 'X-Hive-Media': key })).status, 401, p);
 });

@@ -56,6 +56,14 @@ async function tap(label, { scroll = false } = {}) {
     if (n) { sh(`input tap ${n.x} ${n.y}`); await wait(800); return true; }
     if (scroll) { sh('input swipe 540 1800 540 700 300'); await wait(700); }
   }
+  // Home's tabs scroll sideways: a tab off to the right is swiped into view.
+  for (let i = 0; i < 4; i++) {
+    sh('input swipe 900 360 200 360 250'); await wait(600);
+    const n = find(label);
+    if (n) { sh(`input tap ${n.x} ${n.y}`); await wait(800); return true; }
+  }
+  // What was on screen, for whoever reads the failure.
+  try { fs.writeFileSync(path.join(os.tmpdir(), `hive-e2e-missing-${label.replace(/\W+/g, '_')}.png`), execFileSync('adb', ['-s', SERIAL, 'exec-out', 'screencap', '-p'], { maxBuffer: 64 << 20 })); } catch {}
   throw new Error(`nothing on screen called "${label}"`);
 }
 // A text field: its label is drawn in capitals just above the box, so the box below the label is tapped.
@@ -66,8 +74,11 @@ async function type(label, value) {
     if (!n) { sh('input swipe 540 1800 540 700 300'); await wait(700); }
   }
   if (!n) throw new Error(`no field called "${label}"`);
-  sh(`input tap ${n.x} ${n.y + 60}`); await wait(600);
-  sh('input keyevent KEYCODE_MOVE_END'); for (let i = 0; i < 30; i++) sh('input keyevent KEYCODE_DEL');
+  sh(`input tap ${n.x} ${n.y + 60}`); await wait(900);
+  // Cleared from both ends: right after the tap the cursor may not be at the end yet, and a field that kept
+  // part of its old value ("47800" + "48910") made pairing fail now and then.
+  sh('input keyevent KEYCODE_MOVE_END'); await wait(150); for (let i = 0; i < 30; i++) sh('input keyevent KEYCODE_DEL');
+  sh('input keyevent KEYCODE_MOVE_HOME'); await wait(150); for (let i = 0; i < 30; i++) sh('input keyevent KEYCODE_FORWARD_DEL');
   sh(`input text '${value.replace(/ /g, '%s')}'`); await wait(400);
   // The keyboard moves everything; it goes before the next field is looked for.
   if (/mInputShown=true/.test(sh('dumpsys input_method'))) { sh('input keyevent KEYCODE_BACK'); await wait(700); }
@@ -185,7 +196,8 @@ async function phonePlaylists() {
     // A phone with the PC's songs on it (so the two match), paired and trusted.
     sh('locksettings set-disabled true; settings put global stay_on_while_plugged_in 3; settings put system screen_off_timeout 1800000; input keyevent KEYCODE_WAKEUP; wm dismiss-keyguard');
     try { adb('uninstall', PKG); } catch {}
-    sh(`rm -r '/sdcard/Music' 2>/dev/null; mkdir -p '${PHONE_ROOT}'`);
+    // A new phone: no music and no Hive backup left by an earlier run (that would look like a reinstall).
+    sh(`rm -r '/sdcard/Music' '/sdcard/Documents/Hive' '/sdcard/Documents/Hive Mobile' 2>/dev/null; mkdir -p '${PHONE_ROOT}'`);
     const pcFiles = execFileSync('find', [PC_MUSIC, '-type', 'f', '(', '-name', '*.mp3', '-o', '-name', '*.flac', '-o', '-name', '*.m4a', ')'], { encoding: 'utf8' }).split('\n').filter(Boolean);
     for (const f of pcFiles) adb('push', f, `${PHONE_ROOT}/${path.basename(f)}`);
     sh('content call --uri content://media --method scan_volume --arg external_primary >/dev/null');
@@ -193,6 +205,7 @@ async function phonePlaylists() {
     reopenPhone(); await wait(5000);
     const pairing = await evaluate('window.beehive.hiveLinkPair()');
     await tap('More options'); await tap('Settings');
+    await tap('Connect to Hive on your PC', { scroll: true });
     await type('PC address', '10.0.2.2'); await type('Port', String(PORT)); await type('Pairing code', pairing.code);
     await tap('Pair', { scroll: true });
     const phone = await until('the phone paired', async () => (await evaluate('window.beehive.hiveLinkDevices()')).find(d => d.name !== 'e2e harness'), 60000);
@@ -242,7 +255,15 @@ async function phonePlaylists() {
   } finally {
     await stopHive();
     const failed = results.filter(r => !r.ok).length;
-    console.log(`\n${results.length - failed} passed, ${failed} failed  (work folder: ${WORK})`);
+    // The work folder sits in a RAM disk on many systems: kept after a failure (to look into), minus the
+    // 300 MB test file; removed after a pass. Only ever our own hive-e2e-* folder in the temp folder.
+    if (path.dirname(WORK) === os.tmpdir() && path.basename(WORK).startsWith('hive-e2e-')) {
+      try {
+        if (!failed) fs.rmSync(WORK, { recursive: true, force: true });
+        else for (const f of fs.readdirSync(WORK, { recursive: true })) if (/big mix\.bin$/.test(String(f))) fs.rmSync(path.join(WORK, String(f)), { force: true });
+      } catch {}
+    }
+    console.log(`\n${results.length - failed} passed, ${failed} failed${failed ? `  (work folder: ${WORK})` : ''}`);
     process.exit(failed ? 1 : 0);
   }
 })();

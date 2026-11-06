@@ -663,10 +663,26 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
         val playing = nowPlaying.value.trackId
         val saved = mutableListOf<Track>()
         var problem: String? = null
+        // Songs kept the same on both sides by the file mirror: the PC writes the same edit into its own copy
+        // (PcEdits below, keeping what only the PC's copy has, like its play count) and the mirror brings that
+        // copy back. So the phone's rewritten copy is still "the same" to the mirror: not sent up as well,
+        // which copied each edited song twice and could leave two versions.
+        val io = kotlinx.coroutines.Dispatchers.IO
+        val mirrored = kotlinx.coroutines.withContext(io) { runCatching { if (app.linkStore.pairing != null) com.local.hive.mobile.link.FileMirror(app).mirroredPhonePaths() else emptySet() }.getOrDefault(emptySet()) }
+        suspend fun pathOf(t: Track) = kotlinx.coroutines.withContext(io) { runCatching { app.contentResolver.query(t.uri, arrayOf(android.provider.MediaStore.MediaColumns.DATA), null, null, null)?.use { c -> if (c.moveToFirst()) c.getString(0) else null } }.getOrNull() }
+        // Only songs the PC has a match for get the edit there (PcEdits); others go up with the mirror as usual.
+        val onPc = if (mirrored.isEmpty()) emptySet() else kotlinx.coroutines.withContext(io) { dao.allMatches().mapTo(HashSet()) { it.trackId } }
         for ((track, edit) in wanted) {
-            runCatching { com.local.hive.mobile.data.TagWriter.write(app, track, edit, cover) }
-                .onSuccess { saved += track }
-                .onFailure { problem = it.message ?: "A song couldn't be changed" }
+            val file = if (track.id !in onPc) null else pathOf(track)?.takeIf { it.lowercase() in mirrored }?.let { java.io.File(it) }
+            // The mirror's turn is taken while writing and re-agreeing; busy (a run copying): written, and sent up as usual.
+            val gated = file != null && com.local.hive.mobile.link.FileMirror.gate.tryLock()
+            try {
+                val before = if (gated) file?.let { com.local.hive.mobile.link.FileStat(it.length(), it.lastModified()) } else null
+                val ok = runCatching { com.local.hive.mobile.data.TagWriter.write(app, track, edit, cover) }
+                    .onSuccess { saved += track }
+                    .onFailure { problem = it.message ?: "A song couldn't be changed" }.isSuccess
+                if (ok && gated && file != null && before != null) kotlinx.coroutines.withContext(io) { runCatching { com.local.hive.mobile.link.FileMirror(app).reAgree(file.path, before) } }
+            } finally { if (gated) com.local.hive.mobile.link.FileMirror.gate.unlock() }
             edit.lyrics?.let { app.lyrics.saveOwn(track.artist, track.title, it) }
         }
         if (saved.any { it.id == playing }) app.player.reloadCurrent()
@@ -829,6 +845,30 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
     // ---- song sync ----
 
     val songSync = app.songSync.state
+
+    /** This phone's own numbers for the developer menu (nothing leaves the phone). */
+    suspend fun developerStats(): DevStats = kotlinx.coroutines.withContext(kotlinx.coroutines.Dispatchers.IO) {
+        val tracks = dao.allTracks()
+        val loves = dao.allLove()
+        val root = runCatching { com.local.hive.mobile.link.FileMirror(app).root() }.getOrNull()
+        val bin = root?.let { java.io.File(it, com.local.hive.mobile.link.FileMirror.DELETED_FOLDER) }?.takeIf { it.isDirectory }
+        val binFiles = bin?.walkTopDown()?.filter { it.isFile && it.name != ".nomedia" }?.toList().orEmpty()
+        val rt = Runtime.getRuntime()
+        DevStats(
+            songs = tracks.size,
+            librarySizeBytes = tracks.sumOf { it.sizeBytes },
+            loved = loves.count { it.loved },
+            lovesWaiting = loves.count { it.pending },
+            playsWaiting = runCatching { dao.unsentPlays().size }.getOrDefault(-1),
+            playsTotal = runCatching { dao.playCounts().sumOf { it.plays } }.getOrDefault(-1),
+            mirrorFolder = root?.path ?: "Not set",
+            mirrorAgreed = runCatching { com.local.hive.mobile.link.FileMirror(app).ledger().size }.getOrDefault(-1),
+            deletedKept = binFiles.size,
+            deletedKeptBytes = binFiles.sumOf { it.length() },
+            memoryUsedMb = ((rt.totalMemory() - rt.freeMemory()) / 1_048_576).toInt(),
+            memoryMaxMb = (rt.maxMemory() / 1_048_576).toInt(),
+        )
+    }
     /** Songs deleted on one side, waiting for the user's decision (see [DeletionsSheet]). */
     val deletions = app.songSync.deletions
     val songSyncOps get() = app.songSync
@@ -836,7 +876,7 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
     val openDeletions = MutableStateFlow(false)
     private val _songSyncOn = MutableStateFlow(app.linkStore.songSync)
     val songSyncOn: StateFlow<Boolean> = _songSyncOn.asStateFlow()
-    fun checkSongs() = viewModelScope.launch { app.songSync.check() }
+    fun checkSongs() = viewModelScope.launch(kotlinx.coroutines.Dispatchers.Default) { app.songSync.check() }
     fun setSongSync(on: Boolean) {
         app.linkStore.songSync = on
         _songSyncOn.value = on
@@ -857,3 +897,9 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
 
 /** A square on the Favorites page: a liked album, artist or playlist, and the route that opens it. */
 data class FavoriteTile(val key: String, val title: String, val subtitle: String, val art: Any?, val kind: String, val route: String, val addedAt: Long)
+
+data class DevStats(
+    val songs: Int, val librarySizeBytes: Long, val loved: Int, val lovesWaiting: Int, val playsWaiting: Int, val playsTotal: Int,
+    val mirrorFolder: String, val mirrorAgreed: Int, val deletedKept: Int, val deletedKeptBytes: Long,
+    val memoryUsedMb: Int, val memoryMaxMb: Int,
+)

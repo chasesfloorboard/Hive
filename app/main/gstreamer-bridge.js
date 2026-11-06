@@ -296,7 +296,20 @@ function createGstreamerBridge(deps) {
     }
   }
 
+  // The system's audio outputs, from the native player's device monitor (Windows' output picker).
+  function listHelperOutputs() {
+    return new Promise((resolve, reject) => {
+      const child = spawnTracked(gstreamerHelperBinary(), ['--list-outputs'], { env: helperSpawnEnv(''), stdio: ['ignore', 'pipe', 'ignore'] });
+      let out = '';
+      const timer = setTimeout(() => { try { child.kill(); } catch {} reject(new Error('the audio device list took too long')); }, 20000);
+      child.stdout.on('data', c => { out += c; if (out.length > 256 * 1024) { try { child.kill(); } catch {} } });
+      child.on('error', err => { clearTimeout(timer); reject(err); });
+      child.on('close', () => { clearTimeout(timer); resolve(out); });
+    });
+  }
+
   return {
+    listHelperOutputs,
     ensureGstreamerHelper,
     startGstreamerProcess,
     gstreamerStatus,

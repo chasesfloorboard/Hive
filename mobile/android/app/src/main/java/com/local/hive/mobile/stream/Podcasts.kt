@@ -81,8 +81,8 @@ class PodcastDirectory(private val http: OkHttpClient = AppleMusic.defaultHttp()
         ).map { url -> async { runCatching { (Json.parseToJsonElement(get(url)) as JsonObject)["results"] as? JsonArray }.getOrNull().orEmpty() } }.awaitAll()
         val merged = LinkedHashMap<String, Podcast>()
         for (r in pages.flatten().mapNotNull { it as? JsonObject }) {
-            val feed = r.str("feedUrl") ?: continue
-            val p = Podcast(feed, r.str("collectionName") ?: r.str("trackName") ?: "Podcast", r.str("artistName").orEmpty(), (r.str("artworkUrl600") ?: r.str("artworkUrl100")).orEmpty().replace(Regex("""/\d+x\d+bb\."""), "/1400x1400bb."))
+            val p = r.toPodcast() ?: continue
+            val feed = p.feedUrl
             val prior = merged[feed]
             merged[feed] = if (prior == null) p else prior.copy(image = prior.image.ifBlank { p.image }, author = prior.author.ifBlank { p.author })
         }
@@ -92,6 +92,25 @@ class PodcastDirectory(private val http: OkHttpClient = AppleMusic.defaultHttp()
     }
 
     suspend fun feed(url: String): Feed = parseFeed(get(url), url)
+
+    @Volatile private var topCache: Pair<Long, List<Podcast>>? = null
+
+    /** Apple's top shows for this country (the chart has no feeds, so they're looked up by id), kept for six hours. */
+    suspend fun top(): List<Podcast> = coroutineScope {
+        topCache?.let { (at, list) -> if (System.currentTimeMillis() - at < 6 * 3_600_000L) return@coroutineScope list }
+        val country = java.util.Locale.getDefault().country.lowercase().takeIf { Regex("[a-z]{2}").matches(it) } ?: "us"
+        suspend fun load(cc: String): List<Podcast> = runCatching {
+            val chart = Json.parseToJsonElement(get("https://rss.marketingtools.apple.com/api/v2/$cc/podcasts/top/50/podcasts.json")) as JsonObject
+            val ids = ((chart["feed"] as? JsonObject)?.get("results") as? JsonArray).orEmpty().mapNotNull { (it as? JsonObject)?.str("id")?.takeIf { id -> id.all(Char::isDigit) } }
+            if (ids.isEmpty()) return@runCatching emptyList()
+            val found = (Json.parseToJsonElement(get("https://itunes.apple.com/lookup?entity=podcast&country=$cc&id=${ids.joinToString(",")}")) as JsonObject)["results"] as? JsonArray
+            val byId = found.orEmpty().mapNotNull { it as? JsonObject }.associateBy { it.str("collectionId") ?: it.str("trackId") }
+            ids.mapNotNull { byId[it]?.toPodcast() }
+        }.onFailure { android.util.Log.w("HivePodcasts", "Top shows ($cc) failed", it) }.getOrDefault(emptyList())
+        val list = load(country).ifEmpty { if (country != "us") load("us") else emptyList() }
+        if (list.isNotEmpty()) topCache = System.currentTimeMillis() to list
+        list
+    }
 
     private suspend fun get(url: String): String = withContext(Dispatchers.IO) {
         val request = Request.Builder().url(url).header("User-Agent", "HiveMobile/1.0 (podcasts)").build()
@@ -103,6 +122,10 @@ class PodcastDirectory(private val http: OkHttpClient = AppleMusic.defaultHttp()
 
     companion object {
         private fun JsonObject.str(key: String): String? = (this[key] as? JsonPrimitive)?.contentOrNull?.ifBlank { null }
+        private fun JsonObject.toPodcast(): Podcast? {
+            val feed = str("feedUrl") ?: return null
+            return Podcast(feed, str("collectionName") ?: str("trackName") ?: "Podcast", str("artistName").orEmpty(), (str("artworkUrl600") ?: str("artworkUrl100")).orEmpty().replace(Regex("""/\d+x\d+bb\."""), "/1400x1400bb."))
+        }
 
         /** An RSS feed's show and its episodes (up to 300, newest first as feeds list them). */
         fun parseFeed(xml: String, feedUrl: String): Feed {

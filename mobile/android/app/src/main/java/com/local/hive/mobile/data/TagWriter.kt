@@ -80,7 +80,7 @@ class CoverEdit(val front: ByteArray? = null, val backs: Map<Int, ByteArray?> = 
  * PC. Each file is edited as a copy, which is read back before it replaces the
  * original; the original is kept aside until the new one is safely in place.
  * The caller first gets Android's permission to change the files
- * (MediaStore.createWriteRequest).
+ * (MediaStore.createWriteRequest), unless Hive has All files access.
  */
 object TagWriter {
     /** The formats Hive can write; others (Opus, for one) are left alone. */

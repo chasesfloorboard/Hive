@@ -81,7 +81,11 @@ class PcLibrary(context: Context, private val client: HiveLinkClient, private va
     fun coverFor(name: String): String? {
         val (host, port) = base() ?: return null
         if (name.isBlank()) return null
-        return "http://$host:$port/api/cover?name=$name&t=${android.net.Uri.encode(store.pairing?.token.orEmpty())}"
+        // The covers-only key when Hive gave one: a cover link that ends up stored, or in Android's media
+        // controls, then never carries the phone's real token (an older Hive has no such key).
+        val key = store.coverKey?.takeIf { it.isNotBlank() }
+        return if (key != null) "http://$host:$port/api/cover?name=$name&c=${android.net.Uri.encode(key)}"
+        else "http://$host:$port/api/cover?name=$name&t=${android.net.Uri.encode(store.pairing?.token.orEmpty())}"
     }
 
     /** Where a library song streams from Hive on the PC. */

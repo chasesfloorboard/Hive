@@ -1,0 +1,33 @@
+# The theme gallery: a theme shared from Hive (a GitHub issue labelled "theme") joins
+# themes/store.json when the maintainer labels it "approved". The theme is checked with the
+# same rules the apps use (app/main/theme-store.js): only colours and sizes, nothing else.
+name: Theme gallery
+on:
+  issues:
+    types: [labeled]
+permissions:
+  contents: write
+  issues: write
+jobs:
+  add-theme:
+    if: github.event.label.name == 'approved' && contains(github.event.issue.labels.*.name, 'theme')
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with: { node-version: 20 }
+      - name: Add the theme to the gallery
+        env:
+          ISSUE_BODY: ${{ github.event.issue.body }}
+          ISSUE_AUTHOR: ${{ github.event.issue.user.login }}
+        run: node scripts/theme-gallery-add.js
+      - name: Commit
+        run: |
+          git config user.name "Hive theme gallery"
+          git config user.email "actions@users.noreply.github.com"
+          git add themes/store.json
+          git diff --cached --quiet || git commit -m "Theme gallery: add a shared theme (#${{ github.event.issue.number }})"
+          git push
+      - name: Close the issue
+        env: { GH_TOKEN: "${{ github.token }}" }
+        run: gh issue close ${{ github.event.issue.number }} --comment "Added to the theme gallery. It shows in Browse themes in a few minutes."

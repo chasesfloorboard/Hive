@@ -63,6 +63,13 @@ fun PodcastsScreen(vm: MainViewModel, bottomPadding: Dp, onBack: () -> Unit, onO
     var submitted by rememberSaveable { mutableStateOf("") }
     var results by remember { mutableStateOf<List<Podcast>?>(null) }
     var error by remember { mutableStateOf<String?>(null) }
+    var top by remember { mutableStateOf<List<Podcast>?>(null) }
+    LaunchedEffect(Unit) {
+        // One quiet retry: right after the phone wakes, the network can lag a few seconds.
+        var list = runCatching { vm.podcasts.top() }.getOrDefault(emptyList())
+        if (list.isEmpty()) { kotlinx.coroutines.delay(3000); list = runCatching { vm.podcasts.top() }.getOrDefault(emptyList()) }
+        top = list
+    }
     LaunchedEffect(submitted) {
         results = null; error = null
         if (submitted.isNotBlank()) runCatching { vm.podcasts.search(submitted) }.onSuccess { results = it }.onFailure { error = it.message ?: "Couldn't search podcasts." }
@@ -79,23 +86,27 @@ fun PodcastsScreen(vm: MainViewModel, bottomPadding: Dp, onBack: () -> Unit, onO
             }
             item { SearchField(query, { query = it }, "Search podcasts, or paste a feed URL", onSubmit = { submitted = query.trim() }, onClear = { query = ""; submitted = "" }) }
             if (submitted.isBlank()) {
-                item { YearHeading("Your podcasts") }
-                if (subs.isEmpty()) item { EmptyState("No podcasts yet", "Search for a show and follow it to keep it here.") }
-                else item { PodcastGrid(subs, onOpen) }
+                if (subs.isNotEmpty()) { item { YearHeading("Your podcasts") }; podcastGrid(subs, onOpen) }
+                // Before a search, Apple's top shows fill the page, as Apple Podcasts and Spotify do.
+                when {
+                    top == null -> item { Busy("Loading top shows…") }
+                    top!!.isNotEmpty() -> { item { YearHeading("Top shows") }; podcastGrid(top!!, onOpen, "top") }
+                    subs.isEmpty() -> item { EmptyState("No podcasts yet", "Search for a show and follow it to keep it here.") }
+                }
             } else when {
                 error != null -> item { Text(error.orEmpty(), style = HiveText.body, color = c.textDim, textAlign = TextAlign.Center, modifier = Modifier.fillMaxWidth().padding(28.dp)) }
                 results == null -> item { Busy("Searching podcasts…") }
                 results!!.isEmpty() -> item { EmptyState("No shows found", "Try another name, or paste the show's feed URL.") }
-                else -> { item { YearHeading("Shows") }; item { PodcastGrid(results!!, onOpen) } }
+                else -> { item { YearHeading("Shows") }; podcastGrid(results!!, onOpen, "found") }
             }
         }
     }
 }
 
-@Composable
-private fun PodcastGrid(shows: List<Podcast>, onOpen: (String) -> Unit) {
-    Column {
-        shows.chunked(2).forEach { row ->
+/** Shows as square covers, two to a row; each row is its own lazy item so a long chart loads as it scrolls. */
+private fun androidx.compose.foundation.lazy.LazyListScope.podcastGrid(shows: List<Podcast>, onOpen: (String) -> Unit, key: String = "mine") {
+    shows.chunked(2).forEachIndexed { i, row ->
+        item(key = "$key-$i") {
             CoverRow(row) { p, m -> CoverCard(p.image.ifBlank { null }, p.title, p.author, m, androidx.compose.material.icons.Icons.AutoMirrored.Rounded.QueueMusic) { onOpen(p.feedUrl) } }
         }
     }

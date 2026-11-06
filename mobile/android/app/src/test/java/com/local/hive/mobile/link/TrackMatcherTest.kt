@@ -2,6 +2,7 @@ package com.local.hive.mobile.link
 
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertNull
+import org.junit.Assert.assertTrue
 import org.junit.Test
 import kotlinx.serialization.json.Json
 import kotlinx.serialization.json.JsonArray
@@ -15,6 +16,17 @@ import java.io.File
 class TrackMatcherTest {
     private fun c(key: String, title: String, artist: String, durationMs: Long = 200_000, albumArtist: String = "") =
         TrackMatcher.Candidate(key, title, artist, albumArtist, durationMs)
+
+    @Test fun aSingleAndTheSameSongOnItsAlbumGoToTheRightCopy() {
+        val index = TrackMatcher.Index(listOf(
+            TrackMatcher.Candidate("single", "Music", "underscores", "underscores", 180_000, "Music - Single"),
+            TrackMatcher.Candidate("album", "Music", "underscores", "underscores", 180_000, "U"),
+        ))
+        assertEquals("album", index.match("Music", "underscores", "", 180_000, "U")?.key)
+        assertEquals("single", index.match("Music", "underscores", "", 180_000, "Music - Single")?.key)
+        // No album known: the closest length decides, as before.
+        assertTrue(index.match("Music", "underscores", "", 180_000) != null)
+    }
 
     @Test fun matchesAcrossFeatCreditsAndPunctuation() {
         val index = TrackMatcher.Index(listOf(c("pc1", "Together (feat. Nikki Nair, Jessy Lanza & Prentiss)", "The Avalanches")))

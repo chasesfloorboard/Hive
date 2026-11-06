@@ -146,7 +146,7 @@ class SoulseekWorker(context: Context, params: WorkerParameters) : CoroutineWork
         runCatching { setForeground(foreground()) }
         val client = SoulseekClient(settings.username, settings.password, log = ::log)
         // Cancelled from the list: the connection closes, which stops the song coming in.
-        val watcher = kotlinx.coroutines.CoroutineScope(kotlinx.coroutines.Dispatchers.Default).launch {
+        val watcher = kotlinx.coroutines.CoroutineScope(kotlinx.coroutines.Dispatchers.Default + com.local.hive.mobile.data.CrashLog.handler()).launch {
             downloads.jobs.first { list -> list.firstOrNull { it.id == request.id }?.cancelled == true }
             log("Cancelled")
             client.close()

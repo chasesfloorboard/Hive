@@ -1,0 +1,138 @@
+{
+  "version": 1,
+  "about": "Hive theme gallery. Shared through GitHub issues labelled \"theme\"; added when approved.",
+  "themes": [
+    {
+      "id": "honeycomb",
+      "name": "Honeycomb",
+      "author": "Hive",
+      "description": "Warm honey gold with a dark comb-brown accent.",
+      "vars": {
+        "--bg": "#f2b632",
+        "--panel": "rgba(248,215,142,0.72)",
+        "--panel-strong": "rgba(250,227,177,0.90)",
+        "--border": "rgba(17,17,20,0.14)",
+        "--text": "#231e16",
+        "--text-dim": "#54421d",
+        "--text-dimmer": "#7d6022",
+        "--accent": "#3b2208",
+        "--accent-soft": "rgba(59,34,8,0.32)",
+        "--accent-glow": "rgba(59,34,8,0.16)",
+        "--ambient-a": "rgba(59,34,8,0.10)",
+        "--ambient-b": "rgba(150,108,29,0.16)",
+        "--radius": "14px",
+        "--blur": "24px"
+      }
+    },
+    {
+      "id": "matcha",
+      "name": "Matcha",
+      "author": "Hive",
+      "description": "Whisked green tea with a deep leaf accent.",
+      "vars": {
+        "--bg": "#c5d9a4",
+        "--panel": "rgba(223,234,205,0.72)",
+        "--panel-strong": "rgba(233,241,220,0.90)",
+        "--border": "rgba(17,17,20,0.14)",
+        "--text": "#1f2120",
+        "--text-dim": "#474d3f",
+        "--text-dimmer": "#677159",
+        "--accent": "#2f5a1c",
+        "--accent-soft": "rgba(47,90,28,0.32)",
+        "--accent-glow": "rgba(47,90,28,0.16)",
+        "--ambient-a": "rgba(47,90,28,0.10)",
+        "--ambient-b": "rgba(122,154,96,0.16)",
+        "--radius": "14px",
+        "--blur": "24px"
+      }
+    },
+    {
+      "id": "peach-fuzz",
+      "name": "Peach Fuzz",
+      "author": "Hive",
+      "description": "Soft peach with a plum accent.",
+      "vars": {
+        "--bg": "#ffcfb0",
+        "--panel": "rgba(255,229,212,0.72)",
+        "--panel-strong": "rgba(255,237,225,0.90)",
+        "--border": "rgba(17,17,20,0.14)",
+        "--text": "#242020",
+        "--text-dim": "#584a43",
+        "--text-dimmer": "#836c5f",
+        "--accent": "#6b2a4a",
+        "--accent-soft": "rgba(107,42,74,0.32)",
+        "--accent-glow": "rgba(107,42,74,0.16)",
+        "--ambient-a": "rgba(107,42,74,0.10)",
+        "--ambient-b": "rgba(181,124,125,0.16)",
+        "--radius": "14px",
+        "--blur": "24px"
+      }
+    },
+    {
+      "id": "slate",
+      "name": "Slate",
+      "author": "Hive",
+      "description": "Blue-grey stone with a sharp ice accent.",
+      "vars": {
+        "--bg": "#2c333d",
+        "--panel": "rgba(59,65,75,0.72)",
+        "--panel-strong": "rgba(55,61,71,0.90)",
+        "--border": "rgba(255,255,255,0.12)",
+        "--text": "#eeefef",
+        "--text-dim": "#c0c2c5",
+        "--text-dimmer": "#9a9da2",
+        "--accent": "#9fe3ff",
+        "--accent-soft": "rgba(159,227,255,0.32)",
+        "--accent-glow": "rgba(159,227,255,0.24)",
+        "--ambient-a": "rgba(159,227,255,0.20)",
+        "--ambient-b": "rgba(102,139,158,0.16)",
+        "--radius": "14px",
+        "--blur": "24px"
+      }
+    },
+    {
+      "id": "dusk",
+      "name": "Dusk",
+      "author": "Hive",
+      "description": "Evening violet with a sodium-lamp orange accent.",
+      "vars": {
+        "--bg": "#2a1f45",
+        "--panel": "rgba(57,47,82,0.72)",
+        "--panel-strong": "rgba(53,42,78,0.90)",
+        "--border": "rgba(255,255,255,0.12)",
+        "--text": "#eeedf0",
+        "--text-dim": "#bfbcc7",
+        "--text-dimmer": "#9993a6",
+        "--accent": "#ffb36b",
+        "--accent-soft": "rgba(255,179,107,0.32)",
+        "--accent-glow": "rgba(255,179,107,0.24)",
+        "--ambient-a": "rgba(255,179,107,0.20)",
+        "--ambient-b": "rgba(148,105,88,0.16)",
+        "--radius": "14px",
+        "--blur": "24px"
+      }
+    },
+    {
+      "id": "lagoon",
+      "name": "Lagoon",
+      "author": "Hive",
+      "description": "Shallow turquoise with a reef-coral accent.",
+      "vars": {
+        "--bg": "#7fd8d0",
+        "--panel": "rgba(185,234,229,0.72)",
+        "--panel-strong": "rgba(206,240,237,0.90)",
+        "--border": "rgba(17,17,20,0.14)",
+        "--text": "#1a2123",
+        "--text-dim": "#324d4c",
+        "--text-dimmer": "#46716e",
+        "--accent": "#7a1622",
+        "--accent-soft": "rgba(122,22,34,0.32)",
+        "--accent-glow": "rgba(122,22,34,0.16)",
+        "--ambient-a": "rgba(122,22,34,0.10)",
+        "--ambient-b": "rgba(124,119,121,0.16)",
+        "--radius": "14px",
+        "--blur": "24px"
+      }
+    }
+  ]
+}

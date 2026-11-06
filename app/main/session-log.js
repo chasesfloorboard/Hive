@@ -194,7 +194,8 @@ function createSessionLog({ hiveProjectRoot, startupDebugEnabled, startupDebugSt
     if (startupDebugTimer) { clearTimeout(startupDebugTimer); startupDebugTimer = null; }
   }
   function spawnTracked(command, args = [], options = {}) {
-    const child = spawn(command, args, options);
+    // Never a console window flashing up on Windows (no effect elsewhere).
+    const child = spawn(command, args, { windowsHide: true, ...options });
     if (startupDebugEnabled) {
       const key = `${child.pid}:${command}`;
       startupTrackedChildren.set(key, { pid:child.pid, kind:'spawn', command:String(command), args:(args||[]).map(String), startedMs:Number((Number(process.hrtime.bigint()-startupDebugStartedAt)/1e6).toFixed(1)), state:'running' });
@@ -204,7 +205,7 @@ function createSessionLog({ hiveProjectRoot, startupDebugEnabled, startupDebugSt
     return child;
   }
   function forkTracked(modulePath, args = [], options = {}) {
-    const child = fork(modulePath, args, options);
+    const child = fork(modulePath, args, { windowsHide: true, ...options });
     if (startupDebugEnabled) {
       const key = `${child.pid}:fork:${modulePath}`;
       startupTrackedChildren.set(key, { pid:child.pid, kind:'fork', module:String(modulePath), args:(args||[]).map(String), startedMs:Number((Number(process.hrtime.bigint()-startupDebugStartedAt)/1e6).toFixed(1)), state:'running' });

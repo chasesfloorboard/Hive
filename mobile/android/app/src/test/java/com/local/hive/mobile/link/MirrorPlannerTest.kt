@@ -6,8 +6,40 @@ import org.junit.Test
 
 class MirrorPlannerTest {
     private fun f(size: Long, modified: Long) = FileStat(size, modified)
-    private fun plan(phone: Map<String, FileStat>, pc: Map<String, FileStat>, ledger: Map<String, Agreed> = emptyMap(), left: Set<String> = emptySet()) =
-        MirrorPlanner.plan(phone, pc, ledger, left)
+    private fun plan(phone: Map<String, FileStat>, pc: Map<String, FileStat>, ledger: Map<String, Agreed> = emptyMap(), left: Set<String> = emptySet(), unreadable: List<String> = emptyList()) =
+        MirrorPlanner.plan(phone, pc, ledger, left, unreadable)
+
+    @Test fun aPcFolderThatCouldNotBeReadIsNeitherDeletedNorCopied() {
+        val was = mapOf("Locked/a.mp3" to Agreed(f(10, 1), f(10, 1)), "Open/b.mp3" to Agreed(f(20, 1), f(20, 1)))
+        // The PC listed nothing under Locked (it couldn't read it): its song isn't gone from the PC.
+        val p = plan(mapOf("Locked/a.mp3" to f(10, 1), "Locked/new.mp3" to f(5, 1), "Open/b.mp3" to f(20, 1)), mapOf("Open/b.mp3" to f(20, 1)), was, unreadable = listOf("Locked"))
+        assertTrue(p.goneFromPc.isEmpty() && p.toPc.isEmpty() && p.toPhone.isEmpty())
+        // Without the PC saying so, it would have read as a deletion.
+        assertEquals(listOf("Locked/a.mp3"), plan(mapOf("Locked/a.mp3" to f(10, 1), "Open/b.mp3" to f(20, 1)), mapOf("Open/b.mp3" to f(20, 1)), was).goneFromPc)
+        // "Locked" covers what's inside it, not "Locked Out".
+        assertTrue(MirrorPlanner.under("locked/a.mp3", listOf("Locked")) && !MirrorPlanner.under("locked out/a.mp3", listOf("Locked")))
+    }
+
+    @Test fun pathsThatWouldLeaveTheMusicFolderAreNeverActedOn() {
+        val p = plan(emptyMap(), mapOf("../Download/x.apk" to f(5, 1), "/etc/x" to f(5, 1), "A/./b.mp3" to f(5, 1), "A//b.mp3" to f(5, 1), "ok/song.mp3" to f(5, 1)))
+        assertEquals(listOf("ok/song.mp3"), p.toPhone)
+        for (bad in listOf("..", "a/../b", "", "a\\b", "/abs")) assertTrue(bad, !MirrorPlanner.safe(bad))
+        assertTrue(MirrorPlanner.safe("Artist/Album/01 Song.flac"))
+        assertTrue(MirrorPlanner.safe("...And So It Was.mp3"))
+    }
+
+    @Test fun aSongRenamedOnThePcIsRenamedOnThePhoneNotDeletedAndCopied() {
+        val was = mapOf("Old Artist/Song.flac" to Agreed(f(900, 50_000), f(900, 70_000)))
+        val p = plan(mapOf("Old Artist/Song.flac" to f(900, 50_000)), mapOf("New Artist/Album/01 Song.flac" to f(900, 70_000)), was)
+        assertEquals(mapOf("Old Artist/Song.flac" to "New Artist/Album/01 Song.flac"), p.renames)
+        assertTrue(p.goneFromPc.isEmpty() && p.toPhone.isEmpty())
+        // A new file that only looks alike (another modified time) is a deletion and a new song, as before.
+        val other = plan(mapOf("Old Artist/Song.flac" to f(900, 50_000)), mapOf("Other.flac" to f(900, 99_000)), was)
+        assertTrue(other.renames.isEmpty())
+        assertEquals(listOf("Old Artist/Song.flac"), other.goneFromPc)
+        // The phone's copy changed since: not a plain rename, so nothing is guessed.
+        assertTrue(plan(mapOf("Old Artist/Song.flac" to f(950, 60_000)), mapOf("New/Song.flac" to f(900, 70_000)), was).renames.isEmpty())
+    }
 
     @Test fun meetingFirstTheSameSizeIsTakenAsTheSameFile() {
         val p = plan(mapOf("A/song.mp3" to f(100, 5)), mapOf("A/song.mp3" to f(100, 9)))

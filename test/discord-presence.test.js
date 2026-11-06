@@ -117,6 +117,30 @@ test('the published activity is shaped as a music player\'s: not a game instance
   } finally { cleanup(); }
 });
 
+// The look the user approved (2026-11-05, see docs/DISCORD-PRESENCE.md): with "Listening", the
+// profile pop-up shows a "Listening to Hive" card: cover art, the title, the artist, the album, and
+// a live progress bar with elapsed and total time. Every field below feeds one part of that card.
+test('"Listening" shows the approved card: cover, title, artist, album and a live progress bar', async () => {
+  const { presence, sent, cleanup } = makePresence({ settings: { activityType: 'listening' } });
+  try {
+    presence.start();
+    presence.rpc.ready = true;
+    const before = Math.floor(Date.now() / 1000);
+    await presence.update({ ...samplePayload, track: { ...samplePayload.track, title: 'Oh Yeah?', artist: 'Steve Lacy', album: 'Oh Yeah?' }, position: 8, duration: 170, artworkUrl: 'https://example.com/cover.jpg' });
+    const a = sent[0];
+    assert.equal(a.type, 2, 'Listening to Hive');
+    assert.equal(a.details, 'Oh Yeah?', 'the title, in bold');
+    assert.equal(a.state, 'Steve Lacy', 'the artist under it');
+    assert.equal(a.assets.large_image, 'https://example.com/cover.jpg', 'the cover on the left');
+    assert.equal(a.assets.large_text, 'Oh Yeah?', 'the album');
+    assert.equal(a.status_display_type, 1);
+    assert.equal(a.instance, false, 'a music player, not a game: shown in the pop-up');
+    // The progress bar: started 8 s ago, ends at 2:50.
+    assert.ok(Math.abs(a.timestamps.start - (before - 8)) <= 1);
+    assert.equal(a.timestamps.end - a.timestamps.start, 170);
+  } finally { cleanup(); }
+});
+
 // Behavior tests against the real module, with Discord and the loon relay
 // stubbed. Settings live in Hive's own file (userData/discord-activity-type.json),
 // never Music Presence's.

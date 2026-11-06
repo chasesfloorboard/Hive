@@ -18,3 +18,14 @@ for (const c of vectors.cases) {
     assert.equal(index.match({ title, artist, albumArtist, durationMs })?.key ?? null, c.expect);
   });
 }
+
+test('a single and the same song on its album: the copy on the same album is matched (as on the phone)', () => {
+  const { createIndex } = require('../app/main/song-match');
+  const index = createIndex([
+    { key: 'single', title: 'Music', artist: 'underscores', albumArtist: 'underscores', album: 'Music - Single', durationMs: 180000 },
+    { key: 'album', title: 'Music', artist: 'underscores', albumArtist: 'underscores', album: 'U', durationMs: 180000 },
+  ]);
+  assert.equal(index.match({ title: 'Music', artist: 'underscores', durationMs: 180000, album: 'U' }).key, 'album');
+  assert.equal(index.match({ title: 'Music', artist: 'underscores', durationMs: 180000, album: 'Music - Single' }).key, 'single');
+  assert.ok(index.match({ title: 'Music', artist: 'underscores', durationMs: 180000 }));
+});

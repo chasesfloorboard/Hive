@@ -55,7 +55,8 @@ class HiveApp : Application(), coil3.SingletonImageLoader.Factory {
         .memoryCache { coil3.memory.MemoryCache.Builder().maxSizePercent(context, 0.35).build() }
         .build()
 
-    val scope = CoroutineScope(SupervisorJob() + Dispatchers.Default)
+    /** Hive's background work. An error in one task is written to the crash log; Hive carries on. */
+    val scope by lazy { CoroutineScope(SupervisorJob() + Dispatchers.Default + com.local.hive.mobile.data.CrashLog.handler(this)) }
     val database by lazy { LibraryDatabase.open(this) }
     val appleMusic by lazy { com.local.hive.mobile.stream.AppleMusic() }
     val spotify by lazy { com.local.hive.mobile.stream.Spotify() }
@@ -88,7 +89,8 @@ class HiveApp : Application(), coil3.SingletonImageLoader.Factory {
     /** Love kept in the song files themselves, as on the PC (see LoveFiles). */
     val loveFiles by lazy {
         com.local.hive.mobile.data.LoveFiles(this, database.dao(), scope, paired = { linkStore.pairing != null }, inUse = { com.local.hive.mobile.playback.OpenSongs.ids },
-            mirrored = { com.local.hive.mobile.link.FileMirror(this).mirroredPhonePaths() })
+            mirrored = { com.local.hive.mobile.link.FileMirror(this).mirroredPhonePaths() },
+            reAgree = { path, before -> com.local.hive.mobile.link.FileMirror(this).reAgree(path, before) })
     }
     private var backupJob: Job? = null
     /** Saves the backup a little later, once a burst of changes has settled. */
@@ -111,7 +113,7 @@ class HiveApp : Application(), coil3.SingletonImageLoader.Factory {
     private suspend fun keepSafeOnPc() {
         val conn = sync.pcConnection() ?: return
         phoneBackup.lookForOffer(conn, linkStore.pairing?.deviceId)
-        phoneBackup.save()
+        phoneBackup.save(atMostEveryMs = 10 * 60_000)
         phoneBackup.sendToPc(conn)
     }
     val songSync by lazy { com.local.hive.mobile.link.SongSync(this, database.dao(), linkStore, HiveLinkClient(), sync) }
@@ -169,6 +171,9 @@ class HiveApp : Application(), coil3.SingletonImageLoader.Factory {
     @OptIn(kotlinx.coroutines.FlowPreview::class)
     override fun onCreate() {
         super.onCreate()
+        com.local.hive.mobile.data.CrashLog.install(this)
+        // A song copy cut off by Hive being stopped last time: its half file goes before anything else runs.
+        runCatching { com.local.hive.mobile.link.FileMirror(this).clearUnfinishedCopy() }
         // A restore asked for puts Hive's files back before anything opens them.
         com.local.hive.mobile.data.PhoneBackup.applyPending(this)
         // Plays missed between songs before 2.19.4 go back in from Recently played, once.

@@ -33,13 +33,28 @@ function safeRel(root, rel, platform = process.platform) {
   return abs.startsWith(base + path.sep) ? abs : null;
 }
 
-/** Every file under [root]: { p: relative path, s: size, m: modified (ms) }. */
+/**
+ * Every file under [root]: { files: [{ p: relative path, s: size, m: modified (ms) }], unreadable: [relative paths] }.
+ * A folder or file that couldn't be read is named in `unreadable`, never just left out: left out, the
+ * phone would take its songs for deleted ones. A library folder that can't be read at all (a drive
+ * not mounted) throws.
+ */
 async function list(root) {
   const base = path.resolve(root);
-  const out = [];
+  const st = await fs.promises.stat(base).catch(() => null);
+  if (!st?.isDirectory()) throw Object.assign(new Error("Hive can't reach its library folder right now (is the drive connected?)."), { code: 'LIBRARY_AWAY' });
+  const files = [];
+  const unreadable = [];
   async function walk(dir, prefix) {
     let entries;
-    try { entries = await fs.promises.readdir(dir, { withFileTypes: true }); } catch { return; }
+    try { entries = await fs.promises.readdir(dir, { withFileTypes: true }); }
+    catch (err) {
+      if (!prefix) throw Object.assign(new Error("Hive can't read its library folder right now."), { code: 'LIBRARY_AWAY' });
+      // Gone between listing its parent and reading it: really gone, not unreadable.
+      if (err?.code !== 'ENOENT') unreadable.push(prefix);
+      return;
+    }
+    const pending = [];
     for (const e of entries) {
       const rel = prefix ? `${prefix}/${e.name}` : e.name;
       const abs = path.join(dir, e.name);
@@ -48,14 +63,21 @@ async function list(root) {
       // (".Exe.mp3", "...And So It Was.mp3"), so only Hive's own scratch files are left out.
       if (e.isDirectory()) { if (!e.name.startsWith('.')) await walk(abs, rel); continue; }
       if (!e.isFile() || HIVE_TEMP.test(e.name) || HIVE_SCRATCH.test(e.name)) continue;
-      try {
-        const st = await fs.promises.stat(abs);
-        out.push({ p: rel, s: st.size, m: Math.floor(st.mtimeMs) });
-      } catch {}
+      pending.push({ rel, abs });
+    }
+    // A folder's files are looked at many at a time: one by one, a big library on a slow or network
+    // drive took longer than the phone waits for the list.
+    for (let i = 0; i < pending.length; i += 64) {
+      await Promise.all(pending.slice(i, i + 64).map(async ({ rel, abs }) => {
+        try {
+          const fst = await fs.promises.stat(abs);
+          files.push({ p: rel, s: fst.size, m: Math.floor(fst.mtimeMs) });
+        } catch (err) { if (err?.code !== 'ENOENT') unreadable.push(rel); }
+      }));
     }
   }
   await walk(base, '');
-  return out;
+  return { files, unreadable };
 }
 
 /** A free name for [target]: itself, or "name (2).ext", "name (3).ext"... */

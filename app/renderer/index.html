@@ -10,6 +10,7 @@
      to add before 1.0: build that isolation and remove this app-wide grant. -->
 <meta http-equiv="Content-Security-Policy" content="default-src 'self' mbfile: mbcover: data:; img-src 'self' mbcover: data: https:; media-src 'self' mbfile: https: http:; connect-src 'self' https:; style-src 'self' 'unsafe-inline' https:; script-src 'self'; frame-src 'self';">
 <title>Hive</title>
+<link rel="stylesheet" href="fonts.css">
 <link rel="stylesheet" href="styles.css" />
 </head>
 <body>
@@ -553,6 +554,13 @@
               </div>
             </div>
             <div class="settings-row">
+              <span class="settings-row-text"><span class="settings-row-label">Theme gallery</span><span class="settings-hint">Themes other people made. Share yours and it joins the gallery once approved.</span></span>
+              <span class="settings-row-control">
+                <button id="theme-browse-btn" class="sidebar-add settings-primary-action" type="button">Browse themes</button>
+                <button id="theme-share-btn" class="sidebar-add" type="button">Share theme</button>
+              </span>
+            </div>
+            <div class="settings-row">
               <span class="settings-row-text"><span class="settings-row-label">Theme files</span><span class="settings-hint">Drop a <code>.hive-theme</code> file into the themes folder and it appears in the list.</span></span>
               <span class="settings-row-control">
                 <button id="theme-open-folder-btn" class="sidebar-add" type="button">Open folder</button>
@@ -899,7 +907,7 @@
       <div class="modal-body about-body">
         <div class="about-brand"><img class="about-brand-logo" id="about-hive-logo" alt="Hive" aria-hidden="true"><span>Hive</span></div>
         <div id="about-version" class="dim small"></div>
-        <p class="dim">A MusicBee-styled music player for Linux, with a smoky glass rice aesthetic and dynamic accent colors pulled from album art.</p>
+        <p class="dim">A MusicBee-styled music player for Linux and Windows, with a smoky glass rice aesthetic and dynamic accent colors pulled from album art.</p>
         <div class="about-update-check">
           <button id="about-check-updates-btn" class="sidebar-add" type="button">Check for updates</button>
           <div id="about-update-status" class="settings-status" aria-live="polite"></div>
@@ -1102,6 +1110,16 @@
         <div id="app-dialog-message" class="app-dialog-message"></div>
         <input id="app-dialog-input" class="app-dialog-input hidden" type="text" autocomplete="off" />
         <div id="app-dialog-actions" class="app-dialog-actions"></div>
+      </div>
+    </div>
+  </div>
+
+  <div id="theme-gallery-modal" class="modal-overlay hidden">
+    <div class="modal glass theme-gallery-modal" role="dialog" aria-modal="true" aria-labelledby="theme-gallery-title">
+      <div class="modal-header"><h3 id="theme-gallery-title">Browse themes</h3><button class="modal-close" data-close type="button" aria-label="Close">✕</button></div>
+      <div class="modal-body">
+        <p id="theme-gallery-status" class="settings-hint" aria-live="polite">Loading the gallery…</p>
+        <div id="theme-gallery-grid" class="theme-gallery-grid"></div>
       </div>
     </div>
   </div>

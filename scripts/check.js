@@ -49,12 +49,10 @@ if (!/frame:\s*themeWindowBarEnabled\s*\?\s*false\s*:\s*true/.test(main) || !/wi
 if (/titleBarStyle:\s*['"]hidden['"]/.test(main) || /titleBarOverlay:\s*\{/.test(main)) throw new Error('Linux desktop integration regression: Hive must not use Electron WCO titlebar overlays for the themed mode.');
 if (!fs.readFileSync(path.join(root, 'app', 'native', 'gstreamer-player.c'), 'utf8').includes('hive-spectrum')) throw new Error('Native spectrum analyzer missing.');
 if (/xdg-open[^\n]*spotify:track|payload\.type === ['"]playUri['"][^\n]*xdg-open/.test(main)) throw new Error('Spotify playback must not bypass the Spicetify Hive bridge through xdg-open.');
-if (!main.includes('spotify-background.sh')) throw new Error('Spotify playback must use the isolated background provider helper.');
-if (main.includes("path.join(APP_ROOT, 'scripts', 'spotify-background.sh')")) throw new Error('Spotify background launcher must not reference undefined APP_ROOT.');
-if (!main.includes("path.join(HIVE_PROJECT_ROOT, 'scripts', 'spotify-background.sh')")) throw new Error('Spotify background launcher must resolve from HIVE_PROJECT_ROOT.');
+// Hive never starts the Spotify app by itself: a hidden background Spotify once leaked 13 GB of
+// /dev/shm and broke other apps (see 32242ae). The old background launcher must stay unused.
+if (main.includes('spotify-background.sh')) throw new Error('Hive must never start Spotify in the background (spotify-background.sh).');
 if (/scheduleSpotifyWindowHide|hideSpotifyWindowBestEffort/.test(main)) throw new Error('Spotify provider must not use window-manager hide hacks.');
-if (!/function ensureSpotifyBridge\(\)[\s\S]*?spotifyLaunch\?\./.test(renderer)) throw new Error('Spotify playback must use the background provider when the bridge is disconnected.');
-if (!/install_spotify_background_dependency/.test(installer) || !/xorg-server-xvfb/.test(installer) || !/apt-get install -y xvfb/.test(installer) || !/dnf install -y xorg-x11-server-Xvfb/.test(installer)) throw new Error('Installer must provision the Spotify Xvfb background-display dependency.');
 if (!spotifyBridge.includes("type === 'volume'") || !renderer.includes("type:'volume'")) throw new Error('Spotify volume control bridge missing.');
 if (!spotifyBridge.includes('getVolume') || !spotifyBridge.includes('getShuffle') || !spotifyBridge.includes('getRepeat')) throw new Error('Spotify state synchronization must use the Spicetify Player API.');
 if (!spotifyBridge.includes('cover: playlistArtwork') || !main.includes('artworkUrl')) throw new Error('Spotify playlist artwork persistence missing.');

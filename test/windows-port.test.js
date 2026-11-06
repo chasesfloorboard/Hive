@@ -272,3 +272,13 @@ test('a library scan flushes its last database batch after the workers finish', 
   const main = fs.readFileSync(path.join(root, 'app', 'main', 'main.js'), 'utf8');
   assert.match(main, /await runPool\(\);\s*scanToken\.onCancel = null;\s*throwIfCancelled\(\);[\s\S]{0,400}await flushDatabaseBatch\(\);/);
 });
+
+test('on Windows the output picker lists the system outputs from the native player, by device id', () => {
+  const { parseHelperOutputs } = require('../app/main/audio-output-manager');
+  const r = parseHelperOutputs('OUTPUT\t{0.0.0.00000000}.{a1}\tSpeakers (Realtek)\t1\r\nnoise\nOUTPUT\t{0.0.0.00000000}.{b2}\tScarlett Solo\t0\r\nOUTPUT\t{0.0.0.00000000}.{b2}\tScarlett Solo\t0\n');
+  assert.deepEqual(r.outputs.map(o => [o.id, o.name]), [['device:{0.0.0.00000000}.{a1}', 'Speakers (Realtek)'], ['device:{0.0.0.00000000}.{b2}', 'Scarlett Solo']]);
+  assert.equal(r.defaultId, 'device:{0.0.0.00000000}.{a1}');
+  const c = fs.readFileSync(path.join(__dirname, '..', 'app', 'native', 'gstreamer-player.c'), 'utf8');
+  assert.match(c, /--list-outputs/);
+  assert.match(c, /g_str_has_prefix\(requested_output, "device:"\)/);
+});

@@ -21,9 +21,9 @@ class PcEdits(
     /** The PC's songs as last fetched: finds the PC copy of a song that hasn't been matched yet. */
     private val pcTracks: () -> List<PcTrack> = { emptyList() },
 ) {
-    @Serializable private data class Tags(val pcId: String, val tags: Map<String, String>)
+    @Serializable private data class Tags(val pcId: String, val tags: Map<String, String>, val tries: Int = 0)
     /** A front cover, or with [back] (its place among the back covers, from 0) a back cover; no [file] takes that back cover off. */
-    @Serializable private data class Cover(val pcIds: List<String>, val file: String, val back: Int = -1)
+    @Serializable private data class Cover(val pcIds: List<String>, val file: String, val back: Int = -1, val tries: Int = 0)
     @Serializable private data class Pending(val tags: List<Tags> = emptyList(), val covers: List<Cover> = emptyList())
 
     private val file = File(context.filesDir, "pc-edits.json")
@@ -43,9 +43,9 @@ class PcEdits(
         // the PC's library now, by the tags it had before this edit, so the edit isn't lost.
         val missing = wanted - found.keys
         if (missing.isNotEmpty()) {
-            val index = TrackMatcher.Index(pcTracks().map { TrackMatcher.Candidate(it.id, it.title, it.artist, it.albumArtist, it.duration) })
+            val index = TrackMatcher.Index(pcTracks().map { TrackMatcher.Candidate(it.id, it.title, it.artist, it.albumArtist, it.duration, it.album) })
             for (t in dao.tracks(missing.toList())) {
-                (index.match(t.title, t.artist, t.albumArtist, t.durationMs)
+                (index.match(t.title, t.artist, t.albumArtist, t.durationMs, t.album)
                     ?: index.match(t.fileName.substringBeforeLast('.').replace(Regex("""^\d+[\s.-]+"""), ""), t.artist, t.albumArtist, t.durationMs))
                     ?.let { found[t.id] = it.key }
             }
@@ -89,25 +89,37 @@ class PcEdits(
         if (p.tags.isEmpty() && p.covers.isEmpty()) return@withLock
         try {
             if (p.tags.isNotEmpty()) {
-                client.editTags(conn, p.tags.map { SongTagEdit(it.pcId, it.tags) })
-                p = p.copy(tags = emptyList()); save(p)
+                // Only edits Hive says it wrote are done; the rest are sent again next sync (a file
+                // busy or read-only on the PC), and given up after MAX_TRIES so one bad file can't stick forever.
+                val edited = client.editTags(conn, p.tags.map { SongTagEdit(it.pcId, it.tags) }).toSet()
+                p = p.copy(tags = p.tags.filter { it.pcId !in edited }.map { it.copy(tries = it.tries + 1) }.filter { it.tries < MAX_TRIES }); save(p)
             }
         } catch (e: java.io.IOException) { return@withLock }
         for (c in p.covers) {
             val f = File(coverDir, c.file)
+            // Hive no longer having the songs (404 below) counts as done: there's nothing to write.
+            var edited: List<String> = c.pcIds
             try {
-                when {
-                    c.back < 0 -> if (f.exists()) client.sendCover(conn, c.pcIds, f.readBytes())
+                edited = when {
+                    c.back < 0 -> if (f.exists()) client.sendCover(conn, c.pcIds, f.readBytes()) else c.pcIds
                     c.file.isEmpty() -> client.sendBackCover(conn, c.pcIds, c.back, null)
                     f.exists() -> client.sendBackCover(conn, c.pcIds, c.back, f.readBytes())
+                    else -> c.pcIds
                 }
             } catch (e: HiveLinkException) {
                 // Hive no longer has those songs: nothing to send. Anything else (a Hive too old
                 // for back covers among it) waits.
                 if (e.status != 404 || e.message?.contains("none of those") != true) return@withLock
             } catch (e: java.io.IOException) { return@withLock }
-            if (c.file.isNotEmpty()) f.delete()
-            p = p.copy(covers = p.covers - c); save(p)
+            // Songs Hive couldn't write stay waiting with this picture, up to MAX_TRIES sends.
+            val left = c.pcIds - edited.toSet()
+            val again = if (left.isNotEmpty() && c.tries + 1 < MAX_TRIES) c.copy(pcIds = left, tries = c.tries + 1) else null
+            if (again == null && c.file.isNotEmpty()) f.delete()
+            p = p.copy(covers = p.covers - c + listOfNotNull(again)); save(p)
         }
     }
+
+    // Tried at many syncs before giving up (a file read-only on the PC): an edit dropped too soon could be
+    // lost, as the phone's copy may already count as the same as the PC's (see MainViewModel.saveEdits).
+    private companion object { const val MAX_TRIES = 30 }
 }

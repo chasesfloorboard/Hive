@@ -180,7 +180,7 @@ def read_artwork(path, include_data=True):
         f=FLAC(path)
         for i,p in enumerate(f.pictures):
             add_picture(bytes(p.data), p.type, p.mime, p.desc, i, p.width, p.height)
-    elif ext in ('.mp3', '.wav'):
+    elif ext == '.mp3' or ext in ID3_CONTAINERS:
         if ext == '.wav':
             from mutagen.wave import WAVE
             tag=WAVE(path).tags
@@ -833,8 +833,7 @@ def write_metadata(path, tags, artwork=None):
         # instance, same as a bare .mp3 -- it needs proper Frame objects, not
         # the plain dict-of-strings the generic fallback below assumes. See
         # apply_id3_fields.
-        from mutagen.wave import WAVE
-        f=WAVE(path)
+        f=open_id3_container(path)
         tag=f.tags or f.add_tags() or f.tags
         apply_id3_fields(tag, tags)
         if artwork: apply_artwork_mp3(tag, artwork)
@@ -941,8 +940,7 @@ def modify_artwork(path, op):
         f=MP4(path); apply_artwork_mp4(f,op); f.save(); return
     if ext=='.wav':
         # The "id3 " RIFF chunk is real ID3, as write_metadata already treats it.
-        from mutagen.wave import WAVE
-        f=WAVE(path)
+        f=open_id3_container(path)
         if f.tags is None: f.add_tags()
         apply_artwork_mp3(f.tags,op); f.save(v2_version=4); return
     if ext=='.wma':
@@ -1017,8 +1015,7 @@ def read_metadata_fields(path, fields):
         except ID3NoHeaderError: tag = ID3()
         return read_id3_fields(tag, requested)
     if ext == '.wav':
-        from mutagen.wave import WAVE
-        f = WAVE(path)
+        f = open_id3_container(path)
         if f.tags is None: return out
         return read_id3_fields(f.tags, requested)
     if ext == '.flac':
@@ -1066,15 +1063,14 @@ def read_metadata_fields(path, fields):
 
 def read_compilation(path):
     ext = Path(path).suffix.lower()
-    if ext in ('.mp3', '.wav'):
+    if ext == '.mp3' or ext in ID3_CONTAINERS:
         if ext == '.mp3':
             try: tag = ID3(path)
             except ID3NoHeaderError: return '0'
         else:
             # Same WAV/ID3 gap as read_metadata_fields -- WAV's tags object
             # is a real ID3Tags instance, TCMP lives there exactly like MP3.
-            from mutagen.wave import WAVE
-            f = WAVE(path)
+            f = open_id3_container(path)
             tag = f.tags
             if tag is None: return '0'
         frames = tag.getall('TCMP') if tag else []
@@ -1142,6 +1138,14 @@ def save_id3_as_found(tag, path):
     else:
         tag.save(path, v2_version=4, v1=1)
 
+# Files whose tags are an ID3 block inside another container (WAV, AIFF, DSF): written like MP3's,
+# frame by frame. Treated as plain key/value tags, a Love or rating write failed on them.
+ID3_CONTAINERS=('.wav','.aif','.aiff','.aifc','.dsf')
+def open_id3_container(path):
+    f=File(path, easy=False)
+    if f is None: raise RuntimeError(f'Unsupported audio format: {Path(path).suffix.lower()}')
+    return f
+
 def write_rating(path, stars):
     """Write Hive's portable rating using Mutagen only.
 
@@ -1156,13 +1160,12 @@ def write_rating(path, stars):
     # as unrated.
     clear=value <= 0
     ext=Path(path).suffix.lower()
-    if ext in ('.mp3','.wav'):
+    if ext=='.mp3' or ext in ID3_CONTAINERS:
         if ext=='.mp3':
             try: tag=ID3(path)
             except ID3NoHeaderError: tag=ID3()
         else:
-            from mutagen.wave import WAVE
-            f=WAVE(path)
+            f=open_id3_container(path)
             tag=f.tags or f.add_tags() or f.tags
         # Replace only Hive's portable rating fields; unrelated POPM/TXXX data survives.
         # MusicBee keeps its play counter in the same POPM frame: it survives a rating change.
@@ -1214,13 +1217,12 @@ def write_pcount(path, count):
     """
     value = max(0, min(0xFFFFFFFF, int(count or 0)))
     ext = Path(path).suffix.lower()
-    if ext in ('.mp3', '.wav'):
+    if ext == '.mp3' or ext in ID3_CONTAINERS:
         if ext == '.mp3':
             try: tag = ID3(path)
             except ID3NoHeaderError: tag = ID3()
         else:
-            from mutagen.wave import WAVE
-            f = WAVE(path)
+            f = open_id3_container(path)
             tag = f.tags or f.add_tags() or f.tags
         remove_txxx(tag, 'P_COUNT')
         set_txxx(tag, 'P_COUNT', str(value))
@@ -1249,13 +1251,12 @@ def write_pcount(path, count):
 def read_pcount(path):
     """Read Hive's embedded play count back through Mutagen, symmetric with write_pcount."""
     ext = Path(path).suffix.lower()
-    if ext in ('.mp3', '.wav'):
+    if ext == '.mp3' or ext in ID3_CONTAINERS:
         if ext == '.mp3':
             try: tag = ID3(path)
             except ID3NoHeaderError: return 0
         else:
-            from mutagen.wave import WAVE
-            f = WAVE(path); tag = f.tags
+            f = open_id3_container(path); tag = f.tags
         if not tag: return 0
         for frame in tag.getall('TXXX'):
             if str(getattr(frame, 'desc', '')).strip().upper() == 'P_COUNT':
@@ -1296,13 +1297,12 @@ def is_beehive_love_field_name(value):
 def read_love(path):
     ext=Path(path).suffix.lower()
     aliases={'LOVE RATING','LOVE','LOVERATING','MUSICBEE/LOVE RATING','MUSICBEE/LOVERATING','MUSICBEE LOVE RATING'}
-    if ext in ('.mp3','.wav'):
+    if ext=='.mp3' or ext in ID3_CONTAINERS:
         if ext=='.mp3':
             try: tag=ID3(path)
             except ID3NoHeaderError: return False
         else:
-            from mutagen.wave import WAVE
-            f=WAVE(path); tag=f.tags
+            f=open_id3_container(path); tag=f.tags
         if not tag: return False
         for frame in tag.getall('TXXX'):
             if str(getattr(frame,'desc','')).strip().upper() in aliases and any(str(v).strip().upper()=='L' for v in getattr(frame,'text',[]) or []): return True
@@ -1324,13 +1324,12 @@ def write_love(path, loved):
     """Write Hive's canonical LOVE RATING using the bundled Mutagen backend."""
     loved=bool(loved)
     ext=Path(path).suffix.lower()
-    if ext in ('.mp3','.wav'):
+    if ext=='.mp3' or ext in ID3_CONTAINERS:
         if ext=='.mp3':
             try: tag=ID3(path)
             except ID3NoHeaderError: tag=ID3()
         else:
-            from mutagen.wave import WAVE
-            f=WAVE(path); tag=f.tags or f.add_tags() or f.tags
+            f=open_id3_container(path); tag=f.tags or f.add_tags() or f.tags
         for frame in list(tag.getall('TXXX')):
             if is_beehive_love_field_name(getattr(frame,'desc','')):
                 try: tag.delall(frame.HashKey)
@@ -1376,8 +1375,7 @@ def write_tags(path,tags):
         # See write_metadata's .wav branch: WAV's tags object is a real
         # ID3Tags instance and needs apply_id3_fields, not the generic
         # dict-of-strings fallback below.
-        from mutagen.wave import WAVE
-        f=WAVE(path)
+        f=open_id3_container(path)
         tag=f.tags or f.add_tags() or f.tags
         apply_id3_fields(tag, tags)
         f.save(v2_version=4)

@@ -298,6 +298,12 @@ data class TrackPlays(val trackId: Long, val plays: Int)
 /** A play with the song it was, for Yearly Wrap. */
 data class PlayRow(val trackId: Long, val playedAt: Long, val listenedMs: Long, val title: String, val artist: String, val album: String, val albumArtist: String, val albumId: Long, val genre: String)
 
+/** Which settled Loves may be written: only those whose row is still the one read (or sent) before. */
+object LoveSettle {
+    fun unchanged(sent: Map<Long, Long>, current: Map<Long, LoveState>, states: List<LoveState>) =
+        states.filter { s -> val now = current[s.trackId]; now == null || now.changedAt == sent[s.trackId] }
+}
+
 @Dao
 interface LibraryDao {
     @Query("SELECT * FROM tracks ORDER BY title COLLATE NOCASE")
@@ -507,6 +513,16 @@ interface LibraryDao {
 
     @Upsert
     suspend fun upsertLove(states: List<LoveState>)
+
+    /**
+     * Settles Loves the PC answered, each only if it's still the change that was sent: a heart tapped
+     * again while the sync was out is newer, stays pending, and goes on the next sync.
+     */
+    @Transaction
+    suspend fun settleLove(sent: Map<Long, Long>, states: List<LoveState>) {
+        val current = states.mapNotNull { love(it.trackId) }.associateBy { it.trackId }
+        upsertLove(LoveSettle.unchanged(sent, current, states))
+    }
 
     // ---- playlists ----
 
@@ -728,6 +744,10 @@ interface LibraryDao {
     /** The phone's own plays not yet sent to the PC (for the backup). */
     @Query("SELECT * FROM plays WHERE synced = 0 AND fromPc = 0")
     suspend fun unsentPlays(): List<Play>
+
+    /** The phone's plays waiting to reach the PC: of songs the PC has (others stay on the phone only). */
+    @Query("SELECT COUNT(*) FROM plays p JOIN pc_match m ON m.trackId = p.trackId WHERE p.synced = 0 AND p.fromPc = 0")
+    suspend fun unsentMatchedPlayCount(): Int
 
     @Query("SELECT * FROM favorite_albums")
     suspend fun favoriteAlbumsOnce(): List<FavoriteAlbum>

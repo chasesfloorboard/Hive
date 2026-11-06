@@ -86,6 +86,8 @@ class SyncEngine(
     }
 
     private var autoConnecting = false
+    /** Whether the paired Hive takes ratings from the phone (an older one doesn't: they're not "waiting"). */
+    @Volatile private var pcTakesRatings = true
 
     /**
      * "Connect automatically": an unpaired phone looks for Hive on this
@@ -96,7 +98,11 @@ class SyncEngine(
         if (store.pairing != null || !store.autoConnect || autoConnecting) return
         autoConnecting = true
         try {
-            val hive = client.discover().firstOrNull() ?: return
+            // Only when exactly one Hive answers: with more (another computer, or something posing as Hive),
+            // the phone lists them in Settings and the person picks, instead of taking whichever was first.
+            val found = client.discover().distinctBy { it.serverId }
+            if (found.size > 1) { _status.update { it.copy(connecting = null, error = "${found.size} Hives answered on this network. Pick yours in Settings › Hive on your PC.") }; return }
+            val hive = found.firstOrNull() ?: return
             _status.update { it.copy(connecting = "Found ${hive.name}. Allow this phone in Hive on the PC…", error = null) }
             val ticket = client.requestConnect(hive.host, hive.port, deviceName, store.phoneKey)
             repeat(70) {
@@ -121,18 +127,18 @@ class SyncEngine(
     }
 
     private suspend fun paired(host: String, port: Int, response: PairResponse) {
-        val conn = HiveLinkClient.Connection(host, port, response.token)
-        val info = runCatching { client.info(conn) }.getOrNull()
-        store.pairing = Pairing(
-            serverId = response.serverId,
-            name = response.name,
-            port = port,
-            token = response.token,
-            deviceId = response.deviceId,
-            hosts = listOf(host) + info?.addresses.orEmpty().sortedBy { it.tailscale }.map { it.address },
-        )
+        val fresh = Pairing(serverId = response.serverId, name = response.name, port = port, token = response.token, deviceId = response.deviceId, hosts = listOf(host))
+        // Kept at once: the PC already counts this phone as paired, so an app closed during the checks below
+        // must not forget it. Nothing is sent with it until connection() has checked the PC again.
         store.lastSeq = 0
         store.fullSyncDone = false
+        store.pairing = fresh
+        // At once onto the Hive's encrypted port when it has one (its certificate proved with the new pairing),
+        // and the read-only media key fetched now, so nothing after pairing carries the token unencrypted.
+        // If the check can't finish now, the first sync does it.
+        val info = runCatching { if (isOurs(host, port, fresh)) client.info(connectionTo(host, port, fresh)) else null }.getOrNull()
+        info?.coverKey?.ifBlank { null }?.let { store.coverKey = it }
+        if (info != null) store.pairing = fresh.copy(hosts = listOf(host) + info.addresses.sortedBy { it.tailscale }.map { it.address })
         activeHost = host
         _status.update { LinkStatus(paired = true, serverName = response.name, host = host) }
         // The first sync belongs to the engine, not to whoever asked to pair:
@@ -166,8 +172,10 @@ class SyncEngine(
         if (store.pairing == null) return
         mutex.withLock {
             _status.update { it.copy(syncing = true) }
+            var used: HiveLinkClient.Connection? = null
             try {
                 val conn = connection() ?: throw HiveLinkException("Can't reach ${store.pairing?.name ?: "Hive"}. Is it open on the PC?")
+                used = conn
                 pushPending(conn)
                 // Changes come as Hive's change log, which keeps only the latest ones; a whole
                 // comparison every few hours catches anything the log missed (bulk Love, imports).
@@ -188,9 +196,17 @@ class SyncEngine(
                     _status.value = LinkStatus(error = "This phone was unpaired from Hive. Pair it again.")
                 } else _status.update { it.copy(error = e.message) }
             } catch (e: Exception) {
-                _status.update { it.copy(error = e.message ?: e.javaClass.simpleName) }
+                // The PC answered on its plain port but not on its encrypted one: most likely a firewall.
+                val blocked = used?.let { it.tlsPort > 0 && (e is java.net.ConnectException || e is java.net.SocketTimeoutException) } == true
+                val message = if (blocked) "Hive on the PC answers, but not on its secure port ${used?.tlsPort}. If the PC has a firewall, allow TCP ${used?.tlsPort} on your home network."
+                    else e.message ?: e.javaClass.simpleName
+                _status.update { it.copy(error = message) }
             } finally {
-                _status.update { it.copy(syncing = false, pendingChanges = (dao.pendingLove().size - stagedLove).coerceAtLeast(0)) }
+                // Everything still waiting to go: favorites, ratings and plays (the status never says
+                // "synced" over changes that haven't reached the PC).
+                val waiting = (dao.pendingLove().size - stagedLove).coerceAtLeast(0) +
+                    runCatching { (if (pcTakesRatings) dao.ratingsToSend().size else 0) + dao.unsentMatchedPlayCount() }.getOrDefault(0)
+                _status.update { it.copy(syncing = false, pendingChanges = waiting) }
             }
         }
     }
@@ -262,7 +278,7 @@ class SyncEngine(
         val library = client.library(conn)
         step("download ${library.tracks.size} PC tracks")
         val index = TrackMatcher.Index(library.tracks.map {
-            TrackMatcher.Candidate(it.id, it.title, it.artist, it.albumArtist, it.duration)
+            TrackMatcher.Candidate(it.id, it.title, it.artist, it.albumArtist, it.duration, it.album)
         })
         val pcById = library.tracks.associateBy { it.id }
         val phone = dao.allTracks()
@@ -274,7 +290,7 @@ class SyncEngine(
         val matches = phone.mapNotNull { t ->
             val pc = bySize[t.sizeBytes]?.firstOrNull { close(it.duration, t.durationMs) }
                 ?: byName[t.fileName.lowercase()]?.firstOrNull { it.duration > 0 && t.durationMs > 0 && close(it.duration, t.durationMs) }
-            (pc?.id ?: index.match(t.title, t.artist, t.albumArtist, t.durationMs)?.key)?.let { PcMatch(t.id, it) }
+            (pc?.id ?: index.match(t.title, t.artist, t.albumArtist, t.durationMs, t.album)?.key)?.let { PcMatch(t.id, it) }
         }
         step("match ${phone.size} phone tracks -> ${matches.size}")
         dao.replaceMatches(matches)
@@ -296,7 +312,8 @@ class SyncEngine(
                 else -> null
             }
         }
-        dao.upsertLove(adopt)
+        // Written only where nothing was tapped meanwhile (see settleLove).
+        dao.settleLove(adopt.mapNotNull { a -> local[a.trackId]?.let { a.trackId to it.changedAt } }.toMap(), adopt)
         // Ratings: the newer one wins, on either side.
         val mine = dao.allRatings().associateBy { it.trackId }
         adoptRatings(matches.mapNotNull { m -> pcById[m.pcId]?.let { Triple(m.trackId, it.rating.toFloat(), it.ratedAt) } }, mine)
@@ -318,6 +335,8 @@ class SyncEngine(
      */
     private suspend fun syncPlays(conn: HiveLinkClient.Connection) {
         val info = runCatchingNotCancelled { client.info(conn) }.getOrNull() ?: return
+        // The covers-only key (see hive-link.js coverKeyFor): cover links carry it instead of the token.
+        if (store.coverKey != info.coverKey.ifBlank { null }) store.coverKey = info.coverKey.ifBlank { null }
         _status.update { it.copy(waitingOnPc = info.inbox.loves + info.inbox.plays) }
         rememberAddresses(info)
         if (!info.plays) return
@@ -325,6 +344,7 @@ class SyncEngine(
         // Hive learns this phone's key once per pairing, so a reinstall comes back without asking.
         val pairedAs = store.pairing?.deviceId
         if (info.phoneKeys && pairedAs != null && store.keyGivenFor != pairedAs) runCatchingNotCancelled { client.sendPhoneKey(conn, store.phoneKey); store.keyGivenFor = pairedAs }
+        pcTakesRatings = info.ratings
         if (info.ratings) runCatchingNotCancelled { pushRatings(conn) }.onFailure { android.util.Log.w("HiveSync", "ratings: ${it.message}") }
         // Hive shares plays it didn't before (this phone's own, imported MusicBee history): all of them
         // again from the start; any already here is skipped below.
@@ -438,7 +458,7 @@ class SyncEngine(
         val pcIdFor = dao.allMatches().associate { it.trackId to it.pcId }
         // A phone-only song has nothing to sync with; it stays Loved here.
         val (matched, phoneOnly) = pending.partition { pcIdFor[it.trackId] != null }
-        dao.upsertLove(phoneOnly.map { it.copy(pending = false) })
+        dao.settleLove(phoneOnly.associate { it.trackId to it.changedAt }, phoneOnly.map { it.copy(pending = false) })
 
         for (chunk in matched.chunked(200)) {
             val response = client.sendLove(conn, chunk.map { LoveChange(it.trackId, pcIdFor.getValue(it.trackId), it.loved, it.changedAt) })
@@ -457,7 +477,7 @@ class SyncEngine(
                     else -> null // "failed": keep it pending and try again next sync
                 }
             }
-            dao.upsertLove(resolved)
+            dao.settleLove(chunk.associate { it.trackId to it.changedAt }, resolved)
         }
     }
 
@@ -466,10 +486,12 @@ class SyncEngine(
         val deviceId = store.pairing?.deviceId
         val tracksFor = dao.allMatches().groupBy({ it.pcId }, { it.trackId })
         val updates = mutableListOf<LoveState>()
+        val seen = HashMap<Long, Long>()
         for (event in events) {
             if (event.origin == deviceId) continue // our own change coming back
             for (trackId in tracksFor[event.id].orEmpty()) {
                 val mine = dao.love(trackId)
+                if (mine != null) seen.putIfAbsent(trackId, mine.changedAt)
                 if (mine != null && mine.pending && mine.changedAt > event.at) continue
                 // Already so here: the song keeps the date it was favorited (a file write on the PC
                 // that left Love as it was is not a new favorite).
@@ -477,7 +499,7 @@ class SyncEngine(
                 updates += LoveState(trackId, event.loved, event.at, pending = false)
             }
         }
-        dao.upsertLove(updates)
+        dao.settleLove(seen, updates)
     }
 
     /**
@@ -535,26 +557,78 @@ class SyncEngine(
     /** A working connection to Hive on the PC, if it can be reached. */
     suspend fun pcConnection(): HiveLinkClient.Connection? = connection()
 
+    /**
+     * Whether [host] is really the paired Hive (see HiveLinkClient.hello). A Hive from before the check
+     * passes on its id alone, until the paired Hive has once proved itself: then never again.
+     */
+    private suspend fun isOurs(host: String, port: Int, pairing: Pairing): Boolean {
+        val hello = client.hello(host, port, pairing)
+        return when (hello.kind) {
+        HiveLinkClient.Hello.PROVED -> {
+            if (store.helloSeenFor != pairing.serverId) store.helloSeenFor = pairing.serverId
+            val knownTls = store.tlsFor == pairing.serverId && store.tlsPin != null
+            when {
+                // Its certificate, proved with the pairing: pinned, and the token goes only over the encrypted port.
+                hello.tlsPin != null -> {
+                    if (store.tlsPin != hello.tlsPin || store.tlsPort != hello.tlsPort || store.tlsFor != pairing.serverId) {
+                        store.tlsPin = hello.tlsPin; store.tlsPort = hello.tlsPort; store.tlsFor = pairing.serverId
+                    }
+                    HiveLinkClient.pinnedCerts = setOf(hello.tlsPin)
+                    true
+                }
+                // This Hive used to offer encryption and now doesn't: someone in between may have stripped it.
+                // The token isn't sent unencrypted to it.
+                knownTls -> {
+                    _status.update { it.copy(error = "Hive on the PC isn't offering its secure connection right now, so this phone won't send its key. Restart Hive on the PC (or update it).") }
+                    false
+                }
+                else -> true
+            }
+        }
+        HiveLinkClient.Hello.OLD_HIVE -> store.helloSeenFor != pairing.serverId && client.serverAt(host, port) == pairing.serverId
+        HiveLinkClient.Hello.NOT_IT -> false
+        // Unpaired on the PC: said here at once (no token sent: it's of no use there), so the person can pair
+        // again. Something posing as the Hive can at worst make the phone ask to be paired again.
+        // The PC says it no longer knows this phone. That answer can't be signed (the PC has no pairing left
+        // to sign with), so the phone's pairing is kept: anything posing as the PC could send it. The person
+        // is told, and pairs again (or the PC finds it again) when they choose.
+        HiveLinkClient.Hello.UNPAIRED -> {
+            _status.update { it.copy(error = "Hive on the PC says this phone isn't paired with it any more. Pair it again in Settings › Hive on your PC.") }
+            false
+        }
+        }
+    }
+
+    /** The connection to [host]: on the Hive's encrypted port when it has proved one (see isOurs). */
+    private fun connectionTo(host: String, port: Int, pairing: Pairing): HiveLinkClient.Connection {
+        val tlsPort = if (store.tlsFor == pairing.serverId && store.tlsPin != null) store.tlsPort else 0
+        store.tlsPin?.takeIf { tlsPort > 0 }?.let { HiveLinkClient.pinnedCerts = setOf(it) }
+        return HiveLinkClient.Connection(host, port, pairing.token, tlsPort)
+    }
+
     private suspend fun connection(): HiveLinkClient.Connection? {
         val pairing = store.pairing ?: return null
         // The cable first: Hive on the PC answers on this phone's own address while it's plugged in.
-        if (client.serverAt(HiveLinkClient.USB_HOST, pairing.port) == pairing.serverId) {
+        if (client.serverAt(HiveLinkClient.USB_HOST, pairing.port) == pairing.serverId && isOurs(HiveLinkClient.USB_HOST, pairing.port, pairing)) {
             activeHost = HiveLinkClient.USB_HOST
             if (HiveLinkClient.USB_HOST !in pairing.hosts) store.pairing = pairing.copy(hosts = pairing.hosts + HiveLinkClient.USB_HOST)
-            return HiveLinkClient.Connection(HiveLinkClient.USB_HOST, pairing.port, pairing.token)
+            return connectionTo(HiveLinkClient.USB_HOST, pairing.port, pairing)
         }
+        if (store.pairing == null) return null
         val candidates = (listOfNotNull(activeHost) + pairing.hosts).filter { it != HiveLinkClient.USB_HOST }
         for (host in candidates.distinct()) {
-            if (client.ping(host, pairing.port)) {
+            // Only the paired Hive: a host answering at a remembered address (the router may have given
+            // it to another device since) gets nothing, not even the token.
+            if (isOurs(host, pairing.port, pairing)) {
                 activeHost = host
                 if (pairing.hosts.firstOrNull() != host) store.pairing = pairing.copy(hosts = listOf(host) + pairing.hosts)
-                return HiveLinkClient.Connection(host, pairing.port, pairing.token)
+                return connectionTo(host, pairing.port, pairing)
             }
         }
-        val found = client.discover().firstOrNull { it.serverId == pairing.serverId } ?: return null
+        val found = client.discover().filter { it.serverId == pairing.serverId }.firstOrNull { isOurs(it.host, it.port, pairing) } ?: return null
         activeHost = found.host
         store.pairing = pairing.copy(port = found.port, hosts = listOf(found.host) + pairing.hosts)
-        return HiveLinkClient.Connection(found.host, found.port, pairing.token)
+        return connectionTo(found.host, found.port, pairing)
     }
 }
 

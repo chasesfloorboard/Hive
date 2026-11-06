@@ -1,4 +1,5 @@
 'use strict';
+const { tempDir } = require('./temp-dirs');
 const test = require('node:test');
 const assert = require('node:assert/strict');
 const fs = require('node:fs');
@@ -35,7 +36,7 @@ function manualTimers() {
 }
 
 function tracker() {
-  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'hive-window-state-'));
+  const dir = tempDir('hive-window-state-');
   const timers = manualTimers();
   const file = path.join(dir, 'window-state.json');
   const make = () => createWindowStateTracker({ fs, path, filePath: () => file, ...timers });
@@ -149,7 +150,7 @@ test('saved bounds on a disconnected monitor are not reused', () => {
 });
 
 test('on Windows a locked state file is replaced instead of silently not saving', () => {
-  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'hive-window-state-'));
+  const dir = tempDir('hive-window-state-');
   const file = path.join(dir, 'window-state.json');
   fs.writeFileSync(file, JSON.stringify({ bounds: { x: 1, y: 1, width: 500, height: 500 } }));
   let attempts = 0;

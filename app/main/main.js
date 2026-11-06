@@ -41,7 +41,7 @@ const { createDiagnosticsController } = require('./diagnostics');
 const { PlaybackProtection } = require('./playback-protection');
 const { ScrobblingService } = require('./scrobbling');
 const { refreshDevices, sendTracksToDevice } = require('./device-manager');
-const { listAudioOutputs, effectiveOutputDevice } = require('./audio-output-manager');
+const { listAudioOutputs, effectiveOutputDevice, setHelperOutputLister } = require('./audio-output-manager');
 const { readMusicBeeWrappedArchive, musicBeeImportPlayId } = require('./musicbee-wrapped-import');
 const HiveEqualiser = require('../renderer/equaliser');
 const { planOrganise, DEFAULT_TEMPLATE: ORGANISE_DEFAULT_TEMPLATE } = require('./file-organiser');
@@ -700,10 +700,15 @@ function startDatabaseWorker() {
     }
   });
   databaseProcess.stderr.on('data', chunk => { const text=String(chunk||'').trim(); if(text) crashDebug('DATABASE worker stderr', text); });
-  databaseProcess.on('exit', () => {
-    for (const pending of databasePending.values()) pending.reject(new Error('Database worker exited.'));
+  const ended = (why) => {
+    for (const pending of databasePending.values()) pending.reject(new Error(why));
     databasePending.clear(); databaseProcess = null; databaseReady = false;
-  });
+  };
+  databaseProcess.on('exit', () => ended('Database worker exited.'));
+  // Python missing (or not startable): requests fail with a clear error instead of an unhandled
+  // 'error' event taking down Hive's main process.
+  databaseProcess.on('error', err => { crashDebug('DATABASE worker could not start', { message: err?.message || String(err) }); ended(`The library database couldn't start: ${err?.message || err}`); });
+  databaseProcess.stdin?.on('error', () => {});
   databaseReady = true;
 }
 function databaseRequest(cmd, payload = {}) {
@@ -1341,7 +1346,46 @@ app.on('child-process-gone', (_event, details) => {
   }
 });
 
+// ---- "Hive closed unexpectedly": a marker while Hive runs, gone when it quits normally ----
+// At the next start, a marker still there means the last run ended without quitting (a crash, a
+// power cut): Hive says so and offers to show the report. Nothing is sent anywhere.
+const RUNNING_MARKER = () => path.join(USER_DATA(), 'hive-running.json');
+let previousRunCrashed = null;
+function noteRunStarted() {
+  try { previousRunCrashed = JSON.parse(fs.readFileSync(RUNNING_MARKER(), 'utf8')); } catch { previousRunCrashed = null; }
+  // Another Hive still running on the same data (its process alive): not a crash, and its marker stays.
+  if (previousRunCrashed?.pid && previousRunCrashed.pid !== process.pid) {
+    try { process.kill(previousRunCrashed.pid, 0); previousRunCrashed = null; return; } catch {}
+  }
+  try { fs.writeFileSync(RUNNING_MARKER(), JSON.stringify({ pid: process.pid, startedAt: Date.now(), log: sessionLogPath(), version: app.getVersion() })); } catch {}
+}
+function noteRunEnded() { try { fs.rmSync(RUNNING_MARKER(), { force: true }); } catch {} }
+// A plain stop request (the launcher's restart, logging out) is a normal end, not a crash: Hive quits
+// the usual way (before-quit and will-quit save everything, and clear the marker). A second request,
+// while that's still going, ends it at once.
+process.once('SIGTERM', () => {
+  noteRunEnded();
+  // Never longer than a few seconds: a restart (the launcher) waits for Hive to be gone, and Electron can
+  // hang on its way out. The quit handlers save what matters first.
+  setTimeout(() => process.exit(0), 4000).unref?.();
+  try { app.quit(); } catch { process.exit(0); }
+});
+async function offerLastCrashReport() {
+  const crashed = previousRunCrashed;
+  previousRunCrashed = null;
+  if (!crashed || !mainWindow || mainWindow.isDestroyed()) return;
+  const log = String(crashed.log || '');
+  const hasLog = !!log && fs.existsSync(log);
+  const { response } = await dialog.showMessageBox(mainWindow, {
+    type: 'warning', buttons: hasLog ? ['Show report', 'Not now'] : ['OK'], defaultId: 0, cancelId: hasLog ? 1 : 0, noLink: true,
+    title: 'Hive', message: 'Hive closed unexpectedly last time',
+    detail: hasLog ? 'Its report says what Hive was doing (no music or personal details). To help get it fixed, share the file it opens with the person who makes Hive.' : 'There was no report from that time.'
+  });
+  if (hasLog && response === 0) shell.showItemInFolder(log);
+}
+
 app.on('before-quit', () => {
+  noteRunEnded();
   // User-owned JSON is mirrored into the in-project backup as it is written.
   // Do not recursively copy the entire profile on the close path: a large
   // library/profile made the X button block the BrowserWindow while fs.cpSync
@@ -1369,6 +1413,8 @@ app.on('before-quit', () => {
 });
 
 app.whenReady().then(async () => {
+  noteRunStarted();
+  setTimeout(() => { void offerLastCrashReport().catch(() => {}); }, 4000);
   // Streamed audio (YouTube Music, radio, podcasts) is routed through Web
   // Audio so volume changes can glide instead of jumping (a jump clicks).
   // Web Audio silences cross-origin media without CORS, and most stream
@@ -1995,6 +2041,8 @@ ipcMain.handle('devices:setDestination', async (_evt, payload = {}) => {
   });
   return { ok: true, deviceId: id, destinationPath };
 });
+// Windows has no pactl: the native player lists the outputs (GStreamer's device monitor).
+if (process.platform !== 'linux') setHelperOutputLister(() => gstreamerBridge.listHelperOutputs());
 ipcMain.handle('audio-output:list', async () => listAudioOutputs());
 // Settings sends { sink, bitPerfect }: the output the user picked and the
 // bit-perfect toggle. config.audioOutputDevice stays the single value the
@@ -2789,6 +2837,43 @@ ipcMain.handle('themes:seedStock', async (_evt, themes = []) => {
 });
 
 ipcMain.handle('theme:meta', async () => readJsonSafe(THEME_META_PATH(), {name:'Custom CSS'}));
+
+// ---- the theme gallery ("Browse themes", see theme-store.js) ----
+const themeStore = require('./theme-store');
+async function fetchThemeGallery(url, maxBytes) {
+  const res = await net.fetch(url, { cache: 'no-cache' });
+  if (!res.ok) throw new Error(`The theme gallery answered ${res.status}.`);
+  const buf = Buffer.from(await res.arrayBuffer());
+  if (buf.length > maxBytes) throw new Error('The theme gallery list is too big.');
+  return buf.toString('utf8');
+}
+ipcMain.handle('themeStore:list', async () => {
+  try { return { themes: await themeStore.loadStore(fetchThemeGallery), online: true }; }
+  catch (err) {
+    // Offline (or GitHub unreachable): the gallery as it was when this Hive was built.
+    try {
+      const bundled = await fsp.readFile(path.join(__dirname, '..', '..', 'themes', 'store.json'), 'utf8');
+      return { themes: themeStore.cleanStore(JSON.parse(bundled)), online: false, error: err?.message || String(err) };
+    } catch { return { themes: [], online: false, error: err?.message || String(err) }; }
+  }
+});
+ipcMain.handle('themeStore:install', async (_evt, raw) => {
+  const theme = themeStore.cleanTheme(raw);
+  if (!theme) throw new Error("That theme can't be used.");
+  const dir = THEMES_DIR();
+  await fsp.mkdir(dir, { recursive: true, mode: 0o700 });
+  const file = `gallery-${theme.id}.hive-theme`;
+  await writeJsonSafe(path.join(dir, file), { format: 'hive-theme', version: 1, name: theme.name, css: themeStore.themeCss(theme), source: 'Theme gallery', author: theme.author });
+  return { file };
+});
+ipcMain.handle('themeStore:share', async (_evt, payload = {}) => {
+  const vars = themeStore.varsFromCss(payload.css);
+  if (!vars) throw new Error("This theme has no colours Hive can share. Pick one of your themes first.");
+  const url = themeStore.shareUrl({ name: String(payload.name || 'My theme'), author: String(payload.author || ''), vars });
+  if (!url) throw new Error("This theme can't be shared.");
+  await shell.openExternal(url);
+  return { ok: true };
+});
 
 const PLUGIN_STATE_DIR = () => path.join(USER_DATA(), 'plugin-state');
 async function pluginStatePath(id) {
@@ -5511,8 +5596,11 @@ async function recordPhonePlays(plays) {
         const previous = Number(entry.pCountEmbeddedLocal);
         const delta = Math.max(0, entry.playCount - (Number.isFinite(previous) && previous >= 0 ? previous : 0));
         try {
-          if (delta > 0) await embedPlayCountDelta(trackPath, delta);
-          entry.pCountEmbeddedLocal = entry.playCount;
+          if (delta > 0 && isPlaybackProtectedPath(trackPath)) queueDeferredPlayCountEmbed(trackPath);
+          else {
+            if (delta > 0) await embedPlayCountDelta(trackPath, delta);
+            entry.pCountEmbeddedLocal = entry.playCount;
+          }
         } catch (err) {
           console.warn('Could not embed phone play count into file:', trackPath, err?.message || err);
         }
@@ -5629,6 +5717,38 @@ async function writeEmbeddedPlayCount(trackPath, value) {
   }
 }
 
+// Play counts owed to the files of songs that were playing when counted: written once each is released.
+const deferredPlayCountEmbeds = new Set();
+function queueDeferredPlayCountEmbed(trackPath) {
+  const key = path.resolve(String(trackPath));
+  if (deferredPlayCountEmbeds.has(key)) return;
+  deferredPlayCountEmbeds.add(key);
+  void (async () => {
+    let again = false;
+    try {
+      await waitForPlaybackProtectionRelease(key);
+      await withStatsMutation(async () => {
+        // Opened again in the moment between (played once more): it waits for that play to end too.
+        if (isPlaybackProtectedPath(key)) { again = true; return; }
+        const config = await readJsonSafe(CONFIG_PATH(), { folders: [] });
+        if (config.embedPlayCounts !== true) return;
+        const stats = await readJsonSafe(STATS_PATH(), {});
+        const id = Object.keys(stats).find(k => path.resolve(k) === key);
+        const entry = id && stats[id];
+        if (!entry) return;
+        const previous = Number(entry.pCountEmbeddedLocal);
+        const delta = Math.max(0, Number(entry.playCount || 0) - (Number.isFinite(previous) && previous >= 0 ? previous : 0));
+        if (delta > 0) await embedPlayCountDelta(id, delta);
+        entry.pCountEmbeddedLocal = entry.playCount;
+        await writeJsonSafe(STATS_PATH(), stats);
+      });
+    } catch (err) {
+      console.warn('Could not embed a deferred play count:', key, err?.message || err);
+    } finally { deferredPlayCountEmbeds.delete(key); }
+    if (again) queueDeferredPlayCountEmbed(key);
+  })();
+}
+
 async function embedPlayCountDelta(trackPath, delta) {
   if (isVirtualTrackPath(trackPath)) return { embedded: false };
   const amount = Math.max(0, Math.floor(Number(delta) || 0));
@@ -5661,7 +5781,11 @@ ipcMain.handle('track:recordPlay', async (_evt, trackPath, meta = {}) => withSta
       const previousEmbeddedLocal = Number(entry.pCountEmbeddedLocal);
       const baseline = Number.isFinite(previousEmbeddedLocal) && previousEmbeddedLocal >= 0 ? previousEmbeddedLocal : 0;
       const delta = Math.max(0, entry.playCount - baseline);
-      if (delta > 0) {
+      if (delta > 0 && isPlaybackProtectedPath(trackPath)) {
+        // Still playing (or paused): its file isn't rewritten under the player. The count is owed and
+        // written once the song is released (the baseline stays, so nothing is lost if Hive quits first).
+        queueDeferredPlayCountEmbed(trackPath);
+      } else if (delta > 0) {
         pCountEmbedding = await embedPlayCountDelta(trackPath, delta);
         entry.pCountEmbeddedLocal = entry.playCount;
         stats[trackPath] = entry;
@@ -5887,8 +6011,14 @@ ipcMain.handle('stats:forceEmbedPlayCounts', async (_evt, paths) => withStatsMut
           results.unchanged += 1;
           continue;
         }
-        await waitForPlaybackProtectionRelease(trackPath);
-        await writeEmbeddedPlayCount(trackPath, localCount);
+        // The song playing is left for next time: waiting for it here held the stats lock (every play
+        // and rating) until it ended. Every write takes the per-file lock the other writers use.
+        if (isPlaybackProtectedPath(trackPath)) {
+          results.failed += 1;
+          if (results.errors.length < 100) results.errors.push({ path: trackPath, error: 'Playing now: run this again once it has finished.' });
+          continue;
+        }
+        await withMusicBeeWriteLock(trackPath, () => writeEmbeddedPlayCount(trackPath, localCount));
         entry.pCountEmbeddedLocal = localCount;
         stats[trackPath] = entry;
         results.embedded += 1;
@@ -6019,18 +6149,47 @@ ipcMain.handle('tracks:setRatings', async (evt, trackPaths = [], rating) => with
 }));
 
 /** A song's star rating, into its file and Hive's stats (call inside withStatsMutation). */
+// Ratings for the playing song, written into its file once it's released: only the newest per song.
+const pendingRatingWrites = new Map();
+function queueRatingFileWrite(trackPath, value, job) {
+  const key = path.resolve(String(trackPath));
+  const waiting = pendingRatingWrites.get(key);
+  if (waiting) { waiting.value = value; void deleteMetadataJob(waiting.job.id).catch(() => {}); waiting.job = job; return; }
+  const entry = { value, job };
+  pendingRatingWrites.set(key, entry);
+  void (async () => {
+    try {
+      await waitForPlaybackProtectionRelease(key);
+      pendingRatingWrites.delete(key);
+      await embedRatingInFile(key, entry.value);
+      await deleteMetadataJob(entry.job.id);
+    } catch (err) {
+      pendingRatingWrites.delete(key);
+      await updateMetadataJob(entry.job.id, 'retry', 1, err?.message || String(err)).catch(() => {});
+      crashDebug('RATING deferred file write failed', { path: key, error: err?.message || String(err) });
+    }
+  })();
+}
+
 async function setTrackRating(trackPath, rating, at = Date.now()) {
   const stats = await readJsonSafe(STATS_PATH(), {});
   const value = Math.max(0, Math.min(5, Number(rating) || 0));
   const entry = stats[trackPath] || { playCount: 0, lastPlayedAt: 0 };
   const recoveryJob = { id:crypto.randomUUID(), kind:'rating', path:path.resolve(String(trackPath)), rating:value, createdAt:Date.now() };
   await persistMetadataJob(recoveryJob, 'running', 1, '');
-  try {
-    await embedRatingInFile(trackPath, value);
-    await deleteMetadataJob(recoveryJob.id);
-  } catch (err) {
-    await updateMetadataJob(recoveryJob.id, 'retry', 1, err?.message || String(err));
-    throw err;
+  if (isPlaybackProtectedPath(trackPath)) {
+    // The song playing (or paused) can't be rewritten until it's let go, which may be a long time.
+    // Waiting here held the stats lock all that while: every play and rating, the phone's too, hung.
+    // The rating counts now; its file gets it once the song is released (the job above survives a quit).
+    queueRatingFileWrite(trackPath, value, recoveryJob);
+  } else {
+    try {
+      await embedRatingInFile(trackPath, value);
+      await deleteMetadataJob(recoveryJob.id);
+    } catch (err) {
+      await updateMetadataJob(recoveryJob.id, 'retry', 1, err?.message || String(err));
+      throw err;
+    }
   }
   entry.rating = value;
   entry.ratingSource = 'beehive';
@@ -6702,7 +6861,9 @@ function enqueueMetadataSave(evt, jobs, options = {}) {
   const normalizedJobs = (Array.isArray(jobs) ? jobs : []).filter(job => !isVirtualTrackPath(job?.path)).map(job => ({ ...job, id:String(job?.id || crypto.randomUUID()), createdAt:Number(job?.createdAt || Date.now()), path:String(job?.path || '') })).filter(job => job.path);
   metadataSaveQueue = metadataSaveQueue.then(() => new Promise((resolve) => {
     taskManager.enqueue('metadata', async () => {
-      try { await runMetadataBatch(normalizedJobs, sender, options); } finally { resolve(); }
+      // Resolves with what was written ({ updatedPaths }), so callers such as Hive Link can tell the phone the truth.
+      let outcome = { updatedPaths: [] };
+      try { outcome = (await runMetadataBatch(normalizedJobs, sender, options)) || outcome; } finally { resolve(outcome); }
     }, { priority: 30 });
   }));
   return metadataSaveQueue;
@@ -6718,7 +6879,7 @@ async function runMetadataBatch(normalizedJobs, sender, options = {}) {
     await Promise.all(normalizedJobs.map(job => persistMetadataJob(job, 'queued', Number(job.attempts||0), job.lastError || '')));
     const total=normalizedJobs.length; let done=0,updated=0,failed=0; const errors=[],updatedPaths=[];
     const sendProgress=(active,phase,current='')=>{ try{ sender?.send('library:tagProgress',{active,operation:normalizedJobs.some(j=>j.operation==='artwork')?'artwork':'metadata',operationLabel:'Saving changes',phase,done,total,updated,failed,current,errors,paths:updatedPaths,recovered:!!options.recovered}); }catch{} };
-    if(!total){sendProgress(false,'Finished');return;} sendProgress(true,'Writing');
+    if(!total){sendProgress(false,'Finished');return { updatedPaths: [] };} sendProgress(true,'Writing');
     for(const job of normalizedJobs){
       if (!(await isTrackPathAllowedInLibrary(job.path))) {
         done++; failed++; errors.push({path:job.path,error:LIBRARY_BOUNDARY_ERROR});
@@ -6771,6 +6932,7 @@ async function runMetadataBatch(normalizedJobs, sender, options = {}) {
       sendProgress(true,'Writing',path.basename(job.path));
     }
     sendProgress(false,failed?'Finished with errors':'Finished');
+    return { updatedPaths: updatedPaths.map(p => path.resolve(String(p))) };
   } catch (err) {
     try { sender?.send('library:tagProgress',{active:false,operation:normalizedJobs.some(j=>j.operation==='artwork')?'artwork':'metadata',operationLabel:'Metadata save failed',phase:'Finished',done:0,total:normalizedJobs.length,updated:0,failed:normalizedJobs.length,errors:[{path:'',error:err?.message||String(err)}],paths:[],recovered:!!options.recovered}); } catch {}
   } finally {
@@ -7365,8 +7527,21 @@ ipcMain.handle('spotify:status', async () => ({
   background: spotifyBackgroundStatus()
 }));
 // Open the normal, visible Spotify app so the user can sign in.
+// A program that may not be installed: started if it is, false if not (a missing program is an 'error'
+// event, which unhandled would take down Hive's main process).
+function launchDetached(command, args = []) {
+  return new Promise(resolve => {
+    try {
+      const child = require('child_process').spawn(command, args, { detached: true, stdio: 'ignore', windowsHide: true });
+      child.once('error', () => resolve(false));
+      child.once('spawn', () => { child.unref(); resolve(true); });
+    } catch { resolve(false); }
+  });
+}
 ipcMain.handle('spotify:openForLogin', async () => {
-  try { require('child_process').spawn('spotify', [], { detached: true, stdio: 'ignore' }).unref(); return true; } catch { return false; }
+  // Linux: the spotify command. Windows and others (or Linux without it): the app's own link handler.
+  if (process.platform === 'linux' && await launchDetached('spotify')) return true;
+  try { await shell.openExternal('spotify:'); return true; } catch { return false; }
 });
 ipcMain.handle('spotify:home', async () => {
   if (SPOTIFY_DEVELOPMENT_PAUSED) return { connected: false };
@@ -7382,9 +7557,7 @@ ipcMain.handle('spotify:launch', async () => {
 });
 ipcMain.handle('spotify:login', async () => {
   if (SPOTIFY_DEVELOPMENT_PAUSED) return false;
-  for (const command of ['opera', 'opera-stable']) {
-    try { require('child_process').spawn(command, ['--new-window', 'https://accounts.spotify.com/login'], { detached: true, stdio: 'ignore' }).unref(); return true; } catch {}
-  }
+  // The person's own default browser (where they're signed in), on every system.
   try { await shell.openExternal('https://accounts.spotify.com/login'); return true; } catch { return false; }
 });
 ipcMain.handle('spotify:command', async (_evt, command) => {
@@ -7396,6 +7569,7 @@ ipcMain.handle('spotify:command', async (_evt, command) => {
 // Podcasts — public directory discovery + RSS episode metadata
 // ---------------------------------------------------------------------------
 const { podcastRequest, parsePodcastFeed } = require('./podcast-feed');
+const { keepUnseen: keepUnseenPlaylistEntries } = require('./playlist-merge');
 ipcMain.handle('podcast:search', async (_evt, query) => {
   const q=String(query||'').trim(); if (!q) return {results:[]};
   // Allow a pasted RSS feed URL to act as a direct search/open action. This is
@@ -7428,6 +7602,27 @@ ipcMain.handle('podcast:search', async (_evt, query) => {
   return {results};
 });
 ipcMain.handle('podcast:feed', async (_evt, url) => parsePodcastFeed(await podcastRequest(url), String(url)));
+
+// Apple's top shows chart, for the Podcasts page before anything is searched.
+// The chart has no feed URLs, so the shows are looked up by id (one request).
+let podcastTopCache={at:0, country:'', results:[]};
+ipcMain.handle('podcast:top', async () => {
+  const country=(String(app.getLocaleCountryCode?.()||'').toLowerCase().match(/^[a-z]{2}$/)||['us'])[0];
+  if (podcastTopCache.results.length && podcastTopCache.country===country && Date.now()-podcastTopCache.at<6*3600e3) return {results:podcastTopCache.results};
+  const load=async cc=>{
+    const chart=JSON.parse(await podcastRequest(`https://rss.marketingtools.apple.com/api/v2/${cc}/podcasts/top/50/podcasts.json`));
+    const ids=(chart?.feed?.results||[]).map(x=>String(x.id||'')).filter(id=>/^\d+$/.test(id));
+    if (!ids.length) return [];
+    const found=JSON.parse(await podcastRequest(`https://itunes.apple.com/lookup?entity=podcast&country=${cc}&id=${ids.join(',')}`));
+    const byId=new Map((found?.results||[]).filter(x=>x.feedUrl).map(x=>[String(x.collectionId||x.trackId), x]));
+    return ids.map(id=>byId.get(id)).filter(Boolean).map(x=>({id:String(x.collectionId||x.trackId||''), title:String(x.collectionName||x.trackName||'Podcast'), author:String(x.artistName||''), feedUrl:String(x.feedUrl), image:String(x.artworkUrl600||x.artworkUrl100||''), genre:String(x.primaryGenreName||'')}));
+  };
+  let results=[];
+  try { results=await load(country); } catch {}
+  if (!results.length && country!=='us') { try { results=await load('us'); } catch {} }
+  if (results.length) podcastTopCache={at:Date.now(), country, results};
+  return {results};
+});
 
 ipcMain.handle('podcasts:favorites:get', async () => {
   const config = await readJsonSafe(CONFIG_PATH(), { folders: [] });
@@ -7566,6 +7761,7 @@ function tellWindowPlaylistsChanged() {
 }
 
 async function savePlaylistFromPhone(incoming) {
+  const libraryPaths = new Set((((await libraryCacheStore.get()) || {}).tracks || []).filter(t => t?.path).map(t => path.resolve(String(t.path))));
   const saved = await withJsonFileLock(PLAYLISTS_PATH(), async () => {
     await backUpPlaylistsForPhone();
     const lists = await readJsonSafe(PLAYLISTS_PATH(), []);
@@ -7573,6 +7769,8 @@ async function savePlaylistFromPhone(incoming) {
     const existing = idx >= 0 ? lists[idx] : null;
     // Smart playlists and Favorites are made by their rules, not by the phone's list.
     if (existing && (existing.smart || existing.systemKey)) return null;
+    // Radio, podcast episodes and songs outside the library never reach the phone: its list keeps them where they were.
+    if (existing) incoming = { ...incoming, tracks: keepUnseenPlaylistEntries(existing.tracks, incoming.tracks, libraryPaths) };
     const now = Date.now();
     const previousAdded = existing?.trackAddedAt && typeof existing.trackAddedAt === 'object' ? existing.trackAddedAt : {};
     const trackAddedAt = {};
@@ -8146,13 +8344,13 @@ function startHiveLink() {
       return { name: match?.name || 'Your Hive theme', css, stock: !!match?.stock };
     },
     // A phone on the network asking to connect without a code: the person at the PC decides.
-    onPairRequest: async ({ name }) => {
+    onPairRequest: async ({ name, returning }) => {
       if (!mainWindow || mainWindow.isDestroyed()) return false;
       try { mainWindow.flashFrame(true); } catch {}
       const { response } = await dialog.showMessageBox(mainWindow, {
-        type: 'question', buttons: ['Allow', 'Refuse'], defaultId: 0, cancelId: 1, noLink: true,
-        title: 'Hive Mobile', message: `“${name}” wants to connect to Hive`,
-        detail: 'It will sync favorites, plays and songs with this PC over your network. Allow only your own phone.'
+        type: 'question', buttons: ['Allow', 'Refuse'], defaultId: 1, cancelId: 1, noLink: true,
+        title: 'Hive Mobile', message: returning ? `“${name}” wants to connect to Hive again` : `“${name}” wants to connect to Hive`,
+        detail: (returning ? 'It says it is a phone that was paired with this PC before (reinstalled, or its data cleared). ' : '') + 'It will sync favorites, plays and songs with this PC over your network. Allow only your own phone.'
       });
       try { mainWindow.flashFrame(false); } catch {}
       return response === 0;

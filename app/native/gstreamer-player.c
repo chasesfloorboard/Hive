@@ -63,6 +63,8 @@ static GstElement *panorama_element = NULL;
  * untouched, so it is only built when the user turned tempo/pitch on. */
 static GstElement *pitch_element = NULL;
 /* Output the main sink uses, so the crossfade companion opens the same one. */
+static gchar *chosen_device_id = NULL; /* "device:<id>" output (no PulseAudio: Windows), for the crossfade too */
+static GstElement *sink_for_output_device(const gchar *wanted);
 static gchar *output_kind = NULL;   /* "pulse", "null" (or NULL = default pulse) */
 static gchar *output_device = NULL; /* pulse device name, or NULL for default */
 /* Fade-in for the next pending LOAD; crossfades lengthen it. */
@@ -1005,14 +1007,27 @@ static void start_xfade_companion(const gchar *b64, gdouble position, gdouble ms
   x->pipe = gst_element_factory_make("playbin3", NULL);
   GstElement *bin = gst_bin_new(NULL);
   x->volume = gst_element_factory_make("volume", NULL);
-  GstElement *out = !g_strcmp0(output_kind, "null") ? gst_element_factory_make("fakesink", NULL) : gst_element_factory_make("pulsesink", NULL);
-  if (out && g_strcmp0(output_kind, "null")) hive_tag_pulse_stream(out);
+  /* The fading-out song plays where the main output plays: PulseAudio/PipeWire on Linux, the
+   * system's own output elsewhere (Windows has no pulsesink: crossfade never sounded there). */
+  gboolean out_is_pulse = FALSE;
+  GstElement *out = NULL;
+  if (!g_strcmp0(output_kind, "null")) out = gst_element_factory_make("fakesink", NULL);
+  else {
+    out = gst_element_factory_make("pulsesink", NULL);
+    if (out) out_is_pulse = TRUE;
+    else {
+      /* The output picked in Hive's settings, as the main stream plays there. */
+      if (chosen_device_id) out = sink_for_output_device(chosen_device_id);
+      if (!out) out = gst_element_factory_make("autoaudiosink", NULL);
+    }
+  }
+  if (out && out_is_pulse) hive_tag_pulse_stream(out);
   if (!x->pipe || !bin || !x->volume || !out) {
     if (bin) gst_object_unref(bin);
     g_free(uri); xfade_companion_free(x); return;
   }
   if (!g_strcmp0(output_kind, "null")) g_object_set(out, "sync", TRUE, NULL);
-  else { if (output_device) g_object_set(out, "device", output_device, NULL); g_object_set(out, "volume", 1.0, "mute", FALSE, NULL); }
+  else if (out_is_pulse) { if (output_device) g_object_set(out, "device", output_device, NULL); g_object_set(out, "volume", 1.0, "mute", FALSE, NULL); }
   x->gain = CLAMP(gain, 0.0, 8.0);
   g_object_set(x->volume, "volume", x->gain, NULL);
   gst_bin_add_many(GST_BIN(bin), x->volume, out, NULL);
@@ -1270,8 +1285,67 @@ static gpointer stdin_thread(gpointer unused) {
   return NULL;
 }
 
+/* The system's audio outputs, as GStreamer's device monitor sees them (WASAPI on Windows,
+ * PulseAudio/PipeWire on Linux): one "OUTPUT\t<id>\t<name>\t<default 0|1>" line each on stdout.
+ * Run as `beehive-gstreamer-player --list-outputs` (Hive's output picker on Windows). */
+static gchar *output_device_id(GstDevice *dev) {
+  GstStructure *props = gst_device_get_properties(dev);
+  gchar *id = NULL;
+  if (props) {
+    const gchar *v = gst_structure_get_string(props, "device.id");
+    if (!v) v = gst_structure_get_string(props, "device.strid");
+    if (!v) v = gst_structure_get_string(props, "node.name");
+    if (v) id = g_strdup(v);
+    gst_structure_free(props);
+  }
+  if (!id) id = gst_device_get_display_name(dev);
+  return id;
+}
+
+static gboolean output_device_is_default(GstDevice *dev) {
+  GstStructure *props = gst_device_get_properties(dev);
+  gboolean def = FALSE;
+  if (props) { gst_structure_get_boolean(props, "device.default", &def); gst_structure_free(props); }
+  return def;
+}
+
+static int list_outputs(void) {
+  GstDeviceMonitor *monitor = gst_device_monitor_new();
+  gst_device_monitor_add_filter(monitor, "Audio/Sink", NULL);
+  GList *devices = gst_device_monitor_get_devices(monitor);
+  for (GList *l = devices; l; l = l->next) {
+    GstDevice *dev = GST_DEVICE(l->data);
+    gchar *id = output_device_id(dev);
+    gchar *name = gst_device_get_display_name(dev);
+    if (id && name && !strchr(id, '\t') && !strchr(name, '\t'))
+      printf("OUTPUT\t%s\t%s\t%d\n", id, name, output_device_is_default(dev) ? 1 : 0);
+    g_free(id); g_free(name);
+  }
+  g_list_free_full(devices, gst_object_unref);
+  gst_object_unref(monitor);
+  fflush(stdout);
+  return 0;
+}
+
+/* The sink for "device:<id>" (an output picked from --list-outputs), or NULL if it's gone. */
+static GstElement *sink_for_output_device(const gchar *wanted) {
+  GstDeviceMonitor *monitor = gst_device_monitor_new();
+  gst_device_monitor_add_filter(monitor, "Audio/Sink", NULL);
+  GList *devices = gst_device_monitor_get_devices(monitor);
+  GstElement *sink = NULL;
+  for (GList *l = devices; l && !sink; l = l->next) {
+    gchar *id = output_device_id(GST_DEVICE(l->data));
+    if (!g_strcmp0(id, wanted)) sink = gst_device_create_element(GST_DEVICE(l->data), "audio-output");
+    g_free(id);
+  }
+  g_list_free_full(devices, gst_object_unref);
+  gst_object_unref(monitor);
+  return sink;
+}
+
 int main(int argc, char **argv) {
   gst_init(&argc, &argv);
+  if (argc > 1 && !g_strcmp0(argv[1], "--list-outputs")) return list_outputs();
   trace_enabled = g_getenv("HIVE_GST_TRACE") && g_strcmp0(g_getenv("HIVE_GST_TRACE"), "1") == 0;
 #ifdef G_OS_WIN32
   /* Windows has no reliable inherited fd 3, so events go to stdout (nothing
@@ -1312,6 +1386,14 @@ int main(int argc, char **argv) {
      * (alsa:null is bit-perfect, which deliberately bypasses it). */
     sink = gst_element_factory_make("fakesink", "audio-output");
     if (sink) { g_object_set(sink, "sync", TRUE, NULL); event_line("OUTPUT_DEVICE", "null"); output_kind = g_strdup("null"); }
+    requested_output = NULL;
+  }
+  if (requested_output && g_str_has_prefix(requested_output, "device:")) {
+    /* An output picked in Hive's settings on a system without PulseAudio (Windows): GStreamer
+     * makes the right sink for it. Gone (unplugged): the system default, as on Linux. */
+    sink = sink_for_output_device(requested_output + 7);
+    if (sink) chosen_device_id = g_strdup(requested_output + 7);
+    event_line(sink ? "OUTPUT_DEVICE" : "OUTPUT_DEVICE_FALLBACK", sink ? requested_output : "selected output unavailable; using system default");
     requested_output = NULL;
   }
   if (requested_output && *requested_output) {
@@ -1470,6 +1552,7 @@ int main(int argc, char **argv) {
   g_thread_join(tin);
   g_clear_pointer(&next_uri, g_free);
   g_clear_pointer(&output_kind, g_free);
+  g_clear_pointer(&chosen_device_id, g_free);
   g_clear_pointer(&output_device, g_free);
   g_async_queue_unref(commands);
   g_main_loop_unref(loop);

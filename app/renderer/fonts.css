@@ -1,0 +1,10 @@
+/* Hive's text face on every system: Noto Sans, as Linux shows it. Bundled for Windows (and any
+   Linux without Noto), so the app looks the same everywhere. SIL OFL, see fonts/OFL-NotoSans.txt. */
+@font-face { font-family: "Hive Noto Sans"; src: url("fonts/NotoSans-Light.woff2") format("woff2"); font-weight: 300; font-style: normal; font-display: block; }
+@font-face { font-family: "Hive Noto Sans"; src: url("fonts/NotoSans-Regular.woff2") format("woff2"); font-weight: 400; font-style: normal; font-display: block; }
+@font-face { font-family: "Hive Noto Sans"; src: url("fonts/NotoSans-Italic.woff2") format("woff2"); font-weight: 400; font-style: italic; font-display: block; }
+@font-face { font-family: "Hive Noto Sans"; src: url("fonts/NotoSans-Medium.woff2") format("woff2"); font-weight: 500; font-style: normal; font-display: block; }
+@font-face { font-family: "Hive Noto Sans"; src: url("fonts/NotoSans-SemiBold.woff2") format("woff2"); font-weight: 600; font-style: normal; font-display: block; }
+@font-face { font-family: "Hive Noto Sans"; src: url("fonts/NotoSans-Bold.woff2") format("woff2"); font-weight: 700; font-style: normal; font-display: block; }
+@font-face { font-family: "Hive Noto Sans"; src: url("fonts/NotoSans-ExtraBold.woff2") format("woff2"); font-weight: 800; font-style: normal; font-display: block; }
+@font-face { font-family: "Hive Noto Sans"; src: url("fonts/NotoSans-Black.woff2") format("woff2"); font-weight: 900; font-style: normal; font-display: block; }

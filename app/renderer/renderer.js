@@ -18341,7 +18341,10 @@
   }
   function renderPodcastFavorites(host) {
     if (!host) return;
-    if (!podcastFavorites.length) { host.innerHTML = '<div class="podcast-favorites-empty">Shows you favourite appear here as a row of covers. Search for one below and tap its star.</div>'; return; }
+    // Nothing followed yet: hide the shelf and let the top shows fill the page.
+    const shelf = host.closest('.podcast-home-favorites');
+    if (shelf) shelf.hidden = !podcastFavorites.length;
+    if (!podcastFavorites.length) { host.innerHTML = ''; return; }
     // A row of square covers, like Apple Music's and Spotify's shelves: click a show to open it.
     host.innerHTML = podcastFavorites.map((show,i) => `<div class="apple-card podcast-favorite-card podcast-favorite-open" role="button" tabindex="0" data-favorite-index="${i}" aria-label="Open ${escapeHtml(show.title || 'Podcast')}">${show.image ? `<img src="${escapeHtml(show.image)}" alt="" loading="lazy">` : '<span class="apple-card-blank"></span>'}<strong>${escapeHtml(show.title || 'Podcast')}</strong><small>${escapeHtml(show.author || 'Podcast')}</small><button type="button" class="podcast-favorite-remove" aria-label="Remove ${escapeHtml(show.title || 'this show')} from your shows">×</button></div>`).join('');
     host.querySelectorAll('.podcast-favorite-card').forEach(card => card.addEventListener('keydown', e => { if (e.key === 'Enter' || e.key === ' ') { e.preventDefault(); card.click(); } }));
@@ -18406,24 +18409,50 @@
         <div class="podcast-favorites apple-shelf"></div>
       </section>
       <section class="podcast-discovery">
-        <div class="podcast-results-head"><h4 class="radio-heading">Search results</h4><span class="podcast-result-count" aria-live="polite"></span></div>
-        <div class="podcast-results"><div class="podcast-empty-state"><strong>Search for a podcast</strong><span>Try a show name, a host, or a topic.</span></div></div>
+        <div class="podcast-results-head"><h4 class="radio-heading podcast-results-title">Top shows</h4><span class="podcast-result-count" aria-live="polite"></span></div>
+        <div class="podcast-results"><div class="podcast-loading"><span class="podcast-spinner"></span><strong>Loading top shows…</strong></div></div>
       </section>
       <section class="podcast-show" aria-live="polite"></section>
     </section>`;
-    const input=contentTools.querySelector('.podcast-search-input'), clear=contentTools.querySelector('.podcast-search-clear'), results=contentTools.querySelector('.podcast-results'), count=contentTools.querySelector('.podcast-result-count'), favoritesHost=contentTools.querySelector('.podcast-favorites');
+    const title=contentTools.querySelector('.podcast-results-title'), input=contentTools.querySelector('.podcast-search-input'), clear=contentTools.querySelector('.podcast-search-clear'), results=contentTools.querySelector('.podcast-results'), count=contentTools.querySelector('.podcast-result-count'), favoritesHost=contentTools.querySelector('.podcast-favorites');
     void loadPodcastFavorites().then(()=>renderPodcastFavorites(favoritesHost));
     let searchGeneration=0;
     let debounceTimer=0;
     const setCount=(text='')=>{ if(count) count.textContent=text; };
     const emptyState=(title, detail)=>{ results.innerHTML=`<div class="podcast-empty-state"><strong>${escapeHtml(title)}</strong><span>${escapeHtml(detail)}</span></div>`; setCount(''); };
     const updateClear=()=>{ if(clear) clear.classList.toggle('visible', !!input.value); };
+    // Square covers, as albums are everywhere else in Hive; a show opens as its own page.
+    const showGrid=(emptyHtml)=>{
+      results.innerHTML=podcastResults.length ? `<div class="apple-grid podcast-grid">${podcastResults.map((r,i)=>`<div class="apple-card podcast-result-card" role="button" tabindex="0" data-result-index="${i}" aria-label="Open ${escapeHtml(r.title)}">${r.image ? `<img src="${escapeHtml(r.image)}" alt="" loading="lazy" decoding="async">` : '<span class="apple-card-blank"></span>'}<strong>${escapeHtml(r.title)}</strong><small>${escapeHtml(r.author||'Podcast')}</small>${podcastFavoriteButton(r)}</div>`).join('')}</div>` : emptyHtml;
+      results.querySelectorAll('.podcast-result-card').forEach(card=>{
+        const r=podcastResults[Number(card.dataset.resultIndex)];
+        card.addEventListener('click',()=>openPodcastShow(r, card.closest('.podcasts-page')));
+        card.addEventListener('keydown',e=>{ if(e.key==='Enter'||e.key===' '){ e.preventDefault(); card.click(); } });
+      });
+      bindPodcastFavoriteButtons(results);
+    };
+    // Before a search, the page fills with Apple's top shows.
+    let topShows=null;
+    const showTop=async()=>{
+      const generation=++searchGeneration;
+      if(title) title.textContent='Top shows';
+      setCount('');
+      if(!topShows){
+        results.innerHTML='<div class="podcast-loading"><span class="podcast-spinner"></span><strong>Loading top shows…</strong></div>';
+        try { topShows=(await window.beehive.podcastTop())?.results||[]; } catch { topShows=[]; }
+        if(generation !== searchGeneration) return;
+        if(!topShows.length) topShows=null;
+      }
+      podcastResults=topShows||[];
+      showGrid('<div class="podcast-empty-state"><strong>Search for a podcast</strong><span>Try a show name, a host, or a topic.</span></div>');
+    };
     const run=async()=>{
       const q=input.value.trim();
       updateClear();
-      if(!q){ searchGeneration++; emptyState('Search for a podcast','Try a show name, creator, subject, or broad topic.'); return; }
+      if(!q){ searchGeneration++; void showTop(); return; }
       if(q.length < 2){ emptyState('Keep typing','Use at least two characters for a useful podcast search.'); return; }
       const generation=++searchGeneration;
+      if(title) title.textContent='Search results';
       results.innerHTML='<div class="podcast-loading"><span class="podcast-spinner"></span><strong>Searching podcasts…</strong><span>Looking through the public podcast directory.</span></div>';
       setCount('Searching…');
       try {
@@ -18431,14 +18460,8 @@
         if(generation !== searchGeneration) return;
         podcastResults=data.results||[];
         setCount(`${podcastResults.length} ${podcastResults.length === 1 ? 'show' : 'shows'}`);
-        // Square covers, as albums are everywhere else in Hive; a show opens as its own page.
-        results.innerHTML=podcastResults.length ? `<div class="apple-grid podcast-grid">${podcastResults.map((r,i)=>`<div class="apple-card podcast-result-card" role="button" tabindex="0" data-result-index="${i}" aria-label="Open ${escapeHtml(r.title)}">${r.image ? `<img src="${escapeHtml(r.image)}" alt="" loading="lazy" decoding="async">` : '<span class="apple-card-blank"></span>'}<strong>${escapeHtml(r.title)}</strong><small>${escapeHtml(r.author||'Podcast')}</small>${podcastFavoriteButton(r)}</div>`).join('')}</div>` : '<div class="podcast-empty-state"><strong>No shows found</strong><span>Try a shorter title, a host\'s name, or a broader topic.</span></div>';
-        results.querySelectorAll('.podcast-result-card').forEach(card=>{
-          const r=podcastResults[Number(card.dataset.resultIndex)];
-          card.addEventListener('click',()=>openPodcastShow(r, card.closest('.podcasts-page')));
-          card.addEventListener('keydown',e=>{ if(e.key==='Enter'||e.key===' '){ e.preventDefault(); card.click(); } });
-        });
-        bindPodcastFavoriteButtons(results);
+        if(title) title.textContent='Search results';
+        showGrid('<div class="podcast-empty-state"><strong>No shows found</strong><span>Try a shorter title, a host\'s name, or a broader topic.</span></div>');
       } catch(err) {
         if(generation !== searchGeneration) return;
         setCount('');
@@ -18450,15 +18473,15 @@
       clearTimeout(debounceTimer);
       updateClear();
       const q=input.value.trim();
-      if(!q){ emptyState('Search for a podcast','Try a show name, creator, subject, or broad topic.'); return; }
+      if(!q){ void showTop(); return; }
       if(q.length < 2){ emptyState('Keep typing','Use at least two characters for a useful podcast search.'); return; }
       debounceTimer=setTimeout(()=>void run(),450);
     };
     contentTools.querySelector('.podcast-search-form').addEventListener('submit',e=>{e.preventDefault(); clearTimeout(debounceTimer); void run();});
-    clear?.addEventListener('click',()=>{ clearTimeout(debounceTimer); input.value=''; try{localStorage.removeItem('beehive:podcast-search')}catch{} updateClear(); emptyState('Search for a podcast','Try a show name, creator, subject, or broad topic.'); input.focus(); });
+    clear?.addEventListener('click',()=>{ clearTimeout(debounceTimer); input.value=''; try{localStorage.removeItem('beehive:podcast-search')}catch{} updateClear(); void showTop(); input.focus(); });
     input.addEventListener('input',()=>{ try{localStorage.setItem('beehive:podcast-search',input.value)}catch{} scheduleSearch(); });
     input.addEventListener('keydown',e=>{ if(e.key==='Escape' && input.value){ e.preventDefault(); clear?.click(); } });
-    try { const q=localStorage.getItem('beehive:podcast-search')||''; input.value=q; updateClear(); if(q.trim().length>=2) debounceTimer=setTimeout(()=>void run(),250); } catch {}
+    try { const q=localStorage.getItem('beehive:podcast-search')||''; input.value=q; updateClear(); if(q.trim().length>=2) debounceTimer=setTimeout(()=>void run(),250); else void showTop(); } catch { void showTop(); }
   }
 
   function tabPlaceholderCopy(kind) {
@@ -20100,6 +20123,8 @@
     lavender:{name:'Lavender',description:'Light lavender with an indigo accent.',vars:{'--bg':'#d9d2ff','--panel':'rgba(234,230,255,0.72)','--panel-strong':'rgba(241,238,255,0.9)','--border':'rgba(17,17,20,0.14)','--text':'#212027','--text-dim':'#4d4b5a','--text-dimmer':'#716e85','--accent':'#5a3fd1','--accent-soft':'rgba(90,63,209,0.32)','--accent-glow':'rgba(90,63,209,0.16)','--ambient-a':'rgba(90,63,209,0.1)','--ambient-b':'rgba(154,136,232,0.16)','--radius':'14px','--blur':'24px'}},
     emerald:{name:'Emerald',description:'Deep emerald with a light green accent.',vars:{'--bg':'#0f5a43','--panel':'rgba(32,102,80,0.72)','--panel-strong':'rgba(27,98,76,0.9)','--border':'rgba(255,255,255,0.12)','--text':'#ecf2f0','--text-dim':'#b7cec7','--text-dimmer':'#8cb0a5','--accent':'#7cf2a8','--accent-soft':'rgba(124,242,168,0.32)','--accent-glow':'rgba(124,242,168,0.24)','--ambient-a':'rgba(124,242,168,0.2)','--ambient-b':'rgba(70,166,118,0.16)','--radius':'14px','--blur':'24px'}},
     grape:{name:'Grape',description:'Rich grape with a pink accent.',vars:{'--bg':'#4b1f6f','--panel':'rgba(88,47,121,0.72)','--panel-strong':'rgba(84,42,118,0.9)','--border':'rgba(255,255,255,0.12)','--text':'#f1edf3','--text-dim':'#c9bcd4','--text-dimmer':'#a993ba','--accent':'#ff9de2','--accent-soft':'rgba(255,157,226,0.32)','--accent-glow':'rgba(255,157,226,0.24)','--ambient-a':'rgba(255,157,226,0.2)','--ambient-b':'rgba(165,94,168,0.16)','--radius':'14px','--blur':'24px'}},
+    mocha:{name:'Mocha',description:'Dark roast brown with a steamed-milk caramel accent.',vars:{'--bg':'#3e2a20','--panel':'rgba(76,57,48,0.72)','--panel-strong':'rgba(72,53,43,0.90)','--border':'rgba(255,255,255,0.12)','--text':'#f0eeed','--text-dim':'#c5bfbc','--text-dimmer':'#a29994','--accent':'#e9c79e','--accent-soft':'rgba(233,199,158,0.32)','--accent-glow':'rgba(233,199,158,0.24)','--ambient-a':'rgba(233,199,158,0.20)','--ambient-b':'rgba(147,120,95,0.16)','--radius':'14px','--blur':'24px'}},
+    redvelvet:{name:'Red Velvet',description:'Deep burgundy velvet with a cream-cheese frosting accent.',vars:{'--bg':'#5a0f1e','--panel':'rgba(102,32,46,0.72)','--panel-strong':'rgba(98,27,41,0.90)','--border':'rgba(255,255,255,0.12)','--text':'#f2eced','--text-dim':'#cdb7bb','--text-dimmer':'#b08c93','--accent':'#f2d3c4','--accent-soft':'rgba(242,211,196,0.32)','--accent-glow':'rgba(242,211,196,0.24)','--ambient-a':'rgba(242,211,196,0.20)','--ambient-b':'rgba(166,113,113,0.16)','--radius':'14px','--blur':'24px'}},
     cherry:{name:'Cherry',description:'Cherry pink with a deep blood-burgundy accent.',vars:{'--bg':'#f2a7b4','--panel':'rgba(248,207,214,0.72)','--panel-strong':'rgba(250,222,226,0.9)','--border':'rgba(17,17,20,0.14)','--text':'#231d21','--text-dim':'#543e44','--text-dimmer':'#7d5961','--accent':'#5c0a14','--accent-soft':'rgba(92,10,20,0.32)','--accent-glow':'rgba(92,10,20,0.16)','--ambient-a':'rgba(92,10,20,0.1)','--ambient-b':'rgba(167,88,100,0.16)','--radius':'14px','--blur':'24px'}},
   };
   const BUILTIN_THEME_KEY='beehive:builtin-theme';
@@ -20135,9 +20160,17 @@
   // another accent, and Hive's early dark variants) wait behind Settings →
   // Appearance → Show legacy themes. The theme in use always shows.
   const REGULAR_THEME_FILES = new Set(['light.hive-theme', 'dark.hive-theme', 'ocean.hive-theme',
-    'musicbee-mellon-remix.hive-theme', 'musicbee-sky-blue.hive-theme', 'musicbee-absolute-zero.hive-theme', 'musicbee-ultramarine.hive-theme', 'musicbee-pop-pink.hive-theme',
-    'lemon.hive-theme', 'sunflower.hive-theme', 'tangerine.hive-theme', 'coral.hive-theme', 'bubblegum.hive-theme', 'mint.hive-theme',
+    'musicbee-mellon-remix.hive-theme', 'musicbee-sky-blue.hive-theme', 'musicbee-absolute-zero.hive-theme', 'red-velvet.hive-theme', 'musicbee-pop-pink.hive-theme',
+    'lemon.hive-theme', 'sunflower.hive-theme', 'tangerine.hive-theme', 'mocha.hive-theme', 'bubblegum.hive-theme', 'mint.hive-theme',
     'lavender.hive-theme', 'emerald.hive-theme', 'grape.hive-theme', 'cherry.hive-theme']);
+  // Hive's own themes in colour order, as on the phone: Light and Dark first, then round the colour
+  // wheel (each colour's light version before its deep one). The user's own themes follow, by name.
+  const THEME_COLOUR_ORDER = ['light', 'dark', 'musicbee-pop-pink', 'cherry', 'red-velvet', 'tangerine', 'mocha', 'lemon', 'sunflower',
+    'mint', 'emerald', 'musicbee-mellon-remix', 'ocean', 'musicbee-sky-blue', 'musicbee-absolute-zero', 'lavender', 'grape', 'bubblegum'];
+  function sortThemesByColour(themes) {
+    const rank = t => { const i = THEME_COLOUR_ORDER.indexOf(String(t?.file || '').toLowerCase().replace(/\.hive-theme$/, '')); return i < 0 ? THEME_COLOUR_ORDER.length : i; };
+    return [...themes].sort((a, b) => rank(a) - rank(b) || String(a.name).localeCompare(String(b.name)));
+  }
   const LEGACY_THEMES_KEY = 'beehive:legacy-themes';
   function showLegacyThemes() { try { return localStorage.getItem(LEGACY_THEMES_KEY) === '1'; } catch { return false; } }
   function isLegacyTheme(t) { return !REGULAR_THEME_FILES.has(String(t?.file || '').toLowerCase()) && (t?.stock || /^musicbee-/i.test(String(t?.file || ''))); }
@@ -20177,7 +20210,7 @@
     await seedStockThemesIntoFolder();
     try {
       const result = await window.beehive.listThemeFolder?.();
-      themeFolderThemes = Array.isArray(result?.themes) ? result.themes : [];
+      themeFolderThemes = sortThemesByColour(Array.isArray(result?.themes) ? result.themes : []);
     } catch { themeFolderThemes = []; }
     return themeFolderThemes;
   }
@@ -20749,6 +20782,63 @@
   lfFinish?.addEventListener('click',async()=>{ try { const r=await window.beehive.lastfmFinishAuth(); if(lfSession) lfSession.value=''; if(lfEnabled) lfEnabled.checked=true; if(scrobbleStatusEl) scrobbleStatusEl.textContent='Last.fm authorization completed.'; await refreshScrobbleSettings(); } catch(err){ if(scrobbleStatusEl) scrobbleStatusEl.textContent=err?.message||'Could not finish Last.fm authorization.'; } });
   refreshScrobbleSettings();
 
+  // ---- Theme gallery: Browse themes / Share theme (see app/main/theme-store.js) ----
+  function themeGalleryCard(t, i, installed, inUse = false) {
+    const v = t.vars;
+    const style = `--g-bg:${v['--bg']};--g-text:${v['--text']};--g-accent:${v['--accent']};--g-panel:${v['--panel'] || v['--bg']};--g-dim:${v['--text-dim'] || v['--text']}`;
+    return `<div class="theme-gallery-card" style="${escapeHtml(style)}">
+      <div class="theme-gallery-preview" aria-hidden="true"><span class="tg-side"></span><span class="tg-main"><span class="tg-line"></span><span class="tg-line short"></span><span class="tg-pill"></span></span></div>
+      <div class="theme-gallery-meta"><strong>${escapeHtml(t.name)}</strong><small>${escapeHtml(t.author ? `by ${t.author}` : 'Shared theme')}</small></div>
+      ${t.description ? `<p class="theme-gallery-desc">${escapeHtml(t.description)}</p>` : ''}
+      <button type="button" class="sidebar-add${installed ? '' : ' settings-primary-action'}" data-gallery-index="${i}"${inUse ? ' disabled' : ''}>${inUse ? 'In use' : installed ? 'Use' : 'Add'}</button>
+    </div>`;
+  }
+  async function openThemeGallery() {
+    const modal = document.getElementById('theme-gallery-modal');
+    if (!modal) return;
+    const status = modal.querySelector('#theme-gallery-status');
+    const grid = modal.querySelector('#theme-gallery-grid');
+    status.textContent = 'Loading the gallery…';
+    grid.innerHTML = '';
+    openModal(modal);
+    let result;
+    try { result = await window.beehive.themeStoreList(); } catch (err) { result = { themes: [], error: err?.message || String(err) }; }
+    const themes = result?.themes || [];
+    const render = () => {
+      const have = new Set(themeFolderThemes.map(t => t.file));
+      const using = themeFolderThemes.find(t => t.css === customCssRawSource)?.file;
+      grid.innerHTML = themes.map((t, i) => themeGalleryCard(t, i, have.has(`gallery-${t.id}.hive-theme`), using === `gallery-${t.id}.hive-theme`)).join('');
+      grid.querySelectorAll('[data-gallery-index]').forEach(button => button.addEventListener('click', async () => {
+        const t = themes[Number(button.dataset.galleryIndex)];
+        button.disabled = true;
+        try {
+          const { file } = await window.beehive.themeStoreInstall(t);
+          await loadThemeFolderThemes();
+          const select = document.getElementById('builtin-theme-select');
+          if (select) { select.innerHTML = themeOptionsHtml('folder:', file); select.value = `folder:${file}`; }
+          await applyFolderTheme(file, true);
+          status.textContent = `${t.name} is now your theme. It's in the theme list too.`;
+          render();
+        } catch (err) { status.textContent = `Couldn't add ${t.name}: ${err?.message || err}`; button.disabled = false; }
+      }));
+    };
+    status.textContent = !themes.length ? `The gallery couldn't be reached${result?.error ? ` (${result.error})` : ''}. Try again later.`
+      : result.online === false ? `Showing the gallery as it came with Hive (offline). ${themes.length} themes.` : `${themes.length} themes. Add one and it becomes your theme.`;
+    render();
+  }
+  async function shareCurrentTheme() {
+    const current = themeFolderThemes.find(t => t.css === customCssRawSource);
+    const css = current?.css || customCssRawSource || '';
+    // Hive's own themes are in everyone's Hive already: the suggestion is a name of the person's own.
+    const suggested = current && !current.stock && !/^gallery-/.test(String(current.file || '')) ? current.name : 'My theme';
+    const name = await themedDialog({ title: 'Share your theme', mode: 'prompt', value: suggested, placeholder: 'Theme name',
+      message: 'Your browser opens a short GitHub form with this theme\'s colours (nothing else). Once approved, it shows up in everyone\'s Browse themes.' });
+    if (!name || !String(name).trim()) return;
+    try { await window.beehive.themeStoreShare({ name: String(name).trim(), css }); }
+    catch (err) { themedAlert(err?.message || 'Could not share this theme.', 'Share theme'); }
+  }
+  document.getElementById('theme-browse-btn')?.addEventListener('click', () => { void openThemeGallery(); });
+  document.getElementById('theme-share-btn')?.addEventListener('click', () => { void shareCurrentTheme(); });
   document.getElementById('theme-import-btn')?.addEventListener('click',async()=>{ try { const r=await window.beehive.importTheme(); if(r?.canceled)return; applyCustomCss(r.css,true,r.name||'theme'); } catch(err){ themedAlert?.(err?.message||'Could not import theme.','Theme import'); } });
   document.getElementById('theme-export-btn')?.addEventListener('click',async()=>{ try { const css=customCssRawSource||customThemeStyle?.textContent||''; const r=await window.beehive.exportTheme({css,name:'Hive Theme'}); if(!r?.canceled) themedAlert?.('Theme exported.','Theme'); } catch(err){ themedAlert?.(err?.message||'Could not export theme.','Theme export'); } });
 

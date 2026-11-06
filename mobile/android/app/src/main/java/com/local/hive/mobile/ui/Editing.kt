@@ -120,6 +120,11 @@ fun rememberWriteAccess(onToast: (String) -> Unit): (List<Track>, (List<Track>) 
         when {
             writable.isEmpty() -> onToast("Hive can't write tags into ${tracks.firstOrNull()?.fileName?.substringAfterLast('.')?.let { ".$it" } ?: "these"} files")
             Build.VERSION.SDK_INT < Build.VERSION_CODES.R -> onAllowed(writable)
+            // With All files access (given for song sync), Android lets Hive change the files without asking each time.
+            android.os.Environment.isExternalStorageManager() -> {
+                if (writable.size < tracks.size) onToast("${countOf(tracks.size - writable.size, "song")} can't be edited (format)")
+                onAllowed(writable)
+            }
             else -> {
                 if (writable.size < tracks.size) onToast("${countOf(tracks.size - writable.size, "song")} can't be edited (format)")
                 waiting = writable to onAllowed

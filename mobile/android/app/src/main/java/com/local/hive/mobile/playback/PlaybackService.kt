@@ -145,7 +145,12 @@ class PlaybackService : MediaLibraryService() {
             }
             val pairing = app.linkStore.pairing
             val toPc = pairing != null && spec.uri.scheme == "http" && spec.uri.port == pairing.port && spec.uri.host in pairing.hosts
-            if (toPc) spec.withAdditionalHeaders(mapOf("Authorization" to "Bearer ${pairing!!.token}")) else spec
+            // The read-only media key when Hive gave one (songs and covers only), so the real token never
+            // travels unencrypted; an older Hive takes the token.
+            val mediaKey = app.linkStore.coverKey?.takeIf { it.isNotBlank() }
+            if (!toPc) spec
+            else if (mediaKey != null) spec.withAdditionalHeaders(mapOf("X-Hive-Media" to mediaKey))
+            else spec.withAdditionalHeaders(mapOf("Authorization" to "Bearer ${pairing!!.token}"))
         }
         // Hive's equaliser runs inside the audio sink, ahead of every output.
         fun renderers(processor: EqualiserProcessor) = object : DefaultRenderersFactory(this) {

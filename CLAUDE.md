@@ -207,8 +207,8 @@ test file. Repeat.
   a test copy, side by side with screenshots, before anything else.
 - **GitHub Releases/`electron-updater`** are wired up (`app/main/update-checker.js`).
   **Done, 2026-09-21:** the real GitHub repo now exists
-  (github.com/chasesfloorboard/Hive, public; the account was previously
-  named MADVlLLIAN, and old links redirect), `package.json`'s
+  (github.com/chasesfloorboard/Hive, public; old links from the account's
+  earlier name redirect), `package.json`'s
   `build.publish.owner` is `chasesfloorboard`, and this
   session's pending work is committed and pushed to `main`. Auto-update can
   now actually resolve a release once one is published there.
@@ -235,8 +235,7 @@ otherwise:
   `set_uslt`/`set_comm` (malformed ID3 language codes like `'   '`/`'XXX'`
   weren't matching the "default language" check, so writes added a second
   USLT frame instead of replacing the old one). Migrated the user's library
-  off embedded synced lyrics to plain (backups under
-  `~/Downloads/Hive-lyrics-migration-backup-20260920/`) and deduplicated 6
+  off embedded synced lyrics to plain (with backups) and deduplicated 6
   affected files as a result of finding this bug.
 - Extracted `app/main/metadata-writer.js` (`createMetadataWriter(deps)`) and
   `app/main/update-checker.js` (`createUpdateChecker({autoUpdater})`) out of

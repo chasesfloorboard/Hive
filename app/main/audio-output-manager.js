@@ -123,8 +123,35 @@ function attachAlsaIds(outputs, cardsText, pcmText) {
   });
 }
 
+// Outputs as Hive's native player lists them (`--list-outputs`, GStreamer's device monitor):
+// on Windows, where there's no pactl. Each line "OUTPUT\t<id>\t<name>\t<default 0|1>"; the id the
+// player opens is "device:<id>". Bit-perfect (ALSA) is Linux's only.
+function parseHelperOutputs(text) {
+  const outputs = [];
+  let defaultId = '';
+  for (const line of String(text || '').split(/\r?\n/)) {
+    const [kind, id, name, def] = line.split('\t');
+    if (kind !== 'OUTPUT' || !id || !name) continue;
+    const entry = { id: `device:${id}`, name: cleanText(name), description: cleanText(name), state: 'unknown', server: 'System' };
+    if (outputs.some(o => o.id === entry.id)) continue;
+    outputs.push(entry);
+    if (def === '1' && !defaultId) defaultId = entry.id;
+  }
+  return { outputs, defaultId };
+}
+
+// Set by main.js: runs the native player's --list-outputs and returns its stdout.
+let helperOutputLister = null;
+function setHelperOutputLister(fn) { helperOutputLister = typeof fn === 'function' ? fn : null; }
+
 async function listAudioOutputs() {
-  if (process.platform !== 'linux') return { supported: false, outputs: [], reason: 'Audio output selection is currently supported on Linux.' };
+  if (process.platform !== 'linux') {
+    if (!helperOutputLister) return { supported: false, outputs: [], reason: 'Audio output selection is unavailable on this system.' };
+    try {
+      const { outputs, defaultId } = parseHelperOutputs(await helperOutputLister());
+      return outputs.length ? { supported: true, outputs, defaultId, bitPerfectSupported: false } : { supported: false, outputs: [], reason: "Hive couldn't find this computer's audio outputs." };
+    } catch (err) { return { supported: false, outputs: [], reason: `Hive couldn't list the audio outputs: ${err?.message || err}` }; }
+  }
   const [pulse, [cardsText, pcmText]] = await Promise.all([listPulseOutputs(), readAsoundText()]);
   if (!pulse.supported) return pulse;
   return { ...pulse, outputs: attachAlsaIds(pulse.outputs, cardsText, pcmText) };
@@ -135,6 +162,7 @@ async function listAudioOutputs() {
 async function effectiveOutputDevice(sink, bitPerfect) {
   const chosen = String(sink || '').trim();
   if (!bitPerfect) return { device: chosen };
+  if (process.platform !== 'linux') return { device: chosen, error: 'Bit-perfect output is only available on Linux. Hive plays through the chosen output as usual.' };
   const { outputs, defaultId } = await listAudioOutputs();
   const target = (outputs || []).find(o => o.id === (chosen || defaultId));
   if (!target?.alsaId) {
@@ -228,4 +256,4 @@ function scheduleExclusiveReleaseRestore(restore, { spawn = require('child_proce
   } catch { return false; }
 }
 
-module.exports = { listAudioOutputs, getDefaultSink, parsePactlJson, parsePactlShort, parseAlsaPlaybackDevices, attachAlsaIds, effectiveOutputDevice, resolveLaunchOutput, scheduleExclusiveReleaseRestore };
+module.exports = { parseHelperOutputs, setHelperOutputLister, listAudioOutputs, getDefaultSink, parsePactlJson, parsePactlShort, parseAlsaPlaybackDevices, attachAlsaIds, effectiveOutputDevice, resolveLaunchOutput, scheduleExclusiveReleaseRestore };

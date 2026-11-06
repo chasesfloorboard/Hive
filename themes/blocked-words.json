@@ -1,0 +1,36 @@
+{
+  "about": "Names shared to the theme gallery (only those) are checked against the most common slurs and swear words. 'anywhere': blocked even inside other words, after undoing look-alike letters (sh1t, f.u.c.k). 'words': whole words only, so ordinary words that contain them (Scunthorpe, Grape, Assassin) are fine.",
+  "anywhere": [
+    "fuck",
+    "nigg",
+    "faggot",
+    "retard",
+    "whore",
+    "slut",
+    "bitch",
+    "cocksucker",
+    "kike",
+    "tranny"
+  ],
+  "words": [
+    "ass",
+    "asshole",
+    "bullshit",
+    "chink",
+    "cock",
+    "cunt",
+    "cunts",
+    "dick",
+    "fag",
+    "fags",
+    "gook",
+    "nazi",
+    "pussy",
+    "rape",
+    "shit",
+    "shitty",
+    "spic",
+    "twat",
+    "wetback"
+  ]
+}

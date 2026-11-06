@@ -69,7 +69,8 @@ class AppUpdater(
     }
 
     private val online = object : Source {
-        private val http by lazy { HiveLinkClient.defaultHttp().newBuilder().readTimeout(120, java.util.concurrent.TimeUnit.SECONDS).build() }
+        // GitHub, with the system's ordinary certificate checks (Hive Link's own clients accept only the paired Hive's).
+        private val http by lazy { okhttp3.OkHttpClient.Builder().connectTimeout(10, java.util.concurrent.TimeUnit.SECONDS).readTimeout(120, java.util.concurrent.TimeUnit.SECONDS).build() }
         private val json = kotlinx.serialization.json.Json { ignoreUnknownKeys = true }
         override suspend fun info(): AppUpdate? = withContext(Dispatchers.IO) {
             http.newCall(okhttp3.Request.Builder().url("$ONLINE/HiveMobile.json").build()).execute().use { res ->

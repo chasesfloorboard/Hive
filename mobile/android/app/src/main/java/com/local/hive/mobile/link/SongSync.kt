@@ -178,6 +178,8 @@ data class SongSyncState(
     val current: String = "",
     val failed: Int = 0,
     val message: String? = null,
+    /** An unusually big copy waiting for the user's go-ahead (how many files), or null. */
+    val manyWaiting: Int? = null,
 )
 
 /** A song deleted on one side since it was on both: [phone] is the copy left on this phone, or [pc] the one left on the PC. */
@@ -299,6 +301,13 @@ class SongSync(
         runCatching { nm.notify(DELETED_NOTIFICATION_ID, notification) }
     }
 
+    /** The user looked and said go ahead: the next run copies even an unusually big batch, once. */
+    fun allowManyOnce() {
+        context.getSharedPreferences("file-mirror", Context.MODE_PRIVATE).edit().putBoolean("allowManyOnce", true).apply()
+        _state.update { it.copy(message = null, manyWaiting = null) }
+        schedule(context, now = true)
+    }
+
     /** Copy these back to the side they were deleted on, so both sides match again. */
     suspend fun copyBack(songs: List<GoneSong>) {
         mirror.forget(songs.mapNotNull { it.file })
@@ -330,7 +339,7 @@ class SongSync(
         val deleted = mirror.deleteOnPhone(songs.mapNotNull { it.file }).toSet()
         val gone = songs.filter { it.file in deleted }
         drop(gone)
-        announceDeleted(gone, "from this phone")
+        announceDeleted(gone, "from this phone (kept 30 days, recoverable)")
         return gone.size
     }
 
@@ -429,7 +438,16 @@ class SongSync(
         _state.update { it.copy(total = plan.toPhone.size + plan.toPc.size) }
         val free = MusicHome.freeBytes(context, (MusicHome.find(context) ?: MusicHome.Place(MediaStore.VOLUME_EXTERNAL_PRIMARY, "Hive")).volume)
         val budget = if (free == null) Long.MAX_VALUE else free - 2L * 1024 * 1024 * 1024
-        val result = mirror.run(client, conn, leftFiles(), budget) { label, work -> step(label, onProgress, work) }
+        val allowMany = context.getSharedPreferences("file-mirror", Context.MODE_PRIVATE).getBoolean("allowManyOnce", false)
+        val result = try {
+            mirror.run(client, conn, leftFiles(), budget, { label, work -> step(label, onProgress, work) }, allowMany)
+        } catch (e: FileMirror.TooManyCopies) {
+            // Said once and left waiting: not tried again and again (each try listing everything) until the user answers.
+            _state.update { it.copy(message = e.message, manyWaiting = e.copies) }
+            return true
+        }
+        if (allowMany) context.getSharedPreferences("file-mirror", Context.MODE_PRIVATE).edit().remove("allowManyOnce").apply()
+        _state.update { it.copy(manyWaiting = null) }
         if (plan.bytesToPhone > budget) _state.update { it.copy(message = "This phone is nearly full, so some files from the PC weren't copied.") }
         // New files on the PC are new songs there: matching again (once Hive has scanned them)
         // lets their Love and plays line up.
@@ -453,7 +471,7 @@ class SongSync(
         fun gone(path: String) = GoneSong(FILE_KEY + path, path.substringAfterLast('/').substringBeforeLast('.'), path.substringBeforeLast('/', ""), "", canDelete = true, file = path)
         if (fromPc.isNotEmpty()) {
             val deleted = mirror.deleteOnPhone(fromPc).toSet()
-            announceDeleted(fromPc.filter { it in deleted }.map(::gone), "from this phone (deleted on your PC)")
+            announceDeleted(fromPc.filter { it in deleted }.map(::gone), "from this phone (deleted on your PC; kept 30 days)")
         }
         if (fromPhone.isNotEmpty()) {
             val deleted = runCatching { client.deleteFiles(conn, fromPhone) }.getOrDefault(emptyList()).toSet()

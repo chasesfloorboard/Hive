@@ -1,5 +1,6 @@
 'use strict';
 
+const { tempDir } = require('./temp-dirs');
 const test = require('node:test');
 const assert = require('node:assert/strict');
 const fs = require('node:fs');
@@ -24,7 +25,7 @@ function fakeFetch(catalog, calls) {
 }
 
 function makeProvider(catalog, options = {}) {
-  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'hive-artist-'));
+  const dir = tempDir('hive-artist-');
   const calls = [];
   const provider = createArtistImageProvider({ fetch: fakeFetch(catalog, calls), fsp: fs.promises, path, crypto, dir: () => dir, ...options });
   return { provider, calls, dir };

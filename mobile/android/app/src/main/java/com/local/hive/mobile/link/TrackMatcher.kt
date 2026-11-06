@@ -21,7 +21,7 @@ object TrackMatcher {
     private val nonWord = Regex("""[^\p{L}\p{N}]+""")
     private val artistSeparators = Regex("""\s*(/|;|,|&|\bfeat\.?|\bft\.?|\bx\b|\band\b)\s*""", RegexOption.IGNORE_CASE)
 
-    data class Candidate(val key: String, val title: String, val artist: String, val albumArtist: String, val durationMs: Long)
+    data class Candidate(val key: String, val title: String, val artist: String, val albumArtist: String, val durationMs: Long, val album: String = "")
 
     fun normalize(value: String): String {
         val decomposed = Normalizer.normalize(value.lowercase(), Normalizer.Form.NFKD)
@@ -48,7 +48,11 @@ object TrackMatcher {
             { Entry(it, artistParts(it.artist) + artistParts(it.albumArtist)) },
         )
 
-        fun match(title: String, artist: String, albumArtist: String, durationMs: Long): Candidate? {
+        /**
+         * [album]: when several copies fit (a single and the same song on its album, often the same
+         * length), the one on the same album is taken.
+         */
+        fun match(title: String, artist: String, albumArtist: String, durationMs: Long, album: String = ""): Candidate? {
             val entries = byTitle[normalize(title)].orEmpty()
             if (entries.isEmpty()) return null
             val mine = artistParts(artist) + artistParts(albumArtist)
@@ -59,9 +63,10 @@ object TrackMatcher {
             }.map { it.candidate }
             if (sameArtist.isEmpty()) return null
             if (sameArtist.size == 1) return sameArtist[0].takeIf { durationOk(it.durationMs, durationMs) }
+            val mineAlbum = normalize(album)
             return sameArtist
                 .filter { durationOk(it.durationMs, durationMs) }
-                .minByOrNull { abs(it.durationMs - durationMs) }
+                .minWithOrNull(compareBy<Candidate>({ if (mineAlbum.isNotEmpty() && normalize(it.album) == mineAlbum) 0 else 1 }, { abs(it.durationMs - durationMs) }))
         }
 
         /** Every candidate that is this song, closest in length first (a song kept in several versions or copies). */

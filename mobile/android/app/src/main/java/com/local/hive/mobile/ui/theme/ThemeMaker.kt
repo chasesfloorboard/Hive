@@ -15,26 +15,30 @@ object ThemeMaker {
 
     /** The phone's theme set: light and bright first, then deep colours, then the one dark theme. */
     val SUITE = listOf(
+        // The picker is two rows filled column by column, after "Your Hive" (top left): Light sits
+        // under it, and Dark beside Light. Then one colour per column around the colour wheel,
+        // the light version on top and the deep one under it.
         Swatch("Light", Color(0xFFF6F7FB), Color(0xFF4F5FD6)),
-        Swatch("Melon", Color(0xFFCDEBFF), Color(0xFF5F8A14)),
-        // Dark sits beside Light in the picker (two rows, filled column by column).
-        Swatch("Dark", Color(0xFF121317), Color(0xFF9FB3FF)),
-        Swatch("Sky Blue", Color(0xFF8FCBE6), Color(0xFF1F4E79)),
-        Swatch("Lemon", Color(0xFFFFF3A3), Color(0xFFB4530A)),
-        Swatch("Sunflower", Color(0xFFFFD23F), Color(0xFF8C6200)),
-        Swatch("Tangerine", Color(0xFFFF9F45), Color(0xFF1F4D14)),
-        Swatch("Coral", Color(0xFFFF8A7A), Color(0xFF1F3A93)),
-        Swatch("Bubblegum", Color(0xFFFFC4E1), Color(0xFFC2185B)),
-        Swatch("Cherry", Color(0xFFF2A7B4), Color(0xFF5C0A14)),
-        Swatch("Mint", Color(0xFFB8F0D4), Color(0xFF0B7A55)),
-        Swatch("Lavender", Color(0xFFD9D2FF), Color(0xFF5A3FD1)),
-        Swatch("Ocean", Color(0xFF0E4F6E), Color(0xFF6FE3D4)),
-        Swatch("Absolute Zero", Color(0xFF0B3D6B), Color(0xFF7FD1FF)),
-        Swatch("Ultramarine", Color(0xFF1F2A9C), Color(0xFFFFD166)),
-        Swatch("Emerald", Color(0xFF0F5A43), Color(0xFF7CF2A8)),
-        Swatch("Grape", Color(0xFF4B1F6F), Color(0xFFFF9DE2)),
         // MusicBee's Pop Pink, as it was: charcoal with a pink accent.
         Swatch("Pop Pink", Color(0xFF323232), Color(0xFFE4597A)),
+        Swatch("Dark", Color(0xFF121317), Color(0xFF9FB3FF)),
+        Swatch("Cherry", Color(0xFFF2A7B4), Color(0xFF5C0A14)),
+        // Red Velvet: burgundy cake, cream-cheese frosting.
+        Swatch("Red Velvet", Color(0xFF5A0F1E), Color(0xFFF2D3C4)),
+        Swatch("Tangerine", Color(0xFFFF9F45), Color(0xFF1F4D14)),
+        // Mocha: dark roast, steamed milk.
+        Swatch("Mocha", Color(0xFF3E2A20), Color(0xFFE9C79E)),
+        Swatch("Lemon", Color(0xFFFFF3A3), Color(0xFFB4530A)),
+        Swatch("Sunflower", Color(0xFFFFD23F), Color(0xFF8C6200)),
+        Swatch("Mint", Color(0xFFB8F0D4), Color(0xFF0B7A55)),
+        Swatch("Emerald", Color(0xFF0F5A43), Color(0xFF7CF2A8)),
+        Swatch("Melon", Color(0xFFCDEBFF), Color(0xFF5F8A14)),
+        Swatch("Ocean", Color(0xFF0E4F6E), Color(0xFF6FE3D4)),
+        Swatch("Sky Blue", Color(0xFF8FCBE6), Color(0xFF1F4E79)),
+        Swatch("Absolute Zero", Color(0xFF0B3D6B), Color(0xFF7FD1FF)),
+        Swatch("Lavender", Color(0xFFD9D2FF), Color(0xFF5A3FD1)),
+        Swatch("Grape", Color(0xFF4B1F6F), Color(0xFFFF9DE2)),
+        Swatch("Bubblegum", Color(0xFFFFC4E1), Color(0xFFC2185B)),
     )
 
     fun pack(s: Swatch) = ThemePack(s.name, css(s.bg, s.accent))

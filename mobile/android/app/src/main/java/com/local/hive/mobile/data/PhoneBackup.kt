@@ -81,6 +81,7 @@ class PhoneBackup(
 
     private val fresh get() = prefs.getBoolean("freshInstall", false)
     private val answered get() = prefs.getBoolean("answered", false)
+    @Volatile private var lastBuilt = 0L
 
     /**
      * At the very first start of this install, before anything is read in: whether the app had
@@ -149,8 +150,11 @@ class PhoneBackup(
     private val maySave get() = noted
 
     /** Makes a copy as things are now, and keeps it on the phone. Unchanged since the last: nothing is written. */
-    suspend fun save() = lock.withLock {
+    suspend fun save(atMostEveryMs: Long = 0) = lock.withLock {
         if (!maySave) return@withLock
+        // After a sync (often several a minute while music plays): the copy is rebuilt at most every few minutes.
+        if (atMostEveryMs > 0 && System.currentTimeMillis() - lastBuilt < atMostEveryMs) return@withLock
+        lastBuilt = System.currentTimeMillis()
         withContext(Dispatchers.IO) {
             runCatching {
                 val made = File(context.cacheDir, "backup.zip.part")
@@ -272,6 +276,13 @@ class PhoneBackup(
                     val bytes = Pairing.strip(f.readText()).toByteArray()
                     zip.write(bytes); digest.update(bytes); digest.update(name.toByteArray()); zip.closeEntry(); return
                 }
+                // Nor do passwords and sign-ins (Soulseek, Spotify, Apple Music, scrobbling): a copy sits in
+                // Documents and in the cloud, where other apps or people may read it. After a restore on
+                // another phone, those are signed in to again.
+                Secrets.keysFor(f.name)?.let { keys ->
+                    val bytes = Secrets.strip(f.readText(), keys).toByteArray()
+                    zip.write(bytes); digest.update(bytes); digest.update(name.toByteArray()); zip.closeEntry(); return
+                }
                 f.inputStream().use { input ->
                     val buf = ByteArray(1 shl 16)
                     while (true) { val n = input.read(buf); if (n < 0) break; zip.write(buf, 0, n); digest.update(buf, 0, n) }
@@ -334,6 +345,8 @@ class PhoneBackup(
                 // This install's own pairing stays: the copy's (an older install's, or none) would be
                 // refused by the PC, and the phone would unpair itself.
                 val ownPairing = File(prefsDir, LINK_PREFS).takeIf { it.isFile }?.readText()?.let(Pairing::entries).orEmpty()
+                // So do this install's own sign-ins (the copy has none): restoring never signs anyone out.
+                val ownSecrets = Secrets.FILES.mapNotNull { (file, keys) -> File(prefsDir, file).takeIf { it.isFile }?.readText()?.let { file to Secrets.entries(it, keys) } }.toMap()
                 ZipFile(pending).use { zip ->
                     // Only what the copy has replaces what's here; nothing outside the app's folders is written.
                     context.getDatabasePath(DB).let { db -> listOf(db, File(db.path + "-wal"), File(db.path + "-shm")).forEach { it.delete() } }
@@ -353,6 +366,11 @@ class PhoneBackup(
                     }
                 }
                 File(prefsDir, LINK_PREFS).takeIf { it.isFile }?.let { f -> f.writeText(Pairing.put(f.readText(), ownPairing)) }
+                for ((file, own) in ownSecrets) {
+                    if (own.isEmpty()) continue
+                    val f = File(prefsDir, file)
+                    f.writeText(Secrets.put(if (f.isFile) f.readText() else "<?xml version='1.0' encoding='utf-8' standalone='yes' ?>\n<map>\n</map>\n", own, Secrets.FILES.getValue(file)))
+                }
                 Log.i(TAG, "Restored Hive Mobile from its backup")
             }.onFailure { Log.e(TAG, "Restore failed: ${it.message}", it) }
             pending.delete()
@@ -362,7 +380,7 @@ class PhoneBackup(
 
 /** The PC pairing's entries in Hive Link's settings file (Android's shared-preferences XML). */
 internal object Pairing {
-    private val KEYS = listOf("token", "serverId", "name", "port", "deviceId", "hosts", "keyGivenFor")
+    private val KEYS = listOf("token", "serverId", "name", "port", "deviceId", "hosts", "keyGivenFor", "coverKey", "helloSeenFor", "tlsPin", "tlsPort", "tlsFor")
     private val ENTRY = Regex("""<(\w+) name="(${KEYS.joinToString("|")})"(?: value="[^"]*" />|>[\s\S]*?</\1>)""")
 
     fun entries(xml: String): List<String> = ENTRY.findAll(xml).map { it.value }.toList()
@@ -370,6 +388,26 @@ internal object Pairing {
     /** [xml] with its own pairing taken out and [own] put in. */
     fun put(xml: String, own: List<String>): String {
         val bare = strip(xml)
+        val end = bare.lastIndexOf("</map>")
+        return if (end < 0) bare else bare.substring(0, end) + own.joinToString("") { "$it\n" } + bare.substring(end)
+    }
+}
+
+/** Passwords and sign-ins in Hive's settings files: never in a backup copy (see PhoneBackup.write). */
+internal object Secrets {
+    val FILES = mapOf(
+        "soulseek.xml" to listOf("password"),
+        "spotify.xml" to listOf("access", "refresh", "verifier", "state"),
+        "apple-music.xml" to listOf("mediaUserToken"),
+        // The scrobbling settings hold the ListenBrainz token and the Last.fm session in one value.
+        "scrobbling.xml" to listOf("settings"),
+    )
+    fun keysFor(file: String) = FILES[file]
+    private fun entry(keys: List<String>) = Regex("""<(\w+) name="(${keys.joinToString("|") { Regex.escape(it) }})"(?: value="[^"]*" />|>[\s\S]*?</\1>)""")
+    fun entries(xml: String, keys: List<String>): List<String> = entry(keys).findAll(xml).map { it.value }.toList()
+    fun strip(xml: String, keys: List<String>): String = entry(keys).replace(xml, "")
+    fun put(xml: String, own: List<String>, keys: List<String>): String {
+        val bare = strip(xml, keys)
         val end = bare.lastIndexOf("</map>")
         return if (end < 0) bare else bare.substring(0, end) + own.joinToString("") { "$it\n" } + bare.substring(end)
     }

@@ -39,7 +39,7 @@ class SoulseekClient(
     private val listenPorts: IntRange = 2234..2244,
     private val log: (String) -> Unit = {},
 ) : Closeable {
-    private val scope = CoroutineScope(SupervisorJob() + Dispatchers.IO)
+    private val scope = CoroutineScope(SupervisorJob() + Dispatchers.IO + com.local.hive.mobile.data.CrashLog.handler())
     private var server: Socket? = null
     private var serverOut: OutputStream? = null
     private var listener: ServerSocket? = null

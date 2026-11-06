@@ -41,6 +41,8 @@ class LoveFiles(
     private val inUse: () -> Set<Long>,
     /** Files (full paths, lowercase) whose Love the PC writes and the file mirror brings back. */
     private val mirrored: () -> Set<String> = { emptySet() },
+    /** After writing Love into a mirrored file: tells the mirror it's still the same on both sides (see FileMirror.reAgree). */
+    private val reAgree: (path: String, before: com.local.hive.mobile.link.FileStat) -> Boolean = { _, _ -> false },
 ) {
     private val lock = Mutex()
     private val memoryFile = File(context.filesDir, "love-files.txt")
@@ -73,6 +75,9 @@ class LoveFiles(
             val canWrite = android.os.Build.VERSION.SDK_INT >= 30 && Environment.isExternalStorageManager()
             val busy = inUse()
             val viaPc = if (canWrite) runCatching { mirrored() }.getOrDefault(emptySet()) else emptySet()
+            // Only songs the PC has a match for: their Love reaches the PC's copy too. Others are written here
+            // and sent up by the mirror as a change (no re-agree), so nothing is lost.
+            val onPc = if (viaPc.isEmpty()) emptySet() else dao.allMatches().mapTo(HashSet()) { it.trackId }
             val found = mutableListOf<LoveState>()
             var leftOver = false
             var read = 0; var written = 0
@@ -89,10 +94,19 @@ class LoveFiles(
                     // The app has no word on this song: the file's Love is the song's.
                     wanted == null -> if (known) found += LoveState(t.id, true, file.lastModified(), pending = paired())
                     wanted.loved == known -> Unit
-                    // The PC writes it into its copy, and the mirror brings that copy here; a copy
-                    // rewritten here would go back over the PC's.
-                    file.path.lowercase() in viaPc -> Unit
                     !canWrite -> leftOver = true
+                    // A copy kept the same as the PC's: the PC writes Love into its copy (keeping its time, so it
+                    // isn't copied again), and this copy gets the same Love here. The mirror is then told it's
+                    // still the same file on both sides, so nothing goes either way. Not while the mirror copies.
+                    file.path.lowercase() in viaPc && t.id in onPc -> if (t.id in busy || !com.local.hive.mobile.link.FileMirror.gate.tryLock()) leftOver = true else try {
+                        val before = com.local.hive.mobile.link.FileStat(file.length(), file.lastModified())
+                        TagWriter.write(context, t, TagEdit(loved = wanted.loved))
+                        if (!reAgree(file.path, before)) Log.i(TAG, "Love written into ${t.fileName}; the mirror will compare it next run")
+                        memory[t.id] = Known(file.length(), wanted.loved); written++
+                    } catch (e: CancellationException) { throw e } catch (e: Exception) {
+                        Log.w(TAG, "Love not written into ${t.fileName}: ${e.message}")
+                        leftOver = true
+                    } finally { com.local.hive.mobile.link.FileMirror.gate.unlock() }
                     t.id in busy -> leftOver = true
                     else -> try {
                         TagWriter.write(context, t, TagEdit(loved = wanted.loved))

@@ -80,13 +80,15 @@ fun SettingsScreen(vm: MainViewModel, bottomPadding: Dp, onOpenEqualiser: () -> 
                     item { Section("Scrobbling", "Send what you play to ListenBrainz or Last.fm.") { ScrobbleRows(vm) } }
                     item { Section("Soulseek", "Download albums from Apple Music and Spotify pages. Hive shares nothing.") { SoulseekRows() } }
                 }
-                SettingsPage.Advanced -> advancedSettings(vm)
+                SettingsPage.Advanced -> advancedSettings(vm) { page = SettingsPage.Developer }
+                SettingsPage.Developer -> developerSettings(vm) { page = SettingsPage.Advanced }
+                SettingsPage.Gallery -> themeGallery(vm)
             }
         }
     }
 }
 
-private enum class SettingsPage(val title: String) { Main("Settings"), Pc("Hive on your PC"), Backup("Backup"), Accounts("Accounts"), Advanced("Advanced") }
+private enum class SettingsPage(val title: String) { Main("Settings"), Pc("Hive on your PC"), Backup("Backup"), Accounts("Accounts"), Advanced("Advanced"), Developer("Developer"), Gallery("Browse themes") }
 
 @Composable
 private fun SettingsPageFrame(title: String, bottomPadding: Dp, state: androidx.compose.foundation.lazy.LazyListState, onBack: () -> Unit, content: androidx.compose.foundation.lazy.LazyListScope.() -> Unit) {
@@ -105,6 +107,10 @@ private fun androidx.compose.foundation.lazy.LazyListScope.mainSettings(vm: Main
     item {
         Section("Look", "") {
             ThemePicker(vm)
+            NavRow("Browse themes", "Themes other people made") { open(SettingsPage.Gallery) }
+            var sharing by remember { mutableStateOf(false) }
+            NavRow("Share your theme", "Put the theme you're using in the gallery") { sharing = true }
+            if (sharing) ShareThemeDialog(vm) { sharing = false }
             val photos by vm.artistPhotos.collectAsStateWithLifecycle()
             SettingRow("Artist pictures", if (photos) "Photos from the internet" else "Their album covers") {
                 HiveToggle(listOf("Covers", "Photos"), if (photos) 1 else 0, { vm.setArtistPhotos(it == 1) })
@@ -158,7 +164,7 @@ private fun androidx.compose.foundation.lazy.LazyListScope.mainSettings(vm: Main
     item { Section("", "") { NavRow("Advanced", "Crossfade details, theme schedule, library details") { open(SettingsPage.Advanced) } } }
 }
 
-private fun androidx.compose.foundation.lazy.LazyListScope.advancedSettings(vm: MainViewModel) {
+private fun androidx.compose.foundation.lazy.LazyListScope.advancedSettings(vm: MainViewModel, openDeveloper: () -> Unit) {
     item {
         Section("Crossfade", "") {
             val eq by vm.equaliser.state.collectAsStateWithLifecycle()
@@ -178,7 +184,16 @@ private fun androidx.compose.foundation.lazy.LazyListScope.advancedSettings(vm: 
         Section("About", "") {
             val context = androidx.compose.ui.platform.LocalContext.current
             val version = remember { runCatching { context.packageManager.getPackageInfo(context.packageName, 0).versionName }.getOrNull() ?: "" }
-            SettingRow("Hive Mobile $version", "Inter is licensed under the SIL Open Font License.") {}
+            // Seven taps on the version open the developer menu (this phone's numbers, crashes and logs).
+            var taps by remember { mutableStateOf(0) }
+            var devOn by remember { mutableStateOf(DeveloperMode.on(context)) }
+            Box(Modifier.pressable(onClick = {
+                if (devOn) openDeveloper()
+                else if (++taps >= 7) { DeveloperMode.set(context, true); devOn = true; openDeveloper() }
+            }, pressedScale = 1f)) {
+                SettingRow("Hive Mobile $version", "Inter is licensed under the SIL Open Font License.") {}
+            }
+            if (devOn) NavRow("Developer", "This phone's numbers, crashes and logs") { openDeveloper() }
         }
     }
 }
@@ -283,7 +298,7 @@ private fun DeletedSongsRow(vm: MainViewModel, always: Boolean = false) {
 }
 
 @Composable
-private fun Section(title: String, description: String, content: @Composable () -> Unit) {
+internal fun Section(title: String, description: String, content: @Composable () -> Unit) {
     val c = Hive.colors
     val header = title.isNotBlank() || description.isNotBlank()
     // A card without a heading keeps the same space above its first row as below its last.
@@ -323,9 +338,9 @@ private fun PairedRows(vm: MainViewModel) {
     }
     val detail = buildList {
         if (link.pcTracks > 0) add("%,d of this phone's songs matched to Hive's %,d".format(link.matchedTracks, link.pcTracks))
-        if (link.pendingChanges > 0) add("${link.pendingChanges} changes not sent yet")
-        if (link.waitingOnPc > 0) add("%,d changes and plays waiting for you in Hive on the PC".format(link.waitingOnPc))
-        if (link.lastSyncAt > 0) add("Synced ${DateUtils.getRelativeTimeSpanString(link.lastSyncAt)}")
+        if (link.pendingChanges > 0) add("${link.pendingChanges} ${if (link.pendingChanges == 1) "change" else "changes"} (favorites, ratings, plays) not sent yet")
+        if (link.waitingOnPc > 0) add(if (link.waitingOnPc == 1) "1 change waiting for you in Hive on the PC" else "%,d changes and plays waiting for you in Hive on the PC".format(link.waitingOnPc))
+        if (link.lastSyncAt > 0) add((if (link.pendingChanges > 0) "Last synced " else "Synced ") + DateUtils.getRelativeTimeSpanString(link.lastSyncAt))
     }.joinToString("\n")
     SettingRow("Favorites sync", detail) { HiveButton(if (link.syncing) "Syncing…" else "Sync now", enabled = !link.syncing, primary = true) { vm.syncNow() } }
     link.error?.let { Text(it, style = HiveText.small, color = Color(0xFFFF8A8A), modifier = Modifier.padding(horizontal = 18.dp, vertical = 4.dp)) }
@@ -383,6 +398,7 @@ private fun SongSyncRows(vm: MainViewModel) {
         SettingRow("Song sync", status) { HiveButton("Turn off") { vm.setSongSync(false) } }
     }
     s.message?.let { Text(it, style = HiveText.small, color = Color(0xFFFF8A8A), modifier = Modifier.padding(horizontal = 18.dp, vertical = 4.dp)) }
+    s.manyWaiting?.let { n -> SettingRow("$n files to copy", "That's more than usual. If you just added or changed a lot of music, go ahead.") { HiveButton("Copy them anyway", primary = true) { vm.songSyncOps.allowManyOnce() } } }
     if (android.os.Build.VERSION.SDK_INT >= 30) SettingRow(
         "Keep files one to one",
         if (mirrors) "On: this phone's music folder and the PC's hold the same files, in the same folders. A file changed, added or deleted on one side is changed, added or deleted on the other; anything replaced or deleted on the PC is kept in Hive's Deleted songs there."

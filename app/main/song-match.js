@@ -65,7 +65,9 @@ function createIndex(candidates) {
   }
   return {
     matches,
-    match({ title, artist, albumArtist, durationMs }) {
+    // [album]: when several copies fit (a single and the same song on its album, often the same length),
+    // the one on the same album is taken. Hive Mobile's TrackMatcher does the same.
+    match({ title, artist, albumArtist, durationMs, album = '' }) {
       const entries = byTitle.get(normalize(title)) || [];
       if (!entries.length) return null;
       const mine = [...artistParts(artist), ...artistParts(albumArtist)];
@@ -77,11 +79,13 @@ function createIndex(candidates) {
       if (!sameArtist.length) return null;
       const d = Number(durationMs) || 0;
       if (sameArtist.length === 1) return durationOk(Number(sameArtist[0].durationMs) || 0, d) ? sameArtist[0] : null;
+      const mineAlbum = normalize(album || '');
+      const albumMiss = c => (mineAlbum && normalize(c.album || '') === mineAlbum ? 0 : 1);
       let best = null;
       for (const c of sameArtist) {
         const cd = Number(c.durationMs) || 0;
         if (!durationOk(cd, d)) continue;
-        if (!best || Math.abs(cd - d) < Math.abs((Number(best.durationMs) || 0) - d)) best = c;
+        if (!best || albumMiss(c) < albumMiss(best) || (albumMiss(c) === albumMiss(best) && Math.abs(cd - d) < Math.abs((Number(best.durationMs) || 0) - d))) best = c;
       }
       return best;
     }

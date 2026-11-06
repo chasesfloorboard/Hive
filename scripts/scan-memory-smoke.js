@@ -8,8 +8,8 @@ const { spawn } = require('node:child_process');
 const fs = require('node:fs/promises');
 const os = require('node:os');
 const path = require('node:path');
-const { canonicalize } = require('../canonical-metadata');
-const { rendererTrackPayload } = require('../scan-payload');
+const { canonicalize } = require('../app/main/canonical-metadata');
+const { rendererTrackPayload } = require('../app/main/scan-payload');
 
 const TOTAL = 30000;
 const BATCH_SIZE = 64;

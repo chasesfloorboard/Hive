@@ -145,6 +145,7 @@ private fun HiveContent(vm: MainViewModel, openPlayerInitially: Boolean) {
     val openSettings = remember(nav) { { playerOpen = false; queueOpen = false; lyricsOpen = false; go("settings") } }
     var toast by remember { mutableStateOf<String?>(null) }
     RestoreOfferDialog(vm)
+    CrashPrompt()
     var addTarget by remember { mutableStateOf<List<Track>?>(null) }
     val context = androidx.compose.ui.platform.LocalContext.current
     var deleting by remember { mutableStateOf<List<Track>?>(null) }

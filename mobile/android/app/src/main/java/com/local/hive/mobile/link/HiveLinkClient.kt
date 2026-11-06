@@ -25,6 +25,22 @@ import java.util.concurrent.TimeUnit
 
 // Wire models for Hive Link; see app/main/hive-link.js on the PC.
 
+/** The proof a paired Hive gives for [nonce] (see HiveLinkClient.hello and hive-link.js /api/hello). */
+/** The proof for the Hive's encrypted port and certificate (hive-link.js /api/hello, tlsProof). */
+fun helloTlsProof(token: String, nonce: String, serverId: String, pin: String, port: Int): String {
+    fun hex(b: ByteArray) = b.joinToString("") { "%02x".format(it) }
+    val key = hex(java.security.MessageDigest.getInstance("SHA-256").digest(token.toByteArray()))
+    val mac = javax.crypto.Mac.getInstance("HmacSHA256").apply { init(javax.crypto.spec.SecretKeySpec(key.toByteArray(), "HmacSHA256")) }
+    return hex(mac.doFinal("hive-hello-tls\n$nonce\n$serverId\n$pin\n$port".toByteArray()))
+}
+
+fun helloProof(token: String, nonce: String, serverId: String): String {
+    fun hex(b: ByteArray) = b.joinToString("") { "%02x".format(it) }
+    val key = hex(java.security.MessageDigest.getInstance("SHA-256").digest(token.toByteArray()))
+    val mac = javax.crypto.Mac.getInstance("HmacSHA256").apply { init(javax.crypto.spec.SecretKeySpec(key.toByteArray(), "HmacSHA256")) }
+    return hex(mac.doFinal("hive-hello\n$nonce\n$serverId".toByteArray()))
+}
+
 @Serializable data class DiscoveredHive(val serverId: String, val name: String, val host: String, val port: Int)
 @Serializable data class PairResponse(val token: String, val deviceId: String, val serverId: String, val name: String, val seq: Long)
 @Serializable data class PcTrack(
@@ -65,7 +81,7 @@ import java.util.concurrent.TimeUnit
 /** Song sync on the PC: whether Hive takes song files from the phone. */
 @Serializable data class SongCaps(val receive: Boolean = false)
 @Serializable data class AppUpdate(val versionCode: Long, val versionName: String, val size: Long, val sha256: String)
-@Serializable data class InfoResponse(val serverId: String, val name: String, val port: Int, val seq: Long, val addresses: List<HiveAddress> = emptyList(), val streams: StreamCaps = StreamCaps(), val remote: Boolean = false, val plays: Boolean = false, val playsVersion: Int = 0, val inbox: InboxSummary = InboxSummary(), val songs: SongCaps = SongCaps(), val wrap: Boolean = false, val listening: Boolean = false, val files: Boolean = false, val themes: Boolean = false, val playlistSync: Boolean = false, val ratings: Boolean = false, val phoneKeys: Boolean = false, val trackStats: Boolean = false)
+@Serializable data class InfoResponse(val serverId: String, val name: String, val port: Int, val seq: Long, val addresses: List<HiveAddress> = emptyList(), val streams: StreamCaps = StreamCaps(), val remote: Boolean = false, val plays: Boolean = false, val playsVersion: Int = 0, val inbox: InboxSummary = InboxSummary(), val songs: SongCaps = SongCaps(), val wrap: Boolean = false, val listening: Boolean = false, val files: Boolean = false, val themes: Boolean = false, val playlistSync: Boolean = false, val ratings: Boolean = false, val phoneKeys: Boolean = false, val trackStats: Boolean = false, val coverKey: String = "")
 /** One year's Yearly Wrap as Hive on the PC counts it (its plays, imports and this phone's). */
 @Serializable data class PcWrap(
     val year: Int,
@@ -98,7 +114,8 @@ import java.util.concurrent.TimeUnit
 @Serializable data class PlayOut(val clientId: String, val id: String, val playedAt: Long, val listenedMs: Long)
 /** A file in Hive's library folder (the file mirror): path relative to the folder, size, modified (ms). */
 @Serializable data class RemoteFile(val p: String, val s: Long, val m: Long)
-@Serializable data class FilesResponse(val files: List<RemoteFile> = emptyList())
+/** [unreadable]: folders or files the PC couldn't read this time; what's under them is unknown, not deleted. */
+@Serializable data class FilesResponse(val files: List<RemoteFile> = emptyList(), val unreadable: List<String> = emptyList())
 @Serializable data class FileSaved(val status: String = "", val s: Long = 0, val m: Long = 0)
 @Serializable data class DeleteFiles(val p: List<String>)
 @Serializable data class DeletedFiles(val deleted: List<String> = emptyList())
@@ -210,6 +227,48 @@ class HiveLinkClient(private val http: OkHttpClient = defaultHttp()) {
                 else (Json.parseToJsonElement(res.body.string()) as? kotlinx.serialization.json.JsonObject)?.get("serverId")?.let { (it as? kotlinx.serialization.json.JsonPrimitive)?.content }
             }
         }.getOrNull()
+    }
+
+    enum class Hello { PROVED, OLD_HIVE, NOT_IT, UNPAIRED }
+    /** [tlsPin]/[tlsPort]: the Hive's own certificate and encrypted port, when it proved those too. */
+    data class HelloResult(val kind: Hello, val tlsPin: String? = null, val tlsPort: Int = 0)
+
+    /**
+     * Whether the Hive at [host] is the one this phone paired with, before the token goes anywhere: it
+     * signs a random challenge with the pairing (the hash of the token, known only to the two), so a
+     * device that only claims the Hive's id can't pass. A Hive from before this check answers 401.
+     */
+    suspend fun hello(host: String, port: Int, pairing: Pairing): HelloResult = withContext(Dispatchers.IO) {
+        runCatching {
+            val nonce = ByteArray(24).also { java.security.SecureRandom().nextBytes(it) }
+                .let { android.util.Base64.encodeToString(it, android.util.Base64.URL_SAFE or android.util.Base64.NO_PADDING or android.util.Base64.NO_WRAP) }
+            val url = base(host, port) + "/api/hello?device=" + java.net.URLEncoder.encode(pairing.deviceId, "UTF-8") + "&nonce=" + nonce
+            http.newCall(Request.Builder().url(url).build()).execute().use { res ->
+                when (res.code) {
+                    401 -> HelloResult(Hello.OLD_HIVE)
+                    // The paired Hive no longer knows this phone (unpaired there, or replaced by a re-pair).
+                    410 -> {
+                        val o = Json.parseToJsonElement(res.body.string()) as? kotlinx.serialization.json.JsonObject
+                        HelloResult(if ((o?.get("serverId") as? kotlinx.serialization.json.JsonPrimitive)?.content == pairing.serverId) Hello.UNPAIRED else Hello.NOT_IT)
+                    }
+                    200 -> {
+                        val o = Json.parseToJsonElement(res.body.string()) as? kotlinx.serialization.json.JsonObject
+                        fun str(k: String) = (o?.get(k) as? kotlinx.serialization.json.JsonPrimitive)?.content.orEmpty()
+                        if (str("serverId") != pairing.serverId) return@use HelloResult(Hello.NOT_IT)
+                        val expected = helloProof(pairing.token, nonce, pairing.serverId)
+                        if (!java.security.MessageDigest.isEqual(expected.toByteArray(), str("proof").toByteArray())) return@use HelloResult(Hello.NOT_IT)
+                        // The encrypted port and certificate, signed with the pairing: taken only if the signature holds.
+                        val tls = o?.get("tls") as? kotlinx.serialization.json.JsonObject
+                        val pin = (tls?.get("pin") as? kotlinx.serialization.json.JsonPrimitive)?.content.orEmpty()
+                        val tlsPort = (tls?.get("port") as? kotlinx.serialization.json.JsonPrimitive)?.content?.toIntOrNull() ?: 0
+                        val tlsOk = pin.matches(Regex("[0-9a-f]{64}")) && tlsPort in 1..65535 &&
+                            java.security.MessageDigest.isEqual(helloTlsProof(pairing.token, nonce, pairing.serverId, pin, tlsPort).toByteArray(), str("tlsProof").toByteArray())
+                        if (tlsOk) HelloResult(Hello.PROVED, pin, tlsPort) else HelloResult(Hello.PROVED)
+                    }
+                    else -> HelloResult(Hello.NOT_IT)
+                }
+            }
+        }.getOrDefault(HelloResult(Hello.NOT_IT))
     }
 
     suspend fun ping(host: String, port: Int): Boolean = withContext(Dispatchers.IO) {
@@ -417,16 +476,35 @@ class HiveLinkClient(private val http: OkHttpClient = defaultHttp()) {
     // ---- the file mirror: the phone's music folder one to one with Hive's library folder ----
 
     /** Every file in Hive's library folder. */
-    suspend fun files(conn: Connection): List<RemoteFile> =
-        withContext(Dispatchers.IO) { transferHttp.newCall(authed(conn, "/api/files").build()).execute().use { json.decodeFromString(FilesResponse.serializer(), read(it)).files } }
+    suspend fun files(conn: Connection): FilesResponse =
+        withContext(Dispatchers.IO) { transferHttp.newCall(authed(conn, "/api/files").build()).execute().use { json.decodeFromString(FilesResponse.serializer(), read(it)) } }
 
     /** Writes one of Hive's files to [out]; returns its modified time on the PC. */
     suspend fun downloadFile(conn: Connection, rel: String, out: java.io.OutputStream): Long = withContext(Dispatchers.IO) {
-        transferHttp.newCall(authed(conn, "/api/files/get?p=" + java.net.URLEncoder.encode(rel, "UTF-8")).build()).execute().use { res ->
-            if (!res.isSuccessful) read(res)
-            res.body.byteStream().use { it.copyTo(out, 1 shl 16) }
-            res.header("X-Mtime")?.toLongOrNull() ?: 0L
-        }
+        val call = transferHttp.newCall(authed(conn, "/api/files/get?p=" + java.net.URLEncoder.encode(rel, "UTF-8")).build())
+        // A copy that stops arriving (the PC gone mid-copy, a connection that died without saying so) is ended
+        // after STALL_MS with no data, so its half file is removed at once rather than waiting on the socket.
+        val lastData = java.util.concurrent.atomic.AtomicLong(System.currentTimeMillis())
+        val watchdog = java.util.concurrent.Executors.newSingleThreadScheduledExecutor()
+        watchdog.scheduleWithFixedDelay({ if (System.currentTimeMillis() - lastData.get() > STALL_MS) call.cancel() }, 2, 2, TimeUnit.SECONDS)
+        try {
+            call.execute().use { res ->
+                if (!res.isSuccessful) read(res)
+                res.body.byteStream().use { input ->
+                    val buf = ByteArray(1 shl 16)
+                    while (true) {
+                        val n = input.read(buf)
+                        if (n < 0) break
+                        out.write(buf, 0, n)
+                        lastData.set(System.currentTimeMillis())
+                    }
+                }
+                res.header("X-Mtime")?.toLongOrNull() ?: 0L
+            }
+        } catch (e: java.io.IOException) {
+            android.util.Log.w("HiveSongSync", "copy of $rel stopped: ${e.message}")
+            throw if (call.isCanceled()) java.io.IOException("The copy of $rel stalled and was stopped.") else e
+        } finally { watchdog.shutdownNow() }
     }
 
     /** Sends a file to Hive at [rel] (Hive keeps any file already there); [keep]: only keep it aside there. */
@@ -501,8 +579,9 @@ class HiveLinkClient(private val http: OkHttpClient = defaultHttp()) {
             http.newCall(authed(conn, path).build()).execute().use { json.decodeFromString(serializer, read(it)) }
         }
 
+    /** A request carrying the token: on the Hive's encrypted port whenever it has one (see Connection.tlsPort). */
     private fun authed(conn: Connection, path: String) =
-        Request.Builder().url(base(conn.host, conn.port) + path).header("Authorization", "Bearer ${conn.token}")
+        Request.Builder().url((if (conn.tlsPort > 0) base(conn.host, conn.tlsPort, tls = true) else base(conn.host, conn.port)) + path).header("Authorization", "Bearer ${conn.token}")
 
     private fun read(response: Response): String {
         val text = response.body.string()
@@ -513,9 +592,9 @@ class HiveLinkClient(private val http: OkHttpClient = defaultHttp()) {
         return text
     }
 
-    private fun base(host: String, port: Int): String {
+    private fun base(host: String, port: Int, tls: Boolean = false): String {
         val h = if (host.contains(':') && !host.startsWith("[")) "[$host]" else host
-        return "http://$h:$port"
+        return "${if (tls) "https" else "http"}://$h:$port"
     }
 
     /** The newest Hive Mobile on the PC, or null when it has none for this phone. */
@@ -533,18 +612,41 @@ class HiveLinkClient(private val http: OkHttpClient = defaultHttp()) {
         }
     }
 
-    data class Connection(val host: String, val port: Int, val token: String)
+    /** [tlsPort] > 0: the Hive's encrypted port, its certificate pinned (see pinnedCerts); every authenticated call goes there. */
+    data class Connection(val host: String, val port: Int, val token: String, val tlsPort: Int = 0)
 
     companion object {
         const val DEFAULT_PORT = 47800
+        /** A file copy with no data for this long is stopped (see downloadFile). */
+        const val STALL_MS = 20_000L
         /** Hive on the PC over a USB cable, through "adb reverse". */
         const val USB_HOST = "127.0.0.1"
         const val DISCOVERY_PORT = 47801
         const val DISCOVERY_REQUEST = "HIVELINK_DISCOVER"
 
+        /**
+         * SHA-256 (hex) of the paired Hive's certificate, learned through hello (signed with the pairing): the
+         * only certificate Hive Link's encrypted connections accept. A self-signed certificate checked this way
+         * needs no certificate authority; anything else, even a valid public certificate, is refused.
+         */
+        @Volatile var pinnedCerts: Set<String> = emptySet()
+        private val pinningTrust = object : javax.net.ssl.X509TrustManager {
+            override fun checkClientTrusted(chain: Array<java.security.cert.X509Certificate>, authType: String) = throw java.security.cert.CertificateException("No client certificates here")
+            override fun checkServerTrusted(chain: Array<java.security.cert.X509Certificate>, authType: String) {
+                val leaf = chain.firstOrNull() ?: throw java.security.cert.CertificateException("No certificate")
+                val fp = java.security.MessageDigest.getInstance("SHA-256").digest(leaf.encoded).joinToString("") { "%02x".format(it) }
+                if (fp !in pinnedCerts) throw java.security.cert.CertificateException("Not the paired Hive's certificate")
+            }
+            override fun getAcceptedIssuers(): Array<java.security.cert.X509Certificate> = emptyArray()
+        }
+        private val pinningSsl by lazy { javax.net.ssl.SSLContext.getInstance("TLS").apply { init(null, arrayOf(pinningTrust), java.security.SecureRandom()) } }
+
         fun defaultHttp(): OkHttpClient = OkHttpClient.Builder()
             .connectTimeout(5, TimeUnit.SECONDS)
             .readTimeout(60, TimeUnit.SECONDS)
+            // Hive Link's own clients talk to Hive only: by address (no names to check), its pinned certificate.
+            .sslSocketFactory(pinningSsl.socketFactory, pinningTrust)
+            .hostnameVerifier { _, _ -> true }
             .build()
     }
 }

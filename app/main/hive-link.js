@@ -6,6 +6,9 @@
 // it with a UDP broadcast, pairs once with a short code shown by Hive, and
 // then talks plain HTTP with a bearer token:
 //
+//   GET  /api/hello?device=&nonce= unauthenticated: proves this Hive holds the device's pairing
+//                                  (HMAC of the nonce with the token's hash) before the phone
+//                                  sends its token; 410 when it no longer knows the device
 //   GET  /api/info                 server identity and library revision
 //   GET  /api/library              compact track list (gzip) for matching
 //   GET  /api/love/changes?since=  Love changes after a sequence number
@@ -22,7 +25,8 @@
 //   GET  /api/themes               Hive's themes, and the one it shows now (current)
 //   GET  /api/remote               what Hive is playing (when remote control is on)
 //   POST /api/remote               play/pause, next, previous, seek, volume
-//   GET  /api/cover?name=          a library cover from Hive's covers folder
+//   GET  /api/cover?name=&c=       a library cover from Hive's covers folder; c= is the device's
+//                                  covers-only key (from /api/info), good for nothing else
 //                                  (the token may come as ?t= so any image
 //                                  loader on the phone can fetch it)
 //   GET  /api/stream/song?key=…    a song Hive doesn't have (Apple Music,
@@ -84,6 +88,9 @@
 // play's id is remembered, so a resend never counts twice); Love still waits.
 
 const crypto = require('crypto');
+const net = require('net');
+const https = require('https');
+const tlsCert = require('./tls-cert');
 const dgram = require('dgram');
 const fs = require('fs');
 const http = require('http');
@@ -93,6 +100,21 @@ const { Readable } = require('stream');
 const zlib = require('zlib');
 const { createIndex, normalize, artistParts } = require('./song-match');
 const fileMirror = require('./file-mirror');
+
+// A link in a track's path ("ytm:...", "radio:...", "podcast:..."), not a file. Two letters or more:
+// "C:\\Music\\Song.mp3" is a song on a Windows PC, and a one-letter test made every Windows song a link.
+/**
+ * Of [items] (each with a path, or tracks), those the edit really wrote: editSongs answers with
+ * { updatedPaths }. Only those are "edited" to the phone; the rest stay waiting there and are sent again.
+ * An answer without the list (an older editSongs) counts all, as before.
+ */
+function writtenOf(result, items) {
+  if (!Array.isArray(result?.updatedPaths)) return items;
+  const done = new Set(result.updatedPaths.map(p => path.resolve(String(p))));
+  return items.filter(i => done.has(path.resolve(String(i.path))));
+}
+
+function isLinkRef(ref) { return /^[a-z][a-z0-9+.-]+:/i.test(String(ref || '')); }
 
 const PROTOCOL_VERSION = 1;
 const DEFAULT_PORT = 47800;
@@ -109,6 +131,17 @@ const EDITABLE_TAGS = ['title', 'artist', 'album', 'albumArtist', 'genre', 'year
 const MAX_INBOX_PLAYS = 50000;
 const MAX_COUNTED_PLAY_IDS = 100000;
 const MAX_SONG_BYTES = 1024 * 1024 * 1024;
+// Room always left on the PC's drive: whatever a phone sends, the disk is never filled.
+const KEEP_FREE_BYTES = 2 * 1024 * 1024 * 1024;
+/** Whether [dir]'s drive has room for [size] more bytes, with KEEP_FREE_BYTES to spare (unknown: yes). */
+async function roomFor(dir, size) {
+  try {
+    for (let d = path.resolve(dir); ; d = path.dirname(d)) {
+      try { const st = await fs.promises.statfs(d); return Number(st.bavail) * Number(st.bsize) - size >= KEEP_FREE_BYTES; }
+      catch (err) { if (err?.code !== 'ENOENT' || path.dirname(d) === d) throw err; }
+    }
+  } catch { return true; }
+}
 // A copy of everything Hive Mobile keeps (see receivePhoneBackup).
 const MAX_PHONE_BACKUP_BYTES = 1024 * 1024 * 1024;
 const SONG_EXTENSIONS = new Set(['mp3', 'flac', 'm4a', 'mp4', 'aac', 'ogg', 'oga', 'opus', 'wav', 'aiff', 'aif', 'wv', 'ape', 'wma', 'alac']);
@@ -163,7 +196,7 @@ async function deletableTracks(wanted, all) {
     if (own === null) continue;
     let kept = false;
     for (const o of all) {
-      const p = o?.path && !/^[a-z]+:/i.test(String(o.path)) ? path.resolve(String(o.path)) : null;
+      const p = o?.path && !isLinkRef(String(o.path)) ? path.resolve(String(o.path)) : null;
       if (!p || going.has(p) || !sameSong(t, o)) continue;
       const theirs = await mtime(p);
       if (theirs !== null && theirs <= own) { kept = true; break; }
@@ -184,16 +217,21 @@ function lanAddresses() {
   return out;
 }
 
-function createHiveLink({ dataDir, getTracks, setLove, onPaired, streamSong = null, coversDir = null, remote = null, getPlaylists = null, savePlaylist = null, deletePlaylist = null, getPlays = null, recordPlays = null, spotifySearch = null, songTarget = null, onSongAdded = () => {}, acceptPhonePlays = false, getWrap = null, getWrapYears = null, getListening = null, files = null, onFileChanged = () => {}, getThemes = null, getCurrentTheme = null, onPairRequest = null, deleteSongs = null, editSongs = null, setRating = null, trackStats = null, getStreamLoves = null, applyStreamLoves = null, mobileApp = null, onInbox = () => {}, log = () => {}, port = DEFAULT_PORT, discoveryPort = DISCOVERY_PORT, acceptPhoneChanges = false }) {
+function createHiveLink({ dataDir, getTracks, setLove, onPaired, streamSong = null, coversDir = null, remote = null, getPlaylists = null, savePlaylist = null, deletePlaylist = null, getPlays = null, recordPlays = null, spotifySearch = null, songTarget = null, onSongAdded = () => {}, acceptPhonePlays = false, getWrap = null, getWrapYears = null, getListening = null, files = null, onFileChanged = () => {}, getThemes = null, getCurrentTheme = null, onPairRequest = null, deleteSongs = null, editSongs = null, setRating = null, trackStats = null, getStreamLoves = null, applyStreamLoves = null, mobileApp = null, onInbox = () => {}, log = () => {}, port = DEFAULT_PORT, discoveryPort = DISCOVERY_PORT, tlsPort = port + 2, acceptPhoneChanges = false }) {
   const statePath = path.join(dataDir, 'hive-link.json');
   let state = loadState();
   let server = null;
+  // The encrypted twin of [server] (see start) and this Hive's certificate.
+  let tlsServer = null;
+  let tlsIdentity = null;
+  let tlsReady = false;
   let discovery = null;
   let pairing = null;
   const subscribers = new Set();
   // Paths whose Love write was requested by the phone; the echo from
   // notifyLoveChanged is recorded with that device as the origin.
   const pendingOrigins = new Map();
+  const FILE_LOVE_SETTLE_MS = Number(process.env.HIVE_FILE_LOVE_SETTLE_MS) || 120000;
 
   function loadState() {
     try {
@@ -312,7 +350,9 @@ function createHiveLink({ dataDir, getTracks, setLove, onPaired, streamSong = nu
       pairedAt: Date.now(),
       lastSeen: Date.now(),
       ...(hash ? { phoneKeyHash: hash } : {}),
-      ...(known.some(d => d.trusted) ? { trusted: true } : {})
+      // Always said outright: a phone with no answer here was taken for one paired before trust existed
+      // and became trusted by itself at the next start (see loadState).
+      trusted: known.some(d => d.trusted)
     };
     for (const old of known) unpair(old.id);
     state.devices.push(device);
@@ -325,26 +365,39 @@ function createHiveLink({ dataDir, getTracks, setLove, onPaired, streamSong = nu
   // person at the PC allows or refuses it once (onPairRequest asks them).
   // The phone polls with the request's secret until it has an answer.
   const pairRequests = new Map(); // id -> { id, secret, name, status, result, expiresAt }
-  function requestPairing(body) {
+  // Pairing questions asked lately: a device that was refused waits before asking again, and no more
+  // than a few questions come up in a while, so nothing on the network can keep prompting the PC.
+  const refusedAt = new Map();
+  const askedAt = [];
+  function requestPairing(body, from = '') {
     if (!onPairRequest) return { status: 404, body: { error: 'This Hive only pairs with a code.' } };
     const now = Date.now();
     for (const [id, r] of pairRequests) if (r.expiresAt < now) pairRequests.delete(id);
     const name = String(body?.deviceName || 'Phone').slice(0, 80);
-    // One question at a time, so a device on the network can't flood the PC with prompts.
-    if (!trustedByKey(body?.phoneKey) && !fs.existsSync(path.join(dataDir, 'hive-link-allow-next')) && [...pairRequests.values()].some(r => r.status === 'pending')) return { status: 429, body: { error: 'Hive is already asking about another device.' } };
-    const r = { id: crypto.randomUUID(), secret: crypto.randomBytes(24).toString('base64url'), name, status: 'pending', result: null, expiresAt: now + PAIR_REQUEST_TTL_MS };
+    const allowNextWaiting = fs.existsSync(path.join(dataDir, ALLOW_NEXT_FILE));
+    if (!allowNextWaiting) {
+      if (now - (refusedAt.get(from) || 0) < 2 * 60_000) return { status: 429, body: { error: 'Hive said no a moment ago. Ask again in a couple of minutes.' } };
+      while (askedAt.length && now - askedAt[0] > 10 * 60_000) askedAt.shift();
+      if (askedAt.length >= 5) return { status: 429, body: { error: 'Hive has been asked too often. Try again in a few minutes, or pair with the code.' } };
+      // One question at a time, so a device on the network can't flood the PC with prompts.
+      if ([...pairRequests.values()].some(r => r.status === 'pending')) return { status: 429, body: { error: 'Hive is already asking about another device.' } };
+    }
+    const r = { id: crypto.randomUUID(), secret: crypto.randomBytes(24).toString('base64url'), name, status: 'pending', result: null, expiresAt: now + PAIR_REQUEST_TTL_MS, from, phoneKey: body?.phoneKey || null };
     pairRequests.set(r.id, r);
-    // A phone Hive already trusts, reinstalled: it's let in without asking anyone. So is the next
-    // phone to ask after the PC's owner left word for it (allowNextPhone), away from the PC.
+    // The next phone to ask after the PC's owner left word for it (allowNextPhone), away from the PC,
+    // is let in without asking. Anything else is asked about, even a phone that was paired before:
+    // its phone key travels with every request, so it proves nothing on its own.
     const allowedAhead = takeAllowNext();
-    if (allowedAhead || trustedByKey(body?.phoneKey)) {
+    if (allowedAhead) {
       r.status = 'allowed';
       r.result = addDevice(name, body?.phoneKey);
-      if (allowedAhead) { const d = state.devices.find(x => x.id === r.result.deviceId); if (d) { d.trusted = true; saveNow(); } }
-      log(allowedAhead ? 'Hive Link: let in the phone allowed ahead' : 'Hive Link: a trusted phone came back', name);
+      const d = state.devices.find(x => x.id === r.result.deviceId); if (d) { d.trusted = true; saveNow(); }
+      log('Hive Link: let in the phone allowed ahead', name);
       return { status: 202, body: { requestId: r.id, secret: r.secret, expiresAt: r.expiresAt } };
     }
-    Promise.resolve().then(() => onPairRequest({ id: r.id, name })).then(allow => answerPairRequest(r.id, !!allow)).catch(() => answerPairRequest(r.id, false));
+    askedAt.push(now);
+    const returning = trustedByKey(body?.phoneKey);
+    Promise.resolve().then(() => onPairRequest({ id: r.id, name, returning })).then(allow => answerPairRequest(r.id, !!allow)).catch(() => answerPairRequest(r.id, false));
     return { status: 202, body: { requestId: r.id, secret: r.secret, expiresAt: r.expiresAt } };
   }
 
@@ -366,7 +419,9 @@ function createHiveLink({ dataDir, getTracks, setLove, onPaired, streamSong = nu
     // An answer after the phone gave up pairs nothing.
     if (r.expiresAt < Date.now()) { pairRequests.delete(id); return false; }
     r.status = allow ? 'allowed' : 'refused';
-    if (allow) r.result = addDevice(r.name);
+    // Allowed: a phone paired before (its key) comes back as it was, trusted if it was, its old pairing gone.
+    if (allow) r.result = addDevice(r.name, r.phoneKey);
+    else if (r.from) refusedAt.set(r.from, Date.now());
     return true;
   }
 
@@ -380,8 +435,27 @@ function createHiveLink({ dataDir, getTracks, setLove, onPaired, streamSong = nu
     return { status: 200, body: { status: 'pending' } };
   }
 
+  // A phone's covers-only key: allowed in an address for /api/cover and nothing else, so a cover link
+  // the phone keeps (or hands to Android's media controls) never carries the phone's real token.
+  function coverKeyFor(device) {
+    if (!device.coverKeyHash || !device.coverKey) {
+      device.coverKey = crypto.randomBytes(18).toString('base64url');
+      device.coverKeyHash = sha256(device.coverKey);
+      saveSoon();
+    }
+    return device.coverKey;
+  }
+
   function authenticate(req, url) {
     const header = String(req.headers.authorization || '');
+    // The read-only media key (covers and song streams only): a phone's player and image loader use it over
+    // plain HTTP, so the real token only ever travels on the encrypted port.
+    const MEDIA_ROUTES = new Set(['/api/cover', '/api/stream/track', '/api/stream/song']);
+    const mediaKey = url && MEDIA_ROUTES.has(url.pathname) ? String(req.headers['x-hive-media'] || url.searchParams.get('c') || '') : '';
+    if (mediaKey) {
+      const hash = sha256(mediaKey);
+      return state.devices.find(d => d.coverKeyHash === hash) || null;
+    }
     // Covers alone accept the token in the address: image loaders can't always send headers.
     const fromQuery = url && url.pathname === '/api/cover' ? String(url.searchParams.get('t') || '') : '';
     const token = header.startsWith('Bearer ') ? header.slice(7).trim() : fromQuery;
@@ -447,6 +521,35 @@ function createHiveLink({ dataDir, getTracks, setLove, onPaired, streamSong = nu
       if (!pending && last && last.loved === !!loved) continue;
       recordLove(track, loved, pending?.at || Date.now(), pending?.origin || 'pc');
     }
+  }
+
+  /**
+   * Love changed in a song's file outside Hive's own Love button (another player, a file the phone's
+   * mirror sent, a tag editor), read in at a scan: recorded as a change, so phones take it instead of
+   * sending their older Love back over it. Only songs with a change on record are compared: a song
+   * nobody has changed yet has nothing to contradict.
+   */
+  let fileLoveSeen = new Map();
+  async function recordFileLoves() {
+    const lastById = new Map();
+    for (const e of state.events) lastById.set(e.id, e);
+    if (!lastById.size) return;
+    const now = Date.now();
+    const still = new Map();
+    for (const t of await getTracks()) {
+      if (!t?.path || typeof t.loved !== 'boolean') continue;
+      const id = trackIdFor(t);
+      const last = lastById.get(id);
+      if (!last || last.loved === t.loved || pendingOrigins.has(path.resolve(String(t.path)))) continue;
+      // Hive's own song list can trail a Love just made for a moment: only a difference that's still
+      // there FILE_LOVE_SETTLE_MS later, with no change made meanwhile, is the file's own.
+      const seen = fileLoveSeen.get(id);
+      if (seen && seen.loved === t.loved && seen.seq === last.seq) {
+        if (now - seen.at >= FILE_LOVE_SETTLE_MS) recordLove(t, t.loved, now, 'file');
+        else still.set(id, seen);
+      } else still.set(id, { loved: t.loved, seq: last.seq, at: now });
+    }
+    fileLoveSeen = still;
   }
 
   function changesSince(since) {
@@ -536,6 +639,7 @@ function createHiveLink({ dataDir, getTracks, setLove, onPaired, streamSong = nu
   // to Hive's listening history. A play whose song Hive doesn't have comes
   // back as "unknown" for the phone to keep and send again later.
   const countedPlayIds = new Set(state.countedPlays);
+  const countingPlayIds = new Set();
   async function countPlays(device, plays) {
     const tracks = await getTracks();
     const byId = new Map(tracks.map(t => [trackIdFor(t), t]));
@@ -544,13 +648,17 @@ function createHiveLink({ dataDir, getTracks, setLove, onPaired, streamSong = nu
       const clientId = String(p?.clientId ?? '');
       const playedAt = num(p?.playedAt);
       const key = `${device.id}:${clientId}`;
-      if (!clientId || !playedAt || countedPlayIds.has(key)) continue;
+      // Claimed before anything is awaited: a retry arriving while this request is still counting
+      // (the phone gives up after 60 s and sends again) skips them instead of counting them twice.
+      if (!clientId || !playedAt || countedPlayIds.has(key) || countingPlayIds.has(key)) continue;
       const track = byId.get(String(p?.id || ''));
       if (!track) { unknown.push(clientId); continue; }
+      countingPlayIds.add(key);
       ready.push({ id: trackIdFor(track), playedAt, listenedMs: Math.max(0, num(p?.listenedMs)), deviceId: device.id, clientId, track });
     }
     if (ready.length) {
-      await recordPlays(ready);
+      try { await recordPlays(ready); }
+      finally { for (const p of ready) countingPlayIds.delete(`${device.id}:${p.clientId}`); }
       for (const p of ready) { const key = `${device.id}:${p.clientId}`; countedPlayIds.add(key); state.countedPlays.push(key); }
       if (state.countedPlays.length > MAX_COUNTED_PLAY_IDS) state.countedPlays.splice(0, state.countedPlays.length - MAX_COUNTED_PLAY_IDS);
       saveSoon();
@@ -586,8 +694,8 @@ function createHiveLink({ dataDir, getTracks, setLove, onPaired, streamSong = nu
     const songFor = e => {
       if (e?.path) return byPath.get(path.resolve(String(e.path))) || null;
       if (!e?.title) return null;
-      byName ||= createIndex(tracks.filter(t => t?.path && !/^[a-z]+:/i.test(String(t.path))).map(t => ({ key: t, title: text(t.title), artist: text(t.artist), albumArtist: text(t.albumArtist), durationMs: Math.round(num(t.duration) * 1000) })));
-      return byName.match({ title: text(e.title), artist: text(e.artist), albumArtist: text(e.albumArtist), durationMs: Math.round(num(e.trackDuration) * 1000) })?.key || null;
+      byName ||= createIndex(tracks.filter(t => t?.path && !isLinkRef(String(t.path))).map(t => ({ key: t, title: text(t.title), artist: text(t.artist), albumArtist: text(t.albumArtist), album: text(t.album), durationMs: Math.round(num(t.duration) * 1000) })));
+      return byName.match({ title: text(e.title), artist: text(e.artist), albumArtist: text(e.albumArtist), album: text(e.album), durationMs: Math.round(num(e.trackDuration) * 1000) })?.key || null;
     };
     const plays = [];
     // Oldest first: the phone asks again from the newest it got, so none may be passed over.
@@ -761,12 +869,49 @@ function createHiveLink({ dataDir, getTracks, setLove, onPaired, streamSong = nu
     return appCache;
   }
 
+  // Only Hive Mobile talks to Hive Link. A web page open on this PC (or one using a DNS-rebinding
+  // name that points at it) could otherwise reach it: browsers always say where a request comes from
+  // (Origin, Sec-Fetch-*), which the phone never sends; and the phone asks for the PC by its address
+  // or a local name, never a public domain.
+  function fromBrowser(req) {
+    const h = req.headers || {};
+    return !!(h.origin || h['sec-fetch-mode'] || h['sec-fetch-site'] || h.referer);
+  }
+  function localHost(req) {
+    const host = String(req.headers?.host || '').trim().toLowerCase().replace(/:\d+$/, '').replace(/^\[|\]$/g, '');
+    if (!host) return true; // HTTP/1.0 or a raw client: nothing to rebind
+    if (net.isIP(host)) return true;
+    if (host === 'localhost' || !host.includes('.')) return true; // the PC's own name ("mypc")
+    return /\.(local|lan|home|internal|localdomain|intranet|home\.arpa|ts\.net|fritz\.box|home\.lan)$/.test(host);
+  }
+
   async function handle(req, res) {
+    if (fromBrowser(req) || !localHost(req)) { req.resume(); return send(res, 403, { error: 'Only Hive Mobile can use this.' }); }
     const url = new URL(req.url, 'http://hive.local');
     const route = `${req.method} ${url.pathname}`;
     if (route === 'GET /api/ping') return send(res, 200, { ok: true, protocol: PROTOCOL_VERSION, serverId: state.serverId });
+    // The phone checks it's talking to the Hive it paired with before it sends its token: this Hive
+    // proves it holds the pairing (the hash of the phone's token, which only the two of them know)
+    // by signing the phone's random challenge. Nothing secret crosses the network.
+    if (route === 'GET /api/hello') {
+      const nonce = String(url.searchParams.get('nonce') || '');
+      const d = state.devices.find(x => x.id === String(url.searchParams.get('device') || ''));
+      if (!/^[A-Za-z0-9_-]{16,128}$/.test(nonce)) return send(res, 404, { error: 'Not paired with this Hive.' });
+      // A phone this Hive no longer knows (unpaired here, or replaced by a re-pair): told so, with this Hive's
+      // id, so it asks to be paired again instead of looking for its Hive forever. No proof: nothing to prove.
+      if (!d) return send(res, 410, { serverId: state.serverId, error: 'This phone was unpaired from Hive. Pair it again.' });
+      const proof = crypto.createHmac('sha256', d.tokenHash).update(`hive-hello\n${nonce}\n${state.serverId}`).digest('hex');
+      // The encrypted port and this Hive's certificate, signed the same way: a phone pins exactly this
+      // certificate, so even a device relaying this answer can't read what the phone then sends.
+      if (tlsReady && tlsIdentity) {
+        const tls = { port: tlsPort, pin: tlsIdentity.pin };
+        const tlsProof = crypto.createHmac('sha256', d.tokenHash).update(`hive-hello-tls\n${nonce}\n${state.serverId}\n${tls.pin}\n${tls.port}`).digest('hex');
+        return send(res, 200, { serverId: state.serverId, proof, tls, tlsProof });
+      }
+      return send(res, 200, { serverId: state.serverId, proof });
+    }
     if (route === 'POST /api/pair') return (r => send(res, r.status, r.body))(completePairing(await readJson(req)));
-    if (route === 'POST /api/pair/request') return (r => send(res, r.status, r.body))(requestPairing(await readJson(req)));
+    if (route === 'POST /api/pair/request') return (r => send(res, r.status, r.body))(requestPairing(await readJson(req), req.socket?.remoteAddress || ''));
     if (route === 'GET /api/pair/request') return (r => send(res, r.status, r.body))(pairRequestStatus(url));
 
     const device = authenticate(req, url);
@@ -776,7 +921,7 @@ function createHiveLink({ dataDir, getTracks, setLove, onPaired, streamSong = nu
       case 'GET /api/info':
         // The file mirror is only for a phone Hive trusts: an untrusted one is told it isn't there,
         // so it keeps to plain song sync until the user trusts it.
-        return send(res, 200, { ...info(), files: !!files && trusted(device), playlistSync: !!savePlaylist && trusted(device), deviceId: device.id, deviceName: device.name });
+        return send(res, 200, { ...info(), files: !!files && trusted(device), playlistSync: !!savePlaylist && trusted(device), deviceId: device.id, deviceName: device.name, coverKey: coverKeyFor(device) });
       case 'GET /api/library': {
         const payload = await libraryPayload();
         if (req.headers['if-none-match'] === payload.etag) { res.writeHead(304, { ETag: payload.etag }); return res.end(); }
@@ -806,6 +951,7 @@ function createHiveLink({ dataDir, getTracks, setLove, onPaired, streamSong = nu
         return fs.createReadStream(found.path).on('error', () => res.destroy()).pipe(res);
       }
       case 'GET /api/love/changes':
+        await recordFileLoves();
         return send(res, 200, changesSince(num(url.searchParams.get('since'))));
       case 'POST /api/love': {
         const body = await readJson(req);
@@ -840,7 +986,7 @@ function createHiveLink({ dataDir, getTracks, setLove, onPaired, streamSong = nu
         const changes = (await readJson(req))?.changes;
         const list = Array.isArray(changes) ? changes.slice(0, 500) : [];
         if (!trusted(device)) return send(res, 200, { results: list.map(c => ({ id: String(c?.id || ''), status: 'waiting' })) });
-        const byId = new Map((await getTracks()).filter(t => t?.path && !/^[a-z]+:/i.test(String(t.path))).map(t => [trackIdFor(t), t]));
+        const byId = new Map((await getTracks()).filter(t => t?.path && !isLinkRef(String(t.path))).map(t => [trackIdFor(t), t]));
         const stats = trackStats ? await trackStats() : {};
         const results = [];
         for (const c of list) {
@@ -867,7 +1013,7 @@ function createHiveLink({ dataDir, getTracks, setLove, onPaired, streamSong = nu
         const stats = await trackStats();
         const tracks = [];
         for (const t of await getTracks()) {
-          if (!t?.path || /^[a-z]+:/i.test(String(t.path))) continue;
+          if (!t?.path || isLinkRef(String(t.path))) continue;
           const e = stats[t.path] || stats[path.resolve(String(t.path))];
           if (!e || num(e.statsAt) <= since) continue;
           tracks.push({ id: trackIdFor(t), rating: num(e.rating ?? t.rating), ratedAt: num(e.ratedAt), playCount: num(e.playCount) });
@@ -945,7 +1091,7 @@ function createHiveLink({ dataDir, getTracks, setLove, onPaired, streamSong = nu
         const body = await readJson(req);
         const wanted = new Set((Array.isArray(body?.ids) ? body.ids : []).slice(0, 2000).map(String));
         const all = await getTracks();
-        const asked = all.filter(t => t?.path && !/^[a-z]+:/i.test(String(t.path)) && wanted.has(trackIdFor(t)));
+        const asked = all.filter(t => t?.path && !isLinkRef(String(t.path)) && wanted.has(trackIdFor(t)));
         const tracks = await deletableTracks(asked, all);
         const result = tracks.length ? await deleteSongs(tracks.map(t => path.resolve(String(t.path))), device.name) : { deleted: [], errors: [] };
         const gone = new Set((result?.deleted || []).map(p => path.resolve(p)));
@@ -957,7 +1103,7 @@ function createHiveLink({ dataDir, getTracks, setLove, onPaired, streamSong = nu
         if (!editSongs) return send(res, 404, { error: "This Hive doesn't take tag edits from the phone." });
         if (!trusted(device)) return send(res, 403, { error: 'Apply this phone\'s changes in Hive once (Settings › Connections) before it can edit songs there.' });
         const body = await readJson(req);
-        const byId = new Map((await getTracks()).filter(t => t?.path && !/^[a-z]+:/i.test(String(t.path))).map(t => [trackIdFor(t), t]));
+        const byId = new Map((await getTracks()).filter(t => t?.path && !isLinkRef(String(t.path))).map(t => [trackIdFor(t), t]));
         const edits = [];
         for (const e of (Array.isArray(body?.edits) ? body.edits : []).slice(0, 2000)) {
           const t = byId.get(String(e?.id || ''));
@@ -965,9 +1111,9 @@ function createHiveLink({ dataDir, getTracks, setLove, onPaired, streamSong = nu
           for (const k of EDITABLE_TAGS) if (e?.tags && Object.prototype.hasOwnProperty.call(e.tags, k)) tags[k] = text(e.tags[k]).slice(0, k === 'lyrics' ? 200_000 : 500);
           if (t && Object.keys(tags).length) edits.push({ path: path.resolve(String(t.path)), tags, id: trackIdFor(t) });
         }
-        if (edits.length) await editSongs(edits.map(({ path: p, tags }) => ({ path: p, tags })), null, device.name);
-        log('Hive Link: phone edited tags', device.name, edits.length);
-        return send(res, 200, { edited: edits.map(e => e.id) });
+        const done = edits.length ? writtenOf(await editSongs(edits.map(({ path: p, tags }) => ({ path: p, tags })), null, device.name), edits) : [];
+        log('Hive Link: phone edited tags', device.name, done.length, 'of', edits.length);
+        return send(res, 200, { edited: done.map(e => e.id) });
       }
       case 'PUT /api/songs/cover':
         return receiveCover(req, res, url.searchParams, device);
@@ -1022,17 +1168,17 @@ function createHiveLink({ dataDir, getTracks, setLove, onPaired, streamSong = nu
     if (!trusted(device)) return refuse(403, 'Apply this phone\'s changes in Hive once (Settings › Connections) before it can change covers there.');
     if (back?.remove) {
       const wanted = new Set(String(params.get('ids') || '').split(',').filter(Boolean).slice(0, 2000));
-      const songs = (await getTracks()).filter(t => t?.path && !/^[a-z]+:/i.test(String(t.path)) && wanted.has(trackIdFor(t)));
+      const songs = (await getTracks()).filter(t => t?.path && !isLinkRef(String(t.path)) && wanted.has(trackIdFor(t)));
       req.resume();
       if (!songs.length) return send(res, 404, { error: 'Hive has none of those songs.' });
-      await editSongs(songs.map(t => ({ path: path.resolve(String(t.path)) })), null, device.name, back);
-      log('Hive Link: phone took off a back cover', device.name, songs.length);
-      return send(res, 200, { edited: songs.map(trackIdFor) });
+      const done = writtenOf(await editSongs(songs.map(t => ({ path: path.resolve(String(t.path)) })), null, device.name, back), songs);
+      log('Hive Link: phone took off a back cover', device.name, done.length);
+      return send(res, 200, { edited: done.map(trackIdFor) });
     }
     const size = Number(req.headers['content-length']);
     if (!Number.isFinite(size) || size <= 0 || size > MAX_COVER_BYTES) return refuse(413, 'That picture is too big for a cover.');
     const wanted = new Set(String(params.get('ids') || '').split(',').filter(Boolean).slice(0, 2000));
-    const songs = (await getTracks()).filter(t => t?.path && !/^[a-z]+:/i.test(String(t.path)) && wanted.has(trackIdFor(t)));
+    const songs = (await getTracks()).filter(t => t?.path && !isLinkRef(String(t.path)) && wanted.has(trackIdFor(t)));
     if (!songs.length) return refuse(404, 'Hive has none of those songs.');
     const chunks = []; let got = 0;
     try {
@@ -1046,10 +1192,11 @@ function createHiveLink({ dataDir, getTracks, setLove, onPaired, streamSong = nu
     if (!ext) return send(res, 415, { error: 'The cover must be a JPEG or PNG picture.' });
     const file = path.join(os.tmpdir(), `hive-link-cover-${crypto.randomUUID()}.${ext}`);
     fs.writeFileSync(file, image);
-    try { await editSongs(songs.map(t => ({ path: path.resolve(String(t.path)) })), file, device.name, back); }
+    let done = [];
+    try { done = writtenOf(await editSongs(songs.map(t => ({ path: path.resolve(String(t.path)) })), file, device.name, back), songs); }
     finally { fs.rm(file, { force: true }, () => {}); }
-    log('Hive Link: phone changed a cover', device.name, songs.length);
-    return send(res, 200, { edited: songs.map(trackIdFor) });
+    log('Hive Link: phone changed a cover', device.name, done.length, 'of', songs.length);
+    return send(res, 200, { edited: done.map(trackIdFor) });
   }
 
   // ---- the file mirror (see file-mirror.js) ---------------------------------
@@ -1061,7 +1208,11 @@ function createHiveLink({ dataDir, getTracks, setLove, onPaired, streamSong = nu
     const root = await files.root();
     if (!root) return refuse(503, 'Hive has no library folder yet.');
     const route = `${req.method} ${url.pathname}`;
-    if (route === 'GET /api/files') return send(res, 200, { files: await fileMirror.list(root) });
+    if (route === 'GET /api/files') {
+      // A drive that isn't there answers 503: an empty list would read as every song deleted.
+      try { return send(res, 200, await fileMirror.list(root)); }
+      catch (err) { if (err?.code === 'LIBRARY_AWAY') return send(res, 503, { error: err.message }); throw err; }
+    }
     if (route === 'POST /api/files/delete') {
       const body = await readJson(req);
       const deleted = [];
@@ -1085,6 +1236,7 @@ function createHiveLink({ dataDir, getTracks, setLove, onPaired, streamSong = nu
     }
     const size = Number(req.headers['content-length']);
     if (!Number.isFinite(size) || size < 0) return refuse(411, 'The file needs its length.');
+    if (!(await roomFor(root, size))) return refuse(507, "The PC's drive is nearly full: Hive didn't take the file.");
     try {
       if (route === 'POST /api/files/keep') {
         const kept = fileMirror.freeName(path.join(files.keepDir, 'Phone copies replaced', ...rel.split('/')));
@@ -1121,6 +1273,7 @@ function createHiveLink({ dataDir, getTracks, setLove, onPaired, streamSong = nu
     const size = Number(req.headers['content-length']);
     if (!Number.isFinite(size) || size <= 0) return refuse(411, 'The backup needs its length.');
     if (size > MAX_PHONE_BACKUP_BYTES) return refuse(413, 'That backup is too big.');
+    if (!(await roomFor(dataDir, size))) return refuse(507, "The PC's drive is nearly full: the backup wasn't kept.");
     fs.mkdirSync(phoneBackupsDir, { recursive: true });
     const part = path.join(phoneBackupsDir, `${id}.zip.part`);
     try {
@@ -1164,7 +1317,7 @@ function createHiveLink({ dataDir, getTracks, setLove, onPaired, streamSong = nu
       durationMs: num(params.get('duration')), ext
     };
     if (!meta.title) return refuse(400, 'The song needs a title.');
-    const library = (await getTracks()).filter(t => t?.path && !/^[a-z]+:/i.test(String(t.path)));
+    const library = (await getTracks()).filter(t => t?.path && !isLinkRef(String(t.path)));
     // A better copy of a song Hive has: the old one makes way, but only for a
     // trusted phone and only the same song (a phone can't trash an unrelated file this way).
     const replaces = text(params.get('replaces'));
@@ -1184,7 +1337,7 @@ function createHiveLink({ dataDir, getTracks, setLove, onPaired, streamSong = nu
       log('Hive Link: phone replaced a song', device.name, String(old.path), gone ? 'old copy to the Trash' : 'old copy kept');
       return gone;
     };
-    const index = createIndex(tracks.map(t => ({ key: trackIdFor(t), title: text(t.title), artist: text(t.artist), albumArtist: text(t.albumArtist), durationMs: Math.round(num(t.duration) * 1000) })));
+    const index = createIndex(tracks.map(t => ({ key: trackIdFor(t), title: text(t.title), artist: text(t.artist), albumArtist: text(t.albumArtist), album: text(t.album), durationMs: Math.round(num(t.duration) * 1000) })));
     // A phone keeping its songs one to one with Hive says how many copies of this
     // song Hive already holds for its other files ("have"): one more is a new
     // version to keep. Without it, any copy of the song means Hive has it.
@@ -1200,6 +1353,7 @@ function createHiveLink({ dataDir, getTracks, setLove, onPaired, streamSong = nu
     }
     let target;
     try { target = await songTarget(meta); } catch (err) { return refuse(507, err?.message || String(err)); }
+    if (!(await roomFor(path.dirname(target), size))) return refuse(507, "The PC's drive is nearly full: Hive didn't take the song.");
     const part = path.join(path.dirname(target), `.${path.basename(target)}.hivelink-part`);
     try {
       await fs.promises.mkdir(path.dirname(target), { recursive: true });
@@ -1274,7 +1428,8 @@ function createHiveLink({ dataDir, getTracks, setLove, onPaired, streamSong = nu
           return { kind: 'stream', key: `${stream[1] === 'apple' ? 'am' : 'sp'}:${stream[2]}`, title: text(k.title), artist: text(k.artist), album: text(k.album),
             duration: Math.round(num(k.duration) * 1000), cover: COVER_FILE.test(String(k.cover || '')) ? String(k.cover) : '' };
         }
-        if (/^[a-z]+:/i.test(ref)) return null; // radio, podcasts and the like stay on the PC
+        // Radio, podcasts and the like stay on the PC (two letters or more: "C:\\..." is a Windows song).
+        if (isLinkRef(ref)) return null;
         const track = byPath.get(path.resolve(ref));
         return track ? { kind: 'track', id: trackIdFor(track) } : null;
       }).filter(Boolean);
@@ -1305,7 +1460,7 @@ function createHiveLink({ dataDir, getTracks, setLove, onPaired, streamSong = nu
     const p = remote.state() || {};
     const track = p.track || null;
     let id = '';
-    if (track?.path && !/^[a-z]+:/i.test(String(track.path))) {
+    if (track?.path && !isLinkRef(String(track.path))) {
       const wanted = path.resolve(String(track.path));
       const hit = (await getTracks()).find(t => t?.path && path.resolve(String(t.path)) === wanted);
       id = hit ? trackIdFor(hit) : '';
@@ -1350,7 +1505,7 @@ function createHiveLink({ dataDir, getTracks, setLove, onPaired, streamSong = nu
   // A library song's file, by its Hive Link id. Only files Hive lists are served.
   async function streamTrack(req, res, id) {
     const track = (await getTracks()).find(t => t && t.path && trackIdFor(t) === id);
-    if (!track || /^[a-z]+:/i.test(String(track.path))) return send(res, 404, { error: 'No such song.' });
+    if (!track || isLinkRef(String(track.path))) return send(res, 404, { error: 'No such song.' });
     const file = path.resolve(String(track.path));
     let size;
     try { size = (await fs.promises.stat(file)).size; } catch { return send(res, 404, { error: 'The file is gone.' }); }
@@ -1410,15 +1565,24 @@ function createHiveLink({ dataDir, getTracks, setLove, onPaired, streamSong = nu
       setTimeout(() => applyInbox().catch(err => log('Hive Link inbox apply failed', err?.message || String(err))), 2000);
     }
     if (server) return;
-    server = http.createServer((req, res) => {
+    const onRequest = (req, res) => {
       handle(req, res).catch(err => {
         log('Hive Link request failed', `${req.method} ${req.url}`, err?.message || String(err));
         if (!res.headersSent) send(res, 500, { error: err?.message || 'Internal error.' });
         else try { res.end(); } catch {}
       });
-    });
+    };
+    server = http.createServer(onRequest);
     server.on('error', err => log('Hive Link server error', err?.message || String(err)));
     server.listen(port, '0.0.0.0', () => log('Hive Link listening', port));
+    // The same, encrypted, on the next port but one: a phone that knows this Hive's certificate (from
+    // /api/hello, signed with the pairing) talks to it here, so nothing it sends can be read on the way.
+    try {
+      tlsIdentity = tlsCert.loadOrCreate(dataDir);
+      tlsServer = https.createServer({ key: tlsIdentity.key, cert: tlsIdentity.cert, minVersion: 'TLSv1.2' }, onRequest);
+      tlsServer.on('error', err => { tlsReady = false; log('Hive Link encrypted server error', err?.message || String(err)); });
+      tlsServer.listen(tlsPort, '0.0.0.0', () => { tlsReady = true; log('Hive Link encrypted listening', tlsPort); });
+    } catch (err) { tlsServer = null; tlsReady = false; log('Hive Link encrypted server unavailable', err?.message || String(err)); }
     startDiscovery();
   }
 
@@ -1426,8 +1590,11 @@ function createHiveLink({ dataDir, getTracks, setLove, onPaired, streamSong = nu
     for (const sub of subscribers) { try { sub.res.end(); } catch {} }
     subscribers.clear();
     try { server?.close(); } catch {}
+    try { tlsServer?.close(); } catch {}
     try { discovery?.close(); } catch {}
     server = null;
+    tlsServer = null;
+    tlsReady = false;
     discovery = null;
     if (saveTimer) { clearTimeout(saveTimer); saveTimer = null; }
     saveNow();
@@ -1452,8 +1619,8 @@ function createHiveLink({ dataDir, getTracks, setLove, onPaired, streamSong = nu
     inboxSummary,
     applyInbox,
     discardInbox,
-    devices: () => state.devices.map(({ tokenHash, ...rest }) => rest)
+    devices: () => state.devices.map(({ tokenHash, coverKey, coverKeyHash, ...rest }) => rest)
   };
 }
 
-module.exports = { createHiveLink, trackIdFor, DEFAULT_PORT, DISCOVERY_PORT, PROTOCOL_VERSION };
+module.exports = { createHiveLink, trackIdFor, DEFAULT_PORT, DISCOVERY_PORT, PROTOCOL_VERSION, isLinkRef };
