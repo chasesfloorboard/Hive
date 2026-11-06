@@ -64,6 +64,9 @@
             </intent-filter>
         </activity>
 
+        <!-- Apple Music's own sign-in page (unofficial library access). -->
+        <activity android:name=".AppleSignInActivity" android:exported="false" android:windowSoftInputMode="adjustResize" />
+
         <!-- Hive over the lock screen while music plays, in its own task away from Recents. -->
         <activity
             android:name=".LockPlayerActivity"

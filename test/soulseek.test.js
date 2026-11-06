@@ -104,6 +104,11 @@ test('the picker matches a tracklist by title, prefers the chosen format and fre
   assert.equal(lossless[0].files.size, 3);
   assert.ok(!lossless.some(p => p.user === 'wrong'), 'lengths that disagree are not the album');
   assert.equal(candidates('Slint', wanted, results, 'mp3')[0].user, 'mp3guy');
+  // MP3 chosen: a slow, queued MP3 still beats a fast FLAC; FLAC only when nobody shares the MP3.
+  const slowMp3 = { user: 'slowmp3', files: folder('mp3'), freeSlot: false, speed: 20, queue: 50 };
+  const fastFlac = { user: 'fastflac', files: folder('flac'), freeSlot: true, speed: 9000000, queue: 0 };
+  assert.equal(candidates('Slint', wanted, [fastFlac, slowMp3], 'mp3')[0].user, 'slowmp3');
+  assert.equal(candidates('Slint', wanted, [fastFlac], 'mp3')[0].user, 'fastflac');
   assert.equal(titleOf('01 Slint - Breadcrumb Trail.flac', 'Slint'), 'Breadcrumb Trail');
   assert.equal(albumQuery('Fontaines D.C., Someone', 'Romance (Deluxe Edition)'), 'Fontaines D.C. Romance');
 });

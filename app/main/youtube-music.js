@@ -349,20 +349,20 @@ function create({ userDataDir, net }) {
   // adds a browsed playlist's first songs after whatever is waiting.
   async function prefetch(tracks, { mode = 'queue' } = {}) {
     await loadMatches();
-    // Gentle with YouTube: only what's about to play (the next two in the queue, a browsed
-    // playlist's first song), never a whole list at once.
-    const wanted = (Array.isArray(tracks) ? tracks : []).filter(t => String(t?.path || '').startsWith('ytm:')).slice(0, mode === 'append' ? 1 : 2).filter(t => !isReady(t));
+    // The next 20 songs in the queue (a browsed playlist's first song), prepared one at a
+    // time with a pause between, so YouTube never sees a burst.
+    const wanted = (Array.isArray(tracks) ? tracks : []).filter(t => String(t?.path || '').startsWith('ytm:')).filter(t => !isReady(t)).slice(0, mode === 'append' ? 1 : 20);
     if (mode === 'append') {
       const have = new Set(prefetchList.map(t => t.path));
       prefetchList.push(...wanted.filter(t => !have.has(t.path)));
-      prefetchList = prefetchList.slice(0, 3);
+      prefetchList = prefetchList.slice(0, 21);
       if (prefetchRunning < 1) void prefetchWorker(prefetchGeneration);
       return prefetchList.length;
     }
     const generation = ++prefetchGeneration;
-    prefetchList = wanted;
+    prefetchList = [...wanted];
     void prefetchWorker(generation);
-    return prefetchList.length;
+    return wanted.length;
   }
 
   // MusicBrainz (1 request a second, as its terms ask).

@@ -49,6 +49,24 @@ class YouTubeMusic(context: Context, private val http: OkHttpClient = AppleMusic
     }
 
 
+    /**
+     * Auto DJ for streamed songs: YouTube Music's radio from [song] (similar
+     * songs, as its app plays after one), up to [max], without [song] itself.
+     * Each comes already matched, so it starts without a search. Blocking.
+     */
+    fun radio(song: WantedSong, max: Int = 25): List<com.local.hive.mobile.data.StreamTrack> {
+        val seed = prefs.getString("match:${song.key}", null) ?: findMatch(song)?.also { prefs.edit().putString("match:${song.key}", it).apply() } ?: return emptyList()
+        val body = buildJsonObject {
+            putJsonObject("context") { putJsonObject("client") { put("clientName", "WEB_REMIX"); put("clientVersion", MUSIC_VERSION); put("hl", "en") } }
+            put("videoId", seed); put("playlistId", "RDAMVM$seed"); put("isAudioOnly", true)
+        }
+        val o = post("https://music.youtube.com/youtubei/v1/next?prettyPrint=false", body, WEB_UA, origin = "https://music.youtube.com")
+        val edit = prefs.edit()
+        val out = radioItems(o).filter { it.second != seed }.distinctBy { it.second }.take(max).map { (track, id) -> edit.putString("match:${track.key}", id); track }
+        edit.apply()
+        return out
+    }
+
     /** Forgets [key]'s audio link (it was refused), so the next resolve fetches a new one. */
     fun invalidate(key: String) {
         prefs.getString("match:$key", null)?.let { links.remove(it); prefs.edit().remove("link:$it").apply() }
@@ -254,6 +272,33 @@ class YouTubeMusic(context: Context, private val http: OkHttpClient = AppleMusic
         fun uriFor(s: WantedSong): String = Uri.Builder().scheme("ytm").authority("song")
             .appendQueryParameter("key", s.key).appendQueryParameter("title", s.title).appendQueryParameter("artist", s.artist)
             .appendQueryParameter("album", s.album).appendQueryParameter("duration", s.durationMs.toString()).build().toString()
+
+        /** The songs in a YouTube Music "next" answer (its radio), each with its video id. */
+        fun radioItems(o: JsonElement): List<Pair<com.local.hive.mobile.data.StreamTrack, String>> {
+            val found = mutableListOf<JsonObject>()
+            fun walk(e: JsonElement?) {
+                when (e) {
+                    is JsonObject -> (e["playlistPanelVideoRenderer"] as? JsonObject)?.let { found += it } ?: e.values.forEach(::walk)
+                    is JsonArray -> e.forEach(::walk)
+                    else -> Unit
+                }
+            }
+            walk(o)
+            fun runs(e: JsonElement?) = ((e as? JsonObject)?.get("runs") as? JsonArray).orEmpty().joinToString("") { (it as? JsonObject)?.str("text").orEmpty() }
+            return found.mapNotNull { p ->
+                val id = p.str("videoId") ?: return@mapNotNull null
+                val title = runs(p["title"]).ifBlank { return@mapNotNull null }
+                // "Artist • Album • 2002" (or "Artist • 1.2M views • 2019" for a video).
+                val byline = runs(p["longBylineText"]).split(" • ")
+                val album = byline.getOrNull(1)?.takeUnless { Regex("""views?$|^\d{4}$""").containsMatchIn(it) }.orEmpty()
+                val art = (((p["thumbnail"] as? JsonObject)?.get("thumbnails") as? JsonArray)?.lastOrNull() as? JsonObject)?.str("url").orEmpty()
+                    .replace(Regex("""=w\d+-h\d+.*$"""), "=w600-h600-l90-rj")
+                com.local.hive.mobile.data.StreamTrack(
+                    key = "yt:$id", source = "Auto DJ", title = title, artist = byline.firstOrNull().orEmpty(), album = album,
+                    durationMs = (seconds(runs(p["lengthText"])) ?: 0) * 1000L, artworkUrl = art, previewUrl = "", url = "https://music.youtube.com/watch?v=$id",
+                ) to id
+            }
+        }
 
         fun wantedFrom(uri: Uri): WantedSong? = if (uri.scheme != "ytm") null else WantedSong(
             uri.getQueryParameter("key") ?: return null, uri.getQueryParameter("title").orEmpty(), uri.getQueryParameter("artist").orEmpty(),

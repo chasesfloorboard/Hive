@@ -272,7 +272,7 @@ private fun HiveContent(vm: MainViewModel, openPlayerInitially: Boolean) {
                             SongsScreen(vm, name.trimEnd('/').substringAfterLast('/').ifBlank { name }, vm.folderTracks(name), actions, bottomPadding) { nav.popBackStack() }
                         }
                         page("apple") {
-                            AppleMusicScreen(vm, bottomPadding, onBack = { nav.popBackStack() }) { url -> nav.navigate(appleRoute(url)) }
+                            AppleMusicScreen(vm, bottomPadding, onBack = { nav.popBackStack() }, onOpenSettings = homeNav.openSettings) { url -> nav.navigate(appleRoute(url)) }
                         }
                         page("apple/a?url={url}") { entry ->
                             AppleArtistScreen(vm, entry.arguments?.getString("url").orEmpty(), bottomPadding, onBack = { nav.popBackStack() }) { url -> nav.navigate(appleRoute(url)) }

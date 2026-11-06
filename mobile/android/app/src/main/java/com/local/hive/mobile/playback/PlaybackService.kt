@@ -207,18 +207,53 @@ class PlaybackService : MediaLibraryService() {
                 if (upNext.firstOrNull() == mediaItem?.mediaId) upNext.removeAt(0) else if (reason != Player.MEDIA_ITEM_TRANSITION_REASON_PLAYLIST_CHANGED) upNext.clear()
             }
         })
-        // The next two streamed songs are found on YouTube Music while this one plays, so they start at once.
+        // Auto DJ for streamed songs: when an Apple Music or Spotify song is the last in the queue,
+        // similar songs (YouTube Music's radio from it) are added after it, so the music carries on.
         player.addListener(object : Player.Listener {
+            private var seeded: String? = null
+            override fun onEvents(player: Player, events: Player.Events) {
+                if (!events.containsAny(Player.EVENT_MEDIA_ITEM_TRANSITION, Player.EVENT_TIMELINE_CHANGED, Player.EVENT_REPEAT_MODE_CHANGED)) return
+                if (player.repeatMode != Player.REPEAT_MODE_OFF || player.hasNextMediaItem()) return
+                val item = player.currentMediaItem ?: return
+                val song = item.localConfiguration?.uri?.let { com.local.hive.mobile.stream.YouTubeMusic.wantedFrom(it) }
+                if (song == null) { android.util.Log.i("Hive", "Auto DJ: last song isn't streamed (${item.localConfiguration?.uri?.scheme})"); return }
+                if (seeded == item.mediaId) return
+                seeded = item.mediaId
+                scope.launch(Dispatchers.IO) {
+                    val tracks = runCatching { app.youTubeMusic.radio(song) }.onFailure { android.util.Log.w("Hive", "Auto DJ: ${it.message}") }.getOrNull().orEmpty()
+                    android.util.Log.i("Hive", "Auto DJ: ${tracks.size} songs like ${song.title}")
+                    if (tracks.isEmpty()) return@launch
+                    runCatching { app.database.dao().upsertStreamTracks(tracks) }
+                    val items = tracks.map { t -> t.toMediaItem(com.local.hive.mobile.stream.YouTubeMusic.uriFor(com.local.hive.mobile.stream.WantedSong(t.key, t.title, t.artist, t.album, t.durationMs))) }
+                    kotlinx.coroutines.withContext(Dispatchers.Main) {
+                        // Only if the queue still ends at that song (nothing was picked meanwhile).
+                        if (player.currentMediaItem?.mediaId != item.mediaId || player.hasNextMediaItem()) { seeded = null; return@withContext }
+                        val inQueue = (0 until player.mediaItemCount).map { player.getMediaItemAt(it).mediaId }.toSet()
+                        player.addMediaItems(items.filter { it.mediaId !in inQueue })
+                        seeded = null // done: the same song picked again later grows its own queue
+                        // A song that had already ended (or failed) with nothing after it: carry on now.
+                        if (player.playbackState == Player.STATE_ENDED || player.playerError != null) { player.seekToNextMediaItem(); player.prepare(); player.play() }
+                    }
+                }
+            }
+        })
+        // The next 20 streamed songs are found on YouTube Music while this one plays, so they start at once:
+        // one at a time with a pause between (YouTube never sees a burst), started over when the queue moves.
+        player.addListener(object : Player.Listener {
+            private var preparing: kotlinx.coroutines.Job? = null
             override fun onEvents(player: Player, events: Player.Events) {
                 if (!events.containsAny(Player.EVENT_MEDIA_ITEM_TRANSITION, Player.EVENT_TIMELINE_CHANGED, Player.EVENT_SHUFFLE_MODE_ENABLED_CHANGED)) return
                 // What actually plays next, shuffle and repeat included.
                 val tl = player.currentTimeline
                 val next = if (tl.isEmpty) emptyList() else generateSequence(player.currentMediaItemIndex) { i ->
                     tl.getNextWindowIndex(i, player.repeatMode.takeIf { it != androidx.media3.common.Player.REPEAT_MODE_ONE } ?: androidx.media3.common.Player.REPEAT_MODE_OFF, player.shuffleModeEnabled).takeIf { it != androidx.media3.common.C.INDEX_UNSET }
-                }.drop(1).take(2).filter { it != player.currentMediaItemIndex }.toList()
+                }.drop(1).take(20).filter { it != player.currentMediaItemIndex }.toList()
                     .mapNotNull { player.getMediaItemAt(it).localConfiguration?.uri }
                     .mapNotNull { com.local.hive.mobile.stream.YouTubeMusic.wantedFrom(it) }
-                if (next.isNotEmpty()) scope.launch(Dispatchers.IO) { next.forEach { song -> runCatching { app.youTubeMusic.resolve(song) } } }
+                preparing?.cancel()
+                if (next.isNotEmpty()) preparing = scope.launch(Dispatchers.IO) {
+                    next.forEachIndexed { i, song -> runCatching { app.youTubeMusic.resolve(song) }; if (i >= 1) kotlinx.coroutines.delay(600) }
+                }
             }
         })
         // Hive's lock-screen player covers the lock screen whenever Hive is in use: opened as the
@@ -349,6 +384,13 @@ class PlaybackService : MediaLibraryService() {
         val sessionPlayer = object : androidx.media3.common.ForwardingPlayer(player) {
             override fun seekToNext() { if (!crossfader.skip()) super.seekToNext() }
             override fun seekToNextMediaItem() { if (!crossfader.skip()) super.seekToNextMediaItem() }
+            // Play from the car, a headset or the lock screen always starts the music: after an error it
+            // prepares again, and when another app (the assistant, a call) took the sound, it asks for it back.
+            override fun play() {
+                if (playbackState == Player.STATE_IDLE) super.prepare()
+                if (playWhenReady && !isPlaying) super.pause()
+                super.play()
+            }
         }
         session = MediaLibrarySession.Builder(this, sessionPlayer, object : MediaLibrarySession.Callback {
             // Every controller (the car, the lock screen, Bluetooth) may use Hive's heart, shuffle and repeat buttons.

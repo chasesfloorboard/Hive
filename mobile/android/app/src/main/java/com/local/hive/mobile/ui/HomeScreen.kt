@@ -40,6 +40,7 @@ import androidx.compose.material.icons.rounded.ArrowDropDown
 import androidx.compose.material.icons.rounded.AutoAwesome
 import androidx.compose.material.icons.rounded.Category
 import androidx.compose.material.icons.rounded.Check
+import androidx.compose.material.icons.rounded.CloudDownload
 import androidx.compose.material.icons.rounded.Computer
 import androidx.compose.material.icons.rounded.Devices
 import androidx.compose.material.icons.rounded.Explore
@@ -902,20 +903,55 @@ private fun FavoriteSquare(title: String, covers: List<Any>, round: Boolean, ico
 private fun BrowseTab(vm: MainViewModel, nav: HomeNavigation, bottom: Dp) {
     val link by vm.link.collectAsStateWithLifecycle()
     val tiles = buildList {
-        add(Triple("Apple Music", "Charts and shared links", Icons.Rounded.Explore) to "apple")
-        add(Triple("Spotify", "Playlists and shared links", Icons.Rounded.GraphicEq) to "spotify")
+        add(Triple("Apple Music", "Charts and albums", Icons.Rounded.Explore) to "apple")
+        add(Triple("Spotify", "Playlists and links", Icons.Rounded.GraphicEq) to "spotify")
         add(Triple("Radio", "Stations worldwide", Icons.Rounded.Radio) to "radio")
         add(Triple("Podcasts", "Shows and episodes", Icons.Rounded.Podcasts) to "podcasts")
+        add(Triple("Google Drive", "Import a shared folder", Icons.Rounded.CloudDownload) to "drive")
         if (link.paired) {
             add(Triple("PC library", "Every song on your PC", Icons.Rounded.Computer) to "pc")
             add(Triple("Playing on your PC", "Control it from here", Icons.Rounded.Devices) to "remote")
         }
         add(Triple("Yearly Wrap", "Your year in music", Icons.Rounded.AutoAwesome) to "wrap")
     }
+    val context = androidx.compose.ui.platform.LocalContext.current
+    val toast = LocalToast.current
+    var drive by remember { mutableStateOf(false) }
+    // A Drive link already copied fills the box in.
+    if (drive) {
+        val copied = remember {
+            runCatching { (context.getSystemService(android.content.ClipboardManager::class.java)).primaryClip?.getItemAt(0)?.coerceToText(context)?.toString().orEmpty() }.getOrDefault("")
+                .takeIf { com.local.hive.mobile.soulseek.DriveLinks.parse(it) != null }.orEmpty()
+        }
+        NameDialog("Import from Google Drive", copied, "Import", onDismiss = { drive = false }, hint = "Link to a shared folder or song") { text ->
+            drive = false
+            if (com.local.hive.mobile.soulseek.DriveImportWorker.enqueue(context, text)) toast("Importing from Google Drive. It's in your downloads, and becomes a playlist when it's done.")
+            else toast("That isn't a Google Drive link. Share the folder as “Anyone with the link” and copy its link.")
+        }
+    }
+    // Popular playlists, for when you don't know what to play: Spotify's and Apple Music's front
+    // pages, taken in turn. Kept for the session by each service (30 minutes for Apple).
+    val popular by produceState(emptyList<Pair<com.local.hive.mobile.ui.ServiceCard, String>>()) {
+        val sp = runCatching { vm.spotify.picks() }.getOrDefault(emptyList()).map { ServiceCard(it.name, it.subtitle.ifBlank { "Spotify" }, it.artwork, it.url) to "spotify/c?url=${android.net.Uri.encode(it.url)}" }
+        val am = runCatching { vm.appleMusic.browse() }.getOrDefault(emptyList()).flatMap { it.cards }.filter { it.kind == "playlist" }
+            .map { val url = it.url.ifBlank { "https://music.apple.com/us/playlist/x/${it.id}" }; ServiceCard(it.name, it.curator.ifBlank { "Apple Music" }, it.artwork, url) to "apple/c?url=${android.net.Uri.encode(url)}" }
+        value = (0 until maxOf(sp.size, am.size)).flatMap { i -> listOfNotNull(sp.getOrNull(i), am.getOrNull(i)) }.distinctBy { it.first.url }.take(16)
+    }
     LazyColumn(Modifier.fillMaxSize(), contentPadding = PaddingValues(start = 16.dp, end = 16.dp, top = 10.dp, bottom = bottom + 12.dp), verticalArrangement = Arrangement.spacedBy(12.dp)) {
+        if (popular.isNotEmpty()) {
+            item { Text("Popular playlists", style = HiveText.year, color = Hive.colors.text, modifier = Modifier.padding(start = 2.dp, top = 4.dp)) }
+            item {
+                LazyRow(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(14.dp)) {
+                    items(popular, key = { it.first.url }) { (card, route) ->
+                        CoverCard(card.artwork.ifBlank { null }, card.name, card.subtitle, Modifier.width(136.dp), Icons.AutoMirrored.Rounded.QueueMusic) { nav.open(route) }
+                    }
+                }
+            }
+            item { Text("Explore", style = HiveText.year, color = Hive.colors.text, modifier = Modifier.padding(start = 2.dp, top = 8.dp)) }
+        }
         items(tiles.chunked(2)) { pair ->
             Row(horizontalArrangement = Arrangement.spacedBy(12.dp)) {
-                pair.forEach { (t, route) -> BrowseTile(t.first, t.second, t.third, Modifier.weight(1f)) { nav.open(route) } }
+                pair.forEach { (t, route) -> BrowseTile(t.first, t.second, t.third, Modifier.weight(1f)) { if (route == "drive") drive = true else nav.open(route) } }
                 if (pair.size == 1) Spacer(Modifier.weight(1f))
             }
         }
@@ -925,13 +961,15 @@ private fun BrowseTab(vm: MainViewModel, nav: HomeNavigation, bottom: Dp) {
 @Composable
 private fun BrowseTile(title: String, detail: String, icon: ImageVector, modifier: Modifier, onClick: () -> Unit) {
     val c = Hive.colors
-    Column(modifier.height(124.dp).pressable(onClick).hiveGlass(HiveShape.panel, strength = 0.1f).padding(16.dp)) {
-        Box(Modifier.size(40.dp).clip(CircleShape).background(mix(c.accent, c.panelStrong, 0.22f)), contentAlignment = Alignment.Center) {
-            Icon(icon, null, tint = c.accent, modifier = Modifier.size(21.dp))
+    // The icon beside the name, the line under both: every box the same shape, whatever its words.
+    Column(modifier.height(96.dp).pressable(onClick).hiveGlass(HiveShape.panel, strength = 0.1f).padding(horizontal = 14.dp, vertical = 14.dp), verticalArrangement = Arrangement.SpaceBetween) {
+        Row(verticalAlignment = Alignment.CenterVertically) {
+            Box(Modifier.size(38.dp).clip(CircleShape).background(mix(c.accent, c.panelStrong, 0.22f)), contentAlignment = Alignment.Center) {
+                Icon(icon, null, tint = c.accent, modifier = Modifier.size(20.dp))
+            }
+            Text(title, style = HiveText.cardTitle, color = c.text, maxLines = 1, overflow = TextOverflow.Ellipsis, modifier = Modifier.padding(start = 10.dp).weight(1f))
         }
-        Spacer(Modifier.weight(1f))
-        Text(title, style = HiveText.cardTitle, color = c.text, maxLines = 1, overflow = TextOverflow.Ellipsis)
-        Text(detail, style = HiveText.cardSub, color = c.textDim, maxLines = 2, overflow = TextOverflow.Ellipsis)
+        Text(detail, style = HiveText.cardSub, color = c.textDim, maxLines = 1, overflow = TextOverflow.Ellipsis)
     }
 }
 

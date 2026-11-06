@@ -32,7 +32,7 @@ test('video titles lose the "Artist - " prefix before matching', () => {
   assert.equal(videoTitleWithoutArtist('Someone Else - Hand Of Blood', 'Bullet For My Valentine'), 'Someone Else - Hand Of Blood');
 });
 
-test('full songs come straight from YouTube (no yt-dlp): matched from Music search, preparing only what plays next', async () => {
+test('full songs come straight from YouTube (no yt-dlp): matched from Music search, preparing the next 20, one at a time', async () => {
   const os = require('os'), fs = require('fs'), path = require('path');
   const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'hive-ytm-'));
   const prevYtDlp = process.env.HIVE_YTDLP, prevHome = process.env.HOME;
@@ -61,11 +61,12 @@ test('full songs come straight from YouTube (no yt-dlp): matched from Music sear
     const before = calls.filter(u => u.includes('/search')).length;
     await m.resolve({ path: 'ytm:apple:1', title: 'Roxanne', artist: 'The Police', duration: 192 });
     assert.equal(calls.filter(u => u.includes('/search')).length, before);
-    // A queue of 40 streamed songs prepares just the next two.
+    // A queue of 40 streamed songs prepares the next 20 (one at a time: two in the first second).
     calls.length = 0;
-    await m.prefetch(Array.from({ length: 40 }, (_, i) => ({ path: `ytm:apple:x${i}`, title: 'Roxanne', artist: 'The Police', duration: 192 })));
-    await new Promise(res => setTimeout(res, 1800));
-    assert.ok(calls.filter(u => u.includes('/player')).length <= 2, `prepared ${calls.filter(u => u.includes('/player')).length} songs`);
+    const queued = await m.prefetch(Array.from({ length: 40 }, (_, i) => ({ path: `ytm:apple:x${i}`, title: 'Roxanne', artist: 'The Police', duration: 192 })));
+    assert.equal(queued, 20);
+    await new Promise(res => setTimeout(res, 1000));
+    assert.ok(calls.filter(u => u.includes('/search')).length <= 2, `${calls.filter(u => u.includes('/search')).length} searches in the first second`);
   } finally {
     process.env.HIVE_YTDLP = prevYtDlp ?? ''; if (prevYtDlp === undefined) delete process.env.HIVE_YTDLP; process.env.HOME = prevHome;
     fs.rmSync(dir, { recursive: true, force: true });

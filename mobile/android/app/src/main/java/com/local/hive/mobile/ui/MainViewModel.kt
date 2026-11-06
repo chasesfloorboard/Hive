@@ -435,6 +435,8 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
         return "artist/" + android.net.Uri.encode(hit.artist)
     }
     val spotifyAccount get() = app.spotifyAccount
+    val appleAccount get() = app.appleAccount
+    val appleUser = app.appleAccount.user
     val spotifyUser = app.spotifyAccount.user
 
     /** Spotify search, with this phone's own sign-in (Hive on the PC no longer starts its Spotify app to search). */

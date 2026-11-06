@@ -453,7 +453,8 @@ function formatOf(f) {
 
 const FORMAT_SCORE = {
   lossless: { lossless: 30, 'lossless-hi': 27, 'mp3-320': 22, 'mp3-v0': 20, aac: 16, 'mp3-256': 15, mp3: 10 },
-  mp3: { 'mp3-320': 30, 'mp3-v0': 28, 'mp3-256': 22, lossless: 18, aac: 18, 'lossless-hi': 15, mp3: 12 },
+  // MP3 chosen: a good MP3 always beats FLAC, however fast its sharer; FLAC only when nobody has the MP3.
+  mp3: { 'mp3-320': 30, 'mp3-v0': 28, 'mp3-256': 22, mp3: 12, aac: 8, lossless: -60, 'lossless-hi': -65 },
 };
 
 // Which file is which wanted track: by title (and length when both are known), else, for a folder of exactly the album, in order by length.

@@ -28,6 +28,13 @@ class AlbumPickerTest {
         assertEquals("mp3", AlbumPicker.candidates("clipping.", clppng, results, Quality.Mp3).first().user)
     }
 
+    @Test fun withMp3ChosenAnMp3WinsOverAFasterFlacAndFlacIsOnlyALastResort() {
+        val fastFlac = SearchResult("fastflac", 1, folder("share\\clipping. - CLPPNG (2014)", "flac", 900, 16), freeSlot = true, speed = 9_000_000, queue = 0)
+        val slowMp3 = SearchResult("slowmp3", 1, folder("mp3\\clipping. - CLPPNG", "mp3", 320), freeSlot = false, speed = 20_000, queue = 50)
+        assertEquals("slowmp3", AlbumPicker.candidates("clipping.", clppng, listOf(fastFlac, slowMp3), Quality.Mp3).first().user)
+        assertEquals("fastflac", AlbumPicker.candidates("clipping.", clppng, listOf(fastFlac), Quality.Mp3).first().user)
+    }
+
     @Test fun countsDiscFoldersAsOneAlbumAndReadsArtistPrefixedNames() {
         val files = listOf(
             SharedFile("a\\clipping. - CLPPNG\\CD1\\clipping. - Intro.mp3", 1, 320, 46), SharedFile("a\\clipping. - CLPPNG\\CD1\\clipping. - Body & Blood.mp3", 1, 320, 193),

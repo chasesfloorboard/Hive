@@ -17,6 +17,8 @@ object ThemeMaker {
     val SUITE = listOf(
         Swatch("Light", Color(0xFFF6F7FB), Color(0xFF4F5FD6)),
         Swatch("Melon", Color(0xFFCDEBFF), Color(0xFF5F8A14)),
+        // Dark sits beside Light in the picker (two rows, filled column by column).
+        Swatch("Dark", Color(0xFF121317), Color(0xFF9FB3FF)),
         Swatch("Sky Blue", Color(0xFF8FCBE6), Color(0xFF1F4E79)),
         Swatch("Lemon", Color(0xFFFFF3A3), Color(0xFFB4530A)),
         Swatch("Sunflower", Color(0xFFFFD23F), Color(0xFF8C6200)),
@@ -33,7 +35,6 @@ object ThemeMaker {
         Swatch("Grape", Color(0xFF4B1F6F), Color(0xFFFF9DE2)),
         // MusicBee's Pop Pink, as it was: charcoal with a pink accent.
         Swatch("Pop Pink", Color(0xFF323232), Color(0xFFE4597A)),
-        Swatch("Dark", Color(0xFF121317), Color(0xFF9FB3FF)),
     )
 
     fun pack(s: Swatch) = ThemePack(s.name, css(s.bg, s.accent))

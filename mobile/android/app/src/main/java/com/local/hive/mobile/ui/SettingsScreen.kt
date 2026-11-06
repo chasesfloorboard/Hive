@@ -73,8 +73,9 @@ fun SettingsScreen(vm: MainViewModel, bottomPadding: Dp, onOpenEqualiser: () -> 
             when (shown) {
                 SettingsPage.Main -> mainSettings(vm, onOpenEqualiser) { page = it }
                 SettingsPage.Pc -> item { Section("", "") { val link by vm.link.collectAsStateWithLifecycle(); if (link.paired) PairedRows(vm) else PairRows(vm) } }
-                SettingsPage.Backup -> item { Section("", "Your plays, favorites, playlists, ratings and settings, kept where uninstalling Hive can't reach them. Restoring replaces what's on this phone.") { BackupRows(vm) } }
+                SettingsPage.Backup -> item { Section("", "Your plays, favorites, playlists, ratings and settings, kept in the cloud. Restoring replaces what's on this phone.") { BackupRows(vm) } }
                 SettingsPage.Accounts -> {
+                    item { Section("Apple Music", "Your playlists and songs, through Apple's web player sign-in. Unofficial: Apple may stop it working at any time.") { AppleRows(vm) } }
                     item { Section("Spotify", "Your playlists and Liked Songs, and Spotify search.") { SpotifyRows(vm) } }
                     item { Section("Scrobbling", "Send what you play to ListenBrainz or Last.fm.") { ScrobbleRows(vm) } }
                     item { Section("Soulseek", "Download albums from Apple Music and Spotify pages. Hive shares nothing.") { SoulseekRows() } }
@@ -99,13 +100,8 @@ private fun SettingsPageFrame(title: String, bottomPadding: Dp, state: androidx.
 }
 
 private fun androidx.compose.foundation.lazy.LazyListScope.mainSettings(vm: MainViewModel, onOpenEqualiser: () -> Unit, open: (SettingsPage) -> Unit) {
-    item {
-        Section("Your PC", "") {
-            val link by vm.link.collectAsStateWithLifecycle()
-            if (link.paired) PcSummaryRow(vm)
-            NavRow(if (link.paired) "Connection and song sync" else "Connect to Hive on your PC", if (link.paired) "Pairing, copying songs, keeping folders the same" else "Sync favorites, plays and playlists with your computer") { open(SettingsPage.Pc) }
-        }
-    }
+    // What matters most first: the version and its update, then how Hive looks; the advanced things last.
+    item { Section("", "") { AppUpdateRow() } }
     item {
         Section("Look", "") {
             ThemePicker(vm)
@@ -132,6 +128,13 @@ private fun androidx.compose.foundation.lazy.LazyListScope.mainSettings(vm: Main
         }
     }
     item {
+        Section("Your PC", "") {
+            val link by vm.link.collectAsStateWithLifecycle()
+            if (link.paired) PcSummaryRow(vm)
+            NavRow(if (link.paired) "Connection and song sync" else "Connect to Hive on your PC", if (link.paired) "Pairing, copying songs, keeping folders the same" else "Sync favorites, plays and playlists with your computer") { open(SettingsPage.Pc) }
+        }
+    }
+    item {
         Section("Library", "") {
             val tracks by vm.tracks.collectAsStateWithLifecycle()
             val scanning by vm.scanning.collectAsStateWithLifecycle()
@@ -145,20 +148,14 @@ private fun androidx.compose.foundation.lazy.LazyListScope.mainSettings(vm: Main
         }
     }
     item {
-        Section("Your data", "") {
+        Section("", "") {
             val b by vm.backupStatus.collectAsStateWithLifecycle()
             val link by vm.link.collectAsStateWithLifecycle()
-            NavRow("Backup", backupSummary(b, link.paired), warn = !b.canUsePhone && b.cloudName == null && !link.paired) { open(SettingsPage.Backup) }
-            AppUpdateRow()
+            NavRow("Backup", backupSummary(b, link.paired), warn = b.cloudName == null || b.cloudError != null) { open(SettingsPage.Backup) }
+            NavRow("Accounts", "Apple Music, Spotify, Last.fm, ListenBrainz, Soulseek") { open(SettingsPage.Accounts) }
         }
     }
-    item {
-        Section("", "") {
-            NavRow("Accounts", "Spotify, Last.fm, ListenBrainz, Soulseek") { open(SettingsPage.Accounts) }
-            NavRow("Advanced", "Crossfade details, theme schedule, library details") { open(SettingsPage.Advanced) }
-        }
-    }
-    item { VersionLine() }
+    item { Section("", "") { NavRow("Advanced", "Crossfade details, theme schedule, library details") { open(SettingsPage.Advanced) } } }
 }
 
 private fun androidx.compose.foundation.lazy.LazyListScope.advancedSettings(vm: MainViewModel) {
@@ -187,16 +184,11 @@ private fun androidx.compose.foundation.lazy.LazyListScope.advancedSettings(vm: 
 }
 
 /** Where the backups are, in a few words. */
-private fun backupSummary(b: com.local.hive.mobile.data.PhoneBackup.Status, paired: Boolean): String {
-    val places = listOfNotNull(
-        "this phone".takeIf { b.canUsePhone },
-        "your PC".takeIf { paired },
-        b.cloudName?.substringBefore(" › ")?.takeIf { b.cloudError == null },
-    )
-    if (places.isEmpty()) return "Not backed up yet. Tap to set it up."
-    val latest = listOf(b.phoneAt, b.pcAt, b.cloudAt).maxOrNull() ?: 0
-    val where = when (places.size) { 1 -> places[0]; 2 -> places.joinToString(" and "); else -> places.dropLast(1).joinToString(", ") + " and " + places.last() }
-    return (if (latest > 0) "Saved ${whenSaved(latest)} to " else "Kept on ") + where
+private fun backupSummary(b: com.local.hive.mobile.data.PhoneBackup.Status, paired: Boolean): String = when {
+    b.cloudError != null -> b.cloudError
+    b.cloudName == null -> "Not backed up to the cloud yet. Tap to set it up."
+    b.cloudAt > 0 -> "Saved ${whenSaved(b.cloudAt)} to ${b.cloudName.substringBefore(" › ")}"
+    else -> "Saving to ${b.cloudName.substringBefore(" › ")}…"
 }
 
 /** A row that opens a page: what it holds, a word on where things stand, and a chevron. */
@@ -291,17 +283,12 @@ private fun DeletedSongsRow(vm: MainViewModel, always: Boolean = false) {
 }
 
 @Composable
-private fun VersionLine() {
-    val context = androidx.compose.ui.platform.LocalContext.current
-    val version = remember { runCatching { context.packageManager.getPackageInfo(context.packageName, 0).versionName }.getOrNull() ?: "" }
-    Text("Hive Mobile $version", style = HiveText.small, color = Hive.colors.textDimmer, modifier = Modifier.fillMaxWidth().padding(top = 6.dp), textAlign = androidx.compose.ui.text.style.TextAlign.Center)
-}
-
-@Composable
 private fun Section(title: String, description: String, content: @Composable () -> Unit) {
     val c = Hive.colors
-    Column(Modifier.fillMaxWidth().hiveGlass(HiveShape.panel).padding(vertical = 14.dp)) {
-        Column(Modifier.padding(horizontal = 18.dp).padding(bottom = 6.dp), verticalArrangement = Arrangement.spacedBy(3.dp)) {
+    val header = title.isNotBlank() || description.isNotBlank()
+    // A card without a heading keeps the same space above its first row as below its last.
+    Column(Modifier.fillMaxWidth().hiveGlass(HiveShape.panel).padding(vertical = if (header) 14.dp else 6.dp)) {
+        if (header) Column(Modifier.padding(horizontal = 18.dp).padding(bottom = 6.dp), verticalArrangement = Arrangement.spacedBy(3.dp)) {
             if (title.isNotBlank()) Text(title, style = HiveText.year, color = c.text)
             if (description.isNotBlank()) Text(description, style = HiveText.small, color = c.textDim)
         }
@@ -493,6 +480,20 @@ private fun SoulseekRows() {
     var list by remember { mutableStateOf(false) }
     SettingRow("Downloads", "Albums coming in, song by song, and the latest done.") { HiveButton("Open") { list = true } }
     if (list) DownloadsSheet(onDismiss = { list = false })
+}
+
+@Composable
+private fun AppleRows(vm: MainViewModel) {
+    val context = androidx.compose.ui.platform.LocalContext.current
+    val user by vm.appleUser.collectAsStateWithLifecycle()
+    if (user.signedIn) {
+        SettingRow("Signed in", "Your playlists and songs appear on the Apple Music page.") { HiveButton("Sign out") { vm.appleAccount.signOut() } }
+    } else {
+        SettingRow("Your Apple Music library", "Sign in on Apple's own page. Hive never sees your password.") {
+            HiveButton("Sign in", primary = true) { context.startActivity(android.content.Intent(context, com.local.hive.mobile.AppleSignInActivity::class.java)) }
+        }
+    }
+    user.error?.let { Text(it, style = HiveText.small, color = Color(0xFFFF8A8A), modifier = Modifier.padding(horizontal = 18.dp, vertical = 4.dp)) }
 }
 
 @Composable
@@ -829,9 +830,7 @@ private fun whenSaved(at: Long): String {
 private fun BackupRows(vm: MainViewModel) {
     val context = androidx.compose.ui.platform.LocalContext.current
     val b by vm.backupStatus.collectAsStateWithLifecycle()
-    val link by vm.link.collectAsStateWithLifecycle()
     var error by remember { mutableStateOf<String?>(null) }
-    // All files access may have just been given in Android's settings.
     androidx.lifecycle.compose.LifecycleResumeEffect(Unit) { vm.refreshBackupStatus(); onPauseOrDispose {} }
     val create = androidx.activity.compose.rememberLauncherForActivityResult(androidx.activity.result.contract.ActivityResultContracts.CreateDocument("application/zip")) { uri ->
         uri?.let(vm::backUpToCloud)
@@ -840,27 +839,7 @@ private fun BackupRows(vm: MainViewModel) {
         uri?.let { vm.offerBackupFile(it) { e -> error = e } }
     }
     SettingRow(
-        "On this phone",
-        when {
-            !b.canUsePhone -> "Allow “All files access” to keep a copy in Documents"
-            b.phoneAt > 0 -> "Saved ${whenSaved(b.phoneAt)} in Documents › Hive Mobile"
-            else -> "Kept in Documents › Hive Mobile"
-        },
-    ) {
-        if (!b.canUsePhone && android.os.Build.VERSION.SDK_INT >= 30) HiveButton("Allow") {
-            runCatching { context.startActivity(android.content.Intent(android.provider.Settings.ACTION_MANAGE_APP_ALL_FILES_ACCESS_PERMISSION, android.net.Uri.parse("package:${context.packageName}"))) }
-        }
-    }
-    SettingRow(
-        "On your PC",
-        when {
-            !link.paired -> "Connect to Hive on your PC to keep a copy there too"
-            b.pcAt > 0 -> "Saved ${whenSaved(b.pcAt)}"
-            else -> "Saved the next time your PC can be reached"
-        },
-    ) {}
-    SettingRow(
-        "In the cloud",
+        "Back up to the cloud",
         b.cloudError ?: when {
             b.cloudName == null -> "Keep a copy in Google Drive or another storage app"
             b.cloudAt > 0 -> "Saved ${whenSaved(b.cloudAt)} to ${b.cloudName}"
@@ -870,10 +849,7 @@ private fun BackupRows(vm: MainViewModel) {
         if (b.cloudName == null) HiveButton("Choose") { runCatching { create.launch("Hive Mobile backup.zip") } }
         else HiveButton("Stop") { vm.stopCloudBackup() }
     }
-    if (link.paired) SettingRow("Restore from your PC", "This phone's backup from before, kept on your PC") {
-        HiveButton("Restore") { error = null; vm.offerPcBackup { error = it } }
-    }
-    SettingRow("Restore from a file", "From the cloud or another phone") {
+    SettingRow("Restore from the cloud", "Pick your backup in Google Drive or another storage app") {
         HiveButton("Restore") { error = null; runCatching { open.launch(arrayOf("application/zip", "application/octet-stream", "*/*")) } }
     }
     error?.let { Text(it, style = HiveText.small, color = Color(0xFFFF8A8A), modifier = Modifier.padding(horizontal = 18.dp, vertical = 4.dp)) }

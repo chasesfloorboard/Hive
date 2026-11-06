@@ -306,7 +306,8 @@ fun YearlyWrapScreen(vm: MainViewModel, bottomPadding: Dp, onOpenAlbum: (Long) -
                                 Eyebrow("Your top track")
                                 Title(t.name, big = true, modifier = Modifier.rise(enter, 1))
                                 Sub(t.sub, Modifier.rise(enter, 2))
-                                Stats(listOf("%,d".format((t.plays * count).toInt()) to "plays", daysBetween(w, t.plays) to "between plays, on average"), Modifier.rise(enter, 3))
+                                // How often it came round only means something once it has come round more than once.
+                                Stats(listOfNotNull("%,d".format((t.plays * count).toInt()) to if (t.plays == 1) "play" else "plays", (daysBetween(w, t.plays) to "between plays, on average").takeIf { t.plays > 1 }), Modifier.rise(enter, 3))
                             }
                             3 -> w.topArtists.firstOrNull()?.let { a ->
                                 val photo = rememberArtistPhoto(vm, a.name)

@@ -177,7 +177,15 @@ class PlayerConnection(private val context: Context, private val scope: Coroutin
         c.addMediaItems(items)
     }
 
-    fun togglePlay() = withController { if (it.isPlaying) it.pause() else { if (it.playbackState == Player.STATE_IDLE) it.prepare(); it.play() } }
+    fun togglePlay() = withController {
+        if (it.isPlaying) it.pause() else {
+            if (it.playbackState == Player.STATE_IDLE) it.prepare()
+            // Already set to play but held back (another app took the sound, e.g. the assistant):
+            // play() alone would change nothing, so ask for the sound again.
+            if (it.playWhenReady) it.pause()
+            it.play()
+        }
+    }
     fun next() = withController { c ->
         lastSkipBackAt = 0L
         if (c.isSessionCommandAvailable(HIVE_SKIP)) c.sendCustomCommand(HIVE_SKIP, android.os.Bundle.EMPTY) else c.seekToNext()

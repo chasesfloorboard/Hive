@@ -93,8 +93,10 @@ private fun Throwable.friendly(service: String) = when (this) {
  * anything (artists, songs, albums, playlists), or paste a music.apple.com link.
  */
 @Composable
-fun AppleMusicScreen(vm: MainViewModel, bottomPadding: Dp, onBack: () -> Unit, onOpen: (String) -> Unit) {
+fun AppleMusicScreen(vm: MainViewModel, bottomPadding: Dp, onBack: () -> Unit, onOpenSettings: () -> Unit, onOpen: (String) -> Unit) {
     val c = Hive.colors
+    val user by vm.appleUser.collectAsStateWithLifecycle()
+    var mine by remember { mutableStateOf<Load<List<AmCard>>?>(null) }
     var query by rememberSaveable { mutableStateOf("") }
     var submitted by rememberSaveable { mutableStateOf("") }
     var browse by remember { mutableStateOf<Load<List<AmShelf>>>(Load.Loading) }
@@ -102,6 +104,9 @@ fun AppleMusicScreen(vm: MainViewModel, bottomPadding: Dp, onBack: () -> Unit, o
     var attempt by remember { mutableStateOf(0) }
     vm.tracks.collectAsStateWithLifecycle() // keeps the library index fresh for matching
 
+    LaunchedEffect(user.signedIn, attempt) {
+        mine = if (!user.signedIn) null else { mine = Load.Loading; runCatching { vm.appleAccount.playlists() }.fold({ Load.Ready(it) }, { Load.Failed(it.friendly("Apple Music")) }) }
+    }
     LaunchedEffect(attempt) { browse = runCatching { vm.appleMusic.browse() }.fold({ Load.Ready(it) }, { Load.Failed(it.friendly("Apple Music")) }) }
     LaunchedEffect(submitted, attempt) {
         results = if (submitted.isBlank()) null else {
@@ -129,13 +134,33 @@ fun AppleMusicScreen(vm: MainViewModel, bottomPadding: Dp, onBack: () -> Unit, o
                 SearchField(query, { query = it }, "Search artists, songs, albums, playlists", onSubmit = ::submit, onClear = { query = ""; submitted = "" })
             }
             when (val r = results) {
-                null -> when (val b = browse) {
+                null -> {
+                    if (user.signedIn) {
+                        item(key = "mine-h") { YearHeading("Your library") }
+                        when (val m = mine) {
+                            null, Load.Loading -> item(key = "mine") { Busy("Loading your playlists…") }
+                            is Load.Failed -> item(key = "mine") { Failed(m.message) { attempt++ } }
+                            is Load.Ready -> item(key = "mine") {
+                                CardGrid(listOf(ServiceCard("Songs", "Your library", "", com.local.hive.mobile.stream.AppleAccount.libraryUrl(com.local.hive.mobile.stream.AppleAccount.SONGS_ID))) + m.value.map { it.card() }, onOpen)
+                            }
+                        }
+                    } else item(key = "mine") {
+                        Row(Modifier.padding(horizontal = 14.dp, vertical = 10.dp).fillMaxWidth().hiveGlass(HiveShape.panel).clickable(onClick = onOpenSettings).padding(16.dp), verticalAlignment = Alignment.CenterVertically) {
+                            Column(Modifier.weight(1f)) {
+                                Text("Your Apple Music library", style = HiveText.rowStrong, color = c.text)
+                                Text("Sign in in Settings to see your playlists and songs.", style = HiveText.small, color = c.textDim)
+                            }
+                            Icon(Icons.AutoMirrored.Rounded.OpenInNew, null, tint = c.textDim, modifier = Modifier.size(18.dp))
+                        }
+                    }
+                    when (val b = browse) {
                     Load.Loading -> item { Busy("Loading Apple Music…") }
                     is Load.Failed -> item { Failed(b.message) { attempt++ } }
                     is Load.Ready -> b.value.forEach { shelf ->
                         item(key = "h" + shelf.title) { YearHeading(shelf.title.ifBlank { "More" }) }
                         if (shelf.cards.isNotEmpty()) item(key = "c" + shelf.title) { CardShelf(shelf.cards.map { it.card() }, onOpen) }
                         else item(key = "s" + shelf.title) { SongShelf(vm, shelf.songs.take(10)) }
+                    }
                     }
                 }
                 Load.Loading -> item { Busy("Searching Apple Music…") }
@@ -323,7 +348,7 @@ private fun SpCollection.page() = ServicePage("Spotify", kind, name, owner, "", 
 
 @Composable
 fun AppleCollectionScreen(vm: MainViewModel, url: String, bottomPadding: Dp, onBack: () -> Unit, onOpen: (String) -> Unit, onOpenPlaylist: (Long) -> Unit, onToast: (String) -> Unit) =
-    ServiceCollectionScreen(vm, url, "Apple Music", { vm.appleMusic.collection(url).page() }, bottomPadding, onBack, onOpen, onOpenPlaylist, onToast)
+    ServiceCollectionScreen(vm, url, "Apple Music", { if (com.local.hive.mobile.stream.AppleAccount.isLibrary(url)) vm.appleAccount.collection(url).page() else vm.appleMusic.collection(url).page() }, bottomPadding, onBack, onOpen, onOpenPlaylist, onToast)
 
 const val LIKED_SONGS_URL = "https://open.spotify.com/collection/tracks"
 
@@ -431,7 +456,7 @@ private fun ServiceCollectionScreen(
                 androidx.compose.foundation.layout.Spacer(Modifier.size(8.dp))
             }
             if (collection != null) Box(Modifier.size(42.dp).hiveGlass(CircleShape).clickable {
-                runCatching { context.startActivity(Intent(Intent.ACTION_VIEW, Uri.parse(collection.url))) }
+                runCatching { context.startActivity(Intent(Intent.ACTION_VIEW, Uri.parse(com.local.hive.mobile.stream.AppleAccount.webUrl(collection.url)))) }
             }, contentAlignment = Alignment.Center) {
                 Icon(Icons.AutoMirrored.Rounded.OpenInNew, "Open in ${collection.source}", tint = c.text, modifier = Modifier.size(19.dp))
             }
