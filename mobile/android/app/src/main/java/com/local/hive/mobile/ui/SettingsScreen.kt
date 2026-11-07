@@ -648,13 +648,7 @@ private fun ThemeSwatch(pack: com.local.hive.mobile.ui.theme.ThemePack, selected
     val t = remember(pack) { pack.colors }
     val haptics = androidx.compose.ui.platform.LocalHapticFeedback.current
     Column(Modifier.width(96.dp).clip(RoundedCornerShape(14.dp)).combinedClickable(onClick = onClick, onLongClick = onHold?.let { h -> { haptics.performHapticFeedback(androidx.compose.ui.hapticfeedback.HapticFeedbackType.LongPress); h() } }), horizontalAlignment = Alignment.CenterHorizontally) {
-        Box(
-            Modifier.size(96.dp, 70.dp).clip(RoundedCornerShape(14.dp)).background(t.bg)
-                .border(if (selected) 2.dp else 1.dp, if (selected) c.accent else c.border, RoundedCornerShape(14.dp)).padding(10.dp),
-        ) {
-            Box(Modifier.fillMaxWidth().height(22.dp).clip(RoundedCornerShape(6.dp)).background(t.panelStrong.copy(alpha = 1f)).border(1.dp, t.border, RoundedCornerShape(6.dp)))
-            Box(Modifier.align(Alignment.BottomStart).size(22.dp).clip(CircleShape).background(t.accent))
-            Box(Modifier.align(Alignment.BottomEnd).width(36.dp).height(6.dp).clip(RoundedCornerShape(3.dp)).background(t.textDim))
+        ThemePreview(t, Modifier.size(96.dp, 70.dp), selected) {
             // Custom shows it can be changed.
             if (editable) Box(Modifier.align(Alignment.TopEnd).padding(top = 2.dp).size(18.dp).clip(CircleShape).background(t.accent), contentAlignment = Alignment.Center) {
                 androidx.compose.material3.Icon(androidx.compose.material.icons.Icons.Rounded.Edit, "Change colours", tint = readableOn(t.accent), modifier = Modifier.size(11.dp))

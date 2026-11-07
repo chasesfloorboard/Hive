@@ -47,6 +47,8 @@
   function mount(host, opts) {
     const { api, coverUrl, onPlayTrack, onOpenAlbum, onOpenArtist } = opts;
     let data = null, years = [], index = 0, slides = [], wheelLock = 0, alive = true;
+    // Coming back from an album or artist opened here: the same year and slide.
+    let startSlide = Number.isInteger(opts.slide) ? opts.slide : 0;
     host.innerHTML = '';
     const root = document.createElement('section');
     root.className = 'wrapv';
@@ -244,7 +246,7 @@
         yearSel.value = String(want);
         data = await api.getYearlyWrapData(want);
         if (!alive) return;
-        index = 0;
+        index = startSlide; startSlide = 0;
         render();
         root.focus({ preventScroll: true });
       } catch (err) {
@@ -252,7 +254,7 @@
       }
     }
     load(opts.year);
-    return { destroy() { alive = false; host.innerHTML = ''; } };
+    return { destroy() { alive = false; host.innerHTML = ''; }, position: () => ({ year: data?.year, slide: index }) };
   }
 
   if (typeof window !== 'undefined') window.HiveYearlyWrapView = { mount, monthDetail };

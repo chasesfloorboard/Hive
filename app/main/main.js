@@ -412,7 +412,6 @@ const {
 // target Linux desktop. Disable GPU VSync so Chromium does not wait for the
 // problematic display-vblank synchronization path. This is independent of
 // GStreamer and does not change native audio transport.
-// Linux desktop integration: use Electron 44's explicit X11/Ozone path so the
 // Preserve the proven 0.9 Linux/X11 window path. On a GNOME Wayland desktop this
 // intentionally runs through XWayland, because 0.9 used the legacy X11 path and its
 // window-manager decorations matched the user's desktop theme. Hive can optionally
@@ -421,11 +420,15 @@ const {
 // GStreamer and native audio transport are untouched.
 if (process.platform === 'linux') {
   nativeTheme.themeSource = 'system';
-  // Electron 33 is the known-good Linux desktop foundation for Hive. Keep the
-  // exact 0.9-era X11 path so GNOME/Wayland sessions use XWayland's native
+  // Keep the exact 0.9-era X11 path so GNOME/Wayland sessions use XWayland's native
   // window-manager decorations when the optional Hive title-bar mode is off.
   app.commandLine.appendSwitch('ozone-platform', 'x11');
   app.commandLine.appendSwitch('disable-features', 'UseOzonePlatform');
+  // On X11 (XWayland, AMD/Mesa), Electron 43-45's separate GPU process crashes three
+  // times at start and Hive falls back to slow software drawing (Electron 33 didn't).
+  // Running the GPU work inside the browser process keeps full GPU drawing; checked
+  // with a hidden-window probe on 33 and 45 (0 crashes, compositing/WebGL enabled).
+  app.commandLine.appendSwitch('in-process-gpu');
 }
 app.commandLine.appendSwitch('disable-gpu-vsync');
 app.commandLine.appendSwitch('js-flags', '--max-old-space-size=8192 --expose-gc');

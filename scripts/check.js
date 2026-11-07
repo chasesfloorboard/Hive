@@ -43,8 +43,8 @@ if (!/syncMusicTabSidebarIdentity/.test(renderer)) throw new Error('Music tab/si
 if (!/normalizeSpotifyArtworkSource/.test(renderer) || !/spotify:image:/.test(renderer) || !/spotifyArtworkUrl/.test(renderer)) throw new Error('Renderer Spotify artwork normalization missing.');
 
 const electronVersion = packageJson.devDependencies?.electron;
-if (electronVersion !== '33.2.0') throw new Error(`Electron foundation drift: expected pinned Electron 33.2.0, found ${electronVersion}.`);
-if (!/appendSwitch\(\s*['"]disable-features['"]\s*,\s*['"]UseOzonePlatform['"]/.test(main)) throw new Error('Linux desktop integration regression: Electron 33 must retain the known-good UseOzonePlatform override.');
+if (electronVersion !== '45.2.3') throw new Error(`Electron foundation drift: expected pinned Electron 45.2.3, found ${electronVersion}.`);
+if (!/appendSwitch\(\s*['"]disable-features['"]\s*,\s*['"]UseOzonePlatform['"]/.test(main)) throw new Error('Linux desktop integration regression: Hive must keep the X11 (XWayland) window path its themed title bar was checked on.');
 if (!/frame:\s*themeWindowBarEnabled\s*\?\s*false\s*:\s*true/.test(main) || !/window:minimize/.test(preload) || !/window:maximize/.test(preload) || !/window:close/.test(preload) || !/window:theme-bar:set/.test(main)) throw new Error('Linux desktop integration regression: Hive must expose an explicit optional themed title bar mode with window controls.');
 if (/titleBarStyle:\s*['"]hidden['"]/.test(main) || /titleBarOverlay:\s*\{/.test(main)) throw new Error('Linux desktop integration regression: Hive must not use Electron WCO titlebar overlays for the themed mode.');
 if (!fs.readFileSync(path.join(root, 'app', 'native', 'gstreamer-player.c'), 'utf8').includes('hive-spectrum')) throw new Error('Native spectrum analyzer missing.');
@@ -63,4 +63,4 @@ if (/^\s*curl[^\n]*\|\s*(?:sh|bash)\b/im.test(securityInstaller)) throw new Erro
 if (!spotifyBridge.includes('__HIVE_SPOTIFY_BRIDGE_TOKEN__') || !spotifyBridge.includes('Authorization')) throw new Error('Spotify bridge token hardening is missing.');
 if (!main.includes('function spotifyBridgeAuthorized') || !main.includes("'Access-Control-Allow-Headers': 'Content-Type, Authorization'")) throw new Error('Spotify bridge authorization hardening is missing.');
 
-console.log(`Validated ${files.length} JavaScript entry points, Electron 33.2.0 security flags, and Linux native title-bar integration.`);
+console.log(`Validated ${files.length} JavaScript entry points, Electron 45.2.3 security flags, and Linux native title-bar integration.`);

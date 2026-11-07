@@ -8602,6 +8602,8 @@
   // Yearly Wrap lives in the main window (app/renderer/yearly-wrap-view.js):
   // slides like Hive Mobile's, opening albums, artists and songs right here.
   let yearlyWrapMounted = null;
+  // Where the Wrap was when an album or artist was opened from it: Back returns there.
+  let yearlyWrapReturnTo = null;
   async function renderYearlyWrap(tab = getActiveTab()) {
     if (!tab || getActiveTab()?.id !== tab.id) return false;
     const contentTools = tab.dom?.contentTools;
@@ -8616,12 +8618,23 @@
       return library.tracks.find(x => String(x.title || '').trim().toLowerCase() === t && String(x.artist || '').trim().toLowerCase() === a)
         || library.tracks.find(x => String(x.title || '').trim().toLowerCase() === t && String(x.artist || '').toLowerCase().includes(a));
     };
-    const leaveWrap = () => { contentTools.classList.remove('wrapv-host'); try { yearlyWrapMounted?.destroy(); } catch {} yearlyWrapMounted = null; };
+    // Leaving for an album or artist: remember the year and slide, and clear the Wrap away (its host
+    // stayed visible before, so the album opened above the old Wrap). The page stays "Yearly Wrap"
+    // until the album or artist view takes over, so their Back returns here.
+    const leaveWrap = () => {
+      try { yearlyWrapReturnTo = yearlyWrapMounted?.position?.() || null; } catch { yearlyWrapReturnTo = null; }
+      try { yearlyWrapMounted?.destroy(); } catch {}
+      yearlyWrapMounted = null;
+      contentTools.classList.remove('wrapv-host');
+      contentTools.classList.add('hidden');
+    };
+    const back = yearlyWrapReturnTo; yearlyWrapReturnTo = null;
     yearlyWrapMounted = window.HiveYearlyWrapView.mount(contentTools, {
+      year: back?.year, slide: back?.slide,
       api: window.beehive,
       coverUrl: file => /^(https?:|mbcover:|data:)/.test(String(file)) ? String(file) : coverSrc(file),
       onPlayTrack: (title, artist) => { const t = findTrack(title, artist); if (t) playQueue([t], 0, false); else showAppNotice(`"${title}" isn't in your library any more.`); },
-      onOpenArtist: name => { leaveWrap(); specialView = null; searchForArtist(name); },
+      onOpenArtist: name => { leaveWrap(); searchForArtist(name); },
       onOpenAlbum: (album, artist) => {
         const t = library.tracks.find(x => String(x.album || '') === String(album || '') && (!artist || String(x.albumArtist || x.artist || '') === String(artist))) || library.tracks.find(x => String(x.album || '') === String(album || ''));
         if (!t) { showAppNotice(`"${album}" isn't in your library any more.`); return; }
@@ -11340,6 +11353,8 @@
     el.search.value = artistSearchTerm || searchTerm;
     updateSearchClearButton();
     el.main.classList.toggle('searching', !!(artistSearchTerm || searchTerm));
+    // Opened from the Yearly Wrap: Back goes back to it (the same year and slide).
+    if (specialView === 'yearly-wrap') { void renderYearlyWrap(tab); return; }
 
     const reopenAlbumKey = openAlbumKey;
     const savedScrollTop = Math.max(0, Number(saved.scrollTop) || 0);
@@ -11387,6 +11402,8 @@
     el.search.value = artistSearchTerm || searchTerm;
     updateSearchClearButton();
     el.main.classList.toggle('searching', !!(artistSearchTerm || searchTerm));
+    // Opened from the Yearly Wrap: Back goes back to it (the same year and slide).
+    if (specialView === 'yearly-wrap') { void renderYearlyWrap(tab); return; }
 
     const reopenAlbumKey = openAlbumKey;
     const savedScrollTop = Math.max(0, Number(saved.scrollTop) || 0);
@@ -13291,6 +13308,9 @@
       }
       return;
     }
+    // The ordinary browser always has its toolbar (title, Back, Albums/Tracks/Artists); a page like the
+    // Yearly Wrap hides it, and an artist opened from there must bring it back.
+    el.albumsToolbar?.classList.remove('hidden');
     el.albumsGrid.classList.toggle('hidden', mode !== 'albums');
     el.songsTable.classList.toggle('hidden', mode !== 'songs');
     if (mode !== 'songs') renderColumnBrowser([]);
@@ -20309,6 +20329,7 @@
     if(!select)return;
     await loadThemeFolderThemes();
     select.innerHTML=themeOptionsHtml('folder:');
+    renderThemeTiles();
     select.addEventListener('change',()=>{
       void applyFolderTheme(select.value.slice('folder:'.length),true);
     });
@@ -20349,7 +20370,7 @@
     const lib=window.HiveThemeSchedule; if(!lib) return;
     const schedule=loadThemeSchedule();
     const baseSelect=document.getElementById('builtin-theme-select');
-    if(baseSelect){ baseSelect.disabled=!!schedule.enabled; baseSelect.title=schedule.enabled?'Scheduled theme is on':''; }
+    if(baseSelect){ baseSelect.disabled=!!schedule.enabled; baseSelect.title=schedule.enabled?'Scheduled theme is on':''; syncThemeTiles(); }
     if(!schedule.enabled) return;
     const dayStart=lib.minutesOf(schedule.dayStart) ?? lib.minutesOf(lib.DEFAULTS.dayStart);
     const nightStart=lib.minutesOf(schedule.nightStart) ?? lib.minutesOf(lib.DEFAULTS.nightStart);
@@ -20369,6 +20390,7 @@
       try { localStorage.setItem(LEGACY_THEMES_KEY, box.checked ? '1' : '0'); } catch {}
       const select=document.getElementById('builtin-theme-select');
       if(select){ const current=select.value; select.innerHTML=themeOptionsHtml('folder:', current.replace(/^folder:/, '')); select.value=current; }
+      renderThemeTiles();
       for(const id of ['theme-schedule-day-theme','theme-schedule-night-theme']){
         const s=document.getElementById(id); if(!s) continue;
         const current=s.value; s.innerHTML=themeOptionsHtml('', current); s.value=current;
@@ -20556,6 +20578,7 @@
         ? (sourceLabel ? `Custom CSS active · ${sourceLabel}${remoteCount ? ` · ${remoteCount} remote import${remoteCount === 1 ? '' : 's'}` : ''}` : 'Custom CSS active.')
         : "Using Hive's built-in theme.";
     }
+    syncThemeTiles();
   }
 
   async function loadCustomCssSettings() {
@@ -20783,11 +20806,42 @@
   refreshScrobbleSettings();
 
   // ---- Theme gallery: Browse themes / Share theme (see app/main/theme-store.js) ----
+  // One picture of a theme everywhere (Settings' tiles, the gallery, and Hive Mobile's tiles): a little
+  // window with its background, a panel, its accent and a line of dim text.
+  function themeVarsFromCss(css) {
+    const vars = {};
+    for (const m of String(css || '').matchAll(/(--[a-z0-9-]+)\s*:\s*([^;}]+)[;}]/gi)) if (!(m[1] in vars)) vars[m[1]] = m[2].trim();
+    return vars;
+  }
+  function themeTileWindowHtml(v) {
+    const safe = x => String(x || '').replace(/[;"<>{}]/g, '');
+    const style = `--t-bg:${safe(v['--bg'])};--t-panel:${safe(v['--panel-strong'] || v['--panel'] || v['--bg'])};--t-border:${safe(v['--border'] || 'rgba(127,127,127,.25)')};--t-accent:${safe(v['--accent'])};--t-dim:${safe(v['--text-dim'] || v['--text'])}`;
+    return `<span class="tt-win" style="${escapeHtml(style)}" aria-hidden="true"><span class="tt-panel"></span><span class="tt-dot"></span><span class="tt-line"></span></span>`;
+  }
+  function renderThemeTiles() {
+    const grid = document.getElementById('theme-tile-grid');
+    if (!grid) return;
+    grid.innerHTML = listedThemes().map(t => `<button type="button" class="theme-tile" role="option" data-file="${escapeHtml(t.file)}" title="${escapeHtml(t.name)}">${themeTileWindowHtml(themeVarsFromCss(t.css))}<span class="tt-name">${escapeHtml(t.name)}</span></button>`).join('');
+    syncThemeTiles();
+  }
+  function syncThemeTiles() {
+    const grid = document.getElementById('theme-tile-grid');
+    if (!grid || !grid.firstElementChild) return; // nothing drawn yet (applyCustomCss runs before the list is built)
+    const using = themeFolderThemes.find(t => t.css === customCssRawSource)?.file;
+    const locked = !!document.getElementById('builtin-theme-select')?.disabled;
+    grid.classList.toggle('locked', locked);
+    grid.querySelectorAll('.theme-tile').forEach(b => { const on = b.dataset.file === using; b.classList.toggle('selected', on); b.setAttribute('aria-selected', on ? 'true' : 'false'); b.disabled = locked; });
+  }
+  document.getElementById('theme-tile-grid')?.addEventListener('click', e => {
+    const tile = e.target.closest('.theme-tile');
+    const select = document.getElementById('builtin-theme-select');
+    if (!tile || !select || select.disabled) return;
+    select.value = `folder:${tile.dataset.file}`;
+    select.dispatchEvent(new Event('change', { bubbles: true }));
+  });
   function themeGalleryCard(t, i, installed, inUse = false) {
-    const v = t.vars;
-    const style = `--g-bg:${v['--bg']};--g-text:${v['--text']};--g-accent:${v['--accent']};--g-panel:${v['--panel'] || v['--bg']};--g-dim:${v['--text-dim'] || v['--text']}`;
-    return `<div class="theme-gallery-card" style="${escapeHtml(style)}">
-      <div class="theme-gallery-preview" aria-hidden="true"><span class="tg-side"></span><span class="tg-main"><span class="tg-line"></span><span class="tg-line short"></span><span class="tg-pill"></span></span></div>
+    return `<div class="theme-gallery-card">
+      <div class="theme-gallery-preview">${themeTileWindowHtml(t.vars || {})}</div>
       <div class="theme-gallery-meta"><strong>${escapeHtml(t.name)}</strong><small>${escapeHtml(t.author ? `by ${t.author}` : 'Shared theme')}</small></div>
       ${t.description ? `<p class="theme-gallery-desc">${escapeHtml(t.description)}</p>` : ''}
       <button type="button" class="sidebar-add${installed ? '' : ' settings-primary-action'}" data-gallery-index="${i}"${inUse ? ' disabled' : ''}>${inUse ? 'In use' : installed ? 'Use' : 'Add'}</button>

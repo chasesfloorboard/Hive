@@ -193,18 +193,16 @@ test file. Repeat.
   plugin can fetch files inside the library via `mbfile:` (bypassCSP) but has
   no way to send them anywhere. Verified with a probe plugin and a pixel
   comparison of the Visualizer (identical). Tests: `test/plugin-sandbox.test.js`.
-- **Electron is pinned to an outdated, `npm audit`-flagged version** (see
-  `package.json`). Upgrading is a dedicated, separately-scoped task (full
-  re-test required across main-process APIs, `BrowserWindow` options, and IPC
-  behavior) - do not bump it as a side effect of an unrelated change.
-  **The main reason it stays on 33 (the user's decision):** the themed window
-  bar. With Settings' themed bar on, the main window is frameless and Hive
-  draws its own title bar in the theme's colours, and on Linux the app runs
-  through X11/XWayland (`ozone-platform=x11` in `main.js`). An upgrade is only
-  acceptable if that bar looks and behaves exactly as now on the user's GNOME
-  desktop: drag, double-click to maximise, the min/max/close buttons, resize
-  edges, snapping, and the system frame when the setting is off. Check this on
-  a test copy, side by side with screenshots, before anything else.
+- **Electron 45.2.3 (upgraded from 33.2.0, 2026-11-06).** Keep it exact in
+  `package.json` (`scripts/check.js` checks it). Checked for the upgrade: the
+  same screens on 33 and 45 differ by under 0.05% of pixels (font smoothing);
+  the playing-song Love stress test (63 runs), the phone e2e suites (31 + 10)
+  with the PC on 45, all node tests, and the Windows build under Wine pass.
+  The themed window bar must keep looking and behaving as on 33 on the user's
+  GNOME desktop (X11/XWayland via `ozone-platform=x11`): drag, double-click to
+  maximise, min/max/close, resize edges, snapping, and the system frame when
+  the setting is off. Bump Electron the same way: side-by-side screenshots,
+  the stress test and both e2e suites, then the user tries the bar.
 - **GitHub Releases/`electron-updater`** are wired up (`app/main/update-checker.js`).
   **Done, 2026-09-21:** the real GitHub repo now exists
   (github.com/chasesfloorboard/Hive, public; old links from the account's
@@ -344,12 +342,9 @@ otherwise:
   Real functional/DOM-text tests for #1-#4 live in the new stable
   `test/accessibility.test.js` (not a buildNNN file) - edit it in place
   when #5/#6 get fixed, don't create a second file.
-- **#20 - Upgrade Electron** off the vulnerable pinned 33.2.0 (current
-  `npm audit` wants 44.4.3, an 11-major jump). Separately, lower priority:
-  `dbus-next@0.10.2` pulls an old `node-gyp`/`request`/`tar` chain
-  (install-time only). Not started - deliberately scoped as its own
-  dedicated session per the "1.0 scope decisions" section above, not a
-  side effect of other work.
+- **#20 - Upgrade Electron: DONE 2026-11-06** (45.2.3; see the Electron note
+  above). Lower priority, still open: `dbus-next@0.10.2` pulls an old
+  `node-gyp`/`request`/`tar` chain (install-time only).
 
 ## Security audit, 2026-09-21/22 - one real finding, fixed
 

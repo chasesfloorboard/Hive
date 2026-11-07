@@ -1362,3 +1362,26 @@ fun rememberArtistPhoto(vm: MainViewModel, name: String): String? {
     val online by vm.artistPhotos.collectAsStateWithLifecycle()
     return androidx.compose.runtime.produceState<String?>(null, name, online) { value = if (online) vm.artistImage(name) else null }.value
 }
+
+/**
+ * A theme as a little window: its background, a panel, its accent and a line of dim text. Settings'
+ * theme tiles and the theme gallery draw the same picture; at any size it keeps the 96 x 70 tile's
+ * proportions (the parts scale with the width).
+ */
+@Composable
+fun ThemePreview(t: com.local.hive.mobile.ui.theme.HiveColors, modifier: Modifier, selected: Boolean = false, extra: @Composable androidx.compose.foundation.layout.BoxScope.() -> Unit = {}) {
+    val c = Hive.colors
+    androidx.compose.foundation.layout.BoxWithConstraints(modifier) {
+        val k = maxWidth / 96.dp
+        val shape = RoundedCornerShape(14.dp * k)
+        Box(
+            Modifier.fillMaxSize().clip(shape).background(t.bg)
+                .border(if (selected) 2.dp else 1.dp, if (selected) c.accent else c.border, shape).padding(10.dp * k),
+        ) {
+            Box(Modifier.fillMaxWidth().height(22.dp * k).clip(RoundedCornerShape(6.dp * k)).background(t.panelStrong.copy(alpha = 1f)).border(1.dp, t.border, RoundedCornerShape(6.dp * k)))
+            Box(Modifier.align(Alignment.BottomStart).size(22.dp * k).clip(CircleShape).background(t.accent))
+            Box(Modifier.align(Alignment.BottomEnd).width(36.dp * k).height(6.dp * k).clip(RoundedCornerShape(3.dp * k)).background(t.textDim))
+            extra()
+        }
+    }
+}

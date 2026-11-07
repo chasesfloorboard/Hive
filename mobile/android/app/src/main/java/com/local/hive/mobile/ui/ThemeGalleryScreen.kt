@@ -8,6 +8,7 @@ import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.Spacer
+import androidx.compose.foundation.layout.aspectRatio
 import androidx.compose.foundation.layout.fillMaxHeight
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
@@ -33,21 +34,6 @@ import com.local.hive.mobile.data.ThemeGallery
 import com.local.hive.mobile.ui.theme.Hive
 import com.local.hive.mobile.ui.theme.HiveText
 
-/** A gallery value ("#3e2a20", "rgba(255,255,255,0.72)") as a Compose colour. */
-private fun galleryColour(v: String?): Color {
-    val s = v?.trim().orEmpty()
-    runCatching {
-        if (s.startsWith("#")) {
-            val h = s.drop(1).let { if (it.length <= 4) it.map { c -> "$c$c" }.joinToString("") else it }
-            val rgb = h.take(6).toLong(16)
-            val a = if (h.length == 8) h.substring(6, 8).toInt(16) / 255f else 1f
-            return Color(((rgb shr 16) and 255).toInt(), ((rgb shr 8) and 255).toInt(), (rgb and 255).toInt()).copy(alpha = a)
-        }
-        val n = Regex("[\\d.]+").findAll(s).map { it.value.toFloat() }.toList()
-        return Color(n[0].toInt(), n[1].toInt(), n[2].toInt()).copy(alpha = n.getOrElse(3) { 1f })
-    }
-    return Color.Gray
-}
 
 /** Browse themes: what people shared (the gallery), each with a preview and Add. */
 fun LazyListScope.themeGallery(vm: MainViewModel) {
@@ -91,19 +77,10 @@ private fun ThemeGalleryList(vm: MainViewModel) {
 @Composable
 private fun GalleryCard(t: ThemeGallery.Theme, modifier: Modifier, using: Boolean, added: Boolean, onUse: () -> Unit) {
     val c = Hive.colors
-    val bg = galleryColour(t.vars["--bg"]); val text = galleryColour(t.vars["--text"]); val accent = galleryColour(t.vars["--accent"])
-    val panel = galleryColour(t.vars["--panel"] ?: t.vars["--bg"]); val dim = galleryColour(t.vars["--text-dim"] ?: t.vars["--text"])
+    // The same picture as Settings' theme tiles, from the colours Hive makes of this theme.
+    val colors = remember(t.css) { com.local.hive.mobile.ui.theme.HiveColors.fromCss(t.css) }
     Column(modifier.clip(RoundedCornerShape(16.dp)).background(c.control).padding(10.dp), verticalArrangement = Arrangement.spacedBy(6.dp)) {
-        // A small picture of Hive in this theme: the side panel, two lines of text, the accent.
-        Row(Modifier.fillMaxWidth().height(86.dp).clip(RoundedCornerShape(10.dp)).background(bg)) {
-            Box(Modifier.width(30.dp).fillMaxHeight().background(panel))
-            Column(Modifier.padding(10.dp).weight(1f).fillMaxHeight(), verticalArrangement = Arrangement.spacedBy(6.dp)) {
-                Box(Modifier.fillMaxWidth(0.85f).height(6.dp).clip(RoundedCornerShape(3.dp)).background(text))
-                Box(Modifier.fillMaxWidth(0.55f).height(6.dp).clip(RoundedCornerShape(3.dp)).background(dim))
-                Spacer(Modifier.weight(1f))
-                Box(Modifier.fillMaxWidth(0.5f).height(12.dp).clip(RoundedCornerShape(50)).background(accent))
-            }
-        }
+        ThemePreview(colors, Modifier.fillMaxWidth().aspectRatio(96f / 70f), selected = using)
         Text(t.name, style = HiveText.rowStrong, color = c.text, maxLines = 1)
         Text(if (t.author.isNotBlank()) "by ${t.author}" else "Shared theme", style = HiveText.small, color = c.textDim, maxLines = 1)
         Box(Modifier.align(Alignment.Start)) { HiveButton(if (using) "In use" else if (added) "Use" else "Add", primary = !added, enabled = !using, onClick = onUse) }

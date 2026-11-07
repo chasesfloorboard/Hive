@@ -46,5 +46,5 @@ Hive Link to the internet.
 ## Dependencies
 
 `dbus-next` (MPRIS on Linux) has an unresolved advisory chain in legacy transitive packages with no
-npm-provided fix. MPRIS is optional and isolated from playback. Electron is pinned to 33 for the
-themed window bar on Linux; upgrading it is tracked separately.
+npm-provided fix. MPRIS is optional and isolated from playback. Electron is kept on a current release
+(45.2.3).
