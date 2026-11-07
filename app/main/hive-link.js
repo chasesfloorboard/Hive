@@ -126,6 +126,8 @@ const PAIR_REQUEST_TTL_MS = 2 * 60 * 1000;
 const MAX_EVENTS = 5000;
 const MAX_BODY_BYTES = 1024 * 1024;
 const MAX_COVER_BYTES = 20 * 1024 * 1024;
+// A song's tags and pictures sent without its audio (the file mirror's tag sync): covers can be big.
+const MAX_TAG_BYTES = 64 * 1024 * 1024;
 // The tags a phone may edit in Hive's files: the tag editor's own field names.
 const EDITABLE_TAGS = ['title', 'artist', 'album', 'albumArtist', 'genre', 'year', 'track', 'disk', 'lyrics'];
 const MAX_INBOX_PLAYS = 50000;
@@ -921,7 +923,7 @@ function createHiveLink({ dataDir, getTracks, setLove, onPaired, streamSong = nu
       case 'GET /api/info':
         // The file mirror is only for a phone Hive trusts: an untrusted one is told it isn't there,
         // so it keeps to plain song sync until the user trusts it.
-        return send(res, 200, { ...info(), files: !!files && trusted(device), playlistSync: !!savePlaylist && trusted(device), deviceId: device.id, deviceName: device.name, coverKey: coverKeyFor(device) });
+        return send(res, 200, { ...info(), files: !!files && trusted(device), fileTags: !!files && trusted(device), playlistSync: !!savePlaylist && trusted(device), deviceId: device.id, deviceName: device.name, coverKey: coverKeyFor(device) });
       case 'GET /api/library': {
         const payload = await libraryPayload();
         if (req.headers['if-none-match'] === payload.etag) { res.writeHead(304, { ETag: payload.etag }); return res.end(); }
@@ -1041,6 +1043,9 @@ function createHiveLink({ dataDir, getTracks, setLove, onPaired, streamSong = nu
       case 'PUT /api/files':
       case 'POST /api/files/keep':
       case 'POST /api/files/delete':
+      case 'POST /api/files/info':
+      case 'GET /api/files/tags':
+      case 'PUT /api/files/tags':
         return mirrorFiles(req, res, url, device);
       case 'GET /api/listening': {
         if (!getListening) return send(res, 404, { error: 'This Hive shares no listening history.' });
@@ -1224,6 +1229,9 @@ function createHiveLink({ dataDir, getTracks, setLove, onPaired, streamSong = nu
       log('Hive Link: phone deleted files', device.name, deleted.length);
       return send(res, 200, { deleted });
     }
+    // Tags instead of files: a song whose audio is the same on both sides but whose tags or cover
+    // changed on one is brought in step by its tags alone (see FileMirror on the phone).
+    if (route === 'POST /api/files/info' || route === 'GET /api/files/tags' || route === 'PUT /api/files/tags') return mirrorTags(req, res, url, route, root, device);
     const rel = String(url.searchParams.get('p') || '');
     const abs = fileMirror.safeRel(root, rel);
     if (!abs || fileMirror.HIVE_TEMP.test(abs)) return refuse(400, 'Not a path inside the library.');
@@ -1249,6 +1257,70 @@ function createHiveLink({ dataDir, getTracks, setLove, onPaired, streamSong = nu
       log('Hive Link: phone sent a file', device.name, rel);
       return send(res, 200, { status: 'saved', ...result });
     } catch (err) {
+      return send(res, 500, { error: err?.message || String(err) });
+    }
+  }
+
+  // A file's state for the tag sync: size, time and the audio's signature (null: copy it whole).
+  async function fileState(root, rel) {
+    const abs = fileMirror.safeRel(root, rel);
+    if (!abs || fileMirror.HIVE_TEMP.test(abs)) return null;
+    let st;
+    try { st = await fs.promises.stat(abs); } catch { return null; }
+    if (!st.isFile()) return null;
+    let sig = null;
+    try { sig = await fileMirror.audioSignature(abs); } catch {}
+    return { p: rel, s: st.size, m: Math.floor(st.mtimeMs), sig };
+  }
+
+  // Tags without the song: a file whose audio is the same on both sides is made the same file by
+  // sending only what's around its audio (every tag and picture). See writeFromTags.
+  async function mirrorTags(req, res, url, route, root, device) {
+    if (route === 'POST /api/files/info') {
+      const body = await readJson(req);
+      const out = [];
+      for (const rel of (Array.isArray(body?.p) ? body.p : []).slice(0, 500).map(String)) { const st = await fileState(root, rel); if (st) out.push(st); }
+      return send(res, 200, { files: out });
+    }
+    const rel = String(url.searchParams.get('p') || '');
+    const abs = fileMirror.safeRel(root, rel);
+    if (!abs || fileMirror.HIVE_TEMP.test(abs)) { req.resume(); return send(res, 400, { error: 'Not a path inside the library.' }); }
+    if (route === 'GET /api/files/tags') {
+      let t = null, st = null, hash = '';
+      try { st = await fs.promises.stat(abs); t = await fileMirror.tagBytes(abs); hash = await fileMirror.sha256Of(abs); } catch {}
+      if (!t) return send(res, 404, { error: 'Hive can\'t send that file\'s tags by themselves.' });
+      res.writeHead(200, { 'Content-Type': 'application/octet-stream', 'Content-Length': t.head.length + t.tail.length,
+        'X-Head': String(t.head.length), 'X-Size': String(t.size), 'X-Sha256': hash, 'X-Mtime': String(Math.floor(st.mtimeMs)) });
+      return res.end(Buffer.concat([t.head, t.tail]));
+    }
+    // PUT /api/files/tags?p=&head=&size=&h=&m=: the phone's file, minus its audio.
+    const length = Number(req.headers['content-length']);
+    const headLength = Number(url.searchParams.get('head'));
+    const size = Number(url.searchParams.get('size'));
+    const hash = String(url.searchParams.get('h') || '');
+    if (!Number.isFinite(length) || length <= 0 || length > MAX_TAG_BYTES || !Number.isInteger(headLength) || headLength < 0 || headLength > length || !/^[0-9a-f]{64}$/i.test(hash)) {
+      req.resume(); return send(res, 400, { error: 'Tags without their lengths and checksum.' });
+    }
+    const chunks = []; let got = 0;
+    try {
+      await new Promise((resolve, reject) => {
+        req.on('data', c => { got += c.length; if (got > length) { reject(new Error('More than promised.')); req.destroy(); } else chunks.push(c); });
+        req.on('end', resolve); req.on('error', reject);
+      });
+    } catch (err) { return send(res, 400, { error: err.message }); }
+    const bytes = Buffer.concat(chunks);
+    if (bytes.length !== length) return send(res, 400, { error: 'The tags were cut off.' });
+    try {
+      const place = await fileMirror.audioPlace(abs);
+      if (!place || place.end - place.start + length !== size) return send(res, 409, { error: 'The audio here isn\'t the same: the whole file is needed.' });
+      const keepOnly = url.searchParams.get('keep') === '1';
+      const result = await fileMirror.writeFromTags(root, files.keepDir, rel, bytes.subarray(0, headLength), bytes.subarray(headLength), hash, num(url.searchParams.get('m')), { keepOnly });
+      if (keepOnly) return send(res, 200, { status: 'kept' });
+      onFileChanged(abs);
+      log('Hive Link: phone sent a file\'s tags', device.name, rel);
+      return send(res, 200, { status: 'saved', ...result });
+    } catch (err) {
+      if (err?.code === 'AUDIO_DIFFERS') return send(res, 409, { error: err.message });
       return send(res, 500, { error: err?.message || String(err) });
     }
   }

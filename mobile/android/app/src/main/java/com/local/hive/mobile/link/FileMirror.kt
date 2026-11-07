@@ -254,24 +254,6 @@ class FileMirror(private val context: Context) {
     }
 
     /**
-     * After Hive itself rewrote a phone copy that was the same on both sides (its Love, written here as the PC
-     * wrote it into its copy): still the same file on both, so nothing is copied either way. False while a
-     * run is copying (it would save over this), or if the file wasn't agreed on before.
-     */
-    fun reAgree(fullPath: String, before: FileStat): Boolean = synchronized(LEDGER_LOCK) {
-        if (running) return false
-        val root = root() ?: return false
-        val ledger = HashMap(ledger())
-        val key = ledger.keys.firstOrNull { File(root, MirrorPlanner.phonePath(it)).path.equals(fullPath, ignoreCase = true) } ?: return false
-        val was = ledger.getValue(key)
-        if (!was.phone.same(before)) return false
-        val f = File(fullPath)
-        ledger[key] = was.copy(phone = FileStat(f.length(), f.lastModified()))
-        saveLedger(ledger)
-        true
-    }
-
-    /**
      * A copy cut off by Hive itself being stopped (no code ran to tidy up): its half file goes now. Called when
      * Hive starts, before any sync can begin a new copy.
      */
@@ -310,37 +292,42 @@ class FileMirror(private val context: Context) {
         client: HiveLinkClient, conn: HiveLinkClient.Connection, left: Set<String>, budget: Long,
         step: suspend (label: String, work: suspend () -> Unit) -> Boolean,
         allowMany: Boolean = false,
+        /** Hive takes tags without the file: songs whose audio is the same on both sides go by their tags. */
+        tagSync: Boolean = false,
     ): Result {
         val root = root() ?: throw IOException("Hive can't reach this phone's music folder (allow All files access).")
-        // Taken for the whole run: a Love or tag write into a mirrored file (which then re-agrees it) waits its
-        // turn instead of landing in the middle of a copy (see LoveFiles, MainViewModel.saveEdits).
-        return gate.withLock {
-            running = true
-            try { runLocked(client, conn, left, budget, root, step, allowMany) } finally { running = false }
-        }
+        // One run at a time (the ledger is held in memory for the run and saved by it).
+        return gate.withLock { runLocked(client, conn, left, budget, root, step, allowMany, tagSync) }
     }
 
     private suspend fun runLocked(
         client: HiveLinkClient, conn: HiveLinkClient.Connection, left: Set<String>, budget: Long, root: File,
         step: suspend (label: String, work: suspend () -> Unit) -> Boolean,
         allowMany: Boolean,
+        tagSync: Boolean,
     ): Result {
         pruneDeleted(root)
         val listed = client.files(conn)
         val pc = listed.files.associate { it.p to FileStat(it.s, it.m) }
-        val plan = MirrorPlanner.plan(phoneFiles(root), pc, ledger(), left, listed.unreadable)
+        val phoneNow = phoneFiles(root)
+        val plan = MirrorPlanner.plan(phoneNow, pc, ledger(), left, listed.unreadable)
         // Songs the player has open now (playing, just played, next up) are left as they are this
         // run: replaced or moved under the player, it skips or stops. They're done on a later run.
         val open = openPaths()
         fun inUse(path: String) = File(root, MirrorPlanner.phonePath(path)).path.lowercase() in open
         // Far more to copy than a day's changes, after the two sides have agreed before: more likely a
         // folder read wrong than real changes. Nothing is copied; the user is told.
-        val copies = plan.toPc.size + plan.toPhone.size
-        if (!allowMany && ledger().isNotEmpty() && copies > maxOf(UNUSUAL_COPIES, pc.size / 4))
-            throw TooManyCopies(copies, "Song sync is waiting: it would copy $copies files at once, more than usual. Nothing was copied. If the phone's music folder is the right one, tap Copy them anyway.")
+        // Files on both sides that changed on one can go by their tags alone (checked below): they aren't
+        // the mistaken mass copies this guards against (a folder read wrong lacks them on one side).
+        val phoneHere = phoneNow.keys.mapTo(HashSet()) { it.lowercase() }
+        fun onBoth(path: String) = path in pc && MirrorPlanner.phonePath(path).lowercase() in phoneHere
+        fun tooMany(copies: Int) = !allowMany && ledger().isNotEmpty() && copies > maxOf(UNUSUAL_COPIES, pc.size / 4)
+        val sureCopies = (plan.toPc + plan.toPhone).count { !onBoth(it) }
+        if (tooMany(sureCopies))
+            throw TooManyCopies(sureCopies, "Song sync is waiting: it would copy $sureCopies files at once, more than usual. Nothing was copied. If the phone's music folder is the right one, tap Copy them anyway.")
         val ledger = HashMap(ledger()).apply {
             // Files gone from both sides are forgotten; those agreed on now are remembered.
-            val live = (pc.keys + phoneFiles(root).keys).mapTo(HashSet()) { it.lowercase() }
+            val live = (pc.keys + phoneNow.keys).mapTo(HashSet()) { it.lowercase() }
             // What's under a PC folder that couldn't be read is unknown this run: still remembered.
             keys.removeAll { it.lowercase() !in live && !MirrorPlanner.under(it.lowercase(), listed.unreadable) }
             putAll(plan.agreed)
@@ -355,6 +342,16 @@ class FileMirror(private val context: Context) {
             if (!MirrorPlanner.safe(path) || !f.canonicalPath.startsWith(rootCanonical)) throw IOException("Refused a path outside the music folder: $path")
             return f
         }
+        // Same audio on both sides, other tags: only the tags (and the cover) go across, not the file.
+        // If the tag sync can't be done this run (the PC busy, the network gone), files on both sides wait for the next
+        // run rather than going whole: a whole copy over a song whose tags differ is what lost the PC's play counts.
+        val byTags = if (tagSync) runCatching { syncTags(client, conn, plan, pc, ledger, ::phoneFile, ::inUse, scan) }
+            .onFailure { android.util.Log.w("HiveSongSync", "tag sync: ${it.message}") }
+            .getOrElse { (plan.toPc + plan.toPhone).filterTo(HashSet()) { onBoth(it) } } else emptySet()
+        if (byTags.isNotEmpty()) saveLedger(ledger)
+        val copies = (plan.toPc + plan.toPhone).count { it !in byTags }
+        if (tooMany(copies))
+            throw TooManyCopies(copies, "Song sync is waiting: it would copy $copies files at once, more than usual. Nothing was copied. If the phone's music folder is the right one, tap Copy them anyway.")
         // Files already here in another folder are moved to the PC's path, not copied.
         for ((from, to) in plan.moves) {
             val source = File(root, from); val target = phoneFile(to)
@@ -380,6 +377,7 @@ class FileMirror(private val context: Context) {
             source.parentFile?.takeIf { it != root && it.list()?.isEmpty() == true }?.let { it.delete(); it.parentFile?.takeIf { p -> p != root && p.list()?.isEmpty() == true }?.delete() }
         }
         for (path in plan.toPhone + renameFailed) {
+            if (path in byTags) continue
             val size = pc[path]?.size ?: continue
             if (inUse(path)) continue
             if (size > room) break
@@ -411,6 +409,7 @@ class FileMirror(private val context: Context) {
             if (ok) { copied++; room -= size; if (copied % 50 == 0) saveLedger(ledger) } else failed++
         }
         for (path in plan.toPc) {
+            if (path in byTags) continue
             val ok = step(path.substringAfterLast('/')) {
                 val source = phoneFile(path)
                 // A broken or cut-off file on the phone (a tag write the app didn't finish) never goes over the PC's copy.
@@ -429,6 +428,82 @@ class FileMirror(private val context: Context) {
         // Android's music library learns of the new and changed files.
         scan.chunked(500).forEach { MediaScannerConnection.scanFile(context, it.toTypedArray(), null, null) }
         return Result(plan, copied, failed)
+    }
+
+    /**
+     * The changed files on both sides whose audio is the same: the changed side's whole file minus its
+     * audio (every tag and picture) goes across, and the other side's copy is rebuilt around its own
+     * audio, checked byte for byte against the changed file. The two files are then one and the same,
+     * and the song itself never travels. Returns the paths it took care of: those done, and phone files
+     * Hive couldn't take this time (tried again next run, never sent whole). The rest are copied whole.
+     */
+    private suspend fun syncTags(
+        client: HiveLinkClient, conn: HiveLinkClient.Connection, plan: MirrorPlan, pc: Map<String, FileStat>,
+        ledger: HashMap<String, Agreed>, phoneFile: (String) -> File, inUse: (String) -> Boolean, scan: MutableList<String>,
+    ): Set<String> {
+        fun here(path: String) = path in pc && runCatching { phoneFile(path).isFile }.getOrDefault(false)
+        // Changed on both sides since they agreed: the PC's copy wins (it has taken the phone's own edits as
+        // edits already, PcEdits, so it holds both sides' changes); the phone's is kept aside on the PC.
+        fun bothChanged(path: String) = ledger[path]?.let { was -> pc[path]?.let { !was.pc.same(it) } } == true
+        val toPc = plan.toPc.filter { here(it) && !bothChanged(it) }
+        val keepFirst = plan.keepPhoneFirst + plan.toPc.filter { here(it) && bothChanged(it) }
+        val toPhone = (plan.toPhone + plan.toPc.filter { here(it) && bothChanged(it) }).filter { here(it) && !inUse(it) }
+        if (toPc.isEmpty() && toPhone.isEmpty()) return emptySet()
+        val states = client.fileTagStates(conn, (toPc + toPhone).distinct()).associateBy { it.p }
+        fun sameAudio(path: String): Pair<File, AudioSignature.Place>? {
+            val sig = states[path]?.sig ?: return null
+            val file = phoneFile(path)
+            if (AudioSignature.of(file) != sig) return null
+            return file to (AudioSignature.place(file) ?: return null)
+        }
+        fun bytes(f: File, from: Long, to: Long): ByteArray = java.io.RandomAccessFile(f, "r").use { r -> ByteArray((to - from).toInt()).also { r.seek(from); r.readFully(it) } }
+        val done = HashSet<String>(); val waiting = HashSet<String>()
+        // Phone to PC.
+        for (path in toPc) {
+            val (file, place) = sameAudio(path) ?: continue
+            waiting += path
+            try {
+                val before = FileStat(file.length(), file.lastModified())
+                val saved = client.uploadTags(conn, path, bytes(file, 0, place.start), bytes(file, place.end, place.size), place.size, AudioSignature.sha256(file), before.modified)
+                if (saved.status == "saved" && FileStat(file.length(), file.lastModified()).same(before)) { ledger[path] = Agreed(before, FileStat(saved.s, saved.m)); done += path }
+            } catch (e: HiveLinkException) {
+                // The audio isn't the same after all: the whole file goes, as before.
+                if (e.status == 409) waiting -= path
+                android.util.Log.w("HiveSongSync", "tags of $path not sent: ${e.message}")
+            } catch (e: IOException) { android.util.Log.w("HiveSongSync", "tags of $path not sent: ${e.message}") }
+        }
+        // PC to phone: the phone's copy rebuilt from Hive's tags and its own audio, next to it, then renamed over it.
+        for (path in toPhone) {
+            val (file, place) = sameAudio(path) ?: continue
+            // Both changed, the phone's copy the newer: never sent whole over the PC's if this doesn't work out.
+            if (path in plan.toPc) waiting += path
+            val part = File(file.parentFile, ".${file.name}.hive-mirror-part")
+            try {
+                if (path in keepFirst) client.uploadTags(conn, path, bytes(file, 0, place.start), bytes(file, place.end, place.size), place.size, AudioSignature.sha256(file), file.lastModified(), keep = true)
+                val t = client.downloadTags(conn, path)
+                if (t.size - t.head.size - t.tail.size != place.end - place.start) continue
+                prefs.edit().putString(PART_IN_PROGRESS, part.path).commit()
+                java.io.FileOutputStream(part).use { out ->
+                    out.write(t.head)
+                    java.io.RandomAccessFile(file, "r").use { r ->
+                        r.seek(place.start)
+                        val buf = ByteArray(1 shl 20); var left = place.end - place.start
+                        while (left > 0) { val n = r.read(buf, 0, minOf(buf.size.toLong(), left).toInt()); if (n < 0) break; out.write(buf, 0, n); left -= n }
+                    }
+                    out.write(t.tail); out.fd.sync()
+                }
+                if (part.length() != t.size || AudioSignature.sha256(part) != t.sha256) { part.delete(); continue }
+                if (!part.renameTo(file)) { part.delete(); continue }
+                if (t.modified > 0) file.setLastModified(t.modified)
+                ledger[path] = Agreed(FileStat(file.length(), file.lastModified()), FileStat(t.size, t.modified))
+                scan += file.path; done += path
+            } catch (e: Exception) {
+                part.delete()
+                android.util.Log.w("HiveSongSync", "tags of $path not taken: ${e.message}")
+            } finally { prefs.edit().remove(PART_IN_PROGRESS).apply() }
+        }
+        android.util.Log.i("HiveSongSync", "tag sync: ${done.size} of ${toPc.size + toPhone.size} by tags, ${(waiting - done).size} waiting")
+        return done + waiting
     }
 
     /**
@@ -502,11 +577,8 @@ class FileMirror(private val context: Context) {
         /** The music folder's hidden folder for songs taken off the phone because they were deleted on the PC. */
         const val DELETED_FOLDER = ".Hive deleted songs"
         private const val PART_IN_PROGRESS = "partInProgress"
-        /** A run copying files now (it holds the ledger in memory and saves it): see reAgree. */
-        @Volatile var running = false
-        /** Held by a run, and by a write into a mirrored file followed by reAgree: the two never overlap. */
+        /** Held by a run: two runs never overlap. */
         val gate = kotlinx.coroutines.sync.Mutex()
-        private val LEDGER_LOCK = Any()
         const val KEEP_DELETED_DAYS = 30
 
         /** More copies than this in one run (and over a quarter of the library), once agreed before, is taken for a mistake. */

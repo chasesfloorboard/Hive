@@ -808,7 +808,11 @@ private fun FavoritesHome(vm: MainViewModel, nav: HomeNavigation, tracks: List<T
     ) {
         if (!searching) item(key = "favorites") {
             val covers: List<Any> = favoritesImage?.let { listOf(it) } ?: mosaicCovers(tracks) + streams.mapNotNull { it.first.artworkUrl.ifBlank { null } }.distinct().take(MOSAIC)
-            FavoriteSquare(AutoPlaylist.Favorites.title, covers, round = false, icon = Icons.Rounded.Favorite) { nav.openPlaylist(AutoPlaylist.Favorites) }
+            // Hold: the Favorites menu (play, shuffle, play next, add to queue…), as holding its card on Playlists does.
+            FavoriteSquare(AutoPlaylist.Favorites.title, covers, round = false, icon = Icons.Rounded.Favorite,
+                onLongClick = if (tracks.isEmpty()) null else ({ haptics.performHapticFeedback(androidx.compose.ui.hapticfeedback.HapticFeedbackType.LongPress); nav.collection(AutoDjRequest(AutoPlaylist.Favorites.title) { tracks }) })) {
+                nav.openPlaylist(AutoPlaylist.Favorites)
+            }
         }
         gridItems(shown, key = { it.key }) { t ->
             val isDragged = dragging == t.key

@@ -89,8 +89,7 @@ class HiveApp : Application(), coil3.SingletonImageLoader.Factory {
     /** Love kept in the song files themselves, as on the PC (see LoveFiles). */
     val loveFiles by lazy {
         com.local.hive.mobile.data.LoveFiles(this, database.dao(), scope, paired = { linkStore.pairing != null }, inUse = { com.local.hive.mobile.playback.OpenSongs.ids },
-            mirrored = { com.local.hive.mobile.link.FileMirror(this).mirroredPhonePaths() },
-            reAgree = { path, before -> com.local.hive.mobile.link.FileMirror(this).reAgree(path, before) })
+            mirrored = { com.local.hive.mobile.link.FileMirror(this).mirroredPhonePaths() })
     }
     private var backupJob: Job? = null
     /** Saves the backup a little later, once a burst of changes has settled. */

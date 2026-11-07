@@ -39,14 +39,12 @@ async function writeAndSyncReplacement(temp, target, data) {
 // Shared tail of writeAndSyncReplacement, for a writer (like metaflac) that
 // already produced the final content directly at `temp` itself rather than
 // handing us an in-memory buffer to write.
-// Love is bookkeeping, not a change to the song: the file keeps its modified time, so Hive
-// Mobile's song sync doesn't copy the whole song across again for it.
-async function syncAndRenameExistingTemp(temp, target, keepMtime = true) {
-  const before = keepMtime ? await fsp.stat(target).catch(() => null) : null;
+// Love gives the file a new modified time, like any write: that's how Hive Mobile's file mirror sees it
+// and makes the phone's copy the same file again (by the tags alone; the song isn't copied).
+async function syncAndRenameExistingTemp(temp, target) {
   const fd = await fsp.open(temp, 'r+');
   try { await fd.sync(); } finally { await fd.close(); }
   await replaceFile(temp, target);
-  if (before) await fsp.utimes(target, before.atime, before.mtime).catch(() => {});
 }
 
 const musicBeeWriteLocks = new Map();

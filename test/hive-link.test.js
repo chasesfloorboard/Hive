@@ -928,6 +928,83 @@ test('the file mirror lists, sends and takes files, keeping every one it replace
   assert.equal(fs.readFileSync(path.join(keepDir, 'notes.txt'), 'utf8'), 'notes');
 });
 
+test('the audio signature sees through tags: the same audio matches, other audio does not (the phone expects these values)', async () => {
+  const { audioSignature } = require('../app/main/file-mirror');
+  const { fixtures } = require('./fixtures-audio-signature');
+  // AudioSignatureTest.kt on the phone builds the same bytes and expects these same signatures.
+  const expected = {
+    mp3: ['aa97edbea4b768857aef75824bcd6500', '523ecc648149cd23aad13196517a39c2'],
+    bigmp3: ['e73d08479de57fa84488c202ccc1bcae', '08f58b11c04dd4616f717c0d7daf25d0'],
+    flac: ['cd68a5aaf20c8d4424f813e5d09829b3', 'eff20654c7e0d8106ce2629674ebee24'],
+    m4a: ['fbac4b6e8091f7e8c52658171cb4824c', 'd4ca2d60a5fb7928410b189e91e4f258'],
+    wav: ['8d62692c5dfd3993a7fe2b1d1419f225', 'caa414f697c85b37181a1e1267f54aa7'],
+  };
+  const dir = tempDir('hive-sig-');
+  for (const [kind, files] of Object.entries(fixtures())) {
+    const ext = kind === 'bigmp3' ? 'mp3' : kind;
+    const sig = {};
+    for (const [name, bytes] of Object.entries(files)) { const f = path.join(dir, `${kind}-${name}.${ext}`); fs.writeFileSync(f, bytes); sig[name] = await audioSignature(f); }
+    assert.equal(sig.a, expected[kind][0], kind);
+    assert.equal(sig.b, sig.a, `${kind}: other tags, same audio`);
+    assert.equal(sig.other, expected[kind][1], `${kind}: other audio`);
+  }
+  fs.writeFileSync(path.join(dir, 'x.opus'), 'OggS...');
+  assert.equal(await audioSignature(path.join(dir, 'x.opus')), null);
+  fs.writeFileSync(path.join(dir, 'broken.flac'), 'not a flac');
+  assert.equal(await audioSignature(path.join(dir, 'broken.flac')), null);
+});
+
+test('the file mirror syncs a file by its tags alone: the result is the other side\'s file byte for byte, the audio never sent', async t => {
+  const root = tempDir('hive-mirror-root-');
+  const keepDir = tempDir('hive-mirror-keep-');
+  const { fixtures } = require('./fixtures-audio-signature');
+  const fx = fixtures();
+  fs.mkdirSync(path.join(root, 'A'), { recursive: true });
+  const one = path.join(root, 'A', 'One.mp3');
+  fs.writeFileSync(one, fx.bigmp3.a);
+  const ctx = setup({ files: { root: async () => root, keepDir } });
+  t.after(() => { ctx.link.stop(); fs.rmSync(root, { recursive: true, force: true }); fs.rmSync(keepDir, { recursive: true, force: true }); });
+  await waitListening(ctx.port);
+  const token = await pair(ctx);
+  assert.equal((await request(ctx.port, 'GET', '/api/info', { token })).body.fileTags, true);
+  const info = (await request(ctx.port, 'POST', '/api/files/info', { token, body: { p: ['A/One.mp3', 'A/Gone.mp3', '../x.mp3'] } })).body.files;
+  assert.deepEqual(info.map(f => f.p), ['A/One.mp3']);
+  assert.equal(info[0].sig, 'e73d08479de57fa84488c202ccc1bcae');
+
+  // PC to phone: everything but the audio.
+  const got = await rawGet(ctx.port, '/api/files/tags?p=' + encodeURIComponent('A/One.mp3'), token);
+  const head = Number(got.headers['x-head']);
+  assert.equal(head, 50);
+  assert.equal(got.body.length, fx.bigmp3.a.length - (3 * 1024 * 1024 + 17));
+  assert.equal(got.headers['x-sha256'], crypto.createHash('sha256').update(fx.bigmp3.a).digest('hex'));
+
+  // Phone to PC: the phone's file (other tags, a bigger tag, an ID3v1) rebuilt here around the PC's audio.
+  const phone = fx.bigmp3.b;
+  const audioStart = 10 + 4000, audioEnd = phone.length - 128;
+  const tags = Buffer.concat([phone.subarray(0, audioStart), phone.subarray(audioEnd)]);
+  const hash = crypto.createHash('sha256').update(phone).digest('hex');
+  const q = `/api/files/tags?p=${encodeURIComponent('A/One.mp3')}&head=${audioStart}&size=${phone.length}&h=${hash}&m=1700000000000`;
+  const saved = await putBytes(ctx.port, q, token, tags);
+  assert.equal(saved.body.status, 'saved');
+  assert.ok(fs.readFileSync(one).equals(phone), 'the PC\'s file is now the phone\'s, byte for byte');
+  assert.equal(Math.floor(fs.statSync(one).mtimeMs / 1000), 1700000000);
+  assert.ok(fs.readFileSync(path.join(keepDir, 'A', 'One.mp3')).equals(fx.bigmp3.a), 'the old copy is kept');
+
+  // Both changed and the PC's copy won: the phone's is only kept aside, rebuilt from its tags.
+  const kept = await putBytes(ctx.port, `/api/files/tags?p=${encodeURIComponent('A/One.mp3')}&head=50&size=${fx.bigmp3.a.length}&h=${crypto.createHash('sha256').update(fx.bigmp3.a).digest('hex')}&keep=1`, token,
+    Buffer.concat([fx.bigmp3.a.subarray(0, 50)]));
+  assert.equal(kept.body.status, 'kept');
+  assert.ok(fs.readFileSync(path.join(keepDir, 'Phone copies replaced', 'A', 'One.mp3')).equals(fx.bigmp3.a));
+  assert.ok(fs.readFileSync(one).equals(phone), 'the library file is left as it is');
+
+  // Other audio: refused, nothing changed (the phone then sends the whole file).
+  const other = fx.mp3.other;
+  const wrong = await putBytes(ctx.port, `/api/files/tags?p=${encodeURIComponent('A/One.mp3')}&head=30&size=${phone.length}&h=${'0'.repeat(64)}`, token, Buffer.concat([other.subarray(0, 30), Buffer.alloc(phone.length - (audioEnd - audioStart) - 30)]));
+  assert.equal(wrong.status, 409);
+  assert.ok(fs.readFileSync(one).equals(phone));
+  assert.equal((await putBytes(ctx.port, `/api/files/tags?p=${encodeURIComponent('../x.mp3')}&head=1&size=2&h=${hash}`, token, Buffer.from('xx'))).status, 400);
+});
+
 test('the file mirror survives cut-off and overlapping transfers, and big files arrive whole', async t => {
   const root = tempDir('hive-mirror-root-');
   const keepDir = tempDir('hive-mirror-keep-');

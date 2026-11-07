@@ -5712,7 +5712,7 @@ async function writeEmbeddedPlayCount(trackPath, value) {
     if (artworkBefore?.fingerprint !== artworkAfter?.fingerprint) {
       throw new Error('P_count write changed embedded artwork unexpectedly; the original file was left untouched.');
     }
-    await commitMetadataTemp(temp, trackPath, false, true);
+    await commitMetadataTemp(temp, trackPath, false);
     return nextValue;
   } catch (err) {
     try { await fsp.unlink(temp); } catch {}
@@ -8167,7 +8167,7 @@ async function embedLoveInFileLocked(trackPath, loved) {
     if (artworkBefore?.fingerprint !== artworkAfter?.fingerprint) {
       throw new Error('Love write changed embedded artwork unexpectedly; the original file was left untouched.');
     }
-    await commitMetadataTemp(temp, trackPath, false, true);
+    await commitMetadataTemp(temp, trackPath, false);
     return true;
   } catch(err) {
     try { await fsp.unlink(temp); } catch {}

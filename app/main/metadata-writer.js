@@ -113,9 +113,10 @@ function createMetadataWriter(deps) {
   }
 
   /**
-   * Puts the edited temp copy in place of the file, flushed to disk first. [keepMtime]: the write is
-   * bookkeeping (Love, rating, play count), not a change to the song: the file keeps its modified
-   * time, so Hive Mobile's song sync doesn't copy the whole song across again for it.
+   * Puts the edited temp copy in place of the file, flushed to disk first. Every write, Love and play
+   * counts too, gives the file a new modified time: that's how Hive Mobile's file mirror sees the change
+   * and brings its copy in step (by the tags alone, see file-mirror.js writeFromTags). [keepMtime]
+   * keeps the old time; nothing uses it now (a change the phone never saw left its copy behind).
    */
   async function commitMetadataTemp(temp, trackPath, background = false, keepMtime = false) {
     const before = keepMtime ? await fsp.stat(trackPath).catch(() => null) : null;
@@ -156,7 +157,7 @@ function createMetadataWriter(deps) {
         if (artworkBefore?.fingerprint !== artworkAfter?.fingerprint) {
           throw new Error('Rating write changed embedded artwork unexpectedly; the original file was left untouched.');
         }
-        await commitMetadataTemp(temp, trackPath, false, true);
+        await commitMetadataTemp(temp, trackPath, false);
         return true;
       } catch (err) {
         try { await fsp.unlink(temp); } catch {}

@@ -81,7 +81,7 @@ fun helloProof(token: String, nonce: String, serverId: String): String {
 /** Song sync on the PC: whether Hive takes song files from the phone. */
 @Serializable data class SongCaps(val receive: Boolean = false)
 @Serializable data class AppUpdate(val versionCode: Long, val versionName: String, val size: Long, val sha256: String)
-@Serializable data class InfoResponse(val serverId: String, val name: String, val port: Int, val seq: Long, val addresses: List<HiveAddress> = emptyList(), val streams: StreamCaps = StreamCaps(), val remote: Boolean = false, val plays: Boolean = false, val playsVersion: Int = 0, val inbox: InboxSummary = InboxSummary(), val songs: SongCaps = SongCaps(), val wrap: Boolean = false, val listening: Boolean = false, val files: Boolean = false, val themes: Boolean = false, val playlistSync: Boolean = false, val ratings: Boolean = false, val phoneKeys: Boolean = false, val trackStats: Boolean = false, val coverKey: String = "")
+@Serializable data class InfoResponse(val serverId: String, val name: String, val port: Int, val seq: Long, val addresses: List<HiveAddress> = emptyList(), val streams: StreamCaps = StreamCaps(), val remote: Boolean = false, val plays: Boolean = false, val playsVersion: Int = 0, val inbox: InboxSummary = InboxSummary(), val songs: SongCaps = SongCaps(), val wrap: Boolean = false, val listening: Boolean = false, val files: Boolean = false, val fileTags: Boolean = false, val themes: Boolean = false, val playlistSync: Boolean = false, val ratings: Boolean = false, val phoneKeys: Boolean = false, val trackStats: Boolean = false, val coverKey: String = "")
 /** One year's Yearly Wrap as Hive on the PC counts it (its plays, imports and this phone's). */
 @Serializable data class PcWrap(
     val year: Int,
@@ -118,6 +118,11 @@ fun helloProof(token: String, nonce: String, serverId: String): String {
 @Serializable data class FilesResponse(val files: List<RemoteFile> = emptyList(), val unreadable: List<String> = emptyList())
 @Serializable data class FileSaved(val status: String = "", val s: Long = 0, val m: Long = 0)
 @Serializable data class DeleteFiles(val p: List<String>)
+/** A file's state for the tag sync: [sig] the audio's signature (null: Hive can't look inside, copy it whole). */
+@Serializable data class FileTagState(val p: String, val s: Long = 0, val m: Long = 0, val sig: String? = null)
+@Serializable data class FileTagStates(val files: List<FileTagState> = emptyList())
+/** Everything in one of Hive's files but its audio: [head] before it, [tail] after; the whole file is [size] bytes with this [sha256]. */
+class TagBytes(val head: ByteArray, val tail: ByteArray, val size: Long, val sha256: String, val modified: Long)
 @Serializable data class DeletedFiles(val deleted: List<String> = emptyList())
 @Serializable data class PlaysRequest(val plays: List<PlayOut>)
 /** Hive's answer to phone plays: [counted] at once, or [staged] for review; [unknown] songs it doesn't have (by clientId). */
@@ -538,6 +543,34 @@ class HiveLinkClient(private val http: OkHttpClient = defaultHttp()) {
             if (!res.isSuccessful) read(res)
             res.body.byteStream().use { it.copyTo(out, 1 shl 16) }
         }
+    }
+
+    // ---- tags without the song: a file whose audio is the same on both sides is made the same file ----
+
+    /** Hive's state of these files (missing ones left out), for the tag sync. */
+    suspend fun fileTagStates(conn: Connection, rels: List<String>): List<FileTagState> = withContext(Dispatchers.IO) {
+        rels.chunked(200).flatMap { part ->
+            val body = json.encodeToString(DeleteFiles.serializer(), DeleteFiles(part)).toRequestBody(jsonType)
+            http.newCall(authed(conn, "/api/files/info").post(body).build()).execute().use { json.decodeFromString(FileTagStates.serializer(), read(it)).files }
+        }
+    }
+
+    /** One of Hive's files without its audio (every tag and picture), to rebuild the phone's copy around its own audio. */
+    suspend fun downloadTags(conn: Connection, rel: String): TagBytes = withContext(Dispatchers.IO) {
+        transferHttp.newCall(authed(conn, "/api/files/tags?p=" + java.net.URLEncoder.encode(rel, "UTF-8")).build()).execute().use { res ->
+            if (!res.isSuccessful) read(res)
+            val bytes = res.body.bytes()
+            val head = res.header("X-Head")?.toIntOrNull()?.takeIf { it in 0..bytes.size } ?: throw IOException("Hive's answer had no tag lengths")
+            TagBytes(bytes.copyOfRange(0, head), bytes.copyOfRange(head, bytes.size), res.header("X-Size")?.toLongOrNull() ?: -1,
+                res.header("X-Sha256").orEmpty().lowercase(), res.header("X-Mtime")?.toLongOrNull() ?: 0)
+        }
+    }
+
+    /** The phone's file without its audio, for Hive to rebuild its copy around its own audio; a 409 means the audio differs. */
+    suspend fun uploadTags(conn: Connection, rel: String, head: ByteArray, tail: ByteArray, size: Long, sha256: String, modified: Long, keep: Boolean = false): FileSaved = withContext(Dispatchers.IO) {
+        val q = "p=" + java.net.URLEncoder.encode(rel, "UTF-8") + "&head=${head.size}&size=$size&h=$sha256&m=$modified" + if (keep) "&keep=1" else ""
+        val body = (head + tail).toRequestBody("application/octet-stream".toMediaType())
+        transferHttp.newCall(authed(conn, "/api/files/tags?$q").put(body).build()).execute().use { json.decodeFromString(FileSaved.serializer(), read(it)) }
     }
 
     /** Files deleted on the phone: Hive moves them into its Deleted songs. Returns the ones it moved. */

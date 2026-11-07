@@ -241,6 +241,11 @@ async function freshInstallChecks(when) {
     check('Phone and PC hold the same files, byte for byte in size', !missing.length && !extra.length, `${missing.length} missing/different on the phone, ${extra.length} only on the phone ${[...missing, ...extra].slice(0, 4).join(' | ')}`);
 
     // 6. Changes on each side cross over.
+    const sentFiles = () => (fs.readFileSync(path.join(WORK, 'hive.log'), 'utf8').match(/phone sent a file(?!'s tags)/g) || []).length;
+    const sha = f => require('crypto').createHash('sha256').update(fs.readFileSync(f)).digest('hex');
+    // One to one: the phone's copy is the PC's file, byte for byte.
+    const sameFile = (pcFile, phonePath, pulledTo) => { adb('pull', phonePath, pulledTo); return sha(pcFile) === sha(pulledTo); };
+    const sentBefore = sentFiles();
     const second = path.join(PC_MUSIC, 'Artist A', 'First Album', '02 Second.mp3');
     await evaluate(`window.beehive.setLove([${JSON.stringify(second)}], true)`);
     await until('Love written to the file', () => fileTag(second, 'LOVE RATING') === 'L', 30000);
@@ -250,6 +255,7 @@ async function freshInstallChecks(when) {
     const pulled = path.join(WORK, 'second-from-phone.mp3');
     await until('the newer file reached the phone', async () => { adb('pull', secondOnPhone, pulled); return fileTag(pulled, 'LOVE RATING') === 'L'; }, 300000, 5000).catch(() => {});
     check("…and the phone's copy of the file gets it too", fs.existsSync(pulled) && fileTag(pulled, 'LOVE RATING') === 'L');
+    check('…byte for byte the same file as the PC\'s', await until('one to one', () => sameFile(second, secondOnPhone, pulled), 120000, 5000).catch(() => false));
 
     // Tags edited on the phone (its song menu › More › Edit tags) are written into the PC's file, and the
     // phone's copy ends up the same.
@@ -266,6 +272,39 @@ async function freshInstallChecks(when) {
     sh('logcat -c'); reopenPhone();
     await until('the phone\'s copy has the edit', async () => { adb('pull', secondOnPhone, pulled); return fileTag(pulled, 'TCON') === 'Phone Edit'; }, 300000, 5000).catch(() => {});
     check('…and the phone\'s copy has it too, with its Favorite kept', fileTag(pulled, 'TCON') === 'Phone Edit' && fileTag(pulled, 'LOVE RATING') === 'L', `${fileTag(pulled, 'TCON')} / ${fileTag(pulled, 'LOVE RATING')}`);
+    check('…and the two are one file again, byte for byte', await until('one to one', () => sameFile(second, secondOnPhone, pulled), 120000, 5000).catch(() => false));
+
+    // 6a. Tags and covers changed on one side go across as tags, never as the whole file: the other
+    //     side's own tags (Love, play counts) stay as they are, and the audio is never re-sent.
+    const opening = path.join(PC_MUSIC, 'Artist A', 'First Album', '01 Opening.mp3');
+    const openingOnPhone = `${PHONE_ROOT}/Artist A/First Album/01 Opening.mp3`;
+    const openingPulled = path.join(WORK, 'opening-from-phone.mp3');
+    const art = path.join(WORK, 'new-cover.png');
+    execFileSync('ffmpeg', ['-v', 'error', '-y', '-f', 'lavfi', '-i', 'color=c=0x2a9d8f:s=300x300', '-frames:v', '1', art]);
+    const artHash = require('crypto').createHash('sha256').update(fs.readFileSync(art)).digest('hex');
+    const coverHash = file => execFileSync('python3', ['-I', '-c', `import sys, hashlib; sys.path.insert(0, ${JSON.stringify(path.join(REPO, 'resources'))})
+import mutagen; t = mutagen.File(sys.argv[1]).tags or {}
+p = [t[k].data for k in t.keys() if k.startswith('APIC')]
+print(hashlib.sha256(p[0]).hexdigest() if p else '')`, file], { encoding: 'utf8' }).trim();
+    await evaluate(`window.beehive.writeTags(${JSON.stringify(opening)}, { genre: 'PC Edit' })`);
+    await evaluate(`window.beehive.writeArtwork(${JSON.stringify(opening)}, ${JSON.stringify(art)}, { pictureType: 'Cover (Front)' })`);
+    sh('logcat -c'); reopenPhone();
+    await until('the PC\'s tag edit on the phone', async () => { adb('pull', openingOnPhone, openingPulled); return fileTag(openingPulled, 'TCON') === 'PC Edit' && coverHash(openingPulled) === artHash; }, 300000, 5000).catch(() => {});
+    const bySync = logcat('HiveSongSync').split('\n').find(l => /^tag sync: [1-9]/.test(l));
+    check('A tag and a cover changed on the PC reach the phone by its tags, not the song', fileTag(openingPulled, 'TCON') === 'PC Edit' && coverHash(openingPulled) === artHash && !!bySync,
+      `${fileTag(openingPulled, 'TCON')}, cover ${coverHash(openingPulled) === artHash ? 'new' : 'old'}; ${bySync || 'no tag sync logged'}`);
+    check('…its Favorite and play count kept', fileTag(openingPulled, 'LOVE RATING') === 'L' && fileTag(openingPulled, 'P_COUNT') === '7', `${fileTag(openingPulled, 'LOVE RATING')} / P_COUNT ${fileTag(openingPulled, 'P_COUNT')}`);
+    check('…byte for byte the PC\'s file', sameFile(opening, openingOnPhone, openingPulled));
+    // Changed in the phone's own file (another app, a tag edit Hive didn't see): its tags go to the PC.
+    execFileSync('python3', ['-I', '-c', `import sys; sys.path.insert(0, ${JSON.stringify(path.join(REPO, 'resources'))})
+from mutagen.id3 import ID3, TALB; t = ID3(sys.argv[1]); t.add(TALB(encoding=3, text=['First Album (Phone)'])); t.save()`, openingPulled]);
+    adb('push', openingPulled, openingOnPhone); sh(`touch '${openingOnPhone}'`);
+    sh('logcat -c'); reopenPhone();
+    await until('the phone file\'s tag on the PC', () => fileTag(opening, 'TALB') === 'First Album (Phone)', 300000, 5000).catch(() => {});
+    check('A tag changed in the phone\'s file reaches the PC by its tags', fileTag(opening, 'TALB') === 'First Album (Phone)', fileTag(opening, 'TALB'));
+    check('…and the PC\'s play count in the file stays', fileTag(opening, 'P_COUNT') === '7', `P_COUNT ${fileTag(opening, 'P_COUNT')}`);
+    check('…and the PC\'s file is the phone\'s, byte for byte', sameFile(opening, openingOnPhone, path.join(WORK, 'opening-check.mp3')));
+    check('No whole file went from the phone to the PC for any Love, tag or cover change', sentFiles() === sentBefore, `${sentFiles() - sentBefore} files sent`);
 
     // A play on the phone counts on the PC, in its history, and in the file.
     // Where Hive filed the phone's song (Artist/Album/Title), found by its file.

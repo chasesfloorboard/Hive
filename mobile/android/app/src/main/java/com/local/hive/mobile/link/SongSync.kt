@@ -440,7 +440,7 @@ class SongSync(
         val budget = if (free == null) Long.MAX_VALUE else free - 2L * 1024 * 1024 * 1024
         val allowMany = context.getSharedPreferences("file-mirror", Context.MODE_PRIVATE).getBoolean("allowManyOnce", false)
         val result = try {
-            mirror.run(client, conn, leftFiles(), budget, { label, work -> step(label, onProgress, work) }, allowMany)
+            mirror.run(client, conn, leftFiles(), budget, { label, work -> step(label, onProgress, work) }, allowMany, tagSync = info.fileTags)
         } catch (e: FileMirror.TooManyCopies) {
             // Said once and left waiting: not tried again and again (each try listing everything) until the user answers.
             _state.update { it.copy(message = e.message, manyWaiting = e.copies) }
