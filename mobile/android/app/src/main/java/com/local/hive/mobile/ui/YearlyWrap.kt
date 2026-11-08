@@ -478,15 +478,24 @@ private fun PosterTile(t: Tile, modifier: Modifier) {
 @Composable
 private fun WrapBackdrop(pager: androidx.compose.foundation.pager.PagerState, arts: List<Any?>) {
     val c = Hive.colors
+    // A full-screen 70dp blur is one of the costliest things to draw; the wrap used to stack one
+    // per distinct cover at once. Only the covers on or next to the slide on screen can be seen
+    // (the rest are at alpha 0), so only those are drawn — the hidden blurs are skipped entirely.
+    val current = pager.currentPage
     Box(Modifier.fillMaxSize()) {
         arts.filterNotNull().distinct().forEach { model ->
             val pages = arts.indices.filter { arts[it] == model }
-            Artwork(model, Modifier.fillMaxSize().graphicsLayer {
-                val at = pager.currentPage + pager.currentPageOffsetFraction
-                val d = pages.minOf { kotlin.math.abs(it - at) }
-                alpha = 0.7f * (1f - d).coerceIn(0f, 1f)
-                scaleX = 1.4f; scaleY = 1.4f
-            }.blur(70.dp), androidx.compose.ui.graphics.RectangleShape, Icons.Rounded.LibraryMusic)
+            if (pages.any { kotlin.math.abs(it - current) <= 1 }) {
+                // Blur a quarter-size copy, then scale it up — the blur touches 1/16 the pixels but
+                // looks the same (a heavy blur is all low-frequency). Laid out at 1/4 the screen and
+                // scaled 5.6x gives the same 1.4x zoom; a ~13dp blur becomes ~70dp once scaled.
+                Artwork(model, Modifier.fillMaxSize(0.25f).align(Alignment.Center).graphicsLayer {
+                    val at = pager.currentPage + pager.currentPageOffsetFraction
+                    val d = pages.minOf { kotlin.math.abs(it - at) }
+                    alpha = 0.7f * (1f - d).coerceIn(0f, 1f)
+                    scaleX = 5.6f; scaleY = 5.6f
+                }.blur(13.dp), androidx.compose.ui.graphics.RectangleShape, Icons.Rounded.LibraryMusic)
+            }
         }
         Box(Modifier.fillMaxSize().background(androidx.compose.ui.graphics.Brush.verticalGradient(0f to c.bg.copy(alpha = 0.35f), 0.55f to c.bg.copy(alpha = 0.6f), 1f to c.bg.copy(alpha = 0.92f))))
     }

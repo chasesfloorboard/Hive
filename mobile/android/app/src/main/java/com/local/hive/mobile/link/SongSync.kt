@@ -402,6 +402,14 @@ class SongSync(
             val conn0 = sync.pcConnection() ?: throw IOException("Can't reach Hive on the PC. Is it open?")
             val info0 = client.info(conn0)
             if (mirrors(info0)) return@withLock runMirror(conn0, info0, onProgress)
+            // A mirror-managed phone must never fall back to the older per-song sync. Without the
+            // PC's agreed file list it can't tell its organised copies apart from new songs, so it
+            // re-uploads them under fresh names on every run (the copy loop). When the PC isn't
+            // offering the mirror (the phone isn't trusted there yet), wait and say so instead.
+            if (mirror.rootChosen() && !info0.files) {
+                _state.update { it.copy(message = "To sync songs, trust this phone in Hive on your PC (Settings › Hive Mobile).") }
+                return@withLock true
+            }
             sendReplacements()
             val (plan, conn) = planNow()
             val pcTakesSongs = _state.value.plan?.pcTakesSongs == true

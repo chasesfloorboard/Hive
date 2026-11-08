@@ -85,6 +85,13 @@ class ThemeReveal internal constructor(internal val layer: GraphicsLayer, privat
     internal var height = 0f
     private var ending: Job? = null
 
+    /**
+     * Whether the app is drawn through the capture layer. Off by default, so the whole app isn't
+     * routed through an extra full-screen offscreen pass every frame just to be ready for a reveal
+     * that almost never happens; turned on only while a theme is opening (see [spread]/[end]).
+     */
+    internal var active by mutableStateOf(false)
+
     /** A theme is open or settling: a new hold waits until it's done. */
     val busy get() = rings.isNotEmpty() || ending?.isActive == true
 
@@ -93,6 +100,12 @@ class ThemeReveal internal constructor(internal val layer: GraphicsLayer, privat
 
     /** Keeps the screen as it is, shows [apply]'s theme, and opens it out of the logo. */
     internal suspend fun spread(apply: () -> Unit) {
+        // Route drawing through the layer so the screen as it is can be grabbed, then wait two
+        // frames for it to record the old theme before grabbing it (a grab a frame early is empty,
+        // a frame late catches the new theme). apply() changes the theme only after the grab.
+        active = true
+        androidx.compose.runtime.withFrameNanos { }
+        androidx.compose.runtime.withFrameNanos { }
         val ring = Ring(layer.toImageBitmap(), Animatable(0f))
         rings += ring
         apply()
@@ -142,6 +155,7 @@ class ThemeReveal internal constructor(internal val layer: GraphicsLayer, privat
                 androidx.compose.runtime.withFrameNanos { }
             }
             rings.clear()
+            active = false
             pull.snapTo(1f)
         }
     }
@@ -201,9 +215,15 @@ fun ThemeRevealHost(themes: ThemeStore, content: @Composable () -> Unit) {
     val rim = Hive.colors.accent
     Box(
         Modifier.fillMaxSize().onSizeChanged { reveal.width = it.width.toFloat(); reveal.height = it.height.toFloat() }.drawWithContent {
-            layer.record { this@drawWithContent.drawContent() }
-            drawLayer(layer)
-            if (reveal.rings.isNotEmpty()) reveal.draw(this, rim)
+            // Only pay for the offscreen capture layer while a theme is opening; otherwise draw
+            // straight through, so every ordinary frame on every screen costs nothing extra.
+            if (reveal.active) {
+                layer.record { this@drawWithContent.drawContent() }
+                drawLayer(layer)
+                if (reveal.rings.isNotEmpty()) reveal.draw(this, rim)
+            } else {
+                this@drawWithContent.drawContent()
+            }
         },
     ) { CompositionLocalProvider(LocalThemeReveal provides reveal, content = content) }
 }

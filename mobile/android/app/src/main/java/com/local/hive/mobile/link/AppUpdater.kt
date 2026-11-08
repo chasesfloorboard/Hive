@@ -95,15 +95,27 @@ class AppUpdater(
      * Asks the PC when it can be reached, else GitHub, so updates arrive with the PC off too.
      * Called when Hive opens and from Settings' Check now.
      */
-    fun checkAnywhere(force: Boolean = false) = check(force) { connection()?.let { pc(it) } ?: online }
+    fun checkAnywhere(force: Boolean = false) = check(force, fallback = online) { connection()?.let { pc(it) } ?: online }
 
-    private fun check(force: Boolean, source: suspend () -> Source) {
+    /**
+     * [source] is tried first; if it fails and a [fallback] is given (and isn't the same source),
+     * the fallback is tried before giving up. So "Check now" falls through to GitHub when the PC
+     * can't be reached — including when a stale on-cable address (127.0.0.1) is still remembered.
+     */
+    private fun check(force: Boolean, fallback: Source? = null, source: suspend () -> Source) {
         scope.launch(Dispatchers.IO) {
             lock.withLock {
                 if (!force && System.currentTimeMillis() - lastCheck < CHECK_EVERY_MS) return@withLock
                 lastCheck = System.currentTimeMillis()
                 val from = runCatching { source() }.getOrElse { online }
-                runCatching { fetch(from) }.onFailure { _state.value = State.Failed(it.message ?: if (from === online) "Couldn't reach GitHub" else "Couldn't reach Hive on the PC") }
+                val result = runCatching { fetch(from) }
+                if (result.isFailure) {
+                    if (fallback != null && from !== fallback) {
+                        runCatching { fetch(fallback) }.onFailure { _state.value = State.Failed(it.message ?: "Couldn't reach GitHub") }
+                    } else {
+                        _state.value = State.Failed(result.exceptionOrNull()?.message ?: if (from === online) "Couldn't reach GitHub" else "Couldn't reach Hive on the PC")
+                    }
+                }
             }
         }
     }

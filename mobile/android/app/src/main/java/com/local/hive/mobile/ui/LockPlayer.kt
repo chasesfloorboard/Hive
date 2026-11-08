@@ -84,7 +84,8 @@ fun LockPlayer(vm: MainViewModel, onUnlock: () -> Unit) {
         },
     ) {
         HiveAmbient(aura?.primary?.copy(alpha = 0.7f) ?: c.ambientA, aura?.secondary?.copy(alpha = 0.6f) ?: c.ambientB, Modifier.fillMaxSize(), intensity = 1.25f)
-        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.S) Artwork(now.artworkUri, Modifier.fillMaxSize().blur(110.dp).alpha(0.3f), RectangleShape)
+        // Blur a fifth-size copy and scale it up: 1/25 the pixels to blur, same soft wash (22dp × 5 ≈ 110dp).
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.S) Artwork(now.artworkUri, Modifier.fillMaxSize(0.2f).align(Alignment.Center).graphicsLayer { scaleX = 5f; scaleY = 5f; alpha = 0.3f }.blur(22.dp), RectangleShape)
         Box(Modifier.fillMaxSize().background(Brush.verticalGradient(0f to c.bg.copy(alpha = 0.35f), 0.5f to Color.Transparent, 1f to c.bg.copy(alpha = 0.8f))))
 
         Column(
