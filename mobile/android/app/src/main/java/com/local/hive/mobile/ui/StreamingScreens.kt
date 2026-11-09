@@ -36,6 +36,9 @@ import androidx.compose.material.icons.automirrored.rounded.QueueMusic
 import androidx.compose.material.icons.rounded.LibraryMusic
 import androidx.compose.material.icons.rounded.Search
 import androidx.compose.material.icons.rounded.Shuffle
+import androidx.compose.material.icons.rounded.Share
+import androidx.compose.runtime.rememberCoroutineScope
+import kotlinx.coroutines.launch
 import androidx.compose.material3.Icon
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
@@ -376,6 +379,7 @@ private fun ServiceCollectionScreen(
 ) {
     val c = Hive.colors
     val context = LocalContext.current
+    val scope = rememberCoroutineScope()
     var page by remember(key) { mutableStateOf<Load<ServicePage>>(Load.Loading) }
     var attempt by remember { mutableStateOf(0) }
     val library by vm.tracks.collectAsStateWithLifecycle()
@@ -385,6 +389,7 @@ private fun ServiceCollectionScreen(
     val veil by list.pageVeil()
     var importing by remember { mutableStateOf(false) }
     var showAll by remember { mutableStateOf(false) }
+    var sharing by remember(key) { mutableStateOf(false) }
     LaunchedEffect(key, attempt) { page = Load.Loading; page = runCatching { load() }.fold({ Load.Ready(it) }, { Load.Failed(it.friendly(service)) }) }
     val collection = (page as? Load.Ready)?.value
     val matches = remember(collection, library) { collection?.songs?.map { vm.localMatch(it) }.orEmpty() }
@@ -453,6 +458,23 @@ private fun ServiceCollectionScreen(
             if (collection != null) {
                 val route = (if (collection.source == "Spotify") "spotify/c?url=" else "apple/c?url=") + Uri.encode(collection.url)
                 FavoriteBarActions(vm, favoritePlaylist(collection.source.lowercase().replace(" ", "") + ":" + collection.url, collection.name, route, collection.artwork.ifBlank { null }, collection.source))
+                androidx.compose.foundation.layout.Spacer(Modifier.size(8.dp))
+            }
+            // Share this album as a Spotify link, found on demand so a friend on Spotify can open it.
+            if (collection != null && collection.kind == "album") {
+                Box(Modifier.size(42.dp).hiveGlass(CircleShape).clickable(enabled = !sharing) {
+                    sharing = true
+                    onToast("Finding “${collection.name}” on Spotify…")
+                    scope.launch {
+                        val link = if (collection.source == "Spotify") collection.url
+                            else com.local.hive.mobile.stream.SpotifyFind.albumLink(collection.curator.ifBlank { collection.songs.firstOrNull()?.artist.orEmpty() }, collection.name)
+                        sharing = false
+                        if (link != null) Share.text(context, link, "Share “${collection.name}”")
+                        else { Share.text(context, collection.url, "Share “${collection.name}”"); onToast("Couldn't place “${collection.name}” on Spotify — shared its ${collection.source} link.") }
+                    }
+                }, contentAlignment = Alignment.Center) {
+                    Icon(Icons.Rounded.Share, "Share Spotify link", tint = c.text, modifier = Modifier.size(19.dp))
+                }
                 androidx.compose.foundation.layout.Spacer(Modifier.size(8.dp))
             }
             if (collection != null) Box(Modifier.size(42.dp).hiveGlass(CircleShape).clickable {

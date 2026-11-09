@@ -27,11 +27,26 @@ class LockPlayerActivity : ComponentActivity() {
     private val vm: MainViewModel by viewModels()
 
     private val unlocked = object : BroadcastReceiver() {
-        override fun onReceive(context: Context, intent: Intent) { leaving("unlocked"); finish() }
+        override fun onReceive(context: Context, intent: Intent) { openHome(); leaving("unlocked"); finish() }
     }
     /** Set when the player goes because it should (unlocked, swiped up): nothing brings it back then. */
     private var leaving = false
     private fun leaving(why: String) { leaving = true; CarLog.lockPlayer(this, "closes: $why") }
+
+    /**
+     * Unlocking the phone from the lock player lands in Hive's home screen, not the launcher and not
+     * the lock view: Hive comes forward (EXTRA_GO_HOME steps its UI back to home). Guarded so the two
+     * unlock paths — face/PIN (ACTION_USER_PRESENT) and swipe-up — only open it once.
+     */
+    private fun openHome() {
+        if (leaving) return
+        runCatching {
+            startActivity(
+                Intent(this, MainActivity::class.java).putExtra(MainActivity.EXTRA_GO_HOME, true)
+                    .addFlags(Intent.FLAG_ACTIVITY_NEW_TASK),
+            )
+        }
+    }
     /** When the player last came to the front, and whether the user then sent it away with Home. */
     private var resumedAt = 0L
     private var wentHome = false
@@ -161,7 +176,7 @@ class LockPlayerActivity : ComponentActivity() {
 
     private fun unlock() {
         (getSystemService(KEYGUARD_SERVICE) as KeyguardManager).requestDismissKeyguard(this, object : KeyguardManager.KeyguardDismissCallback() {
-            override fun onDismissSucceeded() { leaving("swiped up"); finish() }
+            override fun onDismissSucceeded() { openHome(); leaving("swiped up"); finish() }
         })
     }
 

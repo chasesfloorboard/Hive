@@ -132,6 +132,15 @@ private fun HiveContent(vm: MainViewModel, openPlayerInitially: Boolean) {
     var playerOpen by rememberSaveable { mutableStateOf(openPlayerInitially) }
     var queueOpen by rememberSaveable { mutableStateOf(false) }
     var lyricsOpen by rememberSaveable { mutableStateOf(false) }
+    // Unlocking the phone from the lock player opens Hive at its home screen: close any overlay and
+    // step back to home, so the lock player's view isn't what greets the user.
+    val goHomeTick by vm.goHomeTick.collectAsStateWithLifecycle()
+    LaunchedEffect(goHomeTick) {
+        if (goHomeTick > 0) {
+            playerOpen = false; queueOpen = false; lyricsOpen = false
+            nav.popBackStack("home", false)
+        }
+    }
     val hasMedia = now.mediaId != null
     val selection = remember { Selection() }
     // Room at the foot of every list for the playbar, and while picking for the selection pill above it.
@@ -297,7 +306,7 @@ private fun HiveContent(vm: MainViewModel, openPlayerInitially: Boolean) {
                         page("podcast?feed={feed}") { entry -> PodcastShowScreen(vm, entry.arguments?.getString("feed").orEmpty(), bottomPadding) { nav.popBackStack() } }
                         page("radio") { RadioScreen(vm, bottomPadding, onBack = { nav.popBackStack() }, onToast = { toast = it }) }
                         page("spotify") {
-                            SpotifyScreen(vm, bottomPadding, onBack = { nav.popBackStack() }, onOpenSettings = homeNav.openSettings) { url -> nav.navigate("spotify/c?url=${enc(url)}") }
+                            SpotifyScreen(vm, bottomPadding, onBack = { nav.popBackStack() }, onOpenSettings = homeNav.openSettings) { url -> nav.navigate(if ("open.spotify.com" in url) "spotify/c?url=${enc(url)}" else appleRoute(url)) }
                         }
                         page("spotify/c?url={url}") { entry ->
                             SpotifyCollectionScreen(vm, entry.arguments?.getString("url").orEmpty(), bottomPadding, onBack = { nav.popBackStack() }, onOpenPlaylist = homeNav.openUserPlaylist, onToast = { toast = it })
@@ -317,6 +326,7 @@ private fun HiveContent(vm: MainViewModel, openPlayerInitially: Boolean) {
                                 AutoPlaylist.MostPlayed -> vm.topMostPlayed
                                 AutoPlaylist.RecentlyPlayed -> vm.recentlyAdded // shown by HistoryScreen above
                                 AutoPlaylist.TopRated -> vm.topRated
+                                AutoPlaylist.Perfect -> vm.perfectAlbumTracks
                             }
                             SongsScreen(vm, kind.title, flow, actions, bottomPadding, barActions = {
                                 // Favorites is the Favorites page's own first square, so it isn't liked; it can have a picture.

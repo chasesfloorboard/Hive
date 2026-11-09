@@ -135,6 +135,7 @@ import androidx.compose.material.icons.rounded.Settings
 import androidx.compose.material.icons.rounded.Person
 import androidx.compose.material.icons.rounded.Album
 import dev.chrisbanes.haze.HazeTint
+import dev.chrisbanes.haze.HazeInputScale
 import dev.chrisbanes.haze.HazeStyle
 import dev.chrisbanes.haze.hazeEffect
 import com.local.hive.mobile.ui.theme.LocalHiveHaze
@@ -294,7 +295,7 @@ fun PlayerSheet(
                 .requiredSize(with(density) { width.toDp() }, with(density) { height.toDp() })
                 .shadow(lerpDp(18.dp, 0.dp, p), RoundedCornerShape(corner), ambientColor = c.accentGlow, spotColor = Color.Black)
                 .clip(RoundedCornerShape(corner))
-                .then(if (haze != null) Modifier.hazeEffect(haze, HazeStyle(backgroundColor = c.bg, tint = HazeTint(Color.Transparent), blurRadius = 28.dp, noiseFactor = 0.03f)) else Modifier)
+                .then(if (haze != null) Modifier.hazeEffect(haze, HazeStyle(backgroundColor = c.bg, tint = HazeTint(Color.Transparent), blurRadius = 28.dp, noiseFactor = 0.03f)) { inputScale = HazeInputScale.Auto } else Modifier)
                 .background(lerp(glass, c.bg, p))
                 .border(1.dp, edge.copy(alpha = edge.alpha * (1 - p)), RoundedCornerShape(corner)),
         ) {

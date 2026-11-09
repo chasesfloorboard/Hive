@@ -72,6 +72,16 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
     val lovedIds: StateFlow<Set<Long>> = dao.loveStates().map { list -> list.filter { it.loved }.mapTo(HashSet()) { it.trackId } }.state(emptySet())
     val favoriteAlbumKeys: StateFlow<Set<String>> = dao.favoriteAlbums().map { list -> list.mapTo(HashSet()) { it.key } }.state(emptySet())
     val albums: StateFlow<List<AlbumSummary>> = dao.albums().map { list -> LibrarySort.sorted(list) { it.album } }.flowOn(Dispatchers.Default).state(emptyList())
+    /** "Perfect" albums: every track loved (a 10/10). Only real albums (named, 2+ tracks), as on the PC (isPerfectAlbum). */
+    val perfectAlbumIds: StateFlow<Set<Long>> = combine(tracks, lovedIds) { lib, loved ->
+        lib.groupBy { it.albumId }
+            .filter { (id, ts) -> id != 0L && ts.size >= 2 && ts.first().album.isNotBlank() && !ts.first().album.equals("Unknown Album", ignoreCase = true) && !ts.first().album.equals("<unknown>", ignoreCase = true) && ts.all { it.id in loved } }
+            .keys.toHashSet() as Set<Long>
+    }.flowOn(Dispatchers.Default).state(emptySet())
+    /** Every track on a perfect album, in album then disc/track order — the "Perfect albums" playlist. */
+    val perfectAlbumTracks: StateFlow<List<Track>> = combine(tracks, perfectAlbumIds) { lib, ids ->
+        lib.filter { it.albumId in ids }.sortedWith(compareBy({ it.album.lowercase() }, { it.discNumber }, { it.trackNumber }, { it.title.lowercase() }))
+    }.flowOn(Dispatchers.Default).state(emptyList())
     /**
      * Favorite albums that are on this phone: the most recently hearted first
      * (hearting one again brings it to the top); albums hearted together, as
@@ -442,7 +452,14 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
     /** Spotify search, with this phone's own sign-in (Hive on the PC no longer starts its Spotify app to search). */
     suspend fun searchSpotify(q: String): com.local.hive.mobile.stream.SpotifyAccount.Results {
         if (spotifyUser.value.signedIn) return app.spotifyAccount.search(q)
-        throw java.io.IOException("Searching Spotify needs a Spotify sign-in (Settings › Spotify). Spotify links work without one, and Apple Music search finds the same songs.")
+        // No sign-in: the same albums are found on Apple Music's open catalogue, and each one's Spotify
+        // link is resolved on demand when it is shared. (Spotify links still open without a sign-in.)
+        val am = app.appleMusic.search(q)
+        return com.local.hive.mobile.stream.SpotifyAccount.Results(
+            playlists = emptyList(),
+            albums = am.albums.map { com.local.hive.mobile.stream.SpCard("album", it.id, it.name, it.curator, it.artwork, sourceUrl = it.url.ifBlank { "https://music.apple.com/us/album/x/${it.id}" }) },
+            songs = emptyList(),
+        )
     }
     /** Hive on the PC, while reachable; with it, songs the phone lacks play in full. */
     val pcStreams = app.sync.streams
@@ -861,6 +878,9 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
     val songSyncOps get() = app.songSync
     /** Set when the deleted-songs notification is tapped. */
     val openDeletions = MutableStateFlow(false)
+    /** Bumped to send the UI back to the home screen (e.g. unlocking the phone from the lock player). */
+    val goHomeTick = MutableStateFlow(0)
+    fun goHome() { goHomeTick.value++ }
     private val _songSyncOn = MutableStateFlow(app.linkStore.songSync)
     val songSyncOn: StateFlow<Boolean> = _songSyncOn.asStateFlow()
     fun checkSongs() = viewModelScope.launch(kotlinx.coroutines.Dispatchers.Default) { app.songSync.check() }

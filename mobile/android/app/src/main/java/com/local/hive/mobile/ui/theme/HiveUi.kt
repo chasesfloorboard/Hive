@@ -23,6 +23,9 @@ import androidx.compose.ui.graphics.ImageBitmap
 import androidx.compose.ui.graphics.Shape
 import androidx.compose.ui.graphics.drawscope.DrawScope
 import androidx.compose.ui.graphics.BlendMode
+import androidx.compose.ui.graphics.ImageShader
+import androidx.compose.ui.graphics.ShaderBrush
+import androidx.compose.ui.graphics.TileMode
 import androidx.compose.ui.graphics.asImageBitmap
 import androidx.compose.ui.graphics.lerp
 import androidx.compose.ui.text.TextStyle
@@ -34,6 +37,7 @@ import androidx.compose.ui.unit.em
 import androidx.compose.ui.unit.sp
 import com.local.hive.mobile.R
 import dev.chrisbanes.haze.HazeState
+import dev.chrisbanes.haze.HazeInputScale
 import dev.chrisbanes.haze.HazeStyle
 import dev.chrisbanes.haze.HazeTint
 import dev.chrisbanes.haze.hazeEffect
@@ -119,7 +123,10 @@ fun Modifier.hiveGlass(shape: Shape, strength: Float = 0f): Modifier {
             if (state != null) Modifier.hazeEffect(
                 state,
                 HazeStyle(backgroundColor = bg, tint = HazeTint(wash), blurRadius = 28.dp, noiseFactor = 0.03f, fallbackTint = HazeTint(wash.copy(alpha = 0.92f))),
-            ) else Modifier.background(wash.copy(alpha = (wash.alpha + 0.25f).coerceAtMost(0.95f))),
+                // Blur a downscaled copy of what's behind: a 28dp blur hides the downscale, but it is a
+                // quarter or less of the pixels to blur each frame, so a glass bar over a scrolling list
+                // stops being GPU-bound. Auto picks the scale from the blur radius.
+            ) { inputScale = HazeInputScale.Auto } else Modifier.background(wash.copy(alpha = (wash.alpha + 0.25f).coerceAtMost(0.95f))),
         )
         .border(1.dp, edge, shape)
 }
@@ -147,6 +154,10 @@ fun HiveAmbient(blobA: Color, blobB: Color, modifier: Modifier = Modifier, inten
     val a by animateColorAsState(blobA, tween(900), label = "blobA")
     val b by animateColorAsState(blobB, tween(900), label = "blobB")
     val grain = remember { grainTexture() }
+    // One tiled shader, not ~100 blended drawImage calls per redraw: the GPU repeats the 160px grain
+    // across the whole rect in a single draw op, so each ambient redraw (every song, as the blobs glide)
+    // costs a fraction of the UI-thread draw time it used to.
+    val grainBrush = remember(grain) { ShaderBrush(ImageShader(grain, TileMode.Repeated, TileMode.Repeated)) }
     Canvas(modifier.fillMaxSize()) {
         val base = c.bg
         drawRect(
@@ -158,13 +169,8 @@ fun HiveAmbient(blobA: Color, blobB: Color, modifier: Modifier = Modifier, inten
         )
         blob(a.copy(alpha = a.alpha.coerceAtLeast(0.2f) * 0.9f * intensity), Offset(size.width * 0.2f, size.height * -0.05f), size.width * 0.75f)
         blob(b.copy(alpha = b.alpha.coerceAtLeast(0.2f) * 0.9f * intensity), Offset(size.width * 0.8f, size.height * 1.02f), size.width * 0.85f)
-        // 3.5% grain, tiled.
-        var y = 0f
-        while (y < size.height) {
-            var x = 0f
-            while (x < size.width) { drawImage(grain, Offset(x, y), alpha = 0.035f, blendMode = BlendMode.Overlay); x += grain.width }
-            y += grain.height
-        }
+        // 3.5% grain, tiled in one pass.
+        drawRect(grainBrush, alpha = 0.035f, blendMode = BlendMode.Overlay)
     }
 }
 

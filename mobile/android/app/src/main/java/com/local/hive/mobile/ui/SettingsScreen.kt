@@ -275,10 +275,11 @@ private fun AppUpdateRow() {
         is com.local.hive.mobile.link.AppUpdater.State.Ready -> "${u.versionName} is ready"
         is com.local.hive.mobile.link.AppUpdater.State.Installing -> "Installing ${u.versionName}… Hive restarts when it's done"
         is com.local.hive.mobile.link.AppUpdater.State.Downloading -> "Getting ${u.versionName}…"
+        com.local.hive.mobile.link.AppUpdater.State.Checking -> "Checking for updates…"
         is com.local.hive.mobile.link.AppUpdater.State.Failed -> u.message
         else -> "Version ${updater.installedName}"
     }) {
-        if (update is com.local.hive.mobile.link.AppUpdater.State.Installing) androidx.compose.material3.CircularProgressIndicator(
+        if (update is com.local.hive.mobile.link.AppUpdater.State.Installing || update is com.local.hive.mobile.link.AppUpdater.State.Checking) androidx.compose.material3.CircularProgressIndicator(
             androidx.compose.ui.Modifier.padding(end = 10.dp).size(22.dp), strokeWidth = 2.5.dp, color = com.local.hive.mobile.ui.theme.Hive.colors.accent)
         else if (update is com.local.hive.mobile.link.AppUpdater.State.Ready) HiveButton("Install", primary = true) { updater.install(context) }
         else HiveButton("Check now") { updater.checkAnywhere(force = true) }

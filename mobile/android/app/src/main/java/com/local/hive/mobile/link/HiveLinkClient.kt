@@ -282,6 +282,11 @@ class HiveLinkClient(private val http: OkHttpClient = defaultHttp()) {
         }.getOrDefault(false)
     }
 
+    /** Can a TCP connection be opened to [host]:[port]? (Used to confirm the encrypted port is really there.) */
+    suspend fun reachable(host: String, port: Int): Boolean = withContext(Dispatchers.IO) {
+        runCatching { java.net.Socket().use { it.connect(java.net.InetSocketAddress(host, port), 1500); true } }.getOrDefault(false)
+    }
+
     suspend fun pair(host: String, port: Int, code: String, deviceName: String, phoneKey: String = ""): PairResponse = withContext(Dispatchers.IO) {
         val body = json.encodeToString(PairRequest.serializer(), PairRequest(code.trim(), deviceName, phoneKey)).toRequestBody(jsonType)
         http.newCall(Request.Builder().url(base(host, port) + "/api/pair").post(body).build()).execute().use {

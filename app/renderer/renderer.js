@@ -4972,6 +4972,7 @@
     }
     const nowPlaying = window.__beehiveNowPlayingTrack;
     if (nowPlaying && String(nowPlaying.path || '') === normalizedPath) nowPlaying.loved = value;
+    refreshPerfectBadgeFor(canonical);
     const current = currentQueue[currentIndex];
     if (current && String(current.path || '') === normalizedPath) {
       el.btnLove.innerHTML = (value ? ic.heartFilled : ic.heartOutline) || '';
@@ -5813,6 +5814,7 @@
       card.dataset.key=a.key;
       card.innerHTML=`<div class="art-wrap">${lazyCoverImg(coverSrc(a.cover))}</div><div class="title">${escapeHtml(a.title)}</div><div class="artist">${escapeHtml(a.artist)} · ${a.tracks.length} track${a.tracks.length===1?'':'s'}</div>`;
       addCardPlayButton(card,a);
+      addPerfectBadge(card,a);
       attachCoverInteractions(card,a);
       card.addEventListener('contextmenu',e=>{e.preventDefault();showAlbumContextMenu(e,a);});
       return card;
@@ -12453,9 +12455,42 @@
     card.setAttribute('aria-label', window.HiveKeyboardAccess?.albumLabel(a) || String(a.title || ''));
     card.innerHTML = `<div class="art-wrap">${lazyCoverImg(coverSrc(a.cover))}</div><div class="title">${escapeHtml(a.title)}</div><div class="artist">${escapeHtml(a.artist)}</div>`;
     addCardPlayButton(card, a);
+    addPerfectBadge(card, a);
     attachCoverInteractions(card, a);
     card.addEventListener('contextmenu', e => { e.preventDefault(); showAlbumContextMenu(e, a); });
     return card;
+  }
+
+  // A "perfect" album: two or more tracks, every one loved. Its card wears a heart badge in the
+  // cover's corner, as on Hive Mobile (PerfectBadge there).
+  function isPerfectAlbum(a) {
+    const tracks = Array.isArray(a?.tracks) ? a.tracks : [];
+    const title = String(a?.title || '').trim();
+    return tracks.length >= 2 && !!title && !/^unknown album$/i.test(title) && tracks.every(t => !!t?.loved);
+  }
+  function addPerfectBadge(card, a) {
+    card._hiveAlbum = a;
+    const wrap = card.querySelector('.art-wrap');
+    if (!wrap) return;
+    const on = isPerfectAlbum(a);
+    let badge = wrap.querySelector('.perfect-badge');
+    if (on && !badge) {
+      badge = document.createElement('span');
+      badge.className = 'perfect-badge';
+      badge.setAttribute('role', 'img');
+      badge.setAttribute('aria-label', 'Every track loved');
+      badge.dataset.tooltip = 'Every track loved';
+      badge.innerHTML = (window.BeehiveIcons || {}).heartFilled || '♥';
+      wrap.appendChild(badge);
+    } else if (!on && badge) badge.remove();
+  }
+  // A heart changed: the badge on that song's album card follows.
+  function refreshPerfectBadgeFor(track) {
+    if (!track) return;
+    let key = '';
+    try { key = String(albumKey(track) || ''); } catch { return; }
+    if (!key) return;
+    document.querySelectorAll(`.album-card[data-key="${CSS.escape(key)}"]`).forEach(card => { if (card._hiveAlbum) addPerfectBadge(card, card._hiveAlbum); });
   }
 
   function albumReleaseYear(album) {

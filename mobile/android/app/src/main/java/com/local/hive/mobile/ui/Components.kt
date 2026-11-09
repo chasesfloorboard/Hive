@@ -837,6 +837,8 @@ fun CoverCard(
     fallback: ImageVector = Icons.Rounded.LibraryMusic,
     artModifier: Modifier = Modifier,
     picked: Boolean = false,
+    /** A "perfect" album (every track loved): shows the loved-album badge in the corner. */
+    perfect: Boolean = false,
     onLongClick: (() -> Unit)? = null,
     onClick: () -> Unit,
 ) {
@@ -844,6 +846,7 @@ fun CoverCard(
     Column(modifier.pressable(onClick = onClick, onLongClick = onLongClick)) {
         Box {
             Artwork(art, artModifier.fillMaxWidth().aspectRatio(1f), HiveShape.art, fallback, elevation = 14.dp)
+            if (perfect && !picked) PerfectBadge(Modifier.align(Alignment.TopEnd).padding(8.dp))
             if (picked) {
                 Box(Modifier.matchParentSize().clip(HiveShape.art).background(c.accentSoft.copy(alpha = 0.32f)))
                 Box(Modifier.matchParentSize().padding(1.dp).border(2.dp, c.accent, HiveShape.art))
@@ -854,6 +857,18 @@ fun CoverCard(
         }
         Text(title, style = HiveText.cardTitle, color = c.text, maxLines = 2, overflow = TextOverflow.Ellipsis, modifier = Modifier.padding(top = 10.dp))
         if (subtitle.isNotBlank()) Text(subtitle, style = HiveText.cardSub, color = c.textDim, maxLines = 1, overflow = TextOverflow.Ellipsis)
+    }
+}
+
+/**
+ * The "Perfect" album badge: a glass chip in Hive's theme with an accent heart, shown on an album whose
+ * every track is loved (a 10/10). A frosted square that sits in a cover's corner.
+ */
+@Composable
+fun PerfectBadge(modifier: Modifier = Modifier) {
+    val c = Hive.colors
+    Box(modifier.size(28.dp).hiveGlass(RoundedCornerShape(10.dp)), contentAlignment = Alignment.Center) {
+        Icon(Icons.Rounded.Favorite, "Every track loved", tint = c.accent, modifier = Modifier.size(15.dp))
     }
 }
 

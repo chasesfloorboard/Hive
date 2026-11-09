@@ -41,6 +41,8 @@ class AppUpdater(
 ) {
     sealed interface State {
         data object UpToDate : State
+        /** A check is in flight, so the UI can show it's actually looking. */
+        data object Checking : State
         data class Downloading(val versionName: String) : State
         data class Ready(val versionName: String, val file: File) : State
         /** Handed to Android to install: further taps wait for it (it says when it's done, or that it was cancelled). */
@@ -89,44 +91,52 @@ class AppUpdater(
     }
 
     /** Asks the PC for a newer Hive Mobile (at most every few minutes unless [force]). */
-    fun check(conn: HiveLinkClient.Connection, force: Boolean = false) = check(force) { pc(conn) }
+    fun check(conn: HiveLinkClient.Connection, force: Boolean = false) = check(force) { listOf(pc(conn)) }
 
     /**
-     * Asks the PC when it can be reached, else GitHub, so updates arrive with the PC off too.
+     * Asks the PC and GitHub both, so updates arrive with the PC off too, and — crucially — a PC that
+     * answers "nothing newer" (or isn't trusted yet) never hides a newer build sitting on GitHub.
      * Called when Hive opens and from Settings' Check now.
      */
-    fun checkAnywhere(force: Boolean = false) = check(force, fallback = online) { connection()?.let { pc(it) } ?: online }
+    fun checkAnywhere(force: Boolean = false) = check(force) { listOfNotNull(connection()?.let { pc(it) }, online) }
 
     /**
-     * [source] is tried first; if it fails and a [fallback] is given (and isn't the same source),
-     * the fallback is tried before giving up. So "Check now" falls through to GitHub when the PC
-     * can't be reached — including when a stale on-cable address (127.0.0.1) is still remembered.
+     * Asks every reachable [sources] for its newest build and takes the highest; a source that can't be
+     * reached is skipped, not fatal. Downloads from the one that has it, trying the others if that fails.
      */
-    private fun check(force: Boolean, fallback: Source? = null, source: suspend () -> Source) {
+    private fun check(force: Boolean, sources: suspend () -> List<Source>) {
         scope.launch(Dispatchers.IO) {
+            // Feedback before the lock, so a tap is never silent even while another check is busy.
+            if (force && _state.value !is State.Downloading && _state.value !is State.Installing) _state.value = State.Checking
             lock.withLock {
                 if (!force && System.currentTimeMillis() - lastCheck < CHECK_EVERY_MS) return@withLock
                 lastCheck = System.currentTimeMillis()
-                val from = runCatching { source() }.getOrElse { online }
-                val result = runCatching { fetch(from) }
-                if (result.isFailure) {
-                    if (fallback != null && from !== fallback) {
-                        runCatching { fetch(fallback) }.onFailure { _state.value = State.Failed(it.message ?: "Couldn't reach GitHub") }
-                    } else {
-                        _state.value = State.Failed(result.exceptionOrNull()?.message ?: if (from === online) "Couldn't reach GitHub" else "Couldn't reach Hive on the PC")
-                    }
+                if (_state.value !is State.Downloading && _state.value !is State.Installing) _state.value = State.Checking
+                if (force) kotlinx.coroutines.delay(500)
+                val list = runCatching { sources() }.getOrElse { listOf(online) }
+                val offers = list.mapNotNull { s -> runCatching { s.info()?.let { s to it } }.getOrNull() }
+                    .sortedByDescending { it.second.versionCode }
+                log("check: " + (offers.joinToString { "${srcName(it.first)}=${it.second.versionCode}" }.ifBlank { "no source reachable" }) +
+                    " installed=$installedVersion -> " + (offers.firstOrNull { it.second.versionCode > installedVersion }?.let { "get ${it.second.versionCode}" } ?: "up to date"))
+                val best = offers.firstOrNull { it.second.versionCode > installedVersion }
+                if (best == null) {
+                    if (offers.isEmpty() && _state.value is State.Checking) _state.value = State.Failed("Couldn't reach Hive on the PC or GitHub")
+                    else { dir.listFiles()?.forEach { it.delete() }; _state.value = State.UpToDate }
+                    return@withLock
                 }
+                var done = false
+                for ((src, upd) in offers.filter { it.second.versionCode == best.second.versionCode }) {
+                    if (runCatching { download(src, upd) }.onFailure { log("download from ${srcName(src)} failed: ${it.message}") }.isSuccess) { done = true; break }
+                }
+                if (!done && _state.value !is State.Ready) _state.value = State.Failed("Couldn't download the update; it'll try again.")
             }
         }
     }
 
-    private suspend fun fetch(from: Source) {
-        val update = from.info()
-        if (update == null || update.versionCode <= installedVersion) {
-            dir.listFiles()?.forEach { it.delete() }
-            _state.value = State.UpToDate
-            return
-        }
+    private fun srcName(s: Source) = if (s === online) "github" else "pc"
+    private fun log(msg: String) = runCatching { File(context.filesDir, "download-log.txt").appendText("${java.time.LocalDateTime.now()} $msg\n") }
+
+    private suspend fun download(from: Source, update: AppUpdate) {
         val file = File(dir, "HiveMobile-${update.versionCode}.apk")
         if (!(file.exists() && file.length() == update.size && sha256(file) == update.sha256)) {
             _state.value = State.Downloading(update.versionName)
@@ -157,7 +167,7 @@ class AppUpdater(
         _state.value = State.Installing(asked.versionName, asked.file)
         notifyInstalling(asked.versionName)
         scope.launch(Dispatchers.IO) {
-            lock.withLock { runCatching { connection()?.let { fetch(pc(it)) } } }
+            lock.withLock { runCatching { connection()?.let { conn -> val s = pc(conn); s.info()?.let { if (it.versionCode > installedVersion) download(s, it) } } } }
             val ready = (_state.value as? State.Ready) ?: (_state.value as? State.Installing)?.let { State.Ready(it.versionName, it.file) } ?: return@launch
             _state.value = State.Installing(ready.versionName, ready.file)
             runCatching {

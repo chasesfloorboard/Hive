@@ -6,7 +6,6 @@ import android.graphics.BitmapFactory
 import android.media.MediaMetadataRetriever
 import android.provider.MediaStore
 import coil3.ImageLoader
-import coil3.asImage
 import coil3.decode.DataSource
 import coil3.decode.ImageSource
 import coil3.fetch.FetchResult
@@ -196,18 +195,17 @@ class AlbumArtFetcher(private val context: Context, private val albumId: Long, p
 }
 
 /**
- * One song's own picture, never its album's: a song without one shows none. Android's own thumbnail of
- * the song (kept and renewed by Android when the file changes) for rows; the embedded picture when bigger.
+ * One song's own picture, never its album's: a song without one shows none. Read straight from the file's
+ * embedded art, because Android's own audio thumbnail is the album's art, which a coverless song must not
+ * borrow (MediaStore even scrapes a stray image in the song's folder as that invented album's cover).
  */
 class SongArtFetcher(private val context: Context, private val songId: Long, private val options: Options) : Fetcher {
     override suspend fun fetch(): FetchResult? = withContext(Dispatchers.IO) {
         val uri = ContentUris.withAppendedId(MediaStore.Audio.Media.EXTERNAL_CONTENT_URI, songId)
-        fun px(d: coil3.size.Dimension) = (d as? coil3.size.Dimension.Pixels)?.px ?: Int.MAX_VALUE
-        val side = maxOf(px(options.size.width), px(options.size.height))
-        if (side <= 512) {
-            val thumb = runCatching { context.contentResolver.loadThumbnail(uri, android.util.Size(side, side), null) }.getOrNull()
-            if (thumb != null) return@withContext coil3.fetch.ImageFetchResult(thumb.asImage(), true, DataSource.DISK)
-        }
+        // The song's OWN embedded picture only. Not loadThumbnail(): for audio that returns the song's
+        // *album* art, and for a tag-less song MediaStore invents an album from the folder name and
+        // scrapes any stray image sitting in that folder as its cover — so a coverless song would wear a
+        // neighbour's picture (e.g. a lone bjork.jpg in the folder). No embedded picture → no picture.
         val bytes = runCatching { MediaMetadataRetriever().use { r -> r.setDataSource(context, uri); r.embeddedPicture } }.getOrNull()?.let(AlbumArtFetcher::fitted)
             ?: runCatching { context.contentResolver.openInputStream(uri)?.use { EmbeddedPictures.read(it) } }.getOrNull().orEmpty().firstNotNullOfOrNull(AlbumArtFetcher::fitted)
             ?: throw IllegalStateException("This song has no picture")

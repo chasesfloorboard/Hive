@@ -6847,3 +6847,16 @@ body.hive-is-playing #btn-play { animation: hivePlayGlow 2.6s ease-in-out infini
 
 /* Yearly Wrap on a light theme: the blurred cover stays softer, so dark text keeps reading. */
 html[data-hive-theme="light"] .wrapv-bg.on { opacity: .45; }
+
+/* Perfect album (every track loved): a frosted chip with the accent heart in the cover's corner, as on Hive Mobile. */
+.album-card .art-wrap .perfect-badge {
+  position: absolute; top: 8px; right: 8px; z-index: 2;
+  width: 26px; height: 26px; border-radius: 9px;
+  display: grid; place-items: center; pointer-events: auto;
+  color: var(--accent);
+  background: color-mix(in srgb, var(--panel-strong) 55%, transparent);
+  backdrop-filter: blur(10px) saturate(1.4);
+  box-shadow: 0 0 0 1px rgba(255,255,255,.14) inset, 0 6px 16px -6px rgba(0,0,0,.55);
+}
+.album-card .art-wrap .perfect-badge svg { width: 14px; height: 14px; fill: currentColor; }
+.album-card.album-selected .art-wrap .perfect-badge { display: none; }

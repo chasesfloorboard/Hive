@@ -23,9 +23,12 @@ data class SpSong(val id: String, val title: String, val artist: String, val alb
     val url get() = "https://open.spotify.com/track/$id"
 }
 
-/** A Spotify playlist or album card. */
-data class SpCard(val kind: String, val id: String, val name: String, val subtitle: String, val artwork: String) {
-    val url get() = "https://open.spotify.com/$kind/$id"
+/**
+ * A Spotify playlist or album card. [sourceUrl] is set when the card came from an account-less search
+ * (where results are found on Apple Music): it opens that page, and its Spotify link is resolved on demand.
+ */
+data class SpCard(val kind: String, val id: String, val name: String, val subtitle: String, val artwork: String, val sourceUrl: String? = null) {
+    val url get() = sourceUrl ?: "https://open.spotify.com/$kind/$id"
 }
 
 data class SpCollection(val kind: String, val id: String, val name: String, val owner: String, val artwork: String, val songs: List<SpSong>) {

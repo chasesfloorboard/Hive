@@ -140,6 +140,7 @@ enum class AutoPlaylist(val title: String) {
     MostPlayed("Most played"),
     RecentlyPlayed("Recently played"),
     TopRated("Top rated"),
+    Perfect("Perfect albums"),
 }
 
 data class HomeNavigation(
@@ -160,7 +161,7 @@ data class HomeNavigation(
     val collection: (AutoDjRequest) -> Unit = autoDj,
 )
 
-private enum class AlbumSort(val label: String) { Year("Release"), Name("Name"), Artist("Artist"), Added("Date added") }
+private enum class AlbumSort(val label: String) { Year("Release"), Name("Name"), Artist("Artist"), Added("Date added"), Perfect("Perfect") }
 private enum class ArtistSort(val label: String) { Name("Name"), Songs("Most tracks") }
 internal enum class TrackSort(val label: String) { Title("Name"), Artist("Artist"), Album("Album"), Added("Date added"), Length("Length") }
 
@@ -288,13 +289,21 @@ fun <T> ListHeader(
 @Composable
 private fun AlbumsTab(vm: MainViewModel, nav: HomeNavigation, bottom: Dp) {
     val albums by vm.albums.collectAsStateWithLifecycle()
+    val perfectIds by vm.perfectAlbumIds.collectAsStateWithLifecycle()
     var sort by rememberSetting("sort.albums", AlbumSort.Year)
-    val sections by rememberComputed(emptyList<Pair<String, List<AlbumSummary>>>(), albums, sort) {
+    val sections by rememberComputed(emptyList<Pair<String, List<AlbumSummary>>>(), albums, sort, perfectIds) {
         when (sort) {
             AlbumSort.Year -> albums.groupBy { it.year }.toSortedMap(compareByDescending { it }).map { (y, list) -> (if (y > 0) "$y" else "Unknown year") to list }
             AlbumSort.Name -> listOf("" to albums)
             AlbumSort.Artist -> listOf("" to LibrarySort.sorted(albums, compareBy { it.year }) { it.artist })
             AlbumSort.Added -> listOf("" to albums.sortedByDescending { it.added })
+            // Perfect albums (every track loved) grouped at the top, the rest below.
+            AlbumSort.Perfect -> albums.partition { it.albumId in perfectIds }.let { (perfect, rest) ->
+                listOfNotNull(
+                    ("Perfect" to LibrarySort.sorted(perfect) { it.album }).takeIf { perfect.isNotEmpty() },
+                    ("Other albums" to rest).takeIf { rest.isNotEmpty() },
+                )
+            }
         }
     }
     val list = rememberLazyListState()
@@ -309,7 +318,7 @@ private fun AlbumsTab(vm: MainViewModel, nav: HomeNavigation, bottom: Dp) {
             if (heading.isNotBlank()) item(key = "y$heading") { YearHeading(heading) }
             list.chunked(2).forEach { row ->
                 item(key = "r${row.first().albumId}") {
-                    CoverRow(row) { a, m -> AlbumCard(a, m) { nav.openAlbum(a.albumId) } }
+                    CoverRow(row) { a, m -> AlbumCard(a, m, perfect = a.albumId in perfectIds) { nav.openAlbum(a.albumId) } }
                 }
             }
         }
@@ -318,13 +327,14 @@ private fun AlbumsTab(vm: MainViewModel, nav: HomeNavigation, bottom: Dp) {
 
 /** A library album as Hive's album card; hold to start picking albums (and drag over others), tap to add or remove while picking. */
 @Composable
-internal fun AlbumCard(a: AlbumSummary, modifier: Modifier, subtitle: String = listOfNotNull(a.artist.ifBlank { "Unknown artist" }, a.year.takeIf { it > 0 }?.toString()).joinToString(" · "), onClick: () -> Unit) {
+internal fun AlbumCard(a: AlbumSummary, modifier: Modifier, perfect: Boolean = false, subtitle: String = listOfNotNull(a.artist.ifBlank { "Unknown artist" }, a.year.takeIf { it > 0 }?.toString()).joinToString(" · "), onClick: () -> Unit) {
     val selection = LocalSelection.current
     val haptics = androidx.compose.ui.platform.LocalHapticFeedback.current
     CoverCard(
         Uri.parse("content://media/external/audio/albumart/${a.albumId}"), a.album.ifBlank { "Unknown album" }, subtitle, modifier,
         artModifier = Modifier.sharedCover("album-${a.albumId}"),
         picked = selection?.hasAlbum(a.albumId) == true,
+        perfect = perfect,
         onLongClick = selection?.let { s -> { haptics.performHapticFeedback(androidx.compose.ui.hapticfeedback.HapticFeedbackType.LongPress); s.startAlbumDrag(a.albumId) } },
         onClick = { if (selection?.active == true) selection.toggleAlbum(a.albumId) else onClick() },
     )
@@ -537,6 +547,7 @@ private fun PlaylistsTab(vm: MainViewModel, nav: HomeNavigation, bottom: Dp, onC
     val most by vm.mostPlayed.collectAsStateWithLifecycle()
     val played by vm.recentlyPlayed.collectAsStateWithLifecycle()
     val rated by vm.topRated.collectAsStateWithLifecycle()
+    val perfectTracks by vm.perfectAlbumTracks.collectAsStateWithLifecycle()
     val mine by vm.playlists.collectAsStateWithLifecycle()
     val smartLists by vm.smartPlaylists.collectAsStateWithLifecycle()
     var newSmart by remember { mutableStateOf(false) }
@@ -576,6 +587,9 @@ private fun PlaylistsTab(vm: MainViewModel, nav: HomeNavigation, bottom: Dp, onC
                         onLongClick = { nav.collection(AutoDjRequest(AutoPlaylist.RecentlyPlayed.title) { played.mapNotNull { it.track } }) }) { nav.openPlaylist(AutoPlaylist.RecentlyPlayed) } }
                     item { SmartCard(AutoPlaylist.TopRated.title, countOf(rated.size, "track"), mosaicCovers(rated), Icons.Rounded.Star,
                         onLongClick = { nav.collection(AutoDjRequest(AutoPlaylist.TopRated.title) { rated }) }) { nav.openPlaylist(AutoPlaylist.TopRated) } }
+                    // Appears once you have an album with every track loved.
+                    if (perfectTracks.isNotEmpty()) item { SmartCard(AutoPlaylist.Perfect.title, countOf(perfectTracks.size, "track"), mosaicCovers(perfectTracks), Icons.Rounded.AutoAwesome,
+                        onLongClick = { nav.collection(AutoDjRequest(AutoPlaylist.Perfect.title) { perfectTracks }) }) { nav.openPlaylist(AutoPlaylist.Perfect) } }
                 }
             }
             item {
@@ -782,6 +796,7 @@ private fun FavoritesHome(vm: MainViewModel, nav: HomeNavigation, tracks: List<T
     val selection = LocalSelection.current
     val scope = androidx.compose.runtime.rememberCoroutineScope()
     val haptics = androidx.compose.ui.platform.LocalHapticFeedback.current
+    val perfectIds by vm.perfectAlbumIds.collectAsStateWithLifecycle()
     val grid = androidx.compose.foundation.lazy.grid.rememberLazyGridState()
     // The squares in the order the user arranged them; ones liked since then come first, newest first.
     val order by vm.favoriteOrder.collectAsStateWithLifecycle()
@@ -851,7 +866,8 @@ private fun FavoritesHome(vm: MainViewModel, nav: HomeNavigation, tracks: List<T
                         )
                     },
             ) {
-                FavoriteSquare(t.title, listOfNotNull(t.art), round = false, icon = when (t.kind) { "artist" -> Icons.Rounded.Person; "album" -> Icons.Rounded.LibraryMusic; else -> Icons.AutoMirrored.Rounded.QueueMusic }, picked = picked) {
+                FavoriteSquare(t.title, listOfNotNull(t.art), round = false, icon = when (t.kind) { "artist" -> Icons.Rounded.Person; "album" -> Icons.Rounded.LibraryMusic; else -> Icons.AutoMirrored.Rounded.QueueMusic }, picked = picked,
+                    perfect = t.kind == "album" && t.route.removePrefix("album/").toLongOrNull()?.let { it in perfectIds } == true) {
                     // While picking, a tap picks or un-picks; otherwise it opens.
                     if (selection?.active == true) pick(t) else nav.open(t.route)
                 }
@@ -879,7 +895,7 @@ internal fun CoverMosaic(covers: List<Any>) = Column {
 
 /** A big square on the Favorites page: the picture (four covers for Favorites) and the name under it. */
 @Composable
-private fun FavoriteSquare(title: String, covers: List<Any>, round: Boolean, icon: ImageVector, subtitle: String? = null, picked: Boolean = false, onLongClick: (() -> Unit)? = null, onClick: () -> Unit) {
+private fun FavoriteSquare(title: String, covers: List<Any>, round: Boolean, icon: ImageVector, subtitle: String? = null, picked: Boolean = false, perfect: Boolean = false, onLongClick: (() -> Unit)? = null, onClick: () -> Unit) {
     val c = Hive.colors
     val shape = if (round) CircleShape else HiveShape.art
     Column(Modifier.fillMaxWidth().pressable(onClick, onLongClick = onLongClick)) {
@@ -890,6 +906,7 @@ private fun FavoriteSquare(title: String, covers: List<Any>, round: Boolean, ico
                 covers.isNotEmpty() -> Artwork(covers.first(), Modifier.fillMaxSize(), androidx.compose.ui.graphics.RectangleShape, icon)
                 else -> Icon(icon, null, tint = c.textDim, modifier = Modifier.size(40.dp))
             }
+            if (perfect && !picked) PerfectBadge(Modifier.align(Alignment.TopEnd).padding(8.dp))
             // Picked: a tick in the corner, as picked album cards show.
             if (picked) Box(Modifier.align(Alignment.TopEnd).padding(8.dp).size(26.dp).clip(CircleShape).background(c.accent), contentAlignment = Alignment.Center) {
                 Icon(Icons.Rounded.Check, "Picked", tint = readableOn(c.accent), modifier = Modifier.size(18.dp))

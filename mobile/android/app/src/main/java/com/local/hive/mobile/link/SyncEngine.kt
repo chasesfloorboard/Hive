@@ -609,10 +609,16 @@ class SyncEngine(
     private suspend fun connection(): HiveLinkClient.Connection? {
         val pairing = store.pairing ?: return null
         // The cable first: Hive on the PC answers on this phone's own address while it's plugged in.
+        // But only commit to it if the encrypted port is reachable there too — a leftover `adb reverse`
+        // of the main port alone (common after a cable session) otherwise traps every secure call on
+        // 127.0.0.1:<tlsPort>, which has no tunnel, so sync fails while the PC is plainly reachable.
         if (client.serverAt(HiveLinkClient.USB_HOST, pairing.port) == pairing.serverId && isOurs(HiveLinkClient.USB_HOST, pairing.port, pairing)) {
-            activeHost = HiveLinkClient.USB_HOST
-            if (HiveLinkClient.USB_HOST !in pairing.hosts) store.pairing = pairing.copy(hosts = pairing.hosts + HiveLinkClient.USB_HOST)
-            return connectionTo(HiveLinkClient.USB_HOST, pairing.port, pairing)
+            val tlsPort = if (store.tlsFor == pairing.serverId && store.tlsPin != null) store.tlsPort else 0
+            if (tlsPort <= 0 || client.reachable(HiveLinkClient.USB_HOST, tlsPort)) {
+                activeHost = HiveLinkClient.USB_HOST
+                if (HiveLinkClient.USB_HOST !in pairing.hosts) store.pairing = pairing.copy(hosts = pairing.hosts + HiveLinkClient.USB_HOST)
+                return connectionTo(HiveLinkClient.USB_HOST, pairing.port, pairing)
+            }
         }
         if (store.pairing == null) return null
         val candidates = (listOfNotNull(activeHost) + pairing.hosts).filter { it != HiveLinkClient.USB_HOST }
