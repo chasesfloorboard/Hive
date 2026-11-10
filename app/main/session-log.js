@@ -30,7 +30,7 @@ function createSessionLog({ hiveProjectRoot, startupDebugEnabled, startupDebugSt
     /refreshing current-track cover rotation targets/i,
     /automatic artwork image loaded/i,
     /COVER CACHE LOAD/i,
-    /^\[Beehive Scan\]/i
+    /^\[Hive Scan\]/i
   ];
 
   let resolvedLogDir = null;

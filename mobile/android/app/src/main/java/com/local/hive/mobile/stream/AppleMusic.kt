@@ -80,6 +80,24 @@ class AppleMusic(private val http: OkHttpClient = defaultHttp()) {
         return parseSearch(getText("https://music.apple.com/${storefrontOf(storefront)}/search?term=${URLEncoder.encode(q, "UTF-8")}"))
     }
 
+    /**
+     * The release year of an album, from the iTunes Search catalogue, for services that don't give one
+     * (Spotify's public pages). Matched to the SAME album and artist — exact album name and a real artist
+     * overlap — so it borrows a year, never a different release's; returns "" when it can't be sure.
+     */
+    suspend fun albumYear(artist: String, album: String): String {
+        if (artist.isBlank() || album.isBlank()) return ""
+        val term = URLEncoder.encode("$artist ${album.substringBefore(" - ")}", "UTF-8")
+        val body = runCatching { getText("https://itunes.apple.com/search?entity=album&limit=15&term=$term") }.getOrNull() ?: return ""
+        val results = runCatching { Json.parseToJsonElement(body).obj?.get("results")?.arr }.getOrNull().orEmpty().mapNotNull { it.obj }
+        val wanted = YouTubeMusic.normalise(album.replace(Regex("""\s+-\s+(single|ep)$""", RegexOption.IGNORE_CASE), ""))
+        val hit = results.firstOrNull { r ->
+            YouTubeMusic.normalise(r.str("collectionName").orEmpty()) == wanted &&
+                YouTubeMusic.containment(YouTubeMusic.firstArtist(artist), r.str("artistName").orEmpty()) >= 0.5
+        } ?: return ""
+        return hit.str("releaseDate")?.take(4).orEmpty()
+    }
+
     /** An artist by their music.apple.com link. */
     suspend fun artist(url: String): AmArtist {
         val m = Regex("""^https://music\.apple\.com/([a-z]{2})/artist/(?:[^/?#]+/)?(\d+)""", RegexOption.IGNORE_CASE).find(url.trim()) ?: throw IOException("Enter a music.apple.com artist link.")

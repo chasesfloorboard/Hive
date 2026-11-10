@@ -109,6 +109,12 @@ object EmbeddedPictures {
     const val FRONT = 3
     const val BACK = 4
 
+    /** Upper bound on an ID3 tag we will allocate, guarding against corrupt size fields. */
+    private const val MAX_TAG_BYTES = 64 * 1024 * 1024
+
+    /** Upper bound on an MP4 moov box we will hold in RAM (the tags, never the audio). */
+    private const val MAX_MOOV_BYTES = 64L * 1024 * 1024
+
     /** The pictures in a song file's tags, in order. */
     fun read(input: InputStream): List<ByteArray> = readTyped(input).map { it.data }
 
@@ -122,10 +128,12 @@ object EmbeddedPictures {
         val head = ByteArray(4).also { if (stream.read(it) < 4) return emptyList() }
         stream.reset()
         return when {
-            head[0] == 'I'.code.toByte() && head[1] == 'D'.code.toByte() && head[2] == '3'.code.toByte() -> id3(DataInputStream(stream))
+            head[0] == 'I'.code.toByte() && head[1] == 'D'.code.toByte() && head[2] == '3'.code.toByte() -> id3PrefixedTypes(DataInputStream(stream))
             String(head, Charsets.ISO_8859_1) == "fLaC" -> flac(DataInputStream(stream))
-            // MP4: the tags (moov) may sit after the audio, so the whole file is read.
-            isMp4(stream) -> mp4(stream.readBytes())
+            // MP4: the tags (moov) may sit after the audio. Walk the top-level boxes and
+            // read only the moov box into RAM — skipping the (often huge) mdat audio —
+            // instead of pulling the entire file in to find a cover.
+            isMp4(stream) -> mp4FromStream(DataInputStream(stream))
             // WAV: the ID3 tag sits in its own chunk, usually after the audio.
             String(head, Charsets.ISO_8859_1) == "RIFF" -> WavTags.chunks(DataInputStream(stream), setOf("id3 "))?.get("id3 ")?.let { id3(DataInputStream(it.inputStream())) }.orEmpty()
             else -> emptyList()
@@ -144,12 +152,34 @@ object EmbeddedPictures {
     fun id3(input: DataInputStream): List<Picture> =
         id3Frames(input).mapNotNull { (id, body) -> if (id == "APIC" || id == "PIC") picture(body, 0, body.size, id == "PIC") else null }
 
+    /**
+     * Some taggers prepend an ID3v2 tag to a FLAC file, keeping the cover in the FLAC
+     * PICTURE block (after the tag) rather than an APIC — the PC's mutagen reads those,
+     * so the phone must too, or a whole album shows blank covers. Read the ID3 pictures,
+     * and if a FLAC stream follows the tag, read its pictures as well. A plain MP3 (audio
+     * frames after the tag, no "fLaC" marker) is unaffected.
+     */
+    private fun id3PrefixedTypes(input: DataInputStream): List<Picture> {
+        val out = id3(input).toMutableList()
+        val marker = ByteArray(4)
+        if (readFullyOrNull(input, marker) && String(marker, Charsets.ISO_8859_1) == "fLaC") {
+            for (p in flacBlocks(input)) if (out.none { it.data.contentEquals(p.data) }) out += p
+        }
+        return out
+    }
+
     /** An ID3v2 tag's frames, as (id, body), in order. */
     fun id3Frames(input: DataInputStream): List<Pair<String, ByteArray>> {
         val header = ByteArray(10).also { input.readFully(it) }
         val version = header[3].toInt()
         val flags = header[5].toInt()
-        var tag = ByteArray(syncsafe(header, 6)).also { input.readFully(it) }
+        // The header's size field is attacker-controllable (any file on the phone can
+        // be corrupt or hostile) and a syncsafe int reaches 256 MB, so a bogus header
+        // would otherwise allocate that much up front and OOM. Album art lives in a few
+        // MB; anything past the cap is not a tag we can use.
+        val tagSize = syncsafe(header, 6)
+        if (tagSize <= 0 || tagSize > MAX_TAG_BYTES) return emptyList()
+        var tag = ByteArray(tagSize).also { input.readFully(it) }
         // A whole-tag unsynchronisation (v2.2/2.3) is undone before reading frames.
         if (flags and 0x80 != 0 && version < 4) tag = unsync(tag)
         var pos = 0
@@ -195,15 +225,22 @@ object EmbeddedPictures {
     // ---- FLAC ----
 
     fun flac(input: DataInputStream): List<Picture> {
-        input.readFully(ByteArray(4))
+        input.readFully(ByteArray(4)) // "fLaC"
+        return flacBlocks(input)
+    }
+
+    /** The PICTURE blocks of a FLAC stream whose "fLaC" marker has already been consumed. */
+    private fun flacBlocks(input: DataInputStream): List<Picture> {
         val out = mutableListOf<Picture>()
-        while (true) {
-            val h = input.readUnsignedByte()
-            val len = (input.readUnsignedByte() shl 16) or (input.readUnsignedByte() shl 8) or input.readUnsignedByte()
-            val block = ByteArray(len).also { input.readFully(it) }
-            if (h and 0x7f == 6) flacPicture(block)?.let(out::add)
-            if (h and 0x80 != 0) break
-        }
+        try {
+            while (true) {
+                val h = input.readUnsignedByte()
+                val len = (input.readUnsignedByte() shl 16) or (input.readUnsignedByte() shl 8) or input.readUnsignedByte()
+                val block = ByteArray(len).also { input.readFully(it) }
+                if (h and 0x7f == 6) flacPicture(block)?.let(out::add)
+                if (h and 0x80 != 0) break
+            }
+        } catch (_: java.io.EOFException) { /* truncated metadata: keep what we read */ }
         return out
     }
 
@@ -219,7 +256,34 @@ object EmbeddedPictures {
 
     // ---- MP4 ----
 
-    fun mp4(b: ByteArray): List<Picture> {
+    /** Walk the file's top-level boxes, read only the moov box, and pull covers from it. */
+    private fun mp4FromStream(input: DataInputStream): List<Picture> {
+        while (true) {
+            val header = ByteArray(8)
+            if (!readFullyOrNull(input, header)) return emptyList()
+            var size = int(header, 0).toLong() and 0xffffffffL
+            val type = String(header, 4, 4, Charsets.ISO_8859_1)
+            var head = 8L
+            if (size == 1L) { val ext = ByteArray(8); if (!readFullyOrNull(input, ext)) return emptyList(); size = java.nio.ByteBuffer.wrap(ext).long; head = 16L }
+            // size 0 means "to end of file": only worth reading if it is the tags box.
+            val bodyLen = if (size == 0L) -1L else size - head
+            if (size != 0L && bodyLen < 0) return emptyList()
+            if (type == "moov") {
+                if (bodyLen in 1..MAX_MOOV_BYTES) {
+                    val body = ByteArray(bodyLen.toInt()); input.readFully(body); return mp4Covers(body)
+                }
+                if (size == 0L) { // extends to EOF; read it but stay bounded
+                    val body = readBounded(input, MAX_MOOV_BYTES) ?: return emptyList(); return mp4Covers(body)
+                }
+                return emptyList()
+            }
+            if (size == 0L) return emptyList() // a non-moov box runs to EOF; moov isn't ahead
+            skipFully(input, bodyLen)
+        }
+    }
+
+    /** Covers inside a moov box's contents (its direct children). */
+    private fun mp4Covers(b: ByteArray): List<Picture> {
         fun boxes(from: Int, to: Int): List<Triple<String, Int, Int>> {
             val list = mutableListOf<Triple<String, Int, Int>>()
             var p = from
@@ -236,8 +300,7 @@ object EmbeddedPictures {
             return list
         }
         fun child(from: Int, to: Int, type: String) = boxes(from, to).firstOrNull { it.first == type }
-        val moov = child(0, b.size, "moov") ?: return emptyList()
-        val udta = child(moov.second, moov.third, "udta") ?: return emptyList()
+        val udta = child(0, b.size, "udta") ?: return emptyList()
         val meta = child(udta.second, udta.third, "meta") ?: return emptyList()
         // meta is a full box: four bytes of version and flags before its children.
         val ilst = child(meta.second + 4, meta.third, "ilst") ?: return emptyList()
@@ -245,7 +308,63 @@ object EmbeddedPictures {
         return boxes(covr.second, covr.third).filter { it.first == "data" && it.third - it.second > 8 }.mapIndexed { i, d -> Picture(b.copyOfRange(d.second + 8, d.third), if (i == 0) FRONT else BACK) }
     }
 
+    /** The old whole-file entry point, kept for tests and callers that already hold the bytes. */
+    fun mp4(b: ByteArray): List<Picture> {
+        // Find the moov box in the full buffer, then reuse the moov-body parser.
+        var p = 0
+        while (p + 8 <= b.size) {
+            var size = int(b, p).toLong() and 0xffffffffL
+            val type = String(b, p + 4, 4, Charsets.ISO_8859_1)
+            var head = 8
+            if (size == 1L && p + 16 <= b.size) { size = java.nio.ByteBuffer.wrap(b, p + 8, 8).long; head = 16 }
+            if (size == 0L) size = (b.size - p).toLong()
+            if (size < head || p + size > b.size) return emptyList()
+            if (type == "moov") return mp4Covers(b.copyOfRange(p + head, (p + size).toInt()))
+            p = (p + size).toInt()
+        }
+        return emptyList()
+    }
+
     // ---- helpers ----
+
+    /** Fill the array fully; false at clean end-of-stream (so a truncated box just ends the walk). */
+    private fun readFullyOrNull(input: java.io.InputStream, b: ByteArray): Boolean {
+        var off = 0
+        while (off < b.size) {
+            val n = input.read(b, off, b.size - off)
+            if (n < 0) return false
+            off += n
+        }
+        return true
+    }
+
+    /** Skip exactly n bytes, reading past any short skips (skip() may return early on a stream). */
+    private fun skipFully(input: java.io.InputStream, n: Long) {
+        var left = n
+        val scratch = ByteArray(64 * 1024)
+        while (left > 0) {
+            val s = input.skip(left)
+            if (s > 0) { left -= s; continue }
+            val r = input.read(scratch, 0, minOf(scratch.size.toLong(), left).toInt())
+            if (r < 0) return
+            left -= r
+        }
+    }
+
+    /** Read up to max bytes from a to-EOF box, giving up (null) if it exceeds the bound. */
+    private fun readBounded(input: java.io.InputStream, max: Long): ByteArray? {
+        val out = java.io.ByteArrayOutputStream()
+        val scratch = ByteArray(64 * 1024)
+        var total = 0L
+        while (true) {
+            val r = input.read(scratch)
+            if (r < 0) break
+            total += r
+            if (total > max) return null
+            out.write(scratch, 0, r)
+        }
+        return out.toByteArray()
+    }
 
     private fun syncsafe(b: ByteArray, at: Int) = ((b[at].toInt() and 0x7f) shl 21) or ((b[at + 1].toInt() and 0x7f) shl 14) or ((b[at + 2].toInt() and 0x7f) shl 7) or (b[at + 3].toInt() and 0x7f)
     private fun int(b: ByteArray, at: Int) = ((b[at].toInt() and 0xff) shl 24) or ((b[at + 1].toInt() and 0xff) shl 16) or ((b[at + 2].toInt() and 0xff) shl 8) or (b[at + 3].toInt() and 0xff)

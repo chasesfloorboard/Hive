@@ -307,7 +307,7 @@ class SyncEngine(
             val mine = local[m.trackId]
             when {
                 mine?.pending == true -> null
-                pcLoved && mine?.loved != true -> LoveState(m.trackId, true, mine?.changedAt ?: 0, pending = false)
+                pcLoved && mine?.loved != true -> LoveState(m.trackId, true, mine?.changedAt ?: System.currentTimeMillis(), pending = false)
                 !pcLoved && mine?.loved == true -> mine.copy(pending = true)
                 else -> null
             }

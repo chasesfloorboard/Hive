@@ -7,7 +7,7 @@ let dbus = null;
 try { dbus = require('dbus-next'); } catch (e) { console.warn('[MPRIS] dbus-next unavailable:', e?.message || e); }
 
 // HIVE_MPRIS_NAME lets a second copy (e.g. a test instance) run beside Hive without taking its bus name.
-const MPRIS_NAME = String(process.env.HIVE_MPRIS_NAME || 'Beehive').replace(/[^A-Za-z0-9_]/g, '') || 'Beehive';
+const MPRIS_NAME = String(process.env.HIVE_MPRIS_NAME || 'Hive').replace(/[^A-Za-z0-9_]/g, '') || 'Hive';
 const SERVICE = `org.mpris.MediaPlayer2.${MPRIS_NAME}`;
 const OBJECT_PATH = '/org/mpris/MediaPlayer2';
 const PLAYER = 'org.mpris.MediaPlayer2.Player';
@@ -191,7 +191,7 @@ class BeehiveMPRIS {
     }
     if(t.genre)m['xesam:genre']=new v('as',[String(t.genre)]); if(t.track)m['xesam:trackNumber']=new v('i',Number(t.track)||0);
     // MPRIS requires artwork to be part of the Metadata a{sv} dictionary.
-    // Local Beehive artwork always wins: if a valid cached cover exists, never
+    // Local Hive artwork always wins: if a valid cached cover exists, never
     // replace it with a remote URL.
     const localArt = this.coverPath && fs.existsSync(this.coverPath)
       ? pathToFileURL(this.coverPath).href

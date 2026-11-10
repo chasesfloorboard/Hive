@@ -119,7 +119,7 @@ function createGstreamerBridge(deps) {
       return true;
     } catch (err) {
       gstreamerReady = false;
-      try { console.warn('[Beehive] GStreamer backend unavailable:', err.message); } catch {}
+      try { console.warn('[Hive] GStreamer backend unavailable:', err.message); } catch {}
       return false;
     }
   }
@@ -220,7 +220,7 @@ function createGstreamerBridge(deps) {
       });
       return true;
     } catch (err) {
-      try { console.warn('[Beehive] Failed to start GStreamer helper:', err.message); } catch {}
+      try { console.warn('[Hive] Failed to start GStreamer helper:', err.message); } catch {}
       gstreamerProcess = null;
       return false;
     }
@@ -285,7 +285,7 @@ function createGstreamerBridge(deps) {
     if (gstreamerProcess && !gstreamerProcess.killed && gstreamerProcess.stdin?.writable) {
       // The GStreamer helper owns a persistent audio pipeline. Explicitly tell
       // it to quit before Electron exits; otherwise an orphaned helper can keep
-      // the previous song playing and the next Beehive launch can start a second
+      // the previous song playing and the next Hive launch can start a second
       // helper, producing two songs at once.
       try {
         gstreamerProcess.stdin.write('QUIT\n');

@@ -27,7 +27,7 @@ object SpotifyFind {
     private val http: OkHttpClient = AppleMusic.defaultHttp()
     private val cache = ConcurrentHashMap<String, String>()
     private val gate = Mutex()
-    private const val UA = "HiveMusicPlayer/2.26 ( https://github.com/chasesfloorboard/Hive )"
+    private const val UA = "HiveMusicPlayer/3.0.0 ( https://github.com/chasesfloorboard/Hive )"
     private val spotifyAlbum = Regex("""open\.spotify\.com/(?:intl-[a-z-]+/)?album/([A-Za-z0-9]{22})""")
 
     /** The open.spotify.com/album link for an album, or null when it can't be placed on Spotify. */

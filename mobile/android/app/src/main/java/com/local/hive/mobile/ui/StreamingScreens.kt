@@ -24,6 +24,11 @@ import androidx.compose.foundation.lazy.items
 import androidx.compose.foundation.lazy.itemsIndexed
 import androidx.compose.foundation.lazy.rememberLazyListState
 import androidx.compose.foundation.shape.CircleShape
+import androidx.compose.foundation.background
+import androidx.compose.ui.draw.clip
+import androidx.compose.material.icons.rounded.MoreVert
+import androidx.compose.material.icons.rounded.MusicNote
+import androidx.compose.material.icons.rounded.GraphicEq
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.rounded.Download
 import androidx.compose.material.icons.rounded.FavoriteBorder
@@ -344,9 +349,11 @@ data class ServicePage(
     val url: String,
     val songs: List<StreamTrack>,
     val more: List<ServiceCard> = emptyList(),
+    /** The album's release year, where the service gives one (Apple Music does; Spotify's public pages don't). */
+    val year: String = "",
 )
 
-private fun AmCollection.page() = ServicePage("Apple Music", kind, name, curator, description, artwork, url, songs.map { it.toStream() }, more.map { it.card() })
+private fun AmCollection.page() = ServicePage("Apple Music", kind, name, curator, description, artwork, url, songs.map { it.toStream() }, more.map { it.card() }, year = songs.firstOrNull()?.year.orEmpty())
 private fun SpCollection.page() = ServicePage("Spotify", kind, name, owner, "", artwork, url, songs.map { it.toStream() })
 
 @Composable
@@ -361,10 +368,14 @@ fun SpotifyCollectionScreen(vm: MainViewModel, url: String, bottomPadding: Dp, o
         val signedIn = vm.spotifyUser.value.signedIn
         if (url == LIKED_SONGS_URL) {
             ServicePage("Spotify", "playlist", "Liked Songs", vm.spotifyUser.value.name, "", "", url, vm.spotifyAccount.likedSongs().map { it.toStream() })
-        } else runCatching { vm.spotify.collection(url).page() }.getOrElse { failure ->
-            // Private playlists aren't on Spotify's public pages; the signed-in API has them (without previews).
-            val ref = Spotify.parseLink(url)
-            if (signedIn && ref?.first == "playlist") vm.spotifyAccount.playlist(ref.second).page() else throw failure
+        } else {
+            val p = runCatching { vm.spotify.collection(url).page() }.getOrElse { failure ->
+                // Private playlists aren't on Spotify's public pages; the signed-in API has them (without previews).
+                val ref = Spotify.parseLink(url)
+                if (signedIn && ref?.first == "playlist") vm.spotifyAccount.playlist(ref.second).page() else throw failure
+            }
+            // Spotify's public pages carry no release year; borrow the album's from Apple Music's catalogue (same album + artist).
+            if (p.kind == "album" && p.year.isBlank()) p.copy(year = runCatching { vm.appleMusic.albumYear(p.songs.firstOrNull()?.artist.orEmpty(), p.name) }.getOrElse { "" }) else p
         }
     }, bottomPadding, onBack, {}, onOpenPlaylist, onToast)
 
@@ -390,6 +401,8 @@ private fun ServiceCollectionScreen(
     var importing by remember { mutableStateOf(false) }
     var showAll by remember { mutableStateOf(false) }
     var sharing by remember(key) { mutableStateOf(false) }
+    var menuOpen by remember { mutableStateOf(false) }
+    var signIn by remember { mutableStateOf(false) }
     LaunchedEffect(key, attempt) { page = Load.Loading; page = runCatching { load() }.fold({ Load.Ready(it) }, { Load.Failed(it.friendly(service)) }) }
     val collection = (page as? Load.Ready)?.value
     val matches = remember(collection, library) { collection?.songs?.map { vm.localMatch(it) }.orEmpty() }
@@ -416,26 +429,19 @@ private fun ServiceCollectionScreen(
                                 orElse = col.artwork.replace(Regex("""/\d+x\d+bb\.jpg$"""), "/600x600bb.jpg").takeIf { it != col.artwork })
                             Text(col.name, style = HiveText.heroTitle, color = c.text, textAlign = TextAlign.Center, maxLines = 2, overflow = TextOverflow.Ellipsis, modifier = Modifier.padding(top = 22.dp))
                             if (col.curator.isNotBlank()) Text(col.curator, style = HiveText.rowStrong, color = c.accent, textAlign = TextAlign.Center, maxLines = 1, overflow = TextOverflow.Ellipsis, modifier = Modifier.padding(top = 6.dp))
-                            Text(listOf("${col.source} ${if (album) "album" else "playlist"}", countOf(col.songs.size, "track"), formatLength(col.songs.sumOf { it.durationMs }), if (inLibrary > 0) "$inLibrary in your library" else "")
-                                .filter { it.isNotBlank() }.joinToString(" · "), style = HiveText.small, color = c.textDim, textAlign = TextAlign.Center, modifier = Modifier.padding(top = 4.dp))
+                            // The service shows as a small emblem (not a text label), with the release year
+                            // leading where the service gives one, then the song count, length and how many
+                            // are already in the library. Clutter (import/download/share) moves to the ⋯ menu.
+                            Row(Modifier.padding(top = 6.dp), verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(7.dp)) {
+                                ServiceEmblem(col.source)
+                                Text(listOf(col.year.takeIf { album }.orEmpty(), countOf(col.songs.size, "track"), formatLength(col.songs.sumOf { it.durationMs }), if (inLibrary > 0) "$inLibrary in your library" else "")
+                                    .filter { it.isNotBlank() }.joinToString(" · "), style = HiveText.small, color = c.textDim, textAlign = TextAlign.Center)
+                            }
                             if (col.description.isNotBlank()) Text(col.description, style = HiveText.small, color = c.textDim, textAlign = TextAlign.Center, maxLines = if (showAll) Int.MAX_VALUE else 3, overflow = TextOverflow.Ellipsis,
                                 modifier = Modifier.padding(top = 10.dp).clickable { showAll = !showAll })
                             Row(Modifier.fillMaxWidth().padding(top = 20.dp), horizontalArrangement = Arrangement.spacedBy(10.dp), verticalAlignment = Alignment.CenterVertically) {
                                 PillButton("Play", HiveIcons.Play, accent = true, modifier = Modifier.weight(1f)) { vm.playStreams(col.songs) }
                                 PillButton("Shuffle", HiveIcons.Shuffle, accent = false, modifier = Modifier.weight(1f)) { vm.playStreams(col.songs, shuffle = true) }
-                                ControlButton(Icons.AutoMirrored.Rounded.PlaylistAdd, "Import as playlist", {
-                                    if (!importing) {
-                                        importing = true
-                                        vm.importStreams(col.name, col.source, col.url, col.artwork, col.songs) { id, summary -> importing = false; onToast("Imported “${col.name}”: $summary"); onOpenPlaylist(id) }
-                                    }
-                                }, size = 46.dp)
-                                // An album or song: download it with Soulseek.
-                                if (album) {
-                                    val artist = col.curator.ifBlank { col.songs.firstOrNull()?.artist.orEmpty() }
-                                    DownloadButton(artist, col.name, {
-                                        com.local.hive.mobile.soulseek.SoulseekRequest(artist, col.name, col.songs.map { com.local.hive.mobile.soulseek.SoulseekRequest.Track(it.title, it.durationMs, artist = it.artist, album = it.album.ifBlank { col.name }, artworkUrl = it.artworkUrl.ifBlank { col.artwork }) }, if (col.kind == "track") "track" else "album")
-                                    }, onToast)
-                                }
                             }
                             val full by vm.fullSongs.collectAsStateWithLifecycle()
                             Text(if (full) "Songs you don't own play in full." else "Songs you don't own play as 30-second previews.",
@@ -456,13 +462,13 @@ private fun ServiceCollectionScreen(
     }, overlay = {
         PageBar(collection?.name.orEmpty(), titleAlpha, onBack, veil) {
             if (collection != null) {
+                val album = collection.kind == "album"
                 val route = (if (collection.source == "Spotify") "spotify/c?url=" else "apple/c?url=") + Uri.encode(collection.url)
                 FavoriteBarActions(vm, favoritePlaylist(collection.source.lowercase().replace(" ", "") + ":" + collection.url, collection.name, route, collection.artwork.ifBlank { null }, collection.source))
                 androidx.compose.foundation.layout.Spacer(Modifier.size(8.dp))
-            }
-            // Share this album as a Spotify link, found on demand so a friend on Spotify can open it.
-            if (collection != null && collection.kind == "album") {
-                Box(Modifier.size(42.dp).hiveGlass(CircleShape).clickable(enabled = !sharing) {
+                // One ⋯ button for the quieter actions — import, download, share, open — so the page
+                // leads with Play and Shuffle instead of a row of five.
+                fun shareLink() {
                     sharing = true
                     onToast("Finding “${collection.name}” on Spotify…")
                     scope.launch {
@@ -472,18 +478,63 @@ private fun ServiceCollectionScreen(
                         if (link != null) Share.text(context, link, "Share “${collection.name}”")
                         else { Share.text(context, collection.url, "Share “${collection.name}”"); onToast("Couldn't place “${collection.name}” on Spotify — shared its ${collection.source} link.") }
                     }
-                }, contentAlignment = Alignment.Center) {
-                    Icon(Icons.Rounded.Share, "Share Spotify link", tint = c.text, modifier = Modifier.size(19.dp))
                 }
-                androidx.compose.foundation.layout.Spacer(Modifier.size(8.dp))
-            }
-            if (collection != null) Box(Modifier.size(42.dp).hiveGlass(CircleShape).clickable {
-                runCatching { context.startActivity(Intent(Intent.ACTION_VIEW, Uri.parse(com.local.hive.mobile.stream.AppleAccount.webUrl(collection.url)))) }
-            }, contentAlignment = Alignment.Center) {
-                Icon(Icons.AutoMirrored.Rounded.OpenInNew, "Open in ${collection.source}", tint = c.text, modifier = Modifier.size(19.dp))
+                fun startDownload() {
+                    val artist = collection.curator.ifBlank { collection.songs.firstOrNull()?.artist.orEmpty() }
+                    com.local.hive.mobile.soulseek.SoulseekWorker.enqueue(context, com.local.hive.mobile.soulseek.SoulseekRequest(artist, collection.name,
+                        collection.songs.map { com.local.hive.mobile.soulseek.SoulseekRequest.Track(it.title, it.durationMs, artist = it.artist, album = it.album.ifBlank { collection.name }, artworkUrl = it.artworkUrl.ifBlank { collection.artwork }) },
+                        if (collection.kind == "track") "track" else "album"))
+                    onToast("Downloading ${collection.name} to ${com.local.hive.mobile.soulseek.SoulseekSettings(context).where(context)}")
+                }
+                Box {
+                    Box(Modifier.size(42.dp).hiveGlass(CircleShape).clickable { menuOpen = true }, contentAlignment = Alignment.Center) {
+                        Icon(Icons.Rounded.MoreVert, "More", tint = c.text, modifier = Modifier.size(20.dp))
+                    }
+                    HiveMenu(menuOpen, { menuOpen = false }) {
+                        HiveMenuItem("Import as playlist", Icons.AutoMirrored.Rounded.PlaylistAdd) {
+                            menuOpen = false
+                            if (!importing) {
+                                importing = true
+                                vm.importStreams(collection.name, collection.source, collection.url, collection.artwork, collection.songs) { id, summary -> importing = false; onToast("Imported “${collection.name}”: $summary"); onOpenPlaylist(id) }
+                            }
+                        }
+                        if (album) HiveMenuItem("Download", Icons.Rounded.Download) {
+                            menuOpen = false
+                            if (com.local.hive.mobile.soulseek.SoulseekSettings(context).configured) startDownload() else signIn = true
+                        }
+                        if (album) HiveMenuItem("Share", Icons.Rounded.Share) { menuOpen = false; if (!sharing) shareLink() }
+                        HiveMenuItem("Open in ${collection.source}", Icons.AutoMirrored.Rounded.OpenInNew) {
+                            menuOpen = false
+                            runCatching { context.startActivity(Intent(Intent.ACTION_VIEW, Uri.parse(com.local.hive.mobile.stream.AppleAccount.webUrl(collection.url)))) }
+                        }
+                    }
+                }
             }
         }
     })
+    if (signIn) SoulseekSignInDialog(onDismiss = { signIn = false }, onSignedIn = {
+        signIn = false
+        val col = collection ?: return@SoulseekSignInDialog
+        val artist = col.curator.ifBlank { col.songs.firstOrNull()?.artist.orEmpty() }
+        com.local.hive.mobile.soulseek.SoulseekWorker.enqueue(context, com.local.hive.mobile.soulseek.SoulseekRequest(artist, col.name,
+            col.songs.map { com.local.hive.mobile.soulseek.SoulseekRequest.Track(it.title, it.durationMs, artist = it.artist, album = it.album.ifBlank { col.name }, artworkUrl = it.artworkUrl.ifBlank { col.artwork }) },
+            if (col.kind == "track") "track" else "album"))
+        onToast("Downloading ${col.name} to ${com.local.hive.mobile.soulseek.SoulseekSettings(context).where(context)}")
+    })
+}
+
+/**
+ * A small coloured emblem standing in for the streaming service — its brand colour with Hive's own
+ * glyph, not the service's trademarked logo. Identifies Apple Music / Spotify at a glance without a
+ * text label or a copied mark.
+ */
+@Composable
+private fun ServiceEmblem(source: String) {
+    val spotify = source.equals("Spotify", ignoreCase = true)
+    val color = if (spotify) Color(0xFF1DB954) else Color(0xFFFA2D48)
+    Box(Modifier.size(18.dp).clip(CircleShape).background(color), contentAlignment = Alignment.Center) {
+        Icon(if (spotify) Icons.Rounded.GraphicEq else Icons.Rounded.MusicNote, source, tint = Color.White, modifier = Modifier.size(12.dp))
+    }
 }
 
 /**

@@ -2,7 +2,7 @@
 import base64, hashlib, json, mimetypes, os, shutil, sys, tempfile
 from pathlib import Path
 
-# The bundled mutagen package is kept beside this helper so Beehive does not
+# The bundled mutagen package is kept beside this helper so Hive does not
 # require a system Python package installation.
 HERE = Path(__file__).resolve().parent
 # The vendored mutagen package lives in resources/mutagen, a sibling of this
@@ -122,7 +122,7 @@ def type_id(v): return TYPE_TO_ID3.get(str(v or '').strip().lower(), 0)
 # ID3 pictures with the same (often empty) description would overwrite each
 # other in the bundled Mutagen version. Keep the user's visible description
 # unchanged while giving colliding APIC frames an invisible, stable suffix.
-# This lets Beehive embed front + back + leaflet + any other picture types in
+# This lets Hive embed front + back + leaflet + any other picture types in
 # one MP3 without one silently replacing another.
 _APIC_HIDDEN_SUFFIX = '\u200b'
 
@@ -207,7 +207,7 @@ def read_artwork(path, include_data=True):
                 add_picture(bytes(p.data), getattr(p,'type',0), getattr(p,'mime','image/jpeg'), getattr(p,'desc',''), i)
     # Some FLAC/MP3 files created by older tools contain a single primary
     # picture with the generic type 0 (Other). Treat the first picture as the
-    # main Album Cover for Beehive's editor when no explicit front-cover type
+    # main Album Cover for Hive's editor when no explicit front-cover type
     # exists. This is a read-side normalization only; saving it through the
     # Tags-tab cover action writes the proper native front-cover type.
     #
@@ -392,7 +392,7 @@ def apply_id3_fields(id3, tags):
     if 'compilation' in tags:
         id3.delall('TCMP')
         if str(tags['compilation']) == '1': id3.add(TCMP(encoding=3, text=['1']))
-        # Remove only the legacy alias Beehive used to create; leave unrelated TXXX data intact.
+        # Remove only the legacy alias Hive used to create; leave unrelated TXXX data intact.
         remove_txxx(id3,'compilation')
     native_sort = {'TSOA': TSOA, 'TSOT': TSOT, 'TSO2': TSO2, 'TSOP': TSOP, 'TSOC': TSOC}
     # Same reasoning as the FLAC writer's standard_fields guard: a stale raw
@@ -1440,7 +1440,7 @@ if __name__=='__main__':
     # to the ANSI code page (cp1252), which garbled every non-ASCII tag and path.
     for _stream in (sys.stdin, sys.stdout):
         _stream.reconfigure(encoding='utf-8')
-    # Persistent request/reply mode. Beehive keeps this process alive so bulk
+    # Persistent request/reply mode. Hive keeps this process alive so bulk
     # metadata operations do not repeatedly pay Python startup/import costs.
     for line in sys.stdin:
         if not line.strip():

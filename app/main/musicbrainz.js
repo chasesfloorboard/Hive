@@ -6,7 +6,7 @@ const path = require('path');
 
 const API = 'https://musicbrainz.org/ws/2';
 const CAA = 'https://coverartarchive.org';
-const USER_AGENT = 'Hive/0.9.0-beta.2 (BeehiveMusicBrainz) (offline-first music player)';
+const USER_AGENT = 'Hive/0.9.0-beta.2 (HiveMusicBrainz) (offline-first music player)';
 const CACHE_TTL = 30 * 24 * 60 * 60 * 1000;
 
 function norm(value) {

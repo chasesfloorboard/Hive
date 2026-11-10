@@ -163,7 +163,7 @@ fun LyricsBody(vm: MainViewModel, modifier: Modifier, onLine: (Long) -> Unit = {
 @Composable
 private fun LyricLineRow(text: String, current: Boolean, past: Boolean, compact: Boolean, onClick: (() -> Unit)?) {
     val c = Hive.colors
-    val color by animateColorAsState(when { current -> c.text; past -> c.text.copy(alpha = 0.42f); else -> c.text.copy(alpha = 0.30f) }, tween(260), label = "line")
+    val color by com.local.hive.mobile.ui.theme.animateUiColorAsState(when { current -> c.text; past -> c.text.copy(alpha = 0.42f); else -> c.text.copy(alpha = 0.30f) }, tween(260), label = "line")
     val scale by animateFloatAsState(if (current) 1f else 0.94f, tween(260), label = "lineScale")
     val side = if (compact) 18.dp else 26.dp
     if (text.isBlank()) {

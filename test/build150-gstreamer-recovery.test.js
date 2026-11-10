@@ -23,9 +23,9 @@ test('native backend exposes an explicit clean restart for audio-path recovery',
 });
 
 test('native decoder failure remains fail-silent and does not auto-replay the same stream', () => {
-  assert.match(rendererSource, /Beehive audio safety shutdown: GStreamer helper exited/);
+  assert.match(rendererSource, /Hive audio safety shutdown: GStreamer helper exited/);
   assert.match(rendererSource, /Do not automatically replay the current file|failure may be in the file, sink, decoder/);
-  assert.match(rendererSource, /Beehive audio safety shutdown: native GStreamer load failed/);
+  assert.match(rendererSource, /Hive audio safety shutdown: native GStreamer load failed/);
 });
 
 test('Play after a native fault requests a fresh backend before retrying the current track', () => {

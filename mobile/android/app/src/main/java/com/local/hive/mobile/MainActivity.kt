@@ -19,6 +19,7 @@ class MainActivity : ComponentActivity() {
     private val vm: MainViewModel by viewModels()
 
     private val permissions = registerForActivityResult(ActivityResultContracts.RequestMultiplePermissions()) { granted ->
+        vm.refreshAudioPermission()
         if (granted[audioPermission] == true) vm.rescan()
     }
 
@@ -39,6 +40,12 @@ class MainActivity : ComponentActivity() {
         val openPlayer = intent?.getBooleanExtra(EXTRA_OPEN_PLAYER, false) == true
         if (intent?.getBooleanExtra(EXTRA_OPEN_DELETIONS, false) == true) vm.openDeletions.value = true
         if (intent?.getBooleanExtra(EXTRA_GO_HOME, false) == true) vm.goHome()
+        // The empty states' "Allow music access" button routes here: re-ask if we still can, otherwise
+        // (permanently denied) send the user to this app's settings page to flip it on by hand.
+        vm.requestAudioPermission = {
+            if (androidx.core.app.ActivityCompat.shouldShowRequestPermissionRationale(this, audioPermission)) permissions.launch(arrayOf(audioPermission))
+            else runCatching { startActivity(Intent(android.provider.Settings.ACTION_APPLICATION_DETAILS_SETTINGS, android.net.Uri.parse("package:$packageName"))) }
+        }
         setContent { HiveRoot(vm, openPlayer) }
 
         val wanted = buildList {
@@ -56,6 +63,7 @@ class MainActivity : ComponentActivity() {
     // Opening Hive looks for an update: from the PC when it's reachable, else GitHub (every 10 minutes at most).
     override fun onResume() {
         super.onResume()
+        vm.refreshAudioPermission()   // self-correct the empty state after a trip to system settings
         (application as HiveApp).appUpdater.checkAnywhere()
     }
 

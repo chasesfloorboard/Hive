@@ -164,7 +164,7 @@ function parseId3Frames(payload, version) {
   while (pos + 10 <= payload.length) {
     const id = payload.toString('ascii', pos, pos + 4);
 
-    // Valid ID3 padding is zero bytes at the end of the tag. Older Beehive
+    // Valid ID3 padding is zero bytes at the end of the tag. Older Hive
     // builds could accidentally append a frame after that padding, however.
     // Strawberry/TagLib reads the frame list rather than treating the first
     // zero byte as an absolute end marker, so recover those frames here too.
@@ -217,7 +217,7 @@ function makeId3Frame(id, data, version) {
 
 function makeMusicBeeLoveFrame(version, value = 'L') {
   // MusicBee's Love field: TXXX, encoding 0 (ISO-8859-1), description
-  // "LOVE RATING". Beehive uses L for Loved and 0 for Unloved.
+  // "LOVE RATING". Hive uses L for Loved and 0 for Unloved.
   const data = Buffer.concat([
     Buffer.from([0]),
     Buffer.from('LOVE RATING', 'latin1'),
@@ -378,7 +378,7 @@ async function updateWavMusicBeeTags(trackPath, { stars = null, loved = null } =
     if (loved !== null) if (loved) outputFrames.push(makeMusicBeeLoveFrame(version, 'L'));
     if (stars !== null) {
       // Keep the MusicBee POPM source of truth for WAVs with ID3, matching MP3.
-      // FMPS_Rating is also synchronized for portability, but Beehive's reader
+      // FMPS_Rating is also synchronized for portability, but Hive's reader
       // intentionally ignores it on WAV so other applications cannot override
       // the MusicBee value.
       outputFrames.push(makeFMPSRatingFrame(stars, version));
@@ -469,7 +469,7 @@ async function updateMp3MusicBeeTagsUnlocked(trackPath, { stars = null, loved = 
     }
     if (frame.id === 'TXXX' && loved !== null) {
       const desc = txxxDescription(frame.data).toUpperCase();
-      // Replace the exact MusicBee Love field. Also remove Beehive's old
+      // Replace the exact MusicBee Love field. Also remove Hive's old
       // incorrect TXXX:Love spelling if it exists from an earlier build.
       if (isBeehiveLoveFieldName(desc)) remove = true;
     }
@@ -479,7 +479,7 @@ async function updateMp3MusicBeeTagsUnlocked(trackPath, { stars = null, loved = 
   // Write only MusicBee's definitive LOVE RATING field; do not create the
   // legacy TXXX:Love field.
   if (loved !== null) {
-    // Keep one authoritative Love field. Unlove removes every Beehive Love field from the file.
+    // Keep one authoritative Love field. Unlove removes every Hive Love field from the file.
     // The absence of the field is the authoritative Unloved state.
     if (loved) outputFrames.push(makeMusicBeeLoveFrame(version, 'L'));
   }
@@ -497,7 +497,7 @@ async function updateMp3MusicBeeTagsUnlocked(trackPath, { stars = null, loved = 
   // Always keep ID3 padding at the very end. New/replaced frames must be
   // placed before it; putting them after padding makes otherwise valid tags
   // invisible to strict ID3 readers (and was the reason ratings appeared to
-  // save in Beehive but disappeared after restart).
+  // save in Hive but disappeared after restart).
   const keptTrailing = isPadding ? trailing : Buffer.alloc(0);
   payload = Buffer.concat([...outputFrames, keptTrailing]);
   const header = Buffer.concat([
@@ -525,7 +525,7 @@ function isFavoriteLoveValue(value) {
     v === 'FAVORITE' || v === 'FAVOURITE';
 }
 
-// Every Love field Beehive has historically written/recognized. When Unlove is
+// Every Love field Hive has historically written/recognized. When Unlove is
 // requested, ALL of these aliases are normalized to one LOVE RATING field. Unlove removes the Love fields; Love writes one canonical LOVE RATING=L field.
 const BEEHIVE_LOVE_FIELD_NAMES = new Set([
   'LOVE RATING',

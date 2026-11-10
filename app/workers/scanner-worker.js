@@ -602,7 +602,7 @@ async function parseTrack(filePath, coversDir) {
   try { covers = await extractAndCacheCovers(pictures,coversDir); } catch { covers = []; }
 
   let loved = false, rating = 0, ratingRaw = 0;
-  // Beehive rating authority: only the exact fields Beehive writes are
+  // Hive rating authority: only the exact fields Hive writes are
   // allowed to determine the displayed rating. Never infer a rating from
   // provider/container metadata such as WM/PROVIDERRATING, common.rating,
   // generic RATING fields, or another application's POPM frame.

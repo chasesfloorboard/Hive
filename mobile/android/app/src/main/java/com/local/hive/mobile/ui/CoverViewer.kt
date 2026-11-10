@@ -1,12 +1,12 @@
 package com.local.hive.mobile.ui
 
+import coil3.request.allowHardware
 import androidx.compose.animation.core.Animatable
 import androidx.compose.animation.core.tween
 import androidx.compose.foundation.Image
 import androidx.compose.foundation.background
 import androidx.compose.foundation.gestures.detectTapGestures
-import androidx.compose.foundation.gestures.rememberTransformableState
-import androidx.compose.foundation.gestures.transformable
+import androidx.compose.foundation.gestures.detectTransformGestures
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Row
@@ -48,6 +48,7 @@ import com.local.hive.mobile.ui.theme.hiveGlass
 import androidx.compose.ui.graphics.graphicsLayer
 import androidx.compose.ui.input.pointer.pointerInput
 import androidx.compose.ui.layout.ContentScale
+import androidx.compose.ui.layout.onSizeChanged
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.window.Dialog
 import androidx.compose.ui.window.DialogProperties
@@ -68,7 +69,22 @@ fun CoverViewer(vm: MainViewModel, tracks: List<Track>, fallback: Any?, name: St
     val scope = rememberCoroutineScope()
     val first = tracks.firstOrNull()
     // The song's own picture at full size; the phone's album art meanwhile, or when the file has none.
-    val bytes by produceState<ByteArray?>(null, first?.id) { value = first?.let { vm.fullCover(it) } }
+    val context = androidx.compose.ui.platform.LocalContext.current
+    // A local song's picture comes from its file; a streaming one (Apple Music, etc.) has no file, so its
+    // cover is fetched from its artwork address instead, so it can still be held, viewed and saved.
+    val bytes by produceState<ByteArray?>(null, first?.id, fallback) {
+        value = first?.let { vm.fullCover(it) } ?: fallback?.let { fb ->
+            withContext(Dispatchers.IO) {
+                runCatching {
+                    val r = coil3.SingletonImageLoader.get(context).execute(
+                        coil3.request.ImageRequest.Builder(context).data(fb).size(coil3.size.Size.ORIGINAL).allowHardware(false).build())
+                    (r.image as? coil3.BitmapImage)?.bitmap?.let { bm ->
+                        java.io.ByteArrayOutputStream().use { os -> bm.compress(android.graphics.Bitmap.CompressFormat.PNG, 100, os); os.toByteArray() }
+                    }
+                }.getOrNull()
+            }
+        }
+    }
     val full by produceState<ImageBitmap?>(null, bytes) {
         value = bytes?.let { b -> withContext(Dispatchers.Default) { decode(b)?.asImageBitmap() } }
     }
@@ -87,13 +103,35 @@ fun CoverViewer(vm: MainViewModel, tracks: List<Track>, fallback: Any?, name: St
     var savedOk by remember { mutableStateOf(false) }
     val haptics = androidx.compose.ui.platform.LocalHapticFeedback.current
     LaunchedEffect(saved) { if (saved != null) { kotlinx.coroutines.delay(2_600); saved = null } }
-    val zoom = remember { Animatable(1f) }
-    var pan by remember { mutableStateOf(Offset.Zero) }
+    // Photo-style zoom: pinch zooms into the point between the fingers and pan drags the picture, kept
+    // inside its frame so it can't be flung off; double tap toggles 1x and 2.5x at the tapped point.
+    var scale by remember { mutableFloatStateOf(1f) }
+    var offset by remember { mutableStateOf(Offset.Zero) }
+    var frame by remember { mutableStateOf(androidx.compose.ui.unit.IntSize.Zero) }
     var appear by remember { mutableFloatStateOf(0f) }
     LaunchedEffect(Unit) { Animatable(0f).animateTo(1f, tween(220)) { appear = value } }
-    val transform = rememberTransformableState { change, offset, _ ->
-        scope.launch { zoom.snapTo((zoom.value * change).coerceIn(1f, 5f)) }
-        pan = if (zoom.value <= 1f) Offset.Zero else pan + offset
+    // How far the picture may slide at this zoom before an edge would show.
+    fun clamp(s: Float, o: Offset): Offset {
+        val mx = (frame.width * (s - 1f) / 2f).coerceAtLeast(0f)
+        val my = (frame.height * (s - 1f) / 2f).coerceAtLeast(0f)
+        return Offset(o.x.coerceIn(-mx, mx), o.y.coerceIn(-my, my))
+    }
+    fun onGesture(centroid: Offset, pan: Offset, zoomChange: Float) {
+        val s0 = scale
+        val s1 = (s0 * zoomChange).coerceIn(1f, 5f)
+        val c = Offset(frame.width / 2f, frame.height / 2f)
+        // Keep the point under the fingers fixed while zooming, then apply the drag.
+        offset = clamp(s1, (centroid - c) - ((centroid - c) - offset) * (s1 / s0) + pan)
+        scale = s1
+    }
+    fun animateTo(targetScale: Float, targetOffset: Offset) {
+        scope.launch {
+            val s0 = scale; val o0 = offset
+            Animatable(0f).animateTo(1f, tween(220)) {
+                scale = s0 + (targetScale - s0) * value
+                offset = Offset(o0.x + (targetOffset.x - o0.x) * value, o0.y + (targetOffset.y - o0.y) * value)
+            }
+        }
     }
     Dialog(onDismiss, DialogProperties(usePlatformDefaultWidth = false, decorFitsSystemWindows = false)) {
         Box(Modifier.fillMaxSize().graphicsLayer { alpha = appear }.pointerInput(Unit) { detectTapGestures { onDismiss() } }) {
@@ -111,14 +149,18 @@ fun CoverViewer(vm: MainViewModel, tracks: List<Track>, fallback: Any?, name: St
             }
             Box(
                 Modifier.align(Alignment.Center).fillMaxWidth().aspectRatio(1f).padding(12.dp)
+                    .onSizeChanged { frame = it }
                     .graphicsLayer {
-                        val s = (0.92f + 0.08f * appear) * zoom.value
-                        scaleX = s; scaleY = s; translationX = pan.x; translationY = pan.y; alpha = appear
+                        val s = (0.92f + 0.08f * appear) * scale
+                        scaleX = s; scaleY = s; translationX = offset.x; translationY = offset.y; alpha = appear
                     }
-                    .transformable(transform)
                     .pointerInput(Unit) {
-                        detectTapGestures(onDoubleTap = {
-                            scope.launch { if (zoom.value > 1f) { pan = Offset.Zero; zoom.animateTo(1f, tween(200)) } else zoom.animateTo(2.5f, tween(200)) }
+                        detectTransformGestures { centroid, pan, zoomChange, _ -> onGesture(centroid, pan, zoomChange) }
+                    }
+                    .pointerInput(Unit) {
+                        detectTapGestures(onDoubleTap = { tap ->
+                            if (scale > 1f) animateTo(1f, Offset.Zero)
+                            else { val c = Offset(frame.width / 2f, frame.height / 2f); animateTo(2.5f, clamp(2.5f, (tap - c) * (1f - 2.5f))) }
                         })
                     },
             ) {

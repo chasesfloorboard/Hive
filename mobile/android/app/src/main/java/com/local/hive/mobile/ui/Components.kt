@@ -304,7 +304,7 @@ fun NowPlayingBars(playing: Boolean, color: Color, modifier: Modifier = Modifier
 @Composable
 fun HiveTab(label: String, active: Boolean, onClick: () -> Unit, modifier: Modifier = Modifier, leading: (@Composable () -> Unit)? = null, onLongClick: (() -> Unit)? = null) {
     val c = Hive.colors
-    val text by animateColorAsState(if (active) c.text else c.textDim, tween(150), label = "tabText")
+    val text by com.local.hive.mobile.ui.theme.animateUiColorAsState(if (active) c.text else c.textDim, tween(150), label = "tabText")
     val fill by animateFloatAsState(if (active) 1f else 0f, tween(150), label = "tabFill")
     Row(
         modifier
@@ -340,8 +340,8 @@ fun HiveToggle(options: List<String>, selected: Int, onSelect: (Int) -> Unit, mo
 @Composable
 fun HivePill(label: String, active: Boolean, onClick: () -> Unit) {
     val c = Hive.colors
-    val bg by animateColorAsState(if (active) mix(c.accent, Color.Transparent, 0.36f) else mix(c.accent, c.panelStrong, 0.05f), tween(150), label = "pillBg")
-    val edge by animateColorAsState(if (active) mix(c.accent, c.border, 0.6f) else c.border, tween(150), label = "pillEdge")
+    val bg by com.local.hive.mobile.ui.theme.animateUiColorAsState(if (active) mix(c.accent, Color.Transparent, 0.36f) else mix(c.accent, c.panelStrong, 0.05f), tween(150), label = "pillBg")
+    val edge by com.local.hive.mobile.ui.theme.animateUiColorAsState(if (active) mix(c.accent, c.border, 0.6f) else c.border, tween(150), label = "pillEdge")
     Box(
         Modifier.height(32.dp).clip(HiveShape.pill).background(bg).border(1.dp, edge, HiveShape.pill).clickable(onClick = onClick).padding(horizontal = 14.dp),
         contentAlignment = Alignment.Center,
@@ -766,8 +766,8 @@ fun SongRow(
     var open by remember { mutableStateOf(false) }
     val haptics = androidx.compose.ui.platform.LocalHapticFeedback.current
     val showArt = number == null
-    val fill by animateColorAsState(when { picked -> c.accentSoft.copy(alpha = 0.38f); playing -> c.accentSoft.copy(alpha = 0.22f); else -> Color.Transparent }, tween(180), label = "rowFill")
-    val titleColor by animateColorAsState(when { playing -> c.accent; enabled -> c.text; else -> c.textDim }, tween(180), label = "rowTitle")
+    val fill by com.local.hive.mobile.ui.theme.animateUiColorAsState(when { picked -> c.accentSoft.copy(alpha = 0.38f); playing -> c.accentSoft.copy(alpha = 0.22f); else -> Color.Transparent }, tween(180), label = "rowFill")
+    val titleColor by com.local.hive.mobile.ui.theme.animateUiColorAsState(when { playing -> c.accent; enabled -> c.text; else -> c.textDim }, tween(180), label = "rowTitle")
     Box(Modifier.fillMaxWidth().padding(horizontal = 8.dp)) {
         Row(
             Modifier
@@ -1134,11 +1134,19 @@ fun indexLetter(sortKey: String): Char {
 val IndexLetters: List<Char> = ('A'..'Z').toList()
 
 @Composable
-fun EmptyState(title: String, body: String, modifier: Modifier = Modifier) {
+fun EmptyState(
+    title: String,
+    body: String,
+    modifier: Modifier = Modifier,
+    icon: androidx.compose.ui.graphics.vector.ImageVector? = null,
+    action: Pair<String, () -> Unit>? = null,
+) {
     val c = Hive.colors
-    Column(modifier.fillMaxWidth().padding(horizontal = 40.dp, vertical = 56.dp), horizontalAlignment = Alignment.CenterHorizontally, verticalArrangement = Arrangement.spacedBy(8.dp)) {
+    Column(modifier.fillMaxWidth().padding(horizontal = 40.dp, vertical = 56.dp), horizontalAlignment = Alignment.CenterHorizontally, verticalArrangement = Arrangement.spacedBy(12.dp)) {
+        if (icon != null) androidx.compose.material3.Icon(icon, null, tint = c.textDim, modifier = Modifier.size(44.dp))
         Text(title, style = HiveText.cardTitle.copy(fontSize = HiveText.row.fontSize), color = c.text, textAlign = TextAlign.Center)
         if (body.isNotBlank()) Text(body, style = HiveText.rowSub, color = c.textDim, textAlign = TextAlign.Center)
+        if (action != null) HiveButton(action.first, primary = true) { action.second() }
     }
 }
 

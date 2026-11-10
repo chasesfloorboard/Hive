@@ -76,10 +76,10 @@ const updateChecker = createUpdateChecker({
 });
 const { storeRoot: musicBeeStoreRoot, yearDir: musicBeeYearDir, writeYearStore: writeMusicBeeYearStore, metadataFor: musicBeeMetadataFor, readStoredYear: readMusicBeeStoredYear, mergeImportedYear: mergeMusicBeeImportedYear, exportArchive: exportMusicBeeArchive, appendHiveEvent: appendMusicBeeHiveEvent, trackKey: musicBeeTrackKey } = require('./musicbee-wrapped-store');
 
-// Optional startup profiler. It is completely inert unless Beehive is launched
+// Optional startup profiler. It is completely inert unless Hive is launched
 // with --startup-debug (or BEEHIVE_STARTUP_DEBUG=1). The profiler records the
 // main-process timeline, renderer milestones, event-loop stalls, Electron
-// process metrics, and every child process Beehive launches during startup.
+// process metrics, and every child process Hive launches during startup.
 // This is intentionally separate from normal crash logging so production
 // launches do not pay the diagnostic I/O cost.
 
@@ -607,7 +607,7 @@ const inAppDiagnostics = createDiagnosticsController({
     const cfg = await readJsonSafe(CONFIG_PATH(), { folders: [] });
     const environment = await runEnvironmentAudit(HIVE_PROJECT_ROOT, {
       logDir: beehiveLogDir(),
-      tempDir: path.join(app.getPath('temp'), 'BeehiveMusicBrainz'),
+      tempDir: path.join(app.getPath('temp'), 'HiveMusicBrainz'),
       libraryRoots: Array.isArray(cfg?.folders) ? cfg.folders.map(resolveConfiguredFolder).filter(Boolean) : []
     });
     const security = await runSecurityAudit(HIVE_PROJECT_ROOT);
@@ -644,7 +644,7 @@ function gpuAccelerationDisabledAtStartup() {
   }
 }
 if (gpuAccelerationDisabledAtStartup()) {
-  try { app.disableHardwareAcceleration(); } catch (err) { console.warn('[Beehive] Could not disable hardware acceleration:', err.message); }
+  try { app.disableHardwareAcceleration(); } catch (err) { console.warn('[Hive] Could not disable hardware acceleration:', err.message); }
 }
 
 const COVERS_DIR = () => path.join(USER_DATA(), 'covers');
@@ -781,7 +781,7 @@ function scanLog(message, data = null) {
   const stamp = new Date().toISOString();
   const suffix = data === null || data === undefined ? '' : ` ${typeof data === 'string' ? data : JSON.stringify(data)}`;
   const line = `[${stamp}] ${message}${suffix}`;
-  try { console.log(`[Beehive Scan] ${line}`); } catch {}
+  try { console.log(`[Hive Scan] ${line}`); } catch {}
   try { ensureBeehiveLogDir(); fs.appendFileSync(SCAN_LOG_PATH(), line + '\n', 'utf8'); } catch {}
 }
 
@@ -1018,7 +1018,7 @@ function updateConfig(mutate) {
   });
 }
 
-// Serialize mutations to Beehive's play-stats.json so a clear operation cannot
+// Serialize mutations to Hive's play-stats.json so a clear operation cannot
 // race a play/rating write and accidentally restore an old play count.
 let statsMutationChain = Promise.resolve();
 function withStatsMutation(task) {
@@ -1408,7 +1408,7 @@ app.on('before-quit', () => {
   try {
     for (const worker of tagReaderWorkers) {
       if (!worker) continue;
-      for (const p of worker.pending.values()) p.reject(new Error('Beehive is shutting down.'));
+      for (const p of worker.pending.values()) p.reject(new Error('Hive is shutting down.'));
       worker.proc?.kill();
     }
   } catch {}
@@ -1681,7 +1681,7 @@ updateChecker.onStatus(status => {
     }
   });
 
-  scanLog('Beehive started', { version: app.getVersion(), userData: USER_DATA() });
+  scanLog('Hive started', { version: app.getVersion(), userData: USER_DATA() });
   // Show the application shell before waiting on the database worker during
   // ordinary launches. The database is important for durability/recovery, but
   // it should never sit in front of the first paint on normal cached startups.
@@ -1796,7 +1796,7 @@ let libraryWatchers = new Map();
 let libraryWatchDebounce = null;
 let libraryWatchChangedPaths = new Set();
 let libraryBulkWriteIgnoreUntil = 0;
-// Paths written by Beehive itself are ignored by the filesystem watcher.
+// Paths written by Hive itself are ignored by the filesystem watcher.
 // A tag edit should update the UI directly, not trigger a full library scan.
 // Bulk Love writes can legitimately take longer than the normal per-file
 // suppression window, so the whole bulk operation has its own watcher guard.
@@ -1826,7 +1826,7 @@ function markLibraryInternalWrite(trackPath) {
   // MP3/WAV/FFmpeg writers use a temporary file and then rename it over the
   // original. The watcher can therefore report the temporary filename or a
   // directory-level rename rather than the final track path. Suppress the
-  // containing directory for this short self-write window so Beehive never
+  // containing directory for this short self-write window so Hive never
   // rescans its own tag edits.
   libraryInternalWriteDirs.set(path.dirname(p), until);
   // Hive's own write changed this folder's time; don't treat it as a change
@@ -1882,7 +1882,7 @@ async function startLibraryWatchers() {
         // those intentional writes into automatic rescans.
         if (libraryBulkWriteActive || Date.now() < libraryBulkWriteIgnoreUntil) return;
         const name = filename ? String(filename) : '';
-        // Never index Beehive's private transactional media copies. Older
+        // Never index Hive's private transactional media copies. Older
         // versions created these next to the music file; even if a filesystem
         // watcher reports one, it is not a library track.
         if (/\.beehive-(?:native-|love-|rating-|tags-|musicbee-)/i.test(name) || /(^|[\\/])\.beehive-tmp(?:[\\/]|$)/i.test(name)) return;
@@ -1890,7 +1890,7 @@ async function startLibraryWatchers() {
         // Keep changedPath in the watcher callback's scope because it is also
         // needed after the directory-event check below.
         const changedPath = name ? path.resolve(folder, name) : '';
-        // Ignore changes caused by Beehive's own tag writes; the renderer has
+        // Ignore changes caused by Hive's own tag writes; the renderer has
         // already updated that track's Love/rating state directly.
         if (changedPath && isLibraryInternalWrite(changedPath)) return;
         // Tag writers can also produce a directory-level event. During the
@@ -1905,7 +1905,7 @@ async function startLibraryWatchers() {
           }
           // Directory-only notifications are not useful for library indexing.
           // We only need to react when an actual audio file is created, removed,
-          // or changed while Beehive is open.
+          // or changed while Hive is open.
           return;
         }
         if (!AUDIO_EXTS.has(path.extname(name).toLowerCase())) return;
@@ -1961,7 +1961,7 @@ ipcMain.on('playback-state:saveSync', (_evt, state = {}) => {
     _evt.returnValue = true;
   } catch (err) {
     try { _evt.returnValue = false; } catch {}
-    console.warn('Beehive playback-state save failed:', err);
+    console.warn('Hive playback-state save failed:', err);
   }
 });
 ipcMain.handle('playback-state:get', async () => readJsonSafe(PLAYBACK_STATE_PATH(), null));
@@ -1989,7 +1989,7 @@ ipcMain.on('playback-state:updateTransportSync', (_evt, state = {}) => {
     _evt.returnValue = true;
   } catch (err) {
     try { _evt.returnValue = false; } catch {}
-    console.warn('Beehive playback transport save failed:', err);
+    console.warn('Hive playback transport save failed:', err);
   }
 });
 
@@ -2002,7 +2002,7 @@ ipcMain.handle('startup:debugLog', async (_evt, payload = {}) => {
 });
 ipcMain.handle('startup:debugState', async () => ({ enabled:STARTUP_DEBUG_ENABLED, path:STARTUP_DEBUG_ENABLED ? sessionLogPath() : null }));
 ipcMain.handle('app:getVersion', async () => {
-  return { version: app.getVersion(), name: 'Beehive' };
+  return { version: app.getVersion(), name: 'Hive' };
 });
 
 ipcMain.handle('config:get', async () => {
@@ -2619,7 +2619,7 @@ ipcMain.handle('mpris:update', async (_evt, payload = {}) => {
   let artworkPath = '';
   if (track?.path && !/^(?:https?:|spotify:)/i.test(String(track.path))) {
     for (const coverFile of coverCandidates) {
-      // Only Beehive's own cached cover filename is accepted here. Remote/data/blob
+      // Only Hive's own cached cover filename is accepted here. Remote/data/blob
       // URLs are handled separately through artworkUrl when there is no local art.
       if (/^(?:https?:|data:|blob:|mbcover:)/i.test(coverFile)) continue;
       const candidate = path.join(COVERS_DIR(), path.basename(coverFile));
@@ -3112,7 +3112,7 @@ async function isTrackPathAllowedInLibrary(trackPath) {
   const folders = resolveConfigFolders(config);
   return folders.some(folder => isPathInsideFolder(resolved, folder));
 }
-const LIBRARY_BOUNDARY_ERROR = 'File is outside a configured Beehive library folder.';
+const LIBRARY_BOUNDARY_ERROR = 'File is outside a configured Hive library folder.';
 
 ipcMain.on('files:startDrag', (evt, filePaths = []) => {
   const paths = Array.from(new Set((Array.isArray(filePaths) ? filePaths : [filePaths]).map(p => String(p || '')).filter(Boolean)))
@@ -3168,7 +3168,7 @@ async function deleteTracksFromDisk(filePaths = []) {
   const folders = resolveConfigFolders(config); // portable folders included
   const invalid = requested.filter(p => !folders.some(folder => isPathInsideFolder(p, folder)));
   if (invalid.length) {
-    return { ok: false, deleted: [], errors: invalid.map(p => ({ path: p, error: 'File is outside a configured Beehive library folder.' })) };
+    return { ok: false, deleted: [], errors: invalid.map(p => ({ path: p, error: 'File is outside a configured Hive library folder.' })) };
   }
 
   const existing = [];
@@ -3403,7 +3403,7 @@ function startTagReaderWorker(slot) {
   const existing = tagReaderWorkers[slot];
   if (existing?.proc && !existing.proc.killed) return existing;
   const script = tagHelperPath();
-  if (!fs.existsSync(script)) throw new Error('Native tag helper is missing from this Beehive build.');
+  if (!fs.existsSync(script)) throw new Error('Native tag helper is missing from this Hive build.');
   const python = process.env.BEEHIVE_PYTHON || 'python3';
   const launch = backgroundProcessCommand(python, [script]);
   const proc = spawnTracked(launch.command, launch.args, { windowsHide: true, stdio: ['pipe','pipe','pipe'] });
@@ -3612,7 +3612,7 @@ async function repairLoveMetadataFiles(items, sender) {
       const audit = await inspectLoveMetadata(trackPath);
       if (!audit.flagged) continue;
       // The existing format-specific Love writer deliberately removes every
-      // historical Beehive/MusicBee Love alias and writes exactly one canonical
+      // historical Hive/MusicBee Love alias and writes exactly one canonical
       // LOVE RATING value. L always wins because inspectLoveMetadata already
       // resolves any L/U (or equivalent) conflict to Loved.
       await embedLoveInFile(trackPath, audit.loved);
@@ -4078,7 +4078,7 @@ function isFavoriteLoveValue(value) {
     v === 'FAVORITE' || v === 'FAVOURITE';
 }
 
-// Every Love field Beehive has historically written/recognized. When Unlove is
+// Every Love field Hive has historically written/recognized. When Unlove is
 // requested, ALL of these aliases are normalized to one LOVE RATING field. Unlove removes the Love fields; Love writes one canonical LOVE RATING=L field.
 const BEEHIVE_LOVE_FIELD_NAMES = new Set([
   'LOVE RATING',
@@ -4206,7 +4206,7 @@ async function readMp3PopmRaw(filePath) {
           pos += 10 + size;
         }
       }
-      // Beehive's MP3 rating authority is ONLY the MusicBee POPM frame.
+      // Hive's MP3 rating authority is ONLY the MusicBee POPM frame.
       // Other POPM applications and FMPS are deliberately ignored for display.
       return musicBeeRating || 0;
     } finally {
@@ -4248,7 +4248,7 @@ async function readNativeEmbeddedRating(filePath, metadataLib) {
       const rawId = String(tag?.id || '');
       const id = (rawId.includes(':') ? rawId.slice(rawId.lastIndexOf(':') + 1) : rawId).toUpperCase();
       const desc = String(tag?.value?.description || '').toUpperCase();
-      // Only read the exact portable field Beehive writes for non-MP3 files.
+      // Only read the exact portable field Hive writes for non-MP3 files.
       // Generic/provider rating tags are intentionally ignored.
       if (id === 'FMPS_RATING' || desc === 'FMPS_RATING' || id === 'FMPS/RATING' || desc === 'FMPS/RATING') {
         rating = Math.max(rating, normalize(
@@ -4984,7 +4984,7 @@ ipcMain.handle('library:scan', async (evt, options = {}) => {
 
   // In normal mode, unchanged files count as already processed. In a full
   // authoritative rescan every file is reparsed so embedded tags override any
-  // stale Beehive cache and newly added files are guaranteed to enter the library.
+  // stale Hive cache and newly added files are guaranteed to enter the library.
   done = unchanged.length;
   sendProgress('', changed.length ? 'Scanning changed files' : 'No changes detected');
   await runPool();
@@ -6052,7 +6052,7 @@ ipcMain.handle('stats:clearPlayCounts', async () => withStatsMutation(async () =
     const previous = Number(entry.playCount || 0);
     if (previous > 0) cleared += previous;
     entry.playCount = 0;
-    // Clearing Beehive's local counter must not erase the file's P_count.
+    // Clearing Hive's local counter must not erase the file's P_count.
     // Reset only the local embedding baseline so future plays are added again
     // starting from zero local plays.
     entry.pCountEmbeddedLocal = 0;
@@ -6061,7 +6061,7 @@ ipcMain.handle('stats:clearPlayCounts', async () => withStatsMutation(async () =
   await writeJsonSafe(STATS_PATH(), nextStats);
 
   // Keep the cached library in sync so the UI and the next startup both show
-  // zero Beehive play counts without rescanning or touching any music files.
+  // zero Hive play counts without rescanning or touching any music files.
   const libraryCache = (await libraryCacheStore.get()) || { tracks: [] };
   if (Array.isArray(libraryCache.tracks)) {
     libraryCache.tracks = libraryCache.tracks.map(track => ({ ...track, playCount: 0 }));
@@ -6567,7 +6567,7 @@ async function searchLrcLibLyricsFuzzy(artist, title, duration) {
   const params = new URLSearchParams({ track_name: title, artist_name: artist });
   try {
     const response = await fetch(`https://lrclib.net/api/search?${params.toString()}`, {
-      headers: { 'User-Agent': 'Hive/1.0 (BeehiveMusicBrainz)' }
+      headers: { 'User-Agent': 'Hive/1.0 (HiveMusicBrainz)' }
     });
     if (!response.ok) return null;
     const best = require('./lrclib-pick').pickLrcLibCandidate(await response.json(), { artist, duration });
@@ -6583,7 +6583,7 @@ async function searchLrcLibLyricsExact(artist, title, album, duration) {
   if (Number.isFinite(duration) && duration > 0) params.set('duration', String(Math.round(duration)));
   try {
     const response = await fetch(`https://lrclib.net/api/get?${params.toString()}`, {
-      headers: { 'User-Agent': 'Hive/1.0 (BeehiveMusicBrainz)' }
+      headers: { 'User-Agent': 'Hive/1.0 (HiveMusicBrainz)' }
     });
     if (!response.ok) return null;
     const data = await response.json();
@@ -6681,7 +6681,7 @@ ipcMain.handle('track:readTags', async (_evt, trackPath) => {
 
     // readTags() is also used to refresh the currently playing queue entry.
     // The native artwork helper returns the actual embedded bytes, but historically
-    // this response only exposed a data URL and dropped Beehive's persistent cover
+    // this response only exposed a data URL and dropped Hive's persistent cover
     // cache filename. That meant the queue/now-playing UI could still display an
     // image while MPRIS (and Music Presence) had no local file to expose, resulting
     // in playing tracks with no artwork. Cache every embedded picture here and return
@@ -6699,11 +6699,11 @@ ipcMain.handle('track:readTags', async (_evt, trackPath) => {
         return cachedItem ? { ...item, file: cachedItem.file } : item;
       });
     } catch (cacheErr) {
-      console.warn('[Beehive] Embedded artwork cache refresh failed:', cacheErr?.message || cacheErr);
+      console.warn('[Hive] Embedded artwork cache refresh failed:', cacheErr?.message || cacheErr);
     }
     const compilation = await runTagHelper({ op: 'read_compilation', path: trackPath });
     nativeCompilation = String(compilation?.compilation || '0') === '1';
-  } catch (err) { console.warn('[Beehive] Native metadata read fallback:', err.message); }
+  } catch (err) { console.warn('[Hive] Native metadata read fallback:', err.message); }
   const pictureSignatures = nativePictures.map(({ type, mime, hash, index }) => ({ type, mime, hash, index }));
   // Use the native helper as the source of truth for Compilation. This avoids
   // format-specific differences in music-metadata's normalized common tag.
@@ -6963,7 +6963,7 @@ ipcMain.handle('beta:environmentAudit', async () => {
   const cfg = await readJsonSafe(CONFIG_PATH(), { folders: [] });
   return runEnvironmentAudit(HIVE_PROJECT_ROOT, {
     logDir: beehiveLogDir(),
-    tempDir: path.join(app.getPath('temp'), 'BeehiveMusicBrainz'),
+    tempDir: path.join(app.getPath('temp'), 'HiveMusicBrainz'),
     libraryRoots: resolveConfigFolders(cfg)
   });
 });
@@ -7039,7 +7039,7 @@ ipcMain.handle('artwork:artistImage', async (_evt, artist) => {
 });
 
 async function fetchJson(url, headers = {}) {
-  const response = await fetch(url, { headers: { 'User-Agent': 'Hive/0.9.0-beta.2 (BeehiveMusicBrainz) (cover search)', 'Accept': 'application/json', ...headers } });
+  const response = await fetch(url, { headers: { 'User-Agent': 'Hive/0.9.0-beta.2 (HiveMusicBrainz) (cover search)', 'Accept': 'application/json', ...headers } });
   if (!response.ok) throw new Error(`Cover search failed (${response.status}).`);
   return response.json();
 }
@@ -7051,11 +7051,11 @@ function scoreCoverResult(item, album, artist) { return scoreArtworkResult(item,
 
 async function fetchTemporaryArtwork(url) {
   const imageHeaders = {
-    'User-Agent': 'Hive/0.9.0-beta.2 (BeehiveMusicBrainz) (temporary artwork)',
+    'User-Agent': 'Hive/0.9.0-beta.2 (HiveMusicBrainz) (temporary artwork)',
     'Accept': 'image/avif,image/webp,image/apng,image/svg+xml,image/*,*/*;q=0.8'
   };
   const jsonHeaders = {
-    'User-Agent': 'Hive/0.9.0-beta.2 (BeehiveMusicBrainz) (temporary artwork)',
+    'User-Agent': 'Hive/0.9.0-beta.2 (HiveMusicBrainz) (temporary artwork)',
     'Accept': 'application/json'
   };
 
@@ -7163,7 +7163,7 @@ ipcMain.handle('cover:searchInternet', async (_evt, query = {}) => {
     if (!mbResults.length) mbResults = await mbClient.searchReleases({ album: targetAlbum, artist: '', limit: 20 });
     for (const item of mbResults) addResult(item, 40);
   } catch (err) {
-    console.warn('[BeehiveMusicBrainz] MusicBrainz release artwork search failed:', err.message);
+    console.warn('[HiveMusicBrainz] MusicBrainz release artwork search failed:', err.message);
   }
 
   const automatic = !manualQuery;
@@ -7207,7 +7207,7 @@ ipcMain.handle('cover:searchInternet', async (_evt, query = {}) => {
     if (!appleAdded) await appleSearch(targetAlbum, false);
     if (!automatic && manualQuery && results.length === beforeApple) await appleSearch(manualQuery, false);
   } catch (err) {
-    console.warn('[Beehive] iTunes cover search failed:', err.message);
+    console.warn('[Hive] iTunes cover search failed:', err.message);
   }
 
   // Keep exact album matches, but retain multiple releases/editions and both
@@ -7229,7 +7229,7 @@ function assertSafeArtworkUrl(value) {
 
 ipcMain.handle('cover:downloadSearchResult', async (_evt, artworkUrl) => {
   const parsed = assertSafeArtworkUrl(artworkUrl);
-  const response = await fetch(parsed.toString(), { headers: { 'User-Agent': 'Hive/0.9.0-beta.2 (BeehiveMusicBrainz) (cover download)' } });
+  const response = await fetch(parsed.toString(), { headers: { 'User-Agent': 'Hive/0.9.0-beta.2 (HiveMusicBrainz) (cover download)' } });
   if (!response.ok) throw new Error(`Could not download artwork (${response.status}).`);
   const buffer = Buffer.from(await response.arrayBuffer());
   if (!buffer.length) throw new Error('Downloaded artwork was empty.');
@@ -7242,7 +7242,7 @@ ipcMain.handle('cover:downloadSearchResult', async (_evt, artworkUrl) => {
   try {
     // Normalize every selected online cover to exactly 1000x1000. The search
     // prefers true 1000px iTunes artwork and 1200px CAA artwork, but this keeps
-    // the file embedded by Beehive consistent regardless of source.
+    // the file embedded by Hive consistent regardless of source.
     await runFfmpeg(['-hide_banner','-loglevel','error','-y','-i',rawPath,'-vf','scale=1000:1000:force_original_aspect_ratio=decrease,pad=1000:1000:(ow-iw)/2:(oh-ih)/2:color=black','-q:v','2',normalizedPath]);
     const normalized = await fsp.readFile(normalizedPath);
     try { await artworkCacheManager?.put(parsed.toString(), normalizedPath, { provider: parsed.hostname.includes('coverartarchive') ? 'musicbrainz-caa' : 'itunes', width: 1000, height: 1000 }); } catch {}
@@ -7256,7 +7256,7 @@ ipcMain.handle('cover:downloadItunes', async (_evt, artworkUrl) => {
   return ipcMain.emit ? (await (async()=>{
     const parsed = assertSafeArtworkUrl(artworkUrl);
     if (!(parsed.hostname === 'mzstatic.com' || parsed.hostname.endsWith('.mzstatic.com'))) throw new Error('Not an iTunes artwork URL.');
-    const response = await fetch(parsed.toString(), { headers: { 'User-Agent': 'Hive/0.9.0-beta.2 (BeehiveMusicBrainz)' } });
+    const response = await fetch(parsed.toString(), { headers: { 'User-Agent': 'Hive/0.9.0-beta.2 (HiveMusicBrainz)' } });
     if (!response.ok) throw new Error(`Could not download artwork (${response.status}).`);
     const buffer = Buffer.from(await response.arrayBuffer());
     if (!buffer.length) throw new Error('Downloaded artwork was empty.');
@@ -8723,7 +8723,7 @@ ipcMain.handle('tracks:setLove', async (evt, trackPaths = [], loved) => {
   const results = { updated: 0, failed: 0, skipped: 0, errors: [] };
 
   // If we are adding Love, never rewrite files that are already marked as
-  // favorites. The cache mirrors Beehive's authoritative Love tag state, so
+  // favorites. The cache mirrors Hive's authoritative Love tag state, so
   // this removes thousands of needless metadata rewrites from a "Love all"
   // operation while keeping the main process out of the file loop.
   let cache = (await libraryCacheStore.get()) || { tracks: [] };

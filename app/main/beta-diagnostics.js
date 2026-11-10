@@ -37,7 +37,7 @@ async function runSecurityAudit(root) {
       return /'self'/.test(scriptSrc) && !/'unsafe-eval'|'unsafe-inline'/.test(scriptSrc);
     })(), 'Content Security Policy', 'The renderer declares a restrictive self-only script policy.'],
     ['csp-eval-hazard', !/script-src[^;]*'unsafe-eval'/i.test(html), 'No CSP eval grant', "script-src does not include 'unsafe-eval'."],
-    ['preload-only-bridge', /contextBridge\.exposeInMainWorld\(['"]beehive['"]/.test(preload), 'Explicit preload bridge', 'Renderer privileged access is exposed through the Beehive preload bridge.'],
+    ['preload-only-bridge', /contextBridge\.exposeInMainWorld\(['"]beehive['"]/.test(preload), 'Explicit preload bridge', 'Renderer privileged access is exposed through the Hive preload bridge.'],
     ['no-eval', !/\beval\s*\(|new\s+Function\s*\(/.test(main + preload), 'No dynamic code execution', 'Main/preload do not contain eval() or new Function().'],
     ['private-app', /"private"\s*:\s*true/.test(packageText), 'Private package', 'The application package is marked private to avoid accidental npm publishing.'],
     ['license', /"license"\s*:\s*"MIT"/.test(packageText), 'License declared', 'The package declares its project license.'],

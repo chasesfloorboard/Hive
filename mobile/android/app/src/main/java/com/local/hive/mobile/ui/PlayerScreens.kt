@@ -231,10 +231,10 @@ fun PlayerSheet(
         }
     }
     val navBottom = WindowInsets.navigationBars.asPaddingValues().calculateBottomPadding()
-    val glass by animateColorAsState(mix(c.accent, c.panelStrong.copy(alpha = 0.78f), 0.09f), tween(900), label = "barGlass")
+    val glass by com.local.hive.mobile.ui.theme.animateUiColorAsState(mix(c.accent, c.panelStrong.copy(alpha = 0.78f), 0.09f), tween(900), label = "barGlass")
     // Frosted like Hive's player bar: what scrolls under the bar is blurred, not just tinted.
     val haze = LocalHiveHaze.current
-    val edge by animateColorAsState(mix(c.accent, c.border, 0.14f), tween(900), label = "barEdge")
+    val edge by com.local.hive.mobile.ui.theme.animateUiColorAsState(mix(c.accent, c.border, 0.14f), tween(900), label = "barEdge")
 
     LaunchedEffect(open) {
         val spec = settleMs?.let { tween<Float>(it, easing = Motion.Open) } ?: if (open) Motion.open() else Motion.close()
@@ -554,6 +554,11 @@ private fun FullPlayerContent(
     val nowLoved by vm.nowLoved.collectAsStateWithLifecycle()
     val isLoved = nowLoved == true
 
+    // Hold the cover to see it full size and save it; a tap shows the lyrics (below).
+    val haptics = androidx.compose.ui.platform.LocalHapticFeedback.current
+    var viewingCover by remember { mutableStateOf(false) }
+    if (viewingCover) CoverViewer(vm, listOfNotNull(current), now.artworkUri, now.title.ifBlank { now.artist }) { viewingCover = false }
+
     HiveGlassLayers(Modifier.fillMaxSize(), content = {
         HiveAmbient(aura?.primary?.copy(alpha = 0.7f) ?: c.ambientA, aura?.secondary?.copy(alpha = 0.6f) ?: c.ambientB, Modifier.fillMaxSize(), intensity = 1.25f)
         if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.S) {
@@ -641,9 +646,16 @@ private fun FullPlayerContent(
                             .offset(x, y)
                             .size(size)
                             .onGloballyPositioned { co -> onArtPlaced(Rect(co.localToRoot(Offset.Zero), co.localToRoot(Offset(co.size.width.toFloat(), co.size.height.toFloat())))) }
-                            // Swipe the cover to change songs; tap it for the lyrics.
+                            // Swipe the cover to change songs; tap it for the lyrics; hold it to view and save it.
                             .then(if (!queueOpen) Modifier.songSwipe(swipe, scope, onNext = { vm.player.next() }, onPrevious = { vm.player.previous() })
-                                .pointerInput(now.isLive) { detectTapGestures { if (!now.isLive) onOpenLyrics() } } else Modifier.clickable { onQueueChange(false) }),
+                                .pointerInput(now.isLive) {
+                                    detectTapGestures(
+                                        onTap = { if (!now.isLive) onOpenLyrics() },
+                                        // Hold any cover with a picture — including a streaming song's (Apple Music, etc.),
+                                        // which reads as "live" but still has art to view and save.
+                                        onLongPress = { if (now.artworkUri != null) { haptics.performHapticFeedback(androidx.compose.ui.hapticfeedback.HapticFeedbackType.LongPress); viewingCover = true } },
+                                    )
+                                } else Modifier.clickable { onQueueChange(false) }),
                     )
                     if (q > 0f) {
                         Column(Modifier.offset(20.dp + small + 14.dp, 4.dp).height(small).padding(end = 96.dp).alpha(q), verticalArrangement = Arrangement.Center) {
@@ -751,7 +763,7 @@ internal fun NowHeart(vm: MainViewModel, mediaId: String?) {
 @Composable
 internal fun TransportButton(icon: ImageVector, label: String, iconSize: Dp, active: Boolean? = null, tint: Color? = null, onClick: () -> Unit) {
     val c = Hive.colors
-    val shown by animateColorAsState(tint ?: when (active) { null -> c.text; true -> c.accent; false -> c.textDim }, tween(150), label = "tint")
+    val shown by com.local.hive.mobile.ui.theme.animateUiColorAsState(tint ?: when (active) { null -> c.text; true -> c.accent; false -> c.textDim }, tween(150), label = "tint")
     Box(Modifier.size(56.dp).clip(CircleShape).pressable(onClick, 0.86f), contentAlignment = Alignment.Center) {
         Icon(icon, label, tint = shown, modifier = Modifier.size(iconSize))
         if (active == true) Box(Modifier.align(Alignment.BottomCenter).padding(bottom = 6.dp).size(4.dp).clip(CircleShape).background(c.accent))

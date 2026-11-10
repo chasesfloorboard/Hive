@@ -198,6 +198,7 @@ fun HomeScreen(vm: MainViewModel, nav: HomeNavigation, actions: TrackActions, bo
 
     Column(Modifier.fillMaxSize().statusBarsPadding()) {
         HomeBar(vm, nav, onCreatePlaylist = { naming = true })
+        LinkingBanner(vm, nav.openSettings)
         LazyRow(Modifier.fillMaxWidth(), state = tabRow, contentPadding = PaddingValues(horizontal = 10.dp), horizontalArrangement = Arrangement.spacedBy(2.dp)) {
             itemsIndexed(tabs, key = { _, t -> t.name }) { i, tab ->
                 HiveTab(tab.label, pager.currentPage == i, { scope.launch { pager.animateScrollToPage(i, animationSpec = Motion.move()) } }, Modifier.animateItem(), onLongClick = { arranging = true })
@@ -221,6 +222,32 @@ fun HomeScreen(vm: MainViewModel, nav: HomeNavigation, actions: TrackActions, bo
     if (naming) NameDialog("New playlist", "", "Create", onDismiss = { naming = false }) { name ->
         naming = false
         vm.createPlaylist(name, onCreated = nav.openUserPlaylist)
+    }
+}
+
+/**
+ * While Hive has found a PC and is trying to connect (but isn't paired yet), a slim tappable
+ * line on Home says so — e.g. "Waiting for you to allow this phone on your PC" — so linking
+ * doesn't happen silently behind Settings. Tapping it opens Settings to finish.
+ */
+@Composable
+private fun LinkingBanner(vm: MainViewModel, onOpenSettings: () -> Unit) {
+    val link by vm.link.collectAsStateWithLifecycle()
+    val show = !link.paired && link.connecting != null
+    val c = Hive.colors
+    androidx.compose.animation.AnimatedVisibility(show) {
+        val text = link.connecting ?: ""
+        Row(
+            Modifier.fillMaxWidth().padding(horizontal = 10.dp, vertical = 4.dp).clip(HiveShape.pill)
+                .background(mix(c.accent, c.panelStrong, 0.10f)).border(1.dp, mix(c.accent, c.border, 0.14f), HiveShape.pill)
+                .clickable { onOpenSettings() }.padding(horizontal = 14.dp, vertical = 9.dp),
+            verticalAlignment = Alignment.CenterVertically,
+        ) {
+            Icon(Icons.Rounded.Devices, null, tint = c.accent, modifier = Modifier.size(18.dp))
+            Spacer(Modifier.width(10.dp))
+            Text(text, style = HiveText.small, color = c.text, maxLines = 1, overflow = TextOverflow.Ellipsis, modifier = Modifier.weight(1f))
+            Text("Open", style = HiveText.small, color = c.accent)
+        }
     }
 }
 
@@ -291,20 +318,10 @@ private fun AlbumsTab(vm: MainViewModel, nav: HomeNavigation, bottom: Dp) {
     val albums by vm.albums.collectAsStateWithLifecycle()
     val perfectIds by vm.perfectAlbumIds.collectAsStateWithLifecycle()
     var sort by rememberSetting("sort.albums", AlbumSort.Year)
-    val sections by rememberComputed(emptyList<Pair<String, List<AlbumSummary>>>(), albums, sort, perfectIds) {
-        when (sort) {
-            AlbumSort.Year -> albums.groupBy { it.year }.toSortedMap(compareByDescending { it }).map { (y, list) -> (if (y > 0) "$y" else "Unknown year") to list }
-            AlbumSort.Name -> listOf("" to albums)
-            AlbumSort.Artist -> listOf("" to LibrarySort.sorted(albums, compareBy { it.year }) { it.artist })
-            AlbumSort.Added -> listOf("" to albums.sortedByDescending { it.added })
-            // Perfect albums (every track loved) grouped at the top, the rest below.
-            AlbumSort.Perfect -> albums.partition { it.albumId in perfectIds }.let { (perfect, rest) ->
-                listOfNotNull(
-                    ("Perfect" to LibrarySort.sorted(perfect) { it.album }).takeIf { perfect.isNotEmpty() },
-                    ("Other albums" to rest).takeIf { rest.isNotEmpty() },
-                )
-            }
-        }
+    // Worked out right away the first time (not empty while a background sort runs), so coming back from an
+    // album finds the rows already there and the list keeps its place instead of jumping to the top.
+    val sections by rememberComputed(remember { albumSections(albums, sort, perfectIds) }, albums, sort, perfectIds) {
+        albumSections(albums, sort, perfectIds)
     }
     val list = rememberLazyListState()
     // Each grid row's albums by its item key, and every album in order, for hold-and-drag picking.
@@ -313,7 +330,15 @@ private fun AlbumsTab(vm: MainViewModel, nav: HomeNavigation, bottom: Dp) {
     PickableList(albums = order)
     LazyColumn(Modifier.fillMaxSize().albumDragSelect(list, rows, order), state = list, contentPadding = PaddingValues(bottom = bottom + 12.dp)) {
         item { ListHeader(AlbumSort.entries, sort, { it.label }, { sort = it }, countOf(albums.size, "album")) }
-        if (albums.isEmpty()) item { EmptyState("No albums yet", "Albums appear once Hive finds music on this phone.") }
+        if (albums.isEmpty()) item {
+            val canRead by vm.hasAudioPermission.collectAsStateWithLifecycle()
+            if (!canRead) EmptyState(
+                "Hive needs permission to see your music",
+                "Let Hive read the audio on this phone and your albums show up here.",
+                icon = Icons.Rounded.LibraryMusic,
+                action = "Allow music access" to { vm.requestAudioPermission() },
+            ) else EmptyState("No albums yet", "Albums appear once Hive finds music on this phone, or pair with your PC in Settings.", icon = Icons.Rounded.LibraryMusic)
+        }
         sections.forEach { (heading, list) ->
             if (heading.isNotBlank()) item(key = "y$heading") { YearHeading(heading) }
             list.chunked(2).forEach { row ->
@@ -324,6 +349,21 @@ private fun AlbumsTab(vm: MainViewModel, nav: HomeNavigation, bottom: Dp) {
         }
     }
 }
+
+private fun albumSections(albums: List<AlbumSummary>, sort: AlbumSort, perfectIds: Set<Long>): List<Pair<String, List<AlbumSummary>>> =
+    when (sort) {
+        AlbumSort.Year -> albums.groupBy { it.year }.toSortedMap(compareByDescending { it }).map { (y, list) -> (if (y > 0) "$y" else "Unknown year") to list }
+        AlbumSort.Name -> listOf("" to albums)
+        AlbumSort.Artist -> listOf("" to LibrarySort.sorted(albums, compareBy { it.year }) { it.artist })
+        AlbumSort.Added -> listOf("" to albums.sortedByDescending { it.added })
+        // Perfect albums (every track loved) grouped at the top, the rest below.
+        AlbumSort.Perfect -> albums.partition { it.albumId in perfectIds }.let { (perfect, rest) ->
+            listOfNotNull(
+                ("Perfect" to LibrarySort.sorted(perfect) { it.album }).takeIf { perfect.isNotEmpty() },
+                ("Other albums" to rest).takeIf { rest.isNotEmpty() },
+            )
+        }
+    }
 
 /** A library album as Hive's album card; hold to start picking albums (and drag over others), tap to add or remove while picking. */
 @Composable

@@ -89,7 +89,7 @@ fun HiveThemed(vm: MainViewModel, content: @Composable () -> Unit) {
             androidx.core.view.WindowCompat.getInsetsController(w, view).apply { isAppearanceLightStatusBars = lightTheme; isAppearanceLightNavigationBars = lightTheme }
         }
     }
-    CompositionLocalProvider(LocalHiveColors provides colors) {
+    CompositionLocalProvider(LocalHiveColors provides colors, com.local.hive.mobile.ui.theme.LocalThemeKey provides theme) {
         MaterialTheme(colorScheme = scheme) { content() }
     }
 }
@@ -156,6 +156,7 @@ private fun HiveContent(vm: MainViewModel, openPlayerInitially: Boolean) {
     val openSettings = remember(nav) { { playerOpen = false; queueOpen = false; lyricsOpen = false; go("settings") } }
     var toast by remember { mutableStateOf<String?>(null) }
     RestoreOfferDialog(vm)
+    WelcomeDialog(vm)
     CrashPrompt()
     var addTarget by remember { mutableStateOf<List<Track>?>(null) }
     val context = androidx.compose.ui.platform.LocalContext.current

@@ -6,7 +6,7 @@ const fs = require('fs');
 const fsp = fs.promises;
 
 // Tiny localhost-only artwork server used by MPRIS consumers such as Music Presence.
-// It exposes only Beehive's cached cover files and never binds to the LAN.
+// It exposes only Hive's cached cover files and never binds to the LAN.
 class ArtworkProxy {
   constructor(coversDir) {
     this.coversDir = () => path.resolve(typeof coversDir === 'function' ? coversDir() : coversDir);
@@ -68,7 +68,7 @@ class ArtworkProxy {
       return;
     }
     // Only a single basename is accepted. This prevents directory traversal and
-    // keeps the endpoint limited to Beehive's cover cache.
+    // keeps the endpoint limited to Hive's cover cache.
     if (!name || name !== path.basename(name) || name.includes('\\') || name.includes('\0')) {
       res.writeHead(404);
       res.end();

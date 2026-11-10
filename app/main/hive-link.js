@@ -603,12 +603,16 @@ function createHiveLink({ dataDir, getTracks, setLove, onPaired, streamSong = nu
     const tracks = await getTracks();
     const byId = new Map(tracks.map(t => [trackIdFor(t), t]));
     const results = [];
+    let removedInbox = false;
     for (const change of Array.isArray(changes) ? changes.slice(0, 500) : []) {
       const track = byId.get(String(change?.id || ''));
       const at = num(change?.at) || Date.now();
       const key = change?.clientChangeId ?? null;
       if (!track) { results.push({ clientChangeId: key, status: 'not-found' }); continue; }
       const id = trackIdFor(track);
+      // This trusted device is applying the Love directly, so any entry it staged earlier (while it was
+      // still untrusted) is now superseded — clear it so the inbox and "waiting on PC" count self-heal.
+      if (state.inbox.loves[id]) { delete state.inbox.loves[id]; removedInbox = true; }
       const loved = !!change.loved;
       if (num(state.lastChangeAt[id]) > at) {
         results.push({ clientChangeId: key, id, status: 'stale', loved: !!track.loved, at: state.lastChangeAt[id] });
@@ -630,6 +634,7 @@ function createHiveLink({ dataDir, getTracks, setLove, onPaired, streamSong = nu
         results.push({ clientChangeId: key, id, status: 'failed', error: err?.message || String(err) });
       }
     }
+    if (removedInbox) inboxChanged();
     return { seq: state.seq, results };
   }
 
@@ -729,27 +734,46 @@ function createHiveLink({ dataDir, getTracks, setLove, onPaired, streamSong = nu
 
   // Applies what the user chose: Love through the heart button's own path,
   // plays into Hive's listening history. What isn't chosen stays.
-  async function applyInbox({ loves = true, plays = true } = {}) {
-    // Applying a phone's changes trusts it: next time they apply by themselves.
-    const from = new Set([...(loves ? Object.values(state.inbox.loves).map(l => l.deviceId) : []), ...(plays ? state.inbox.plays.map(p => p.deviceId) : [])]);
-    for (const d of state.devices) if (from.has(d.id)) d.trusted = true;
+  async function applyInbox({ loves = true, plays = true, onlyDevices = null, promote = true } = {}) {
+    // onlyDevices scopes the apply to a set of device ids (the unattended startup apply passes the
+    // already-trusted set); promote=false never flips a device to trusted. Out-of-scope entries stay
+    // staged for the user's review — a second, still-untrusted phone must never be applied or promoted.
+    const inScope = id => !onlyDevices || onlyDevices.has(id);
+    if (promote) {
+      // Applying a phone's changes trusts it: next time they apply by themselves.
+      const from = new Set([
+        ...(loves ? Object.values(state.inbox.loves).filter(l => inScope(l.deviceId)).map(l => l.deviceId) : []),
+        ...(plays ? state.inbox.plays.filter(p => inScope(p.deviceId)).map(p => p.deviceId) : []),
+      ]);
+      for (const d of state.devices) if (from.has(d.id)) d.trusted = true;
+    }
     const tracks = await getTracks();
     const byId = new Map(tracks.map(t => [trackIdFor(t), t]));
     let lovesApplied = 0, playsApplied = 0;
     if (loves) {
       for (const change of Object.values(state.inbox.loves)) {
+        if (!inScope(change.deviceId)) continue;              // untrusted/out-of-scope: leave it staged
         const track = byId.get(change.id);
         delete state.inbox.loves[change.id];
-        if (!track || (!!track.loved === change.loved)) continue;
+        if (!track) continue;
+        // The PC has a newer word on this song than the staged change: don't re-apply a stale love.
+        if (num(state.lastChangeAt[change.id]) >= change.at) continue;
+        if (!!track.loved === change.loved) continue;
         const absolute = path.resolve(String(track.path));
         pendingOrigins.set(absolute, { origin: change.deviceId, at: change.at });
         try { await setLove(absolute, change.loved); lovesApplied++; } catch (err) { pendingOrigins.delete(absolute); log('Hive Link inbox Love failed', err?.message || String(err)); }
       }
     }
     if (plays && recordPlays) {
-      const ready = state.inbox.plays.map(p => ({ ...p, track: byId.get(p.id) })).filter(p => p.track);
-      state.inbox.plays = [];
-      if (ready.length) { await recordPlays(ready); playsApplied = ready.length; }
+      // Record first, then drop only the keys that were recorded — so a throw loses nothing and plays
+      // staged during the await (or out of scope) survive.
+      const ready = state.inbox.plays.filter(p => inScope(p.deviceId)).map(p => ({ ...p, track: byId.get(p.id) })).filter(p => p.track);
+      if (ready.length) {
+        await recordPlays(ready);
+        const done = new Set(ready.map(p => `${p.deviceId}:${p.clientId}`));
+        state.inbox.plays = state.inbox.plays.filter(p => !done.has(`${p.deviceId}:${p.clientId}`));
+        playsApplied = ready.length;
+      }
     }
     inboxChanged();
     saveNow();
@@ -1632,9 +1656,13 @@ function createHiveLink({ dataDir, getTracks, setLove, onPaired, streamSong = nu
   }
 
   function start() {
-    // Changes a trusted phone left waiting (from before it was trusted) go in now.
-    if (Object.values(state.inbox.loves).some(l => trusted(l.deviceId)) || state.inbox.plays.some(p => trusted(p.deviceId))) {
-      setTimeout(() => applyInbox().catch(err => log('Hive Link inbox apply failed', err?.message || String(err))), 2000);
+    // Changes a trusted phone left waiting (from before it was trusted) go in now — but ONLY for devices
+    // that are already trusted, and without promoting anyone. A still-untrusted phone's staged changes
+    // keep waiting for the user's review instead of being silently applied (and the device trusted) at
+    // startup — the bug that inflated Favorites when a second phone's stale loves were auto-applied.
+    const trustedIds = new Set(state.devices.filter(d => d.trusted).map(d => d.id));
+    if (Object.values(state.inbox.loves).some(l => trustedIds.has(l.deviceId)) || state.inbox.plays.some(p => trustedIds.has(p.deviceId))) {
+      setTimeout(() => applyInbox({ onlyDevices: trustedIds, promote: false }).catch(err => log('Hive Link inbox apply failed', err?.message || String(err))), 2000);
     }
     if (server) return;
     const onRequest = (req, res) => {

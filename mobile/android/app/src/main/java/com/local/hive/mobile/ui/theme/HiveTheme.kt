@@ -1,5 +1,6 @@
 package com.local.hive.mobile.ui.theme
 
+import androidx.compose.animation.VectorConverter
 import kotlinx.coroutines.launch
 import android.content.Context
 import androidx.compose.ui.graphics.luminance
@@ -407,6 +408,36 @@ class ThemeStore(private val context: Context) {
 }
 
 val LocalHiveColors = staticCompositionLocalOf { HiveColors.Default }
+
+/**
+ * The theme picked (not the accent a cover lends it): changes only when the user switches theme. Colour
+ * fades key off it so a theme switch lands everywhere in the same frame (see [animateUiColorAsState]).
+ */
+val LocalThemeKey = staticCompositionLocalOf<Any?> { null }
+
+/**
+ * Like animateColorAsState, except that when the theme changes the colour jumps straight to the new
+ * theme's, in the same frame as everything else, instead of fading at its own speed (which made some
+ * parts change theme before others). Within one theme it fades as usual: a tab selected, a row playing,
+ * a cover's colour.
+ */
+@androidx.compose.runtime.Composable
+fun animateUiColorAsState(
+    target: androidx.compose.ui.graphics.Color,
+    spec: androidx.compose.animation.core.AnimationSpec<androidx.compose.ui.graphics.Color>,
+    label: String = "",
+): androidx.compose.runtime.State<androidx.compose.ui.graphics.Color> {
+    val key = LocalThemeKey.current
+    val anim = androidx.compose.runtime.remember {
+        androidx.compose.animation.core.Animatable(target, (androidx.compose.ui.graphics.Color.VectorConverter)(target.colorSpace), label = label)
+    }
+    val seen = androidx.compose.runtime.remember { arrayOf(key) }
+    val themeChanged = seen[0] != key
+    androidx.compose.runtime.LaunchedEffect(target, key) {
+        if (seen[0] != key) { seen[0] = key; anim.snapTo(target) } else anim.animateTo(target, spec)
+    }
+    return if (themeChanged) androidx.compose.runtime.rememberUpdatedState(target) else anim.asState()
+}
 
 object Hive {
     val colors: HiveColors @Composable get() = LocalHiveColors.current

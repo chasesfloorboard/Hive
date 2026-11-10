@@ -41,6 +41,13 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
 
     private fun <T> Flow<T>.state(initial: T): StateFlow<T> = stateIn(viewModelScope, SharingStarted.WhileSubscribed(5_000), initial)
 
+    /** Whether Hive may read this phone's music. The empty states read it so that, when it's denied, they
+     *  offer the permission instead of a misleading "no music here yet". MainActivity keeps it current and
+     *  owns the actual OS request (set via [requestAudioPermission]). */
+    val hasAudioPermission = kotlinx.coroutines.flow.MutableStateFlow(app.canReadMusic)
+    fun refreshAudioPermission() { hasAudioPermission.value = app.canReadMusic }
+    var requestAudioPermission: () -> Unit = {}
+
     /**
      * Sorted the way people read titles: leading punctuation and "The" are
      * ignored, numbers sort naturally, case and accents don't matter.
@@ -72,11 +79,21 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
     val lovedIds: StateFlow<Set<Long>> = dao.loveStates().map { list -> list.filter { it.loved }.mapTo(HashSet()) { it.trackId } }.state(emptySet())
     val favoriteAlbumKeys: StateFlow<Set<String>> = dao.favoriteAlbums().map { list -> list.mapTo(HashSet()) { it.key } }.state(emptySet())
     val albums: StateFlow<List<AlbumSummary>> = dao.albums().map { list -> LibrarySort.sorted(list) { it.album } }.flowOn(Dispatchers.Default).state(emptyList())
-    /** "Perfect" albums: every track loved (a 10/10). Only real albums (named, 2+ tracks), as on the PC (isPerfectAlbum). */
-    val perfectAlbumIds: StateFlow<Set<Long>> = combine(tracks, lovedIds) { lib, loved ->
+    /**
+     * Real albums (named, 2+ tracks) and their track ids — the costly part of the
+     * perfect-album check: grouping 30k rows and the name tests. It depends only on the
+     * library, so it is NOT recomputed on every Love toggle (only lovedIds changes then).
+     */
+    private val eligibleAlbumGroups: StateFlow<List<Pair<Long, LongArray>>> = tracks.map { lib ->
         lib.groupBy { it.albumId }
-            .filter { (id, ts) -> id != 0L && ts.size >= 2 && ts.first().album.isNotBlank() && !ts.first().album.equals("Unknown Album", ignoreCase = true) && !ts.first().album.equals("<unknown>", ignoreCase = true) && ts.all { it.id in loved } }
-            .keys.toHashSet() as Set<Long>
+            .asSequence()
+            .filter { (id, ts) -> id != 0L && ts.size >= 2 && ts.first().album.isNotBlank() && !ts.first().album.equals("Unknown Album", ignoreCase = true) && !ts.first().album.equals("<unknown>", ignoreCase = true) }
+            .map { (id, ts) -> id to LongArray(ts.size) { ts[it].id } }
+            .toList()
+    }.flowOn(Dispatchers.Default).state(emptyList())
+    /** "Perfect" albums: every track loved (a 10/10). Only real albums, as on the PC (isPerfectAlbum). */
+    val perfectAlbumIds: StateFlow<Set<Long>> = combine(eligibleAlbumGroups, lovedIds) { groups, loved ->
+        groups.asSequence().filter { (_, ids) -> ids.all { it in loved } }.map { it.first }.toHashSet() as Set<Long>
     }.flowOn(Dispatchers.Default).state(emptySet())
     /** Every track on a perfect album, in album then disc/track order — the "Perfect albums" playlist. */
     val perfectAlbumTracks: StateFlow<List<Track>> = combine(tracks, perfectAlbumIds) { lib, ids ->

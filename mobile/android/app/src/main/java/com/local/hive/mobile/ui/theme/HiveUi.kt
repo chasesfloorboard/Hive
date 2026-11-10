@@ -114,8 +114,8 @@ fun hiveGlassBorder(): Color = Hive.colors.let { mix(it.accent, it.border, 0.14f
  */
 @Composable
 fun Modifier.hiveGlass(shape: Shape, strength: Float = 0f): Modifier {
-    val wash by animateColorAsState(hiveGlassColor(strength), tween(900), label = "glassWash")
-    val edge by animateColorAsState(hiveGlassBorder(), tween(900), label = "glassEdge")
+    val wash by com.local.hive.mobile.ui.theme.animateUiColorAsState(hiveGlassColor(strength), tween(900), label = "glassWash")
+    val edge by com.local.hive.mobile.ui.theme.animateUiColorAsState(hiveGlassBorder(), tween(900), label = "glassEdge")
     val state = LocalHiveHaze.current
     val bg = Hive.colors.bg
     return clip(shape)
@@ -151,8 +151,8 @@ fun HiveGlassLayers(modifier: Modifier = Modifier, content: @Composable BoxScope
 @Composable
 fun HiveAmbient(blobA: Color, blobB: Color, modifier: Modifier = Modifier, intensity: Float = 1f) {
     val c = Hive.colors
-    val a by animateColorAsState(blobA, tween(900), label = "blobA")
-    val b by animateColorAsState(blobB, tween(900), label = "blobB")
+    val a by com.local.hive.mobile.ui.theme.animateUiColorAsState(blobA, tween(900), label = "blobA")
+    val b by com.local.hive.mobile.ui.theme.animateUiColorAsState(blobB, tween(900), label = "blobB")
     val grain = remember { grainTexture() }
     // One tiled shader, not ~100 blended drawImage calls per redraw: the GPU repeats the 160px grain
     // across the whole rect in a single draw op, so each ambient redraw (every song, as the blobs glide)

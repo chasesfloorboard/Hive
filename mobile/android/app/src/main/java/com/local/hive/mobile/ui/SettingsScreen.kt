@@ -72,7 +72,12 @@ fun SettingsScreen(vm: MainViewModel, bottomPadding: Dp, onOpenEqualiser: () -> 
         SettingsPageFrame(if (shown == SettingsPage.Main) "Settings" else shown.title, bottomPadding, if (shown == SettingsPage.Main) mainList else androidx.compose.foundation.lazy.rememberLazyListState(), onBack = { if (shown == SettingsPage.Main) onBack() else page = SettingsPage.Main }) {
             when (shown) {
                 SettingsPage.Main -> mainSettings(vm, onOpenEqualiser) { page = it }
-                SettingsPage.Pc -> item { Section("", "") { val link by vm.link.collectAsStateWithLifecycle(); if (link.paired) PairedRows(vm) else PairRows(vm) } }
+                SettingsPage.Pc -> item {
+                    val link by vm.link.collectAsStateWithLifecycle()
+                    Section("", if (link.paired) "" else "Once paired, Hive keeps your favorites, song ratings, play counts and playlists the same on this phone and your PC — a heart you tap here shows up there, and the other way around, on its own. Nothing of yours leaves your devices. Copying the actual music files across is a separate thing you turn on later.") {
+                        if (link.paired) PairedRows(vm) else PairRows(vm)
+                    }
+                }
                 SettingsPage.Backup -> item { Section("", "Your plays, favorites, playlists, ratings and settings, kept in the cloud. Restoring replaces what's on this phone.") { BackupRows(vm) } }
                 SettingsPage.Accounts -> {
                     item { Section("Apple Music", "Your playlists and songs, through Apple's web player sign-in. Unofficial: Apple may stop it working at any time.") { AppleRows(vm) } }
@@ -465,6 +470,14 @@ private fun PairRows(vm: MainViewModel) {
             vm.pair(host, port.toIntOrNull() ?: HiveLinkClient.DEFAULT_PORT, code)
         }
     }
+    val context = androidx.compose.ui.platform.LocalContext.current
+    Text(
+        "Don't have Hive on your computer yet?  Get it from github.com/chasesfloorboard/Hive",
+        style = HiveText.small, color = c.accent,
+        modifier = Modifier.fillMaxWidth().padding(horizontal = 18.dp, vertical = 12.dp).clickable {
+            runCatching { context.startActivity(android.content.Intent(android.content.Intent.ACTION_VIEW, android.net.Uri.parse("https://github.com/chasesfloorboard/Hive"))) }
+        },
+    )
 }
 
 

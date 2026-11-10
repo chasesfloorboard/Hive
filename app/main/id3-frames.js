@@ -51,7 +51,7 @@ function parseId3Frames(payload, version) {
   while (pos + 10 <= payload.length) {
     const id = payload.toString('ascii', pos, pos + 4);
 
-    // Valid ID3 padding is zero bytes at the end of the tag. Older Beehive
+    // Valid ID3 padding is zero bytes at the end of the tag. Older Hive
     // builds could accidentally append a frame after that padding, however.
     // Strawberry/TagLib reads the frame list rather than treating the first
     // zero byte as an absolute end marker, so recover those frames here too.
@@ -104,7 +104,7 @@ function makeId3Frame(id, data, version) {
 
 function makeMusicBeeLoveFrame(version, value = 'L') {
   // MusicBee's Love field: TXXX, encoding 0 (ISO-8859-1), description
-  // "LOVE RATING". Beehive uses L for Loved and 0 for Unloved.
+  // "LOVE RATING". Hive uses L for Loved and 0 for Unloved.
   const data = Buffer.concat([
     Buffer.from([0]),
     Buffer.from('LOVE RATING', 'latin1'),

@@ -59,6 +59,28 @@ class EmbeddedPicturesTest {
         assertArrayEquals(front, got[0])
     }
 
+    @Test fun readsMp4CoverWhenMoovSitsAfterTheAudioWithoutBufferingIt() {
+        fun box(type: String, body: ByteArray) = be(body.size + 8) + type.toByteArray() + body
+        fun data(b: ByteArray) = box("data", be(13) + be(0) + b)
+        val covr = box("covr", data(front) + data(back))
+        val moov = box("moov", box("udta", box("meta", be(0) + box("ilst", covr))))
+        // mdat (the audio) comes first and is far larger than any cover; the reader must
+        // skip it, not pull it into RAM, before reaching the moov tags at the end.
+        val mdat = box("mdat", ByteArray(4 * 1024 * 1024))
+        val file = box("ftyp", "M4A ".toByteArray() + be(0)) + mdat + moov
+        val got = EmbeddedPictures.read(file.inputStream())
+        assertEquals(2, got.size)
+        assertArrayEquals(front, got[0])
+        assertArrayEquals(back, got[1])
+    }
+
+    @Test fun aCorruptId3SizeDoesNotAllocateHugely() {
+        // A header claiming a ~256 MB tag (max syncsafe) must be refused, not allocated.
+        val header = "ID3".toByteArray() + byteArrayOf(3, 0, 0) + syncsafe(0x0FFFFFFF)
+        val got = EmbeddedPictures.read((header + ByteArray(16)).inputStream())
+        assertEquals(0, got.size)
+    }
+
     @Test fun knowsTheFrontFromTheBackCovers() {
         val mp3 = id3(3, listOf("APIC" to apic(front), "APIC" to apic(back, utf16 = true, type = 4), "APIC" to apic(back, type = 4)))
         assertEquals(listOf(3, 4, 4), EmbeddedPictures.readTyped(mp3.inputStream()).map { it.type })
@@ -69,6 +91,22 @@ class EmbeddedPicturesTest {
     }
 
     @Test fun aFileWithoutTagsHasNone() = assertEquals(0, EmbeddedPictures.read(ByteArray(64).inputStream()).size)
+
+    @Test fun readsCoverFromAFlacThatHasALeadingId3Tag() {
+        // Some taggers prepend an ID3v2 tag to a FLAC; the cover sits in the FLAC PICTURE
+        // block after the tag, not an APIC. The reader must skip the tag and read the FLAC,
+        // the way the PC's mutagen does, or a whole album shows blank covers.
+        fun block(type: Int, last: Boolean, body: ByteArray) = byteArrayOf(((if (last) 0x80 else 0) or type).toByte()) + be(body.size, 3) + body
+        fun pic(data: ByteArray) = be(3) + be(10) + "image/jpeg".toByteArray() + be(0) + ByteArray(16) + be(data.size) + data
+        // An ID3v2.3 tag with a title frame and no APIC, its size counting its whole body
+        // (as real taggers write it), so the FLAC stream begins exactly after it.
+        val frame = "TIT2".toByteArray() + be(5) + byteArrayOf(0, 0) + byteArrayOf(0) + "Song".toByteArray()
+        val id3Tag = "ID3".toByteArray() + byteArrayOf(3, 0, 0) + syncsafe(frame.size) + frame
+        val flac = "fLaC".toByteArray() + block(0, false, ByteArray(34)) + block(6, true, pic(front))
+        val got = EmbeddedPictures.read((id3Tag + flac).inputStream())
+        assertEquals(1, got.size)
+        assertArrayEquals(front, got[0])
+    }
 
     /** Real songs from the PC library with two covers each (skipped where they aren't). */
     @Test fun realFilesWithTwoCovers() {

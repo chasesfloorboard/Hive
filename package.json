@@ -2,7 +2,7 @@
   "name": "beehive-musicbrainz",
   "productName": "Hive",
   "desktopName": "hive",
-  "version": "2.2.0",
+  "version": "3.0.0",
   "description": "Hive — an offline-first professional music library manager and player for Linux.",
   "main": "app/main/main.js",
   "private": true,
@@ -17,9 +17,9 @@
   },
   "author": {
     "name": "Hive Contributors",
-    "email": "hive@localhost"
+    "email": "chasesfloorboard@users.noreply.github.com"
   },
-  "homepage": "http://localhost",
+  "homepage": "https://github.com/chasesfloorboard/Hive",
   "license": "MIT",
   "dependencies": {
     "dbus-next": "^0.10.2",
@@ -58,7 +58,7 @@
       "app/main/musicbee-love.js"
     ],
     "linux": {
-      "maintainer": "Hive Contributors <hive@localhost>",
+      "maintainer": "Hive Contributors <chasesfloorboard@users.noreply.github.com>",
       "syncDesktopName": true,
       "target": [
         "AppImage",

@@ -1,6 +1,6 @@
 'use strict';
 
-// Canonical Beehive metadata model. File-format specific readers/writers can
+// Canonical Hive metadata model. File-format specific readers/writers can
 // translate into this shape without making the UI care whether a value came
 // from Vorbis comments, ID3, MP4 atoms, etc.
 const ALIASES = {

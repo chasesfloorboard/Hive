@@ -1,19 +1,19 @@
 (function () {
-  // Earliest possible renderer marker: this intentionally runs before any Beehive
+  // Earliest possible renderer marker: this intentionally runs before any Hive
   // application initialization so a pre-init exception cannot leave us blind.
   try {
     if (window.beehive?.startupDebugEnabled) {
       window.beehive.startupDebugLog('RENDERER EARLIEST SCRIPT ENTRY', { readyState: document.readyState, href: location.href });
     }
   } catch (err) {
-    try { console.error('[Beehive Debug] earliest startup marker failed', err); } catch {}
+    try { console.error('[Hive Debug] earliest startup marker failed', err); } catch {}
   }
   window.addEventListener('error', event => {
 
-    try { console.error('[Beehive Debug] RENDERER error', { message: event.message, source: event.filename, line: event.lineno, column: event.colno, stack: event.error?.stack }); } catch {}
+    try { console.error('[Hive Debug] RENDERER error', { message: event.message, source: event.filename, line: event.lineno, column: event.colno, stack: event.error?.stack }); } catch {}
   });
   window.addEventListener('unhandledrejection', event => {
-    try { console.error('[Beehive Debug] RENDERER unhandledrejection', event.reason?.stack || event.reason?.message || String(event.reason)); } catch {}
+    try { console.error('[Hive Debug] RENDERER unhandledrejection', event.reason?.stack || event.reason?.message || String(event.reason)); } catch {}
   });
   const audioElement = document.getElementById('audio');
   const rendererRecreationMode = new URLSearchParams(location.search).get('preservePlayback') === '1';
@@ -2696,7 +2696,7 @@
   }
 
   // Play-count qualification is deliberately separate from Yearly Wrap/scrobbling.
-  // A track earns one Beehive play only after five seconds of actual playback
+  // A track earns one Hive play only after five seconds of actual playback
   // time. Pauses do not consume the five-second window, and changing/skipping
   // tracks abandons an unqualified candidate. This prevents accidental clicks,
   // quick previews, and immediate skips from inflating play counts.
@@ -2849,7 +2849,7 @@
     engineEnded = false;
     const restarted = await window.beehive.gstreamerRestart().catch(() => false);
     if (!restarted) {
-      console.error('Beehive audio safety shutdown: could not restart GStreamer after native fault.');
+      console.error('Hive audio safety shutdown: could not restart GStreamer after native fault.');
       return false;
     }
     gstFatalError = false;
@@ -3134,7 +3134,7 @@
       return;
     }
     if (name === 'FATAL_ERROR') {
-      console.error('Beehive audio safety shutdown:', ev.value || 'unknown GStreamer audio error');
+      console.error('Hive audio safety shutdown:', ev.value || 'unknown GStreamer audio error');
       gstFatalError = true;
       gstSend('MUTE\t1');
       gstSend('STOP');
@@ -3154,7 +3154,7 @@
       // failure may be in the file, sink, decoder, or audio device, and an
       // automatic retry can expose the same unsafe condition repeatedly.
       const wasActive = gstActive;
-      console.error('Beehive audio safety shutdown: GStreamer helper exited:', ev.value || 'unknown');
+      console.error('Hive audio safety shutdown: GStreamer helper exited:', ev.value || 'unknown');
       gstFatalError = wasActive || gstExpectInitialStream || gstActive;
       window.beehive.setPlaybackProtectedPath?.('');
       gstActive = false;
@@ -3167,7 +3167,7 @@
       return;
     }
     if (name === 'ERROR' && gstActive) {
-      console.warn('Beehive GStreamer backend:', ev.value || 'error');
+      console.warn('Hive GStreamer backend:', ev.value || 'error');
       // Native ERROR is followed by FATAL_ERROR after the sink has already
       // been muted and the pipeline stopped. Do not start another transport.
       gstFatalError = true;
@@ -4206,7 +4206,7 @@
       e.dataTransfer.setDragImage(preview, 18, Math.min(24, preview.offsetHeight / 2));
       requestAnimationFrame(() => preview.remove());
     }
-    try { window.beehive.startNativeFileDrag?.(paths.map(t => String(t.path))); } catch (err) { console.warn('[Beehive] native file drag unavailable:', err); }
+    try { window.beehive.startNativeFileDrag?.(paths.map(t => String(t.path))); } catch (err) { console.warn('[Hive] native file drag unavailable:', err); }
   }
 
 
@@ -4372,7 +4372,7 @@
   }
 
   // Automatic visual artwork is deliberately memory-only. When a currently
-  // playing track has no embedded artwork, Beehive may find an online album
+  // playing track has no embedded artwork, Hive may find an online album
   // cover in the background and use its URL for the player visuals. Nothing is
   // written to the audio file, library tags, or artwork cache. The override is
   // discarded for the track as soon as real embedded artwork is available.
@@ -4421,7 +4421,7 @@
   function artworkDebug(label, details = null) {
     try {
       const payload = details == null ? '' : ` ${JSON.stringify(details)}`;
-      console.info(`[Beehive Artwork Debug ${new Date().toISOString()}] ${label}${payload}`);
+      console.info(`[Hive Artwork Debug ${new Date().toISOString()}] ${label}${payload}`);
     } catch {}
   }
 
@@ -4571,7 +4571,7 @@
         // The manual picker already proves these URLs are displayable in Chromium,
         // so the automatic path must not introduce a separate Cover Art Archive
         // downloader that can reject a valid result with a false 404. The image is
-        // displayed directly from the remote source; Beehive never writes a
+        // displayed directly from the remote source; Hive never writes a
         // temporary artwork file to disk and never embeds it.
         for (const item of Array.isArray(results) ? results : []) {
           const remoteUrl = String(item?.artworkUrl || '').trim();
@@ -4640,7 +4640,7 @@
         }
 
       } catch (err) {
-        console.error('[Beehive Debug] automatic visual artwork lookup failed', { album, artist, path: trackPath, message: err?.message || String(err), stack: err?.stack });
+        console.error('[Hive Debug] automatic visual artwork lookup failed', { album, artist, path: trackPath, message: err?.message || String(err), stack: err?.stack });
       }
       automaticCoverNoResults.add(key);
       return null;
@@ -4984,7 +4984,7 @@
   }
 
   // Keep Love writes serialized per file, but let the UI update immediately.
-  // This is the behavior of the old stable Beehive build: the heart/Favorites
+  // This is the behavior of the old stable Hive build: the heart/Favorites
   // state changes instantly while the embedded tag write happens off the render
   // path. The main process still performs the real disk write and verification.
   const loveWriteQueue = new Map();
@@ -5134,7 +5134,7 @@
     const streamEntry = streamLoves()[streamKey];
     if (streamEntry && (streamEntry.loved !== false) !== value) { const now = Date.now(); patchStreamLove(streamKey, { loved: value, at: now, appliedAt: now }); }
 
-    // Love is intentionally optimistic: update Beehive's canonical in-memory
+    // Love is intentionally optimistic: update Hive's canonical in-memory
     // library and Favorites immediately, then write the embedded tag in the
     // background. The physical file remains the durable source of truth, but
     // the UI must never make the user wait for file I/O just to see a song
@@ -6091,7 +6091,7 @@
       e.dataTransfer.setDragImage(preview, 18, Math.min(24, preview.offsetHeight / 2));
       requestAnimationFrame(() => preview.remove());
     }
-    try { window.beehive.startNativeFileDrag?.(paths.map(t => String(t.path))); } catch (err) { console.warn('[Beehive] native file drag unavailable:', err); }
+    try { window.beehive.startNativeFileDrag?.(paths.map(t => String(t.path))); } catch (err) { console.warn('[Hive] native file drag unavailable:', err); }
   }
 
   function clearQueueDropTarget() {
@@ -6383,7 +6383,7 @@
     try { localPlaybackState = JSON.parse(localStorage.getItem(LAST_PLAYBACK_KEY) || 'null'); } catch {}
 
     // Volume is application-wide playback state, so restore it independently of
-    // whether the user happened to have a queue when they last closed Beehive.
+    // whether the user happened to have a queue when they last closed Hive.
     // The old restore path required a non-empty queue before it restored anything,
     // which could leave the player at the default 80% and blast audio on startup.
     const volumeCandidates = [backendPlaybackState, localQueueState, localPlaybackState]
@@ -6531,7 +6531,7 @@
     // while that decode is in progress.
     playbackRestorePending = true;
     // Normal application startup always restores the queue, current song, and
-    // saved position, but never restores the previous playing state. Beehive must
+    // saved position, but never restores the previous playing state. Hive must
     // remain paused until the user explicitly presses Play. Renderer recreation
     // is the one exception because the existing native GStreamer pipeline never
     // stopped playing while the BrowserWindow was replaced.
@@ -7752,7 +7752,7 @@
       favoriteFilterDuplicates: !!favorites?.filterDuplicates,
       favoriteRules: rules
     };
-    console.info('[Beehive] FAVORITES PIPELINE DIAGNOSTIC', {
+    console.info('[Hive] FAVORITES PIPELINE DIAGNOSTIC', {
       stage: report.stage,
       libraryTrackCount: report.libraryTrackCount,
       libraryLovedCount: report.libraryLovedCount,
@@ -7775,11 +7775,11 @@
     try {
       if (window.beehive.writeFavoritesPipelineDiagnostic) {
         const result = await window.beehive.writeFavoritesPipelineDiagnostic(report);
-        console.info('[Beehive] FAVORITES PIPELINE DIAGNOSTIC REPORT', result || {});
+        console.info('[Hive] FAVORITES PIPELINE DIAGNOSTIC REPORT', result || {});
         return result;
       }
     } catch (err) {
-      console.warn('[Beehive] FAVORITES PIPELINE DIAGNOSTIC REPORT WRITE FAILED', err);
+      console.warn('[Hive] FAVORITES PIPELINE DIAGNOSTIC REPORT WRITE FAILED', err);
     }
     return null;
   }
@@ -7836,7 +7836,7 @@
       const matched=[], unmatched=[];
       for(const entry of picked.entries||[]){ const t=matchImportedTrack(entry); if(t)matched.push(t.path); else unmatched.push(entry); }
       const unique=[...new Set(matched)];
-      if(!unique.length){ showAppNotice(`No tracks from “${picked.name}” matched your Beehive library.`); return; }
+      if(!unique.length){ showAppNotice(`No tracks from “${picked.name}” matched your Hive library.`); return; }
       const pl=await window.beehive.savePlaylist({name:picked.name,tracks:unique,smart:false,source:'m3u',sourcePath:picked.path,unmatched:unmatched.map(x=>x.info?.title||x.path)});
       playlists=await window.beehive.getPlaylists(); closeModal(el.playlistImportModal); renderPlaylistManager();
       showAppNotice(`Imported “${pl.name}” with ${unique.length} local tracks${unmatched.length?` (${unmatched.length} not found in the library)`:''}.`);
@@ -9724,7 +9724,7 @@
       // painted. The library should never feel blocked by tag serialization.
       // Do not fire-and-forget a bulk metadata transaction. The visible UI is
       // updated immediately, but the action must stay alive until every disk
-      // write has either succeeded or failed so closing/restarting Beehive
+      // write has either succeeded or failed so closing/restarting Hive
       // cannot silently strand the remaining Love writes.
       setTimeout(async () => {
         const result = await window.beehive.setLove(paths, !!value);
@@ -10518,7 +10518,7 @@
       const track = item.track;
       if (!track) continue;
       track.covers = pictures.map(p => ({ type: p.type, mime: p.mime, description: p.description, hash: p.hash, index: p.index, file: p.file || null }));
-      // readTags now returns stable Beehive cache filenames for embedded pictures;
+      // readTags now returns stable Hive cache filenames for embedded pictures;
       // keep those filenames on the live queue object so MPRIS/Music Presence can
       // expose the exact same local artwork instead of falling back to a data URL.
       const front = track.covers.find(p => normalizeArtworkType(p?.type || 'Other') === 'Cover (Front)');
@@ -10812,7 +10812,7 @@
         window.__beehiveArtworkRenderQueued = true;
         requestAnimationFrame(() => {
           window.__beehiveArtworkRenderQueued = false;
-          try { renderCurrentView(); } catch (err) { console.error('[Beehive Artwork] deferred view refresh failed:', err); }
+          try { renderCurrentView(); } catch (err) { console.error('[Hive Artwork] deferred view refresh failed:', err); }
         });
       }
       const currentPath = String(currentQueue[currentIndex]?.path || '');
@@ -10861,7 +10861,7 @@
       applyLibrary(library);
       if (!window.__beehiveArtworkRenderQueued) {
         window.__beehiveArtworkRenderQueued = true;
-        requestAnimationFrame(() => { window.__beehiveArtworkRenderQueued = false; try { renderCurrentView(); } catch (err) { console.error('[Beehive Artwork] deferred view refresh failed:', err); } });
+        requestAnimationFrame(() => { window.__beehiveArtworkRenderQueued = false; try { renderCurrentView(); } catch (err) { console.error('[Hive Artwork] deferred view refresh failed:', err); } });
       }
       if (removed) {
         for (const track of editingTracks) {
@@ -10925,7 +10925,7 @@
       window.__beehiveArtworkRenderQueued = true;
       requestAnimationFrame(() => {
         window.__beehiveArtworkRenderQueued = false;
-        try { renderCurrentView(); } catch (err) { console.error('[Beehive Artwork] deferred view refresh failed:', err); }
+        try { renderCurrentView(); } catch (err) { console.error('[Hive Artwork] deferred view refresh failed:', err); }
       });
     }
     el.tagStatus.textContent = `${artworkTypeLabel(normalizedType)} selected for this slot. Saving in background…`;
@@ -11831,7 +11831,7 @@
         coverDataUrl = String(chosen?.dataUrl || '');
       }
     } catch (err) {
-      console.warn('[Beehive] Auto-tag cover download failed:', err);
+      console.warn('[Hive] Auto-tag cover download failed:', err);
       status.textContent = `Tags will be saved, but the shared cover could not be downloaded: ${err?.message || err}`;
     }
 
@@ -14140,7 +14140,7 @@
           return remoteUrl;
         }
       } catch (err) {
-        console.warn('[Beehive] queue album artwork lookup failed:', err?.message || err);
+        console.warn('[Hive] queue album artwork lookup failed:', err?.message || err);
       }
       automaticAlbumNoResults.add(albumKey);
       return null;
@@ -14206,7 +14206,7 @@
     // already propagates a successful album result to its coverless peers. Starting
     // searches for every album when a queue is rendered caused repeated large-image
     // decodes and could take down Chromium during playback startup.
-    console.info('[Beehive Debug] queue artwork warmup disabled; current-album propagation remains active');
+    console.info('[Hive Debug] queue artwork warmup disabled; current-album propagation remains active');
     if (specialView === 'sandbox' && viewMode === 'songs') renderSpecialSongs(currentQueue.slice());
   }
 
@@ -14403,7 +14403,7 @@
         enginePaused = true;
         engineEnded = true;
         dispatchAudio('pause');
-        console.error('Beehive audio safety shutdown: native GStreamer load failed; Web Audio fallback disabled.');
+        console.error('Hive audio safety shutdown: native GStreamer load failed; Web Audio fallback disabled.');
         return false;
       }
     }
@@ -14420,7 +14420,7 @@
     if (t?.path && !isSpotifyTrack(t) && !isPodcastTrack(t)) {
       enginePaused = true;
       engineEnded = true;
-      console.error('Beehive local playback unavailable: GStreamer is the sole local transport.');
+      console.error('Hive local playback unavailable: GStreamer is the sole local transport.');
       return false;
     }
     await resolveReplayGainForTrack(t);
@@ -14465,7 +14465,7 @@
       enginePaused = true;
       engineEnded = true;
       dispatchAudio('pause');
-      console.error('Beehive playback error:', e);
+      console.error('Hive playback error:', e);
     }
   }
 
@@ -14527,7 +14527,7 @@
       enginePaused = true;
       engineEnded = true;
       dispatchAudio('pause');
-      console.error('Beehive restore error:', e);
+      console.error('Hive restore error:', e);
     }
   }
 
@@ -15968,7 +15968,7 @@
     // playbar heart always reflects the actual embedded tag.
     t = libraryTrackByPath.get(String(t.path)) || t;
     // Do not block the heart on a disk read or metadata write. The current
-    // Beehive Love state is toggled immediately; the embedded file tag is
+    // Hive Love state is toggled immediately; the embedded file tag is
     // persisted by the background Love writer.
     setTrackLove(t, !t.loved, false);
     if (!el.songsTable.classList.contains('hidden')) renderCurrentView();
@@ -16033,7 +16033,7 @@
 
     // The audio file is the source of truth for ratings. Never trust a rating
     // carried forward by library.json: it can be stale after the file was
-    // changed in Beehive or on another machine. Start cached tracks unrated and
+    // changed in Hive or on another machine. Start cached tracks unrated and
     // hydrate their real embedded ratings immediately in the background.
     for (const t of (library.tracks || [])) {
       // Older library.json snapshots can contain music-metadata lyric objects.
@@ -16062,6 +16062,32 @@
       applyTabView(activeTab ? activeTab.kind : 'music');
     }
     rehydrateQueueFromLibrary();
+    warmSearchIndexDuringIdle();
+  }
+
+  // The search index for each track is built lazily (trackMatchesSearch), so the
+  // first keystroke of a search would otherwise build ~30k index strings on the
+  // main thread in one filter pass — a visible stall. Warm them ahead of time in
+  // small chunks during idle, so the heavy work is already done before the user
+  // searches, without the startup hitch that building them all at once caused.
+  let searchIndexWarmHandle = null;
+  function warmSearchIndexDuringIdle() {
+    const ric = window.requestIdleCallback;
+    if (typeof ric !== 'function') return; // warm lazily on demand instead
+    if (searchIndexWarmHandle != null) { window.cancelIdleCallback?.(searchIndexWarmHandle); searchIndexWarmHandle = null; }
+    let i = 0;
+    const step = (deadline) => {
+      const tracks = library.tracks || [];
+      while (i < tracks.length && (!deadline || deadline.timeRemaining() > 2 || deadline.didTimeout)) {
+        // Build a batch per idle slice; stop when the slice runs out of time.
+        const end = Math.min(tracks.length, i + 400);
+        for (; i < end; i++) { const t = tracks[i]; if (t && !t._searchText) t._searchText = buildTrackSearchIndex(t); }
+        if (deadline && deadline.timeRemaining() <= 2 && !deadline.didTimeout) break;
+      }
+      if (i < tracks.length) searchIndexWarmHandle = ric(step, { timeout: 2000 });
+      else searchIndexWarmHandle = null;
+    };
+    searchIndexWarmHandle = ric(step, { timeout: 2000 });
   }
 
   // The queue restored at launch is placeholders (file names, no length or cover): the
@@ -16158,6 +16184,7 @@
     const activeTab = tabs.find(t => t.id === activeTabId);
     applyTabView(activeTab ? activeTab.kind : 'music');
     rehydrateQueueFromLibrary();
+    warmSearchIndexDuringIdle();
     if (options.status !== false) startupStatusUpdate('Library ready · checking for changes…', !tracks.length);
   }
 
@@ -16185,7 +16212,7 @@
         }
         albums = buildAlbums(library.tracks);
         const lovedCount = library.tracks.reduce((n, t) => n + (t?.loved ? 1 : 0), 0);
-        console.info('[Beehive] FAVORITES LOVE HYDRATION RESULT', {
+        console.info('[Hive] FAVORITES LOVE HYDRATION RESULT', {
           total: library.tracks.length,
           lovedCount
         });
@@ -16194,7 +16221,7 @@
       }
       return result || null;
     } catch (err) {
-      console.warn('[Beehive] Love hydration failed:', err);
+      console.warn('[Hive] Love hydration failed:', err);
       // The Settings button reports this (it said "Favorites refreshed" whatever happened).
       if (manualLoveRefreshPending) throw err;
       return null;
@@ -16246,7 +16273,7 @@
   // Recently Added is intentionally empty immediately after the first
   // authoritative library scan. Its baseline is the moment that scan finishes,
   // not app launch: files discovered during that first scan were not "recently"
-  // added from Beehive's point of view. Anything discovered later can appear.
+  // added from Hive's point of view. Anything discovered later can appear.
   const RECENTLY_ADDED_SCAN_BASELINE_KEY = 'beehive:recently-added-scan-baseline';
   function getRecentlyAddedScanBaseline() {
     try {
@@ -16413,7 +16440,7 @@
       // automatically. This means startup never depends on the context-menu Refresh
       // action, while unchanged files are retained from the cache.
       const startupScanDelay = cached?.tracks?.length ? 2500 : 900;
-      console.info('[Beehive] INITIAL RECONCILIATION SCHEDULED', { delayMs: startupScanDelay, cachedTracks: cached?.tracks?.length || 0 });
+      console.info('[Hive] INITIAL RECONCILIATION SCHEDULED', { delayMs: startupScanDelay, cachedTracks: cached?.tracks?.length || 0 });
       startupMark('INITIAL RECONCILIATION SCHEDULED', { delayMs:startupScanDelay, cachedTracks:cached?.tracks?.length || 0 });
       setTimeout(async () => {
         // Skip the scan entirely when nothing in the library folders changed
@@ -16422,18 +16449,18 @@
         let check = null;
         try { check = await window.beehive.libraryStartupCheck?.(); } catch {}
         if (check && check.changed === false) {
-          console.info('[Beehive] INITIAL RECONCILIATION SKIPPED: no library changes');
+          console.info('[Hive] INITIAL RECONCILIATION SKIPPED: no library changes');
           startupMark('INITIAL RECONCILIATION SKIPPED', { elapsedMs:Number((performance.now()-startupPerfStart).toFixed(1)) });
           startupStatusUpdate('Startup complete', false);
           setTimeout(() => startupStatusUpdate('', true), 700);
           return;
         }
-        console.info('[Beehive] INITIAL RECONCILIATION STARTED', { reason: check?.reason || 'unknown' });
+        console.info('[Hive] INITIAL RECONCILIATION STARTED', { reason: check?.reason || 'unknown' });
         startupStatusUpdate('Checking library in background…');
         startupMark('INITIAL RECONCILIATION STARTED');
         runScan(false)
           .then(async () => {
-            console.info('[Beehive] INITIAL RECONCILIATION FINISHED');
+            console.info('[Hive] INITIAL RECONCILIATION FINISHED');
             startupMark('INITIAL RECONCILIATION FINISHED', { elapsedMs:Number((performance.now()-startupPerfStart).toFixed(1)), tracks:library?.tracks?.length || 0 });
             startupStatusUpdate('Startup complete', false);
             setTimeout(() => startupStatusUpdate('', true), 700);
@@ -16443,14 +16470,14 @@
             // here after the scan has completed; that made a finished scan
             // appear to stall at 100% on large libraries. The explicit manual
             // Favorites refresh remains available for repair/verification.
-            console.info('[Beehive] FAVORITES LOVE STATE INCLUDED IN SCAN');
+            console.info('[Hive] FAVORITES LOVE STATE INCLUDED IN SCAN');
           })
-          .catch(err => { startupMark('INITIAL RECONCILIATION FAILED', { message:err?.message || String(err) }); startupStatusUpdate('Library check failed — using cache', false); console.warn('[Beehive] INITIAL RECONCILIATION FAILED:', err); });
+          .catch(err => { startupMark('INITIAL RECONCILIATION FAILED', { message:err?.message || String(err) }); startupStatusUpdate('Library check failed — using cache', false); console.warn('[Hive] INITIAL RECONCILIATION FAILED:', err); });
       }, startupScanDelay);
     }).catch(err => {
       startupMark('CACHE/PLAYLIST SNAPSHOTS FAILED', { message:err?.message || String(err) });
       startupStatusUpdate('Library cache unavailable — checking files…', false);
-      console.warn('[Beehive] CACHE/PLAYLIST SNAPSHOTS FAILED:', err);
+      console.warn('[Hive] CACHE/PLAYLIST SNAPSHOTS FAILED:', err);
       setTimeout(() => runScan(false).catch(scanErr => {
         startupMark('INITIAL RECONCILIATION FAILED', { message:scanErr?.message || String(scanErr) });
         startupStatusUpdate('Library check failed', false);
@@ -16533,7 +16560,7 @@
     if (!payload) return;
     if (Array.isArray(payload.errors)) renderTagFailures(payload.errors);
     if (!payload.active && Number(payload.failed || 0) > 0) {
-      const prefix = payload.recovered ? `Beehive resumed ${Number(payload.done || 0)} interrupted metadata operation${Number(payload.done || 0) === 1 ? '' : 's'}, but ` : '';
+      const prefix = payload.recovered ? `Hive resumed ${Number(payload.done || 0)} interrupted metadata operation${Number(payload.done || 0) === 1 ? '' : 's'}, but ` : '';
       showAppNotice(`${prefix}${Number(payload.failed || 0)} file${Number(payload.failed || 0) === 1 ? '' : 's'} failed after 3 attempts. The original files were not intentionally deleted. Check the failed-files report.`, payload.recovered ? 'Metadata recovery warning' : 'Metadata write warning');
     }
     tagOperationActive = !!payload.active;
@@ -16823,7 +16850,7 @@
 
   // Album hover hints use an app-themed tooltip instead of Chromium's native
   // title bubble. Show only after a short dwell and anchor it at the mouse,
-  // so it behaves like an intentional Beehive tooltip rather than a native hint.
+  // so it behaves like an intentional Hive tooltip rather than a native hint.
   let albumTooltip = null;
   let albumTooltipTimer = null;
   let albumTooltipCard = null;
@@ -16891,9 +16918,12 @@
   });
 
   el.search.addEventListener('focus',()=>{});
-  el.search.addEventListener('input', () => {
-    artistSearchTerm = '';
-    searchTerm = el.search.value.trim().toLowerCase();
+  // Rendering the whole collection on every keystroke is the single most expensive
+  // thing search does on a big library; the mobile app debounces the same way
+  // (CollectionScreens.kt delay(140)). Set searchTerm immediately for feedback (clear
+  // button, the "searching" chrome), but defer the heavy render ~140ms, and flush it at
+  // once when the field is emptied so clearing feels instant.
+  function renderSearchResults() {
     if(specialView){
       if(specialView==='recent'){const t=getRecentlyAddedTracks().sort((a,b)=>(b.addedAt||0)-(a.addedAt||0)).slice(0,100);return viewMode==='albums'?renderSpecialAlbums(t):renderSpecialSongs(t);}
       if(specialView==='top'){const t=[...library.tracks].filter(t=>(t.playCount||0)>0).sort((a,b)=>(b.playCount||0)-(a.playCount||0)).slice(0,25);return viewMode==='albums'?renderSpecialAlbums(t):renderSpecialSongs(t);}
@@ -16906,9 +16936,22 @@
       if(specialView==='yearly-wrap') return renderYearlyWrap();
     }
     setView(viewMode);
+  }
+  let searchRenderTimer = null;
+  function flushSearchRender() {
+    if (searchRenderTimer) { clearTimeout(searchRenderTimer); searchRenderTimer = null; }
+    renderSearchResults();
+  }
+  el.search.addEventListener('input', () => {
+    artistSearchTerm = '';
+    searchTerm = el.search.value.trim().toLowerCase();
     updateSearchClearButton();
+    if (searchRenderTimer) clearTimeout(searchRenderTimer);
+    // Emptying the field renders right away; typing waits out the debounce.
+    if (!searchTerm) { searchRenderTimer = null; renderSearchResults(); return; }
+    searchRenderTimer = setTimeout(() => { searchRenderTimer = null; renderSearchResults(); }, 140);
   });
-  el.search.addEventListener('blur',()=>{if(!searchTerm)el.main.classList.remove('searching');});
+  el.search.addEventListener('blur',()=>{flushSearchRender();if(!searchTerm)el.main.classList.remove('searching');});
   updateSearchClearButton();
 
   async function getSidebarCollectionTracks(nav){
@@ -17034,7 +17077,7 @@
       'yearly-wrap':'Yearly Wrap'
     };
     const tracks=await getSidebarCollectionTracks(nav);
-    return exportPlaylist(names[nav] || 'Beehive',tracks);
+    return exportPlaylist(names[nav] || 'Hive',tracks);
   }
 
   // ---------------- top bar tabs (Playlists / Music / +) ----------------
@@ -17855,7 +17898,7 @@
       <section class="beta-section"><div class="beta-section-head"><div><h2>Reliability & recovery</h2><p>Crash recovery, transactions, regression testing, and production-readiness checks.</p></div></div><div class="beta-grid" id="beta-reliability-grid"></div></section>
       <section class="beta-section"><div class="beta-section-head"><div><h2>Distribution & ecosystem</h2><p>Cross-platform and community-project polish tracked separately from the core Linux player.</p></div></div><div class="beta-grid" id="beta-platform-grid"></div></section>
 
-      <section class="beta-section beta-notes"><div class="beta-section-head"><div><h2>Promotion rules</h2><p>A Beta feature is not production-ready just because its button works.</p></div></div><div class="beta-rules"><div><b>1. UI test</b><span>Make the interaction feel right and expose confusing states.</span></div><div><b>2. Data test</b><span>Run it against the real library without corrupting files.</span></div><div><b>3. Failure test</b><span>Interrupt it, restart Beehive, and verify recovery.</span></div><div><b>4. Regression test</b><span>Confirm playback, scanning, queues, and existing workflows remain untouched.</span></div><div><b>5. Promote</b><span>Only then move the feature into the normal Beehive experience.</span></div></div></section>
+      <section class="beta-section beta-notes"><div class="beta-section-head"><div><h2>Promotion rules</h2><p>A Beta feature is not production-ready just because its button works.</p></div></div><div class="beta-rules"><div><b>1. UI test</b><span>Make the interaction feel right and expose confusing states.</span></div><div><b>2. Data test</b><span>Run it against the real library without corrupting files.</span></div><div><b>3. Failure test</b><span>Interrupt it, restart Hive, and verify recovery.</span></div><div><b>4. Regression test</b><span>Confirm playback, scanning, queues, and existing workflows remain untouched.</span></div><div><b>5. Promote</b><span>Only then move the feature into the normal Hive experience.</span></div></div></section>
     </div>`;
     return { host, viewport: host, initialized: true, dirty: false, betaRendered: false };
   }
@@ -17918,7 +17961,7 @@
       betaCard('Library Health', 'Find missing artwork, incomplete metadata, broken paths, and suspicious records before they become cleanup projects.', 'Ready to test', 'Run health check', async()=>{ const missingTitle=library.tracks.filter(t=>!String(t.title||'').trim()).length; const missingArtist=library.tracks.filter(t=>!String(t.artist||'').trim()).length; return `${stats.missingArt.toLocaleString()} missing-art candidates · ${missingTitle.toLocaleString()} missing titles · ${missingArtist.toLocaleString()} missing artists`; }),
       betaCard('Duplicate detector', 'Preview likely duplicate tracks using path-independent metadata fingerprints without deleting anything.', 'Read-only', 'Analyze duplicates', async()=>{ const m=new Map(); for(const t of library.tracks){const k=`${String(t.title||'').trim().toLowerCase()}\0${String(t.artist||'').trim().toLowerCase()}\0${String(t.duration||'')}`; if(!m.has(k))m.set(k,0);m.set(k,m.get(k)+1);} const groups=[...m.values()].filter(n=>n>1); return `${groups.length.toLocaleString()} probable duplicate groups; no files changed.`; }),
       betaCard('Metadata transaction / undo', 'Prototype a complete before/after snapshot so a whole album retag can eventually be undone as one transaction.', 'Prototype', 'Open test plan', async()=> 'Recovery journal is already present; next step is full transaction rollback testing.'),
-      betaCard('External metadata changes', 'Exercise the filesystem watcher when Picard, Mp3tag, MusicBee, or another editor changes tags outside Beehive.', 'Needs testing', 'Test watcher', async()=> 'Change one file externally, then return here and verify the library reflects it without a full manual refresh.'),
+      betaCard('External metadata changes', 'Exercise the filesystem watcher when Picard, Mp3tag, MusicBee, or another editor changes tags outside Hive.', 'Needs testing', 'Test watcher', async()=> 'Change one file externally, then return here and verify the library reflects it without a full manual refresh.'),
     ]);
     fill('#beta-metadata-grid', [
       betaCard('MusicBrainz match workspace', 'Side-by-side local metadata versus MusicBrainz release results, with explicit field selection before writing.', 'Prototype', 'Test search', async()=>{ const q=await themedPrompt('Search MusicBrainz release groups.', '', 'MusicBrainz search'); if(!q) return 'Search cancelled.'; const found=await window.beehive.musicBrainzSearchReleaseGroups(q); return `${Array.isArray(found)?found.length:0} release-group results returned.`; }),
@@ -17941,13 +17984,13 @@
     fill('#beta-reliability-grid', [
       betaCard('Metadata job journal', 'Inspect the crash-safe queue and confirm unfinished operations remain recoverable after shutdown.', 'Implemented', 'Check queue', async()=>{ const status=await window.beehive.getTaskStatus(); return JSON.stringify(status); }),
       betaCard('Database migration tests', 'Exercise startup against older cache/database shapes and confirm no library data is lost.', 'Needs testing', 'Open migration plan', async()=> 'Migration suite target: fresh DB → legacy DB → interrupted migration → restart → reconcile.'),
-      betaCard('Regression suite', 'Track every historical Beehive regression as a repeatable test instead of relying on memory.', 'Planned', 'Show suite', async()=> 'Initial cases: scrubber, pause/resume, playlist display state, album expansion, Favorites Love hydration, queue-safe Delete, M3U import.'),
+      betaCard('Regression suite', 'Track every historical Hive regression as a repeatable test instead of relying on memory.', 'Planned', 'Show suite', async()=> 'Initial cases: scrubber, pause/resume, playlist display state, album expansion, Favorites Love hydration, queue-safe Delete, M3U import.'),
       betaCard('Failure injection', 'Simulate shutdowns and failed metadata writes to prove the recovery system rather than merely inspecting it.', 'Planned', 'Open scenarios', async()=> 'Scenarios: kill during write, disconnect artwork source, invalid tag, read-only file, missing source image, restart mid-batch.'),
     ]);
     fill('#beta-platform-grid', [
       betaCard('Windows readiness', 'Only pursue Windows if the native dependencies and GStreamer path prove straightforward to maintain. Linux remains the reference platform.', 'Optional', 'Open checklist', async()=> 'Decision rule: prototype the minimum path first; if maintenance becomes disproportionate, drop Windows.'),
-      betaCard('Beehive Wrapped', 'A quiet end-of-year listening retrospective: time listened, artists, albums, tracks, genres, and listening patterns without quips or gamification.', 'Planned', 'Open design', async()=> 'Design rule: calm, friendly, information-first. No jokes, fake personality, or engagement bait.'),
-      betaCard('Community documentation', 'README, installation, supported formats, metadata rules, keyboard shortcuts, recovery behavior, and troubleshooting.', 'Planned', 'Open docs checklist', async()=> 'Documentation should describe Beehive as offline-first and clearly explain what writes to disk.'),
+      betaCard('Hive Wrapped', 'A quiet end-of-year listening retrospective: time listened, artists, albums, tracks, genres, and listening patterns without quips or gamification.', 'Planned', 'Open design', async()=> 'Design rule: calm, friendly, information-first. No jokes, fake personality, or engagement bait.'),
+      betaCard('Community documentation', 'README, installation, supported formats, metadata rules, keyboard shortcuts, recovery behavior, and troubleshooting.', 'Planned', 'Open docs checklist', async()=> 'Documentation should describe Hive as offline-first and clearly explain what writes to disk.'),
       betaCard('Distribution / CI', 'Automated syntax, metadata, migration, playback, package, and Linux build checks before every release.', 'Planned', 'Open CI plan', async()=> 'Target: every release candidate gets automated regression + package validation before promotion.'),
     ]);
   }
@@ -18330,8 +18373,14 @@
       const btn = document.createElement('button');
       btn.className = 'tab' + (tab.id === activeTabId ? ' active' : '');
       btn.dataset.tabId = tab.id;
+      // A stable nav key (the pinned nav id, or 'music' for an extra browser tab) so the icon
+      // stylesheet can draw the SVG mask on every tab of that kind — not only the pinned one, whose
+      // id happened to be "navtab-music". Without it, an extra music tab fell back to the ♫ glyph,
+      // which renders as a grey tofu box.
+      const tabNav = tab.navId || (tab.kind === 'music' ? 'music' : '');
+      if (tabNav) btn.dataset.tabNav = tabNav; else delete btn.dataset.tabNav;
       btn.draggable = true;
-      const icon = tab.icon ? `<span class="tab-icon">${escapeHtml(tab.icon)}</span>` : '';
+      const icon = (tab.icon || tabNav) ? `<span class="tab-icon">${escapeHtml(tab.icon || '')}</span>` : '';
       btn.innerHTML = `<span class="tab-label">${icon}<span class="tab-rich-label"></span></span>` +
         (tab.closable ? `<span class="tab-close" title="Close tab" aria-label="Close tab">\u2715</span>` : '');
       setRichLabel(btn.querySelector('.tab-rich-label'), tab.label);
@@ -19089,7 +19138,7 @@
       const found = await window.beehive.searchInternetCover({ album, artist, manualQuery: manual ? album : '' });
       if (!Array.isArray(found) || !found.length) {
         status.textContent = 'No matching artwork found.';
-        results.innerHTML = `<div class="cover-picker-empty"><div class="cover-picker-empty-icon">⌁</div><strong>No artwork found</strong><span>Beehive could not find artwork for this album and artist.</span><button type="button" class="cover-picker-empty-retry" id="cover-picker-empty-retry">Search again</button></div>`;
+        results.innerHTML = `<div class="cover-picker-empty"><div class="cover-picker-empty-icon">⌁</div><strong>No artwork found</strong><span>Hive could not find artwork for this album and artist.</span><button type="button" class="cover-picker-empty-retry" id="cover-picker-empty-retry">Search again</button></div>`;
         document.getElementById('cover-picker-empty-retry')?.addEventListener('click', () => searchEditorArtwork(true, targetSlot));
         return;
       }
@@ -19141,7 +19190,7 @@
       };
 
       // The preview itself opens the same full-size cover viewer used by the
-      // album/player artwork elsewhere in Beehive. Keep the picker selection
+      // album/player artwork elsewhere in Hive. Keep the picker selection
       // intact; opening the viewer is inspection only and never applies art.
       const openSelectedPreview = () => {
         if (!selectedItem?.artworkUrl) return;
@@ -21826,7 +21875,7 @@
     // While the full-size cover is open, the left/right arrow keys navigate the
     // same cover set as the on-screen previous/next buttons. Keep this listener
     // scoped to the lightbox and remove it on close so normal keyboard shortcuts
-    // continue to work everywhere else in Beehive.
+    // continue to work everywhere else in Hive.
     const onKeyDown = e => {
       if (el.coverLightbox.classList.contains('hidden')) return;
       if (e.key === 'ArrowLeft') {
@@ -22039,7 +22088,7 @@
     try {
       const saved = !!(await window.beehive.setGpuAcceleration(enabled));
       el.gpuAccelerationToggle.checked = saved;
-      await themedAlert(`GPU acceleration ${saved ? 'enabled' : 'disabled'}. Please restart Beehive for this change to take effect.`, 'Graphics setting');
+      await themedAlert(`GPU acceleration ${saved ? 'enabled' : 'disabled'}. Please restart Hive for this change to take effect.`, 'Graphics setting');
     } catch (err) {
       el.gpuAccelerationToggle.checked = !enabled;
       console.error('Could not change GPU acceleration setting:', err);
@@ -22518,7 +22567,7 @@ Open Yearly Wrap to browse the imported years.`, 'Yearly Wrap');
 
   // Clearing play counts is deliberately separate from file/tag metadata.
   // The confirmation makes the destructive scope explicit, and the IPC call
-  // only resets Beehive's local play-stats values.
+  // only resets Hive's local play-stats values.
   el.clearPlayCountsBtn?.addEventListener('click', () => {
     openModal(el.clearPlayCountsModal);
   });
@@ -22533,8 +22582,8 @@ Open Yearly Wrap to browse the imported years.`, 'Yearly Wrap');
       renderCurrentView();
       closeModal(el.clearPlayCountsModal);
     } catch (err) {
-      console.error('Could not clear Beehive play counts:', err);
-      await themedAlert(`Could not clear Beehive play counts: ${err?.message || err}`, 'Clear play counts');
+      console.error('Could not clear Hive play counts:', err);
+      await themedAlert(`Could not clear Hive play counts: ${err?.message || err}`, 'Clear play counts');
     } finally {
       button.disabled = false;
     }

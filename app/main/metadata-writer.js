@@ -142,6 +142,10 @@ function createMetadataWriter(deps) {
     // copy, and renames it back independently, so whichever rename lands last
     // would silently win in its entirety and discard the other edit.
     return withMusicBeeWriteLock(trackPath, async () => {
+      // Hive's own write: the file-watcher must not read the rename back as an outside change and
+      // trigger a spurious rescan. Every other metadata writer marks this; rating relied on callers,
+      // and the single-track rating paths didn't — so mark it here, covering all of them.
+      markLibraryInternalWrite(trackPath);
       const temp = await createMetadataTempPath(trackPath, 'rating');
       const artworkBefore = await runTagHelper({ op:'artwork_fingerprint', path:trackPath });
       try {

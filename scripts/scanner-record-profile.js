@@ -11,7 +11,7 @@ const path = require('node:path');
 
 const root = path.resolve(__dirname, '..');
 const worker = path.join(root, 'dist', 'linux-unpacked', 'resources', 'app.asar.unpacked', 'app', 'workers', 'scanner-worker.js');
-const logPath = process.argv[2] || path.join(os.homedir(), 'Logs', 'BeehiveMusicBrainz', 'scan-live.log');
+const logPath = process.argv[2] || path.join(os.homedir(), 'Logs', 'HiveMusicBrainz', 'scan-live.log');
 const limit = Math.min(300, Math.max(1, Number(process.argv[3] || 250)));
 
 function pathsFromLog(text) {

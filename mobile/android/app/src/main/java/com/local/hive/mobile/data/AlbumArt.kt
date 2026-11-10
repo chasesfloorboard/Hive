@@ -40,23 +40,31 @@ class AlbumArtFetcher(private val context: Context, private val albumId: Long, p
         // An album Hive filed itself (WAV songs, which Android doesn't read tags from): its id is
         // minus its first song's, and the cover is read from that song's own tags.
         if (albumId < 0) return@withContext ownAlbum(-albumId)
-        // List rows and other thumbnails: Android's own ~512 px album thumbnail is
-        // plenty, and costs no song lookup or picture extraction per cache miss.
-        // The extracted picture is kept, so each album's song file is read once.
         val kept = File(File(context.cacheDir, "embedded-art").apply { mkdirs() }, "$albumId.img")
-        // A cover just changed in Hive: Android's thumbnail is the old one for a while, so rows use Hive's copy.
-        if (isThumbnail() && kept.length() > 0 && System.currentTimeMillis() - kept.lastModified() < 10 * 60_000L) return@withContext result(kept.readBytes())
-        if (isThumbnail()) fallback()?.let { return@withContext it }
+        val hq = File(File(context.cacheDir, "hq-art").apply { mkdirs() }, "$albumId.jpg")
+        // Hive's own extracted copy of the album's embedded cover, kept once per album.
         if (kept.length() > 0) return@withContext result(kept.readBytes())
-        val song = firstSong() ?: return@withContext fallback()
-        // Android's reader gives up on some covers (a 14 MB picture): Hive reads the song's pictures itself then.
-        val embedded = runCatching {
-            MediaMetadataRetriever().use { r -> r.setDataSource(context, song.uri); r.embeddedPicture }
-        }.getOrNull()?.let(::fitted) ?: ownPicture(song.uri)
+        val song = firstSong()
+        // The cover is read from the first song's OWN embedded picture — never a stray image sitting in
+        // the song's folder. MediaStore's albumart (content://.../albumart) scrapes a folder image as the
+        // cover of a tag-less "album", wearing one picture across unrelated songs; Hive never shows that.
+        val embedded = song?.let {
+            runCatching { MediaMetadataRetriever().use { r -> r.setDataSource(context, it.uri); r.embeddedPicture } }.getOrNull()?.let(::fitted)
+                ?: ownPicture(it.uri)
+        }
         if (embedded != null && longestSide(embedded) >= SMALL) runCatching { kept.writeBytes(embedded) }
         val side = embedded?.let { longestSide(it) } ?: 0
+        // Thumbnails never fire an online lookup (a grid would start hundreds): they show the embedded
+        // cover, or one already found online for this album, or nothing — never a folder image.
+        if (isThumbnail()) return@withContext when {
+            side > 0 -> result(embedded!!)
+            hq.length() > 0 -> result(hq.readBytes())
+            else -> null
+        }
         if (side >= SMALL) return@withContext result(embedded!!)
-        upgraded(song)?.let { online ->
+        // Coverless or low-res: the cover is looked up on Apple Music (same album, same artist) and kept.
+        // This is the only non-embedded source, and it's matched to the record, not to the folder.
+        if (song != null) upgraded(song)?.let { online ->
             // A sharper copy of the same cover replaces a small one; a different picture never does.
             // The embedded cover is the one shown, and the online one is kept as the album's second
             // cover (the player turns to it; Covers offers it as a back cover).
@@ -68,7 +76,8 @@ class AlbumArtFetcher(private val context: Context, private val albumId: Long, p
             differs.delete()
             return@withContext result(online)
         }
-        embedded?.let { result(it) } ?: fallback()
+        // No embedded cover and none found online → no cover (a placeholder shows), never a folder image.
+        embedded?.let { result(it) }
     }
 
     private fun ownAlbum(songId: Long): FetchResult? {
@@ -131,12 +140,6 @@ class AlbumArtFetcher(private val context: Context, private val albumId: Long, p
         } ?: return null
         val url = hit.str("artworkUrl100")?.replace(Regex("""/\d+x\d+bb\."""), "/1400x1400bb.") ?: return null
         return http.newCall(Request.Builder().url(url).build()).execute().use { if (it.isSuccessful) it.body.bytes() else null }
-    }
-
-    private fun fallback(): FetchResult? {
-        val uri = ContentUris.withAppendedId(android.net.Uri.parse("content://media/external/audio/albumart"), albumId)
-        val bytes = runCatching { context.contentResolver.openInputStream(uri)?.use { it.readBytes() } }.getOrNull() ?: return null
-        return result(bytes)
     }
 
     private fun result(bytes: ByteArray) = SourceFetchResult(

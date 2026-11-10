@@ -521,7 +521,12 @@ class SongSync(
                 if (status == "replaced") gone += old else left += key
             }
         }
-        store.replacedSongs = left
+        // Drop only the keys this run actually finished (replaced on the PC, or nothing left to
+        // send), re-reading the current set so a replacement queued while this ran — which isn't
+        // in our 'replaced' snapshot — isn't clobbered. 'left' keys stay because they were in
+        // 'replaced' and aren't in 'handled'.
+        val handled = replaced - left
+        store.replacedSongs = store.replacedSongs - handled
         // The new copies are new songs there: matching again (once Hive has scanned them) moves the
         // Love the phone gave them across to the PC.
         if (gone.isNotEmpty()) sync.matchAgainNextSync()

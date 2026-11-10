@@ -61,6 +61,13 @@ class LockPlayerActivity : ComponentActivity() {
             // back when the phone next wakes.
             // In the car the phone stays on while it charges: the player stays up for the drive, as the
             // lock screen's small media pill is too small to use while driving.
+            // Unlocked while the player was showing (face unlock with the player on top sends no "user
+            // present" on Pixel: the lock screen never shows, so it's never dismissed). The player goes and
+            // Hive comes forward, so it never lingers as a separate window.
+            if (awake && !locked && !leaving) {
+                openHome(); leaving("unlocked while showing"); finish()
+                return
+            }
             if (awake && locked && !leaving && !CarLog.inCar(this@LockPlayerActivity) && System.currentTimeMillis() - touchedAt > SLEEP_AFTER_MS + IDLE_GRACE_MS) {
                 CarLog.lockPlayer(this@LockPlayerActivity, "left idle, the lock screen takes over so the screen can go off")
                 wentHome = true
@@ -175,6 +182,11 @@ class LockPlayerActivity : ComponentActivity() {
     }
 
     private fun unlock() {
+        // Already unlocked (face unlock): straight to Hive, no dismiss request that would never answer.
+        if (!(getSystemService(KEYGUARD_SERVICE) as KeyguardManager).isKeyguardLocked) {
+            openHome(); leaving("back after unlock"); finish()
+            return
+        }
         (getSystemService(KEYGUARD_SERVICE) as KeyguardManager).requestDismissKeyguard(this, object : KeyguardManager.KeyguardDismissCallback() {
             override fun onDismissSucceeded() { openHome(); leaving("swiped up"); finish() }
         })

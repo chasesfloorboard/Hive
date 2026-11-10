@@ -284,7 +284,7 @@ test('the Favorites pipeline diagnostic logs full pipeline counts without changi
     'favoriteSystemKey', 'favoriteRules'
   ]) assert.match(b, new RegExp(key));
   assert.match(b, /evaluateSmartPlaylist\(favorites\)/);
-  assert.match(b, /console\.info\('\[Beehive\] FAVORITES PIPELINE DIAGNOSTIC'/);
+  assert.match(b, /console\.info\('\[Hive\] FAVORITES PIPELINE DIAGNOSTIC'/);
   assert.match(renderer, /FAVORITES PIPELINE DIAGNOSTIC/);
 });
 
