@@ -3093,6 +3093,7 @@ function startTagReaderWorker(slot) {
         const pending = worker.pending.get(String(msg.id));
         if (!pending) continue;
         worker.pending.delete(String(msg.id));
+        if (pending.timer) clearTimeout(pending.timer);
         if (msg.ok) pending.resolve(msg.result); else pending.reject(new Error(msg.error || 'Native tag helper error'));
       } catch (err) { crashDebug('TAGREADER invalid response', { message: err.message }); }
     }
@@ -3100,7 +3101,7 @@ function startTagReaderWorker(slot) {
   proc.stderr.on('data', chunk => { const text = String(chunk || '').trim(); if (text) crashDebug('TAGREADER stderr', text); });
   proc.on('error', err => crashDebug('TAGREADER process error', { message: err.message }));
   proc.on('exit', () => {
-    for (const pending of worker.pending.values()) pending.reject(new Error('Native tag reader exited.'));
+    for (const pending of worker.pending.values()) { if (pending.timer) clearTimeout(pending.timer); pending.reject(new Error('Native tag reader exited.')); }
     worker.pending.clear();
     if (tagReaderWorkers[slot] === worker) tagReaderWorkers[slot] = null;
   });
@@ -3117,14 +3118,27 @@ function pickTagReaderWorker() {
   }
   return best;
 }
+const TAG_HELPER_REQUEST_TIMEOUT_MS = 20000; // a tag read is sub-second; 20s with no reply means the worker is wedged
 function runTagHelper(request) {
   const worker = pickTagReaderWorker();
   const id = String(++tagReaderSeq);
   const payload = { ...request, id };
   return new Promise((resolve, reject) => {
-    worker.pending.set(id, { resolve, reject });
+    const entry = { resolve, reject, timer: null };
+    // Without this a worker that wedges on one request leaves its caller's Promise unresolved forever
+    // (only a process *exit* rejects pending requests, and a hang is not an exit). On timeout, recycle
+    // the worker — its exit handler rejects any other in-flight requests — and fail just this call. The
+    // timer is unref'd so a pending tag read never keeps the app from quitting.
+    entry.timer = setTimeout(() => {
+      if (worker.pending.get(id) !== entry) return;
+      worker.pending.delete(id);
+      try { worker.proc.kill('SIGKILL'); } catch {}
+      reject(new Error('Native tag helper timed out.'));
+    }, TAG_HELPER_REQUEST_TIMEOUT_MS);
+    entry.timer.unref?.();
+    worker.pending.set(id, entry);
     try { worker.proc.stdin.write(JSON.stringify(payload) + '\n'); }
-    catch (err) { worker.pending.delete(id); reject(err); }
+    catch (err) { clearTimeout(entry.timer); worker.pending.delete(id); reject(err); }
   });
 }
 
