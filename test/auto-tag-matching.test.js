@@ -90,6 +90,16 @@ test('buildAutoTagMapping uses safe by-elimination for a lone leftover file/trac
   assert.equal(map[0].score, 50);
 });
 
+test('buildAutoTagMapping does NOT eliminate a COMPLETE leftover file onto the wrong release', () => {
+  // A file with real, complete metadata that matches no remote track by score must be left
+  // untouched — never force-tagged onto whatever track is left over (that would move a song to
+  // another release). Only an INCOMPLETE leftover file is eligible for by-elimination.
+  const locals = [{ path: '/m/real.mp3', title: 'My Real Song', artist: 'Real Artist', album: 'Real Album', albumArtist: 'Real Artist', track: '5' }];
+  const remotes = [{ title: 'Some Other Track', position: '1', artist: 'Someone Else' }];
+  const map = m.buildAutoTagMapping(locals, remotes);
+  assert.deepEqual(map, [], 'a complete leftover file keeps its own release (no by-elimination)');
+});
+
 test('buildAutoTagMapping does NOT eliminate when more than one file or track is left', () => {
   const locals = [{ path: '/m/a.mp3', title: '' }, { path: '/m/b.mp3', title: '' }];
   const remotes = [{ title: 'One', position: '1' }, { title: 'Two', position: '2' }];

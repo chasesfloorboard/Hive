@@ -74,6 +74,7 @@
       imgs = [];
       items = [];
       idx = 0;
+      decoded.clear(); // nothing is rotating; release the decoded bitmaps
     }
 
     async function start(coverItems, imgEls) {
@@ -89,6 +90,12 @@
       items = nextItems;
       imgs = nextImgs;
       idx = 0;
+      // Bound the decode cache to the current track's covers. Without this, `decoded` grew by
+      // every distinct cover for the whole session (each entry a full decoded bitmap) — a slow
+      // leak over a long listen. The hot path (a single track's covers rotating every 4s) stays
+      // cached because all its sources are in the live set.
+      const liveSources = new Set(items.map(sourceFor));
+      for (const key of decoded.keys()) { if (!liveSources.has(key)) decoded.delete(key); }
       await preload(sourceFor(items[0]));
       if (token !== generation) return;
       apply();

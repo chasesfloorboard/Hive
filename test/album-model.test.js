@@ -54,3 +54,17 @@ test('buildAlbums groups by album, orders tracks, sorts albums by year then titl
   assert.equal(later.cover, 'cover:/b2', 'cover resolved from the first-encountered track via the injected resolver');
   assert.equal(later.tracks.length, 2);
 });
+
+test('buildAlbums does not throw when a track has no album tag (untitled album sorts safely)', () => {
+  const cover = () => '';
+  const tracks = [
+    { path: '/z', albumArtist: 'X', album: 'Titled', year: 2005, track: 1 },
+    { path: '/u', artist: 'Someone', year: 2003, track: 1 }, // no album tag at all -> title undefined
+  ];
+  let albums;
+  assert.doesNotThrow(() => { albums = buildAlbums(tracks, cover); }, 'one untitled album must not abort the whole view');
+  assert.equal(albums.length, 2);
+  // The untitled album sorts first (year 2003) and its title coerces to '' rather than throwing.
+  assert.equal(albums[0].year, 2003);
+  assert.equal(String(albums[0].title || ''), '');
+});

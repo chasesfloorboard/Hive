@@ -5185,6 +5185,9 @@ function queueDeferredPlayCountEmbed(trackPath) {
 
 async function embedPlayCountDelta(trackPath, delta) {
   if (isVirtualTrackPath(trackPath)) return { embedded: false };
+  // Never embed a play count into a file outside the configured library folders (a stats record can
+  // point outside via an imported playlist). The in-app play count still counts; only the file is spared.
+  if (!(await isTrackPathAllowedInLibrary(trackPath))) return { embedded: false };
   const amount = Math.max(0, Math.floor(Number(delta) || 0));
   if (!amount) return { embedded: false, pCount: await readEmbeddedPlayCount(trackPath) };
   return withMusicBeeWriteLock(trackPath, async () => {
@@ -6180,7 +6183,7 @@ const {
   withMusicBeeWriteLock,
   createMetadataTempPath,
   commitMetadataTemp,
-  embedRatingInFile,
+  embedRatingInFile: embedRatingInFileUnguarded,
   performWriteArtwork,
   performModifyArtwork,
   performRemoveFrontArtwork,
@@ -6189,6 +6192,16 @@ const {
   performWriteTags,
   artworkArrangementMatches,
 } = metadataWriter;
+
+// Every rating file write must respect the library boundary. A stats/track record can point OUTSIDE
+// the configured library folders (e.g. an imported playlist referencing an external file), and the
+// 1.0 security fix only wired the guard into the artwork/tag handlers and the batch queue — the direct
+// rating paths (track:setRating, the deferred playback-protected write, and tracks:embedRatings) reached
+// the writer unguarded. Wrapping the writer itself guards all of them in one place.
+async function embedRatingInFile(trackPath, rating) {
+  if (!(await isTrackPathAllowedInLibrary(trackPath))) throw new Error(LIBRARY_BOUNDARY_ERROR);
+  return embedRatingInFileUnguarded(trackPath, rating);
+}
 
 // Direct single-file APIs remain available to the artwork editor, but all
 // multi-file Save operations use the background batch queue below. This keeps
@@ -7582,7 +7595,10 @@ function mp4LoveValuesFromBuffer(input) {
 
 // Under the per-path write lock every other writer holds, so a queued Love and a rating from the
 // phone landing on the same file can't each rename their own copy over the other's.
-function embedLoveInFile(trackPath, loved) {
+async function embedLoveInFile(trackPath, loved) {
+  // Same library-boundary gate the artwork/tag writers use: never write Love into a file outside the
+  // configured library folders (repair and batch callers reach this writer too).
+  if (!(await isTrackPathAllowedInLibrary(trackPath))) throw new Error(LIBRARY_BOUNDARY_ERROR);
   return withMusicBeeWriteLock(trackPath, () => embedLoveInFileLocked(trackPath, loved));
 }
 async function embedLoveInFileLocked(trackPath, loved) {
@@ -8040,6 +8056,9 @@ async function setLoveForSingleTrack(evt, trackPath, loved) {
   if (!trackPath) throw new Error('Track path is required.');
   const value = !!loved;
   const absolutePath = path.resolve(String(trackPath));
+  // Single-track Love uses the metadata-worker path (not embedLoveInFile), so it needs its own guard:
+  // a track record pointing outside the configured library folders must not have its file rewritten.
+  if (!(await isTrackPathAllowedInLibrary(absolutePath))) throw new Error(LIBRARY_BOUNDARY_ERROR);
   const recoveryJob = { id:crypto.randomUUID(), kind:'love', path:absolutePath, loved:value, createdAt:Date.now() };
   await persistMetadataJob(recoveryJob, 'running', 1, '');
   const workerPath = runtimeResourcePath(path.join('app','workers','metadata-worker.js'));
@@ -8174,6 +8193,15 @@ ipcMain.handle('tracks:setLove', async (evt, trackPaths = [], loved) => {
     );
     paths = requestedPaths.filter(p => !alreadyLoved.has(p));
     results.skipped = requestedPaths.length - paths.length;
+  }
+  // Never rewrite files outside the configured library folders (a track record can point outside via an
+  // imported playlist). Drop them before dispatch and report them as errors, like the single-file writers.
+  {
+    const checked = await Promise.all(paths.map(async p => ({ p, ok: await isTrackPathAllowedInLibrary(p) })));
+    for (const c of checked) {
+      if (!c.ok) { results.failed++; results.errors.push({ path: c.p, error: LIBRARY_BOUNDARY_ERROR }); }
+    }
+    paths = checked.filter(c => c.ok).map(c => c.p);
   }
   const total = paths.length;
   if (!total) {

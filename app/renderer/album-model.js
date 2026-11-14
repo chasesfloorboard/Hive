@@ -52,7 +52,10 @@
     }
     const list = Array.from(map.values());
     for (const a of list) a.tracks.sort(albumTrackCompare);
-    list.sort((a, b) => (a.year || 0) - (b.year || 0) || a.title.localeCompare(b.title));
+    // a.title is t.album, which is undefined for a track with no album tag (the "unknown album"
+    // case). Guard it (as albumTrackCompare does) — a bare undefined.localeCompare() here would
+    // throw inside sort() and abort the entire Albums view over one untitled album.
+    list.sort((a, b) => (a.year || 0) - (b.year || 0) || collator.compare(String(a.title || ''), String(b.title || '')));
     return list;
   }
 

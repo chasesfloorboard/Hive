@@ -63,6 +63,24 @@ test('updateTransportSync on a missing/corrupt file still writes a valid record'
   } finally { await fsp.rm(dir, { recursive: true, force: true }); }
 });
 
+test('updateTransportSync skips the write on a transient read error, keeping the saved queue', async () => {
+  const { dir, statePath, store } = await sandbox(() => 5000);
+  try {
+    // Seed a good queue on disk.
+    store.saveSnapshotSync({ paths: ['keep1.flac', 'keep2.flac'], currentIndex: 1, position: 5, queueSavedAt: 99 });
+    const good = fs.readFileSync(statePath(), 'utf8');
+    // A store whose reads fail with a transient filesystem error (writes would still succeed).
+    const flakyFs = Object.assign({}, fs, {
+      readFileSync() { const e = new Error('simulated drive hiccup'); e.code = 'EIO'; throw e; }
+    });
+    const flakyStore = createPlaybackStateStore({ fs: flakyFs, path, statePath, now: () => 8000 });
+    const r = flakyStore.updateTransportSync({ position: 999, currentIndex: 0, currentPath: 'keep1.flac' });
+    assert.equal(r, null, 'the transport update is skipped when the existing file cannot be read');
+    assert.equal(fs.readFileSync(statePath(), 'utf8'), good, 'the saved queue on disk is left intact, not clobbered');
+    assert.equal(fs.existsSync(`${statePath()}.tmp`), false, 'no temp file left from the skipped write');
+  } finally { await fsp.rm(dir, { recursive: true, force: true }); }
+});
+
 test('writeDurableSync leaves no temp file behind on success', async () => {
   const { dir, statePath, store } = await sandbox();
   try {

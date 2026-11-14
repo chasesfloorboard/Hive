@@ -69,10 +69,23 @@ function createPlaybackStateStore({ fs, path, statePath, now = () => Date.now() 
     return payload;
   }
 
-  // Transport-only merge-and-save (ipc playback-state:updateTransportSync). Returns the written payload.
+  // Transport-only merge-and-save (ipc playback-state:updateTransportSync). Returns the written
+  // payload, or null when the update was skipped to protect a queue we couldn't read.
   function updateTransportSync(state) {
     let existing = {};
-    try { existing = JSON.parse(fs.readFileSync(statePath(), 'utf8')) || {}; } catch {}
+    try {
+      existing = JSON.parse(fs.readFileSync(statePath(), 'utf8')) || {};
+    } catch (err) {
+      // A filesystem read error (code set, and not "file absent") means the file is probably
+      // still good on disk and we just couldn't read it this instant — a transient I/O error,
+      // which the exFAT drives this module targets do throw. mergeTransport({}, state) drops the
+      // queue (no paths/version/selection), so overwriting now with a transport-only record would
+      // lose the saved queue. Skip this ~2s update instead; the next good read recovers it.
+      if (err && typeof err.code === 'string' && err.code !== 'ENOENT') return null;
+      // ENOENT (first run) or unparseable JSON (genuinely corrupt content we successfully read):
+      // there is no recoverable queue, so writing a fresh valid record is the right move.
+      existing = {};
+    }
     const payload = mergeTransport(existing, state);
     writeDurableSync(payload);
     return payload;

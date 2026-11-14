@@ -75,8 +75,12 @@ test('rating, artwork, general metadata, and Love writes for the same file are s
   }
   const loveStart = main.indexOf('async function setLoveForSingleTrack(');
   assert.ok(loveStart >= 0, 'setLoveForSingleTrack must exist');
-  const loveBlock = main.slice(loveStart, loveStart + 1500);
+  // End the slice at the next function so it is robust to the body growing (e.g. the added
+  // library-boundary guard) rather than depending on a fixed character count.
+  const loveEnd = main.indexOf('async function setLoveForSingleTrackLocked(', loveStart);
+  const loveBlock = main.slice(loveStart, loveEnd > loveStart ? loveEnd : loveStart + 1800);
   assert.match(loveBlock, /withMusicBeeWriteLock\(absolutePath/, 'Love writes must acquire the same shared per-path write lock');
+  assert.match(loveBlock, /if \(!\(await isTrackPathAllowedInLibrary\(absolutePath\)\)\) throw new Error\(LIBRARY_BOUNDARY_ERROR\);/, 'single-track Love must also reject a path outside the library');
 
   // Bulk Love (tracks:setLove) dispatches each file to a worker and only
   // learns the outcome later via an event-driven message/timeout/error
@@ -88,6 +92,7 @@ test('rating, artwork, general metadata, and Love writes for the same file are s
   const nextHandler = main.indexOf("\nipcMain.handle(", bulkStart + 1);
   const bulkBlock = main.slice(bulkStart, nextHandler >= 0 ? nextHandler : bulkStart + 12000);
   assert.match(bulkBlock, /withMusicBeeWriteLock\(job\.path, \(\) => new Promise\(resolve => \{/, 'each bulk Love job must acquire the shared per-path lock for its whole in-flight duration');
+  assert.match(bulkBlock, /isTrackPathAllowedInLibrary\(p\)/, 'bulk Love must drop paths outside the library before dispatch');
   assert.match(bulkBlock, /job\.releaseLock = resolve;/);
   assert.match(bulkBlock, /job\.releaseLock\?\.\(\);/, 'a completed job must release the lock it acquired');
   assert.match(bulkBlock, /timedOutJob\.releaseLock\?\.\(\);/, 'a timed-out job must also release the lock it acquired, not leave it held forever');

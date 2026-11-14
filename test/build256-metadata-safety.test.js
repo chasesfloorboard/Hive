@@ -108,6 +108,40 @@ test('every metadata/artwork write entry point rejects a path outside the config
   assert.match(batchBlock, /errors\.push\(\{path:job\.path,error:LIBRARY_BOUNDARY_ERROR\}\);/);
 });
 
+test('Love, Rating and play-count file writes also respect the library boundary', () => {
+  // The 1.0 fix wired the guard into the artwork/tag handlers and the batch queue, but the direct
+  // stat-write paths (Rating, Love, play-count) reached their writers unguarded, so a track record
+  // pointing outside the configured library could still have its file rewritten by an ordinary
+  // Love/Rating/play edit. These writers are deep in main.js (not independently require-able), so assert
+  // at the source that each now gates on isTrackPathAllowedInLibrary.
+  function blockAfter(marker, endMarker) {
+    const start = main.indexOf(marker);
+    assert.ok(start >= 0, `expected to find ${marker}`);
+    const end = main.indexOf(endMarker, start);
+    assert.ok(end > start, `expected ${endMarker} after ${marker}`);
+    return main.slice(start, end);
+  }
+
+  // Rating: every rating file write goes through the embedRatingInFile wrapper, which guards once for all
+  // callers (track:setRating, the deferred playback-protected write, and the tracks:embedRatings bulk path).
+  assert.match(main, /embedRatingInFile: embedRatingInFileUnguarded,/, 'the raw writer must be imported under a guarded alias');
+  const ratingWrapper = blockAfter('async function embedRatingInFile(trackPath, rating) {', '\n}');
+  assert.match(ratingWrapper, /if \(!\(await isTrackPathAllowedInLibrary\(trackPath\)\)\) throw new Error\(LIBRARY_BOUNDARY_ERROR\);/, 'rating writes must reject out-of-library paths');
+  assert.match(ratingWrapper, /return embedRatingInFileUnguarded\(trackPath, rating\);/, 'the wrapper must delegate to the raw writer only after the guard');
+
+  // Love via the shared embedLoveInFile writer (repair + batch callers).
+  const loveWriter = blockAfter('async function embedLoveInFile(trackPath, loved) {', '\n}');
+  assert.match(loveWriter, /if \(!\(await isTrackPathAllowedInLibrary\(trackPath\)\)\) throw new Error\(LIBRARY_BOUNDARY_ERROR\);/, 'embedLoveInFile must reject out-of-library paths');
+
+  // Love via the single-track metadata-worker path (does not go through embedLoveInFile).
+  const loveSingle = blockAfter('async function setLoveForSingleTrack(evt, trackPath, loved) {', 'const recoveryJob');
+  assert.match(loveSingle, /if \(!\(await isTrackPathAllowedInLibrary\(absolutePath\)\)\) throw new Error\(LIBRARY_BOUNDARY_ERROR\);/, 'single-track Love must reject out-of-library paths');
+
+  // Play count: skip the file embed (keep the in-app stat) for an out-of-library file rather than throw.
+  const playCount = blockAfter('async function embedPlayCountDelta(trackPath, delta) {', 'const amount =');
+  assert.match(playCount, /if \(!\(await isTrackPathAllowedInLibrary\(trackPath\)\)\) return \{ embedded: false \};/, 'play-count embed must skip out-of-library files');
+});
+
 test('album auto-tag maps every track conservatively and writes only changed metadata', () => {
   // The conservative matching/mapping moved to auto-tag-matching.js (full cases in
   // test/auto-tag-matching.test.js); assert the safety behaviours behaviourally here.

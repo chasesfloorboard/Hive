@@ -105,8 +105,12 @@
       const remainingLocals = locals.filter(x => !usedLocal.has(x.index));
       const remainingRemotes = remotes.filter(x => !usedRemote.has(x.index));
       // If the album has exactly one incomplete local file and exactly one remote
-      // track left, elimination is safe and avoids position-based corruption.
-      if (remainingLocals.length === 1 && remainingRemotes.length === 1) {
+      // track left, elimination is safe and avoids position-based corruption. The
+      // `needs` guard is the point: a COMPLETE leftover file (real title/artist/album)
+      // must never be force-tagged onto whatever track happens to be left over — that
+      // would re-tag a song onto the wrong release. A complete file that matched nothing
+      // by score is simply left alone (it keeps its own release).
+      if (remainingLocals.length === 1 && remainingRemotes.length === 1 && remainingLocals[0].needs) {
         mapping.push({ localIndex:remainingLocals[0].index, remoteIndex:remainingRemotes[0].index, score:50, local:remainingLocals[0].track, remote:remainingRemotes[0].track, byElimination:true });
       }
       return mapping;
