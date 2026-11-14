@@ -1,9 +1,11 @@
 name: Hive Mobile
 
-# Builds Hive Mobile when its code changes on main, and when its version (versionCode in
-# mobile/android/app/build.gradle.kts) is newer than the one in the "hive-mobile" release,
-# replaces that release's HiveMobile.apk and HiveMobile.json. Installed copies update from there
-# when Hive on the PC can't be reached.
+# Builds Hive Mobile when its code changes on main. When its version (versionCode in
+# mobile/android/app/build.gradle.kts) is newer than what a release already has, it replaces that
+# release's HiveMobile.apk and HiveMobile.json. It publishes to BOTH the stable "hive-mobile"
+# release and the "hive-mobile-beta" release (the one an opted-in test device reads), each checked
+# independently so a re-run never downgrades either. Installed copies update from their release when
+# Hive on the PC can't be reached.
 #
 # The APK is signed with the HIVE_MOBILE_KEYSTORE secret (a base64 Android keystore whose key is
 # "androiddebugkey", passwords "android", as Android's debug keystore), passed to the build as
@@ -76,13 +78,19 @@ jobs:
           gradle=mobile/android/app/build.gradle.kts
           code=$(grep -oP 'versionCode = \K[0-9]+' "$gradle")
           name=$(grep -oP 'versionName = "\K[^"]+' "$gradle")
-          published=$(curl -sfL "https://github.com/${GITHUB_REPOSITORY}/releases/download/hive-mobile/HiveMobile.json" | jq -r '.versionCode // 0' || echo 0)
-          if [ "$code" -le "${published:-0}" ]; then
-            echo "Hive Mobile $name ($code) is not newer than the release ($published); nothing to publish."
-            exit 0
-          fi
           cp mobile/android/app/build/outputs/apk/mobile/release/app-mobile-release.apk HiveMobile.apk
           jq -n --argjson code "$code" --arg name "$name" --argjson size "$(stat -c %s HiveMobile.apk)" --arg sha "$(sha256sum HiveMobile.apk | cut -d' ' -f1)" \
             '{versionCode:$code, versionName:$name, size:$size, sha256:$sha}' > HiveMobile.json
           cat HiveMobile.json
-          gh release upload hive-mobile --clobber -R "$GITHUB_REPOSITORY" HiveMobile.apk HiveMobile.json
+          # Publish to the stable release and the beta release (an opted-in test device reads the beta).
+          # Each is updated only when this build is newer than what it already has, so a re-run or an
+          # unrelated mobile change never downgrades either release.
+          for tag in hive-mobile hive-mobile-beta; do
+            have=$(curl -sfL "https://github.com/${GITHUB_REPOSITORY}/releases/download/${tag}/HiveMobile.json" | jq -r '.versionCode // 0' || echo 0)
+            if [ "$code" -le "${have:-0}" ]; then
+              echo "Hive Mobile $name ($code) is not newer than $tag (${have:-0}); skipping it."
+              continue
+            fi
+            echo "Publishing Hive Mobile $name ($code) to $tag (was ${have:-0})."
+            gh release upload "$tag" --clobber -R "$GITHUB_REPOSITORY" HiveMobile.apk HiveMobile.json
+          done
