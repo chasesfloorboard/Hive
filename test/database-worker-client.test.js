@@ -68,7 +68,16 @@ test('isReady()/setReady() reflect spawn and external flips', () => {
 test('a wedged worker request times out, kills the worker, and rejects', async () => {
   const { client, procs } = makeClient({ requestTimeoutMs: 20 });
   const p = client.databaseRequest('replace_library');
-  await assert.rejects(p, /timed out/);
+  // The client unref()s its timeout timer (a pending request must never hold the app open on
+  // quit), so on an otherwise-idle event loop the timer would not keep the loop alive long
+  // enough to fire. Hold a ref'd keepalive across the await so the 20ms timeout actually runs
+  // here; without it the loop drains first and the test cancels ("resolution still pending").
+  const keepAlive = setInterval(() => {}, 5);
+  try {
+    await assert.rejects(p, /timed out/);
+  } finally {
+    clearInterval(keepAlive);
+  }
   assert.equal(procs[0].killed, true, 'the wedged worker was recycled');
 });
 
