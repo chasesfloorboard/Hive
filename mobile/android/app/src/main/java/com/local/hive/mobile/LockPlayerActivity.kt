@@ -27,7 +27,12 @@ class LockPlayerActivity : ComponentActivity() {
     private val vm: MainViewModel by viewModels()
 
     private val unlocked = object : BroadcastReceiver() {
-        override fun onReceive(context: Context, intent: Intent) { openHome(); leaving("unlocked"); finish() }
+        override fun onReceive(context: Context, intent: Intent) {
+            // In the car the phone is held unlocked (face/extend-unlock), so USER_PRESENT fires without the
+            // user leaving -- don't take it as "done with the player" there; Home still sends it away.
+            if (CarLog.inCar(context)) return
+            openHome(); leaving("unlocked"); finish()
+        }
     }
     // Close the instant the keyguard unlocks (face/fingerprint). This is event-driven, so the player is
     // never seen past the unlock -- not even the ~1s the old idle poll could leave it. (API 34+; the idle
@@ -37,7 +42,7 @@ class LockPlayerActivity : ComponentActivity() {
             KeyguardManager.KeyguardLockedStateListener { locked ->
                 // Just finish — the keyguard is mid-dismiss here, so launching Hive now paints a black
                 // window. Finishing reveals whatever is behind (Hive if the user was in it, already drawn).
-                if (!locked && !leaving && !isFinishing) { leaving("keyguard unlocked"); finish() }
+                if (!locked && !CarLog.inCar(this@LockPlayerActivity) && !leaving && !isFinishing) { leaving("keyguard unlocked"); finish() }
             }
         else null
     /** Set when the player goes because it should (unlocked, swiped up): nothing brings it back then. */
@@ -75,7 +80,7 @@ class LockPlayerActivity : ComponentActivity() {
             // Unlocked while the player was showing — fallback to the event-driven keyguard listener (and
             // the only path on < API 34): the player belongs over the lock screen only, so once the phone is
             // unlocked it gets out of the way and Hive comes forward, never lingering as a separate window.
-            if (awake && !locked && !leaving) {
+            if (awake && !locked && !CarLog.inCar(this@LockPlayerActivity) && !leaving) {
                 openHome(); leaving("unlocked while showing"); finish()
                 return
             }
@@ -107,7 +112,7 @@ class LockPlayerActivity : ComponentActivity() {
         } else if (steppedAside) {
             steppedAside = false
             val locked = (getSystemService(KEYGUARD_SERVICE) as KeyguardManager).isKeyguardLocked
-            if (locked && !leaving && !isFinishing) { CarLog.lockPlayer(this, "call over, comes back"); showIfWanted(this) }
+            if ((locked || CarLog.inCar(this)) && !leaving && !isFinishing) { CarLog.lockPlayer(this, "call over, comes back"); showIfWanted(this) }
         }
     }
 
@@ -175,7 +180,7 @@ class LockPlayerActivity : ComponentActivity() {
         // Opened (or still here) with the phone already unlocked: nothing to cover, so get out of the way at
         // once -- just finish, so the task behind (what the user was in) shows as it is. Do NOT launch Hive
         // here: starting an activity mid keyguard-dismiss paints a black window.
-        if (!(getSystemService(KEYGUARD_SERVICE) as KeyguardManager).isKeyguardLocked) { leaving("phone not locked"); finish(); return }
+        if (!(getSystemService(KEYGUARD_SERVICE) as KeyguardManager).isKeyguardLocked && !CarLog.inCar(this)) { leaving("phone not locked"); finish(); return }
     }
 
     /**
@@ -189,10 +194,12 @@ class LockPlayerActivity : ComponentActivity() {
         super.onStop()
         window.decorView.removeCallbacks(idleWatch)
         if (leaving || wentHome || isFinishing || isChangingConfigurations) return
-        val locked = (getSystemService(KEYGUARD_SERVICE) as KeyguardManager).isKeyguardLocked
         val awake = (getSystemService(POWER_SERVICE) as android.os.PowerManager).isInteractive
         CarLog.lockPlayer(this, "pushed away")
-        if (!locked || !awake || !CarLog.inCar(this)) return
+        // Come back only in the car and only while the screen is on. Don't require the keyguard to report
+        // "locked": in the car the phone is held unlocked, so that check never passed and the player, once
+        // pushed aside by Android Auto's takeover, never returned.
+        if (!awake || !CarLog.inCar(this)) return
         // Only Android Auto's takeover as the phone wakes is undone. Anything later (Home, whether or
         // not Android reported it as Home, or an app the user opened) is the user's choice and stands.
         if (System.currentTimeMillis() - screenChangedAt > CAR_TAKEOVER_MS) return

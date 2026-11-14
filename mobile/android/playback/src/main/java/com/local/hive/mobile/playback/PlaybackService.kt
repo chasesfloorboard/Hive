@@ -271,11 +271,18 @@ class PlaybackService : MediaLibraryService() {
             override fun onReceive(context: Context, intent: Intent) {
                 val locked = (getSystemService(KEYGUARD_SERVICE) as android.app.KeyguardManager).isKeyguardLocked
                 bridge.lockScreenChanged()
+                // Diagnostic (only while Android Auto is connected, so it never touches normal use): record
+                // every screen on/off with the full keyguard/screen/car state. A drive where the player never
+                // appears then shows whether SCREEN_ON even arrives in the car and how the phone reports its
+                // lock state — the two unknowns behind "it doesn't pop up in the car". Cleared each drive.
+                if (CarLog.carConnected) CarLog.lockPlayer(this@PlaybackService, "screen ${if (intent.action == Intent.ACTION_SCREEN_ON) "ON" else "OFF"} received; wants=${wantsLockPlayer(player)}")
                 // Only raise the player when the screen actually comes on while locked (a real wake). Launching
                 // on SCREEN_OFF used to turn the screen straight back on (the launch / full-screen-intent wakes
                 // it), which re-fired this receiver and looped every ~10s, re-posting the lock-player
                 // notification. The player now appears on the next wake instead of pre-staging while off.
-                if (intent.action != Intent.ACTION_SCREEN_ON || !locked) return
+                // In the car the phone is held unlocked (face/extend-unlock), so it never reports as locked on
+                // wake; treat "in the car" as lock-equivalent so the player can still come up there.
+                if (intent.action != Intent.ACTION_SCREEN_ON || !(locked || CarLog.inCar(context))) return
                 if (wantsLockPlayer(player)) bridge.showLockPlayerIfWanted(this@PlaybackService, bridge.wasRecentlyForeground())
             }
         }
@@ -285,10 +292,12 @@ class PlaybackService : MediaLibraryService() {
                 lastPlayingAt = System.currentTimeMillis()
                 val locked = (getSystemService(KEYGUARD_SERVICE) as android.app.KeyguardManager).isKeyguardLocked
                 val awake = (getSystemService(POWER_SERVICE) as android.os.PowerManager).isInteractive
+                if (CarLog.carConnected && isPlaying) CarLog.lockPlayer(this@PlaybackService, "play started; showing=${awake && (locked || CarLog.inCar(this@PlaybackService))}")
                 // Only raise the player if the screen is actually on. Launching it over an off screen (music
                 // starting as you connect to the car with the phone pocketed) can't show anything -- it just
-                // opens and is stopped ("pushed away") -- so wait for the next real wake instead.
-                if (isPlaying && locked && awake) bridge.showLockPlayerIfWanted(this@PlaybackService, bridge.wasRecentlyForeground())
+                // opens and is stopped ("pushed away") -- so wait for the next real wake instead. In the car
+                // the phone is held unlocked, so it never reports as locked; treat the car as lock-equivalent.
+                if (isPlaying && awake && (locked || CarLog.inCar(this@PlaybackService))) bridge.showLockPlayerIfWanted(this@PlaybackService, bridge.wasRecentlyForeground())
             }
         })
         // Listens that couldn't be sent last time go now.
