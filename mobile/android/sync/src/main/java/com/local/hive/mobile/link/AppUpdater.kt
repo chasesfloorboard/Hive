@@ -144,11 +144,15 @@ class AppUpdater(
         val file = File(dir, "HiveMobile-${update.versionCode}.apk")
         if (!(file.exists() && file.length() == update.size && sha256(file) == update.sha256)) {
             _state.value = State.Downloading(update.versionName)
-            dir.listFiles()?.forEach { it.delete() }
             val part = File(dir, file.name + ".part")
+            part.delete()
             part.outputStream().use { from.download(it) }
             if (part.length() != update.size || sha256(part) != update.sha256) { part.delete(); throw IllegalStateException("The update didn't arrive whole; it'll try again.") }
             part.renameTo(file)
+            // Only now that the new apk is in place do we drop older staged apks/parts. Deleting them
+            // BEFORE the download meant a failed re-fetch wiped the very apk the user was about to
+            // install, leaving install() stuck with nothing to fall back to.
+            dir.listFiles()?.forEach { if (it != file) it.delete() }
         }
         val wasReady = (_state.value as? State.Ready)?.file == file
         _state.value = State.Ready(update.versionName, file)
@@ -172,7 +176,13 @@ class AppUpdater(
         notifyInstalling(asked.versionName)
         scope.launch(Dispatchers.IO) {
             lock.withLock { runCatching { connection()?.let { conn -> val s = pc(conn); s.info()?.let { if (it.versionCode > installedVersion) download(s, it) } } } }
-            val ready = (_state.value as? State.Ready) ?: (_state.value as? State.Installing)?.let { State.Ready(it.versionName, it.file) } ?: return@launch
+            // Prefer a newer Ready the re-fetch produced; else the originally-staged file (which the
+            // re-fetch no longer deletes on failure); if even that is gone, fail cleanly instead of
+            // leaving the UI stuck on "Downloading" forever.
+            val ready = (_state.value as? State.Ready)
+                ?: (_state.value as? State.Installing)?.let { State.Ready(it.versionName, it.file) }
+                ?: asked.takeIf { it.file.exists() }
+            if (ready == null) { _state.value = State.Failed("Couldn't prepare the update; it'll try again."); return@launch }
             _state.value = State.Installing(ready.versionName, ready.file)
             runCatching {
                 val installer = context.packageManager.packageInstaller
@@ -247,7 +257,9 @@ class AppUpdater(
 
     companion object {
         private const val CHANNEL = "hive-updates"
-        private const val NOTIFICATION_ID = 4711
+        // Distinct from SongSync.NOTIFICATION_ID (4711): sharing it let an update notification and a
+        // song-sync notification cancel/overwrite each other (AppUpdater also cancels this id).
+        private const val NOTIFICATION_ID = 4715
         private const val INSTALLING_ID = 4714
         private const val CHECK_EVERY_MS = 10 * 60_000L
         /** Hive Mobile's own release on GitHub (tag "hive-mobile"): HiveMobile.json and HiveMobile.apk, replaced on each update. */

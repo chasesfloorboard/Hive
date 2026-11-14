@@ -55,16 +55,13 @@ class PlaybackMemory(
         if (kept.isEmpty()) return null
         val current = prefs.getString(KEY_CURRENT, null)
         val savedIndex = prefs.getInt(KEY_INDEX, 0)
-        // The same song can sit in the queue twice; prefer the saved slot if it still holds it.
-        val index = when {
-            current == null -> 0
-            ids.getOrNull(savedIndex) == current -> ids.take(savedIndex).count { it in playable }
-            else -> kept.indexOf(current)
-        }
-        val position = if (index >= 0) prefs.getLong(KEY_POSITION, 0) else 0
+        val index = resumeIndex(ids, playable.keys, kept, current, savedIndex)
+        // Keep the saved position only when we actually resumed on the saved song; if that song is
+        // gone we start somewhere else, where the old position would be meaningless (or past the end).
+        val position = if (kept.getOrNull(index) == current) prefs.getLong(KEY_POSITION, 0) else 0
         return Restored(
             items = kept.map { playable.getValue(it) },
-            index = index.coerceAtLeast(0),
+            index = index,
             positionMs = position,
             shuffle = prefs.getBoolean(KEY_SHUFFLE, false),
             repeatMode = prefs.getInt(KEY_REPEAT, Player.REPEAT_MODE_OFF),
@@ -72,6 +69,27 @@ class PlaybackMemory(
     }
 
     companion object {
+        /**
+         * Where to resume in the playable queue, never out of range. `ids` is the full saved queue;
+         * `playable` is which of those ids can still play; `kept` is the playable ids in order (what
+         * the player will actually hold); `current`/`savedIndex` are the saved cursor.
+         *
+         * The same song can appear twice, so when the saved slot still holds the current (playable)
+         * song, resume on that exact occurrence; otherwise fall back to its first occurrence. If the
+         * saved song is gone the result is clamped into [0, kept.size-1] — the old code could return
+         * `kept.size` (every playable id sat before a now-deleted current), which seeks past the end
+         * and crashes media3 with IllegalSeekPositionException.
+         */
+        fun resumeIndex(ids: List<String>, playable: Set<String>, kept: List<String>, current: String?, savedIndex: Int): Int {
+            if (kept.isEmpty()) return 0
+            val raw = when {
+                current == null -> 0
+                ids.getOrNull(savedIndex) == current && current in playable -> ids.take(savedIndex).count { it in playable }
+                else -> kept.indexOf(current)
+            }
+            return raw.coerceIn(0, kept.size - 1)
+        }
+
         /** A radio station or podcast episode, not a song. */
         fun notMusic(mediaId: String) = mediaId.startsWith("radio:") || mediaId.startsWith("pod:")
         private const val SEPARATOR = "\n"
