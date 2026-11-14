@@ -89,9 +89,22 @@ function createDriveImport({ fetch, log = () => {} }) {
     const name = song.name || (fromHeader ? decodeURIComponent(fromHeader[1]) : `${song.id}.mp3`);
     if (!isAudio(name)) throw new Error(`${name} isn't a song`);
     fs.mkdirSync(dir, { recursive: true });
-    const target = path.join(dir, safe(name.replace(/\.[^.]+$/, '')) + '.' + extOf(name));
+    const base = safe(name.replace(/\.[^.]+$/, ''));
+    const ext = extOf(name);
     const size = Number(res.headers.get('content-length')) || 0;
-    try { if (size && fs.statSync(target).size === size) { await res.body?.cancel?.(); return target; } } catch {}
+    // Two different Drive files can share a name in one folder. Keying the local file on the name alone
+    // let the second overwrite the first (or be skipped as "already here"), silently losing a song. With
+    // a known size we can tell them apart: reuse a same-name, same-size file (already downloaded), but
+    // step to "name (2).ext" when the name is held by a different-sized file. With no content-length we
+    // can't distinguish them, so keep the old single-target behaviour rather than pile up duplicates.
+    let target = path.join(dir, `${base}.${ext}`);
+    if (size) {
+      for (let n = 2; ; n++) {
+        let st; try { st = fs.statSync(target); } catch { break; }
+        if (st.size === size) { await res.body?.cancel?.(); return target; }
+        target = path.join(dir, `${base} (${n}).${ext}`);
+      }
+    }
     const part = `${target}.part`;
     const out = fs.createWriteStream(part);
     let got = 0;

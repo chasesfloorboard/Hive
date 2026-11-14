@@ -24,6 +24,7 @@
     const raf = deps.requestAnimationFrame || (win.requestAnimationFrame ? win.requestAnimationFrame.bind(win) : (cb) => cb());
 
     const resize = new RO((entries) => { for (const entry of entries) measureMarquee(entry.target); });
+    const observed = new Set(); // boxes currently observed, so detached ones can be unobserved (RO holds strong refs)
 
     function setMarqueeText(box, text) {
       if (box.dataset.marqueeText === text && box.firstElementChild?.classList.contains('marquee-track')) return;
@@ -43,11 +44,15 @@
         box.appendChild(track);
       }
       box.classList.add('marquee');
-      resize.observe(box);
+      // A ResizeObserver keeps a strong reference to every target. Prune boxes detached since the last
+      // call (e.g. tab labels replaced on a re-render) so the detached nodes are freed, not leaked.
+      for (const prev of observed) if (prev.isConnected === false) { resize.unobserve(prev); observed.delete(prev); }
+      resize.observe(box); observed.add(box);
       raf(() => measureMarquee(box));
     }
 
     function measureMarquee(box) {
+      if (box && box.isConnected === false) { resize.unobserve(box); observed.delete(box); return; }
       const track = box.firstElementChild;
       if (!track) return;
       const metrics = marqueeMetrics(track.scrollWidth, box.clientWidth);
@@ -57,7 +62,9 @@
       box.style.setProperty('--marquee-time', metrics.timeS);
     }
 
-    return { setMarqueeText, marquee, measureMarquee };
+    // Callers that remove a marquee box can release it proactively; otherwise the next marquee() prunes it.
+    function release(box) { if (box) { resize.unobserve(box); observed.delete(box); } }
+    return { setMarqueeText, marquee, measureMarquee, release };
   }
 
   const exported = { createMarquee, marqueeMetrics };

@@ -3894,21 +3894,11 @@ ipcMain.handle('library:scanChanged', async (evt, changedPaths = []) => {
       const i = cursor++;
       if (i >= existing.length) { if (pool.every(s => !s.busy)) resolve(); return; }
       const info = existing[i]; slot.busy=true; slot.job=info;
-      slot.timer=setTimeout(() => {
-        if (!slot.busy) return;
-        scanLog('INCREMENTAL SCAN TIMEOUT - preserving cached track', { file: info.path });
-        changedResults.push({ info, track: oldByPath.get(path.resolve(info.path)) || null });
-        slot.busy=false; slot.job=null; finished++;
-        // The hung worker is replaced, not reused: its late answer for this file would otherwise be
-        // taken as the answer for the next file it was given (one file's tags on another).
-        cleanup(slot);
-        const fresh = spawnScanner(); pool.splice(pool.indexOf(fresh), 1);
-        fresh.child.on('error',()=>{}); fresh.child.on('exit',()=>{});
-        slot.child = fresh.child;
-        dispatch(slot); if (finished >= existing.length) resolve();
-      }, 12000);
+      // A hung worker is recovered the same way as a crashed one (recoverSlot): its late answer for
+      // this file would otherwise be taken as the answer for the next file (one file's tags on another).
+      slot.timer=setTimeout(() => recoverSlot(slot, 'TIMEOUT'), 12000);
       const onMessage = msg => {
-        if (msg?.id !== undefined && msg.id !== i) return; // an answer for another file
+        if (msg?.id !== i) return; // only this file's answer; a worker's id-less {type:'fatal'} is left to recoverSlot
         slot.child.off('message', onMessage);
         if (slot.timer) { clearTimeout(slot.timer); slot.timer=null; }
         const old = oldByPath.get(path.resolve(info.path));
@@ -3928,9 +3918,29 @@ ipcMain.handle('library:scanChanged', async (evt, changedPaths = []) => {
       try { slot.child.send({ type:'scan', id:i, filePath:info.path, coversDir:COVERS_DIR() }); }
       catch { const old=oldByPath.get(path.resolve(info.path)); changedResults.push({info,track:old||null}); slot.busy=false; slot.job=null; finished++; dispatch(slot); if(finished>=existing.length) resolve(); }
     };
+    // A scan worker that dies mid-file (an id-less {type:'fatal'} then exit, or a plain crash) must be
+    // replaced, not left dead: otherwise every later file dispatched to this slot throws on its closed
+    // channel and is dropped, and a brand-new file dropped this way is silently never indexed. Preserve
+    // the in-flight file (its old record, or null for a new file the next scan re-catches), swap in a
+    // fresh worker, and carry on. Mirrors the timeout recovery above and the full-scan childFailure.
+    const recoverSlot = (slot, why) => {
+      if (!slot.busy || !slot.job) return; // only a crash mid-file; idle/cleanup exits are not failures
+      const info = slot.job;
+      if (slot.timer) { clearTimeout(slot.timer); slot.timer = null; }
+      scanLog(`INCREMENTAL SCAN ${why} - preserving cached track`, { file: info.path });
+      changedResults.push({ info, track: oldByPath.get(path.resolve(info.path)) || null });
+      slot.busy = false; slot.job = null; finished++;
+      cleanup(slot);
+      const fresh = spawnScanner(); pool.splice(pool.indexOf(fresh), 1);
+      fresh.child.on('error', () => recoverSlot(slot, 'WORKER CRASH'));
+      fresh.child.on('exit', () => recoverSlot(slot, 'WORKER CRASH'));
+      slot.child = fresh.child;
+      dispatch(slot); if (finished >= existing.length) resolve();
+    };
     for(let i=0;i<workerCount;i++) {
       const slot=spawnScanner();
-      slot.child.on('error',()=>{}); slot.child.on('exit',()=>{});
+      slot.child.on('error', () => recoverSlot(slot, 'WORKER CRASH'));
+      slot.child.on('exit', () => recoverSlot(slot, 'WORKER CRASH'));
     }
     for(const slot of pool) dispatch(slot);
   });

@@ -56,3 +56,28 @@ test('importing a folder downloads its songs (subfolders too, in order) into <mu
     await assert.rejects(createDriveImport({ fetch }).importLink('https://drive.google.com/drive/folders/privateFolder1', music), /Anyone with the link/);
   } finally { fs.rmSync(music, { recursive: true, force: true }); }
 });
+
+test('download keeps two same-named Drive files as distinct local files (no silent loss)', async () => {
+  const music = fs.mkdtempSync(path.join(os.tmpdir(), 'hive-drive-'));
+  const bytes = { A: Buffer.from('a'.repeat(1000)), B: Buffer.from('b'.repeat(2000)) };
+  const fetch = async (url) => {
+    const id = new URL(url).searchParams.get('id');
+    const data = bytes[id];
+    return { ok: true, status: 200, headers: new Headers({ 'content-type': 'audio/mpeg', 'content-length': String(data.length) }), body: (async function* () { yield data; })() };
+  };
+  try {
+    const di = createDriveImport({ fetch });
+    // Two different Drive files (different ids, different sizes) that share a name.
+    const a = await di.download({ id: 'A', name: 'Track.mp3' }, music);
+    const b = await di.download({ id: 'B', name: 'Track.mp3' }, music);
+    assert.notEqual(a, b, 'the second song must not overwrite or alias the first');
+    assert.equal(path.basename(a), 'Track.mp3');
+    assert.equal(path.basename(b), 'Track (2).mp3');
+    assert.equal(fs.readFileSync(a).length, 1000);
+    assert.equal(fs.readFileSync(b).length, 2000);
+    // Re-downloading the same song (same name AND size) reuses its file, not a third copy.
+    const aAgain = await di.download({ id: 'A', name: 'Track.mp3' }, music);
+    assert.equal(aAgain, a, 'an already-downloaded song is reused, not duplicated');
+    assert.equal(fs.readdirSync(music).filter(f => f.endsWith('.mp3')).length, 2);
+  } finally { fs.rmSync(music, { recursive: true, force: true }); }
+});

@@ -88,3 +88,23 @@ test('setMarqueeText rebuilds the track span and skips redundant updates', () =>
   setMarqueeText(box, 'Hello');
   assert.equal(deps._observed.length, 1, 'redundant update skipped');
 });
+
+test('marquee unobserves detached boxes so the ResizeObserver does not leak them', () => {
+  const live = new Set(), unobserved = [];
+  const RO = class { observe(t) { live.add(t); } unobserve(t) { live.delete(t); unobserved.push(t); } };
+  const deps = { document: { createElement: () => makeTrack(0) }, window: {}, ResizeObserver: RO, requestAnimationFrame: (cb) => cb() };
+  const { marquee, release } = createMarquee(deps);
+  const mk = (connected) => { const b = stubBox({ clientWidth: 100, childTrack: true, scrollWidth: 400 }); b.isConnected = connected; return b; };
+
+  const a = mk(true); marquee(a);
+  assert.ok(live.has(a), 'the box is observed');
+  // Detach `a` (as a tab re-render would) and marquee a replacement: the detached box is pruned.
+  a.isConnected = false;
+  const b = mk(true); marquee(b);
+  assert.ok(!live.has(a), 'the detached box was unobserved — no leak');
+  assert.ok(live.has(b), 'the live box is still observed');
+  assert.deepEqual(unobserved, [a]);
+  // release() unobserves a box proactively.
+  release(b);
+  assert.ok(!live.has(b), 'release() unobserves the box');
+});
