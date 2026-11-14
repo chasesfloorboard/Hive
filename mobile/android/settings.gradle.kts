@@ -14,3 +14,9 @@ dependencyResolutionManagement {
 }
 rootProject.name = "HiveMobile"
 include(":app")
+include(":core")
+include(":streaming")
+include(":widget")
+include(":playback")
+include(":sync")
+include(":soulseek")

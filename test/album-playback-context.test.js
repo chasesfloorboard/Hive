@@ -8,7 +8,9 @@ const root = path.resolve(__dirname, '..');
 const source = fs.readFileSync(path.join(root, 'app', 'renderer', 'renderer.js'), 'utf8');
 
 test('album playback always derives canonical album track order before entering the queue', () => {
-  assert.match(source, /function albumTracksForPlayback\(album\)\s*\{[\s\S]*?Number\(a\?\.disk\)[\s\S]*?Number\(a\?\.track\)[\s\S]*?songCollator\.compare/);
+  // Orders by disc (reading `disk ?? disc` so disc-only-tagged multi-disc albums play disc 1 then disc 2,
+  // not interleaved), then track, then title.
+  assert.match(source, /function albumTracksForPlayback\(album\)\s*\{[\s\S]*?a\?\.disk \?\? a\?\.disc[\s\S]*?Number\(a\?\.track\)[\s\S]*?songCollator\.compare/);
   assert.match(source, /function playAlbum\(album\)\s*\{[\s\S]*?const tracks = albumTracksForPlayback\(album\);[\s\S]*?playQueue\(tracks, 0, true\);/);
 });
 

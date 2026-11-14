@@ -20,11 +20,17 @@ test('Hive stores persistent user data in the stable profile and derives a porta
 });
 
 test('configured music folders are persisted portably and resolved back to absolute paths', () => {
-  assert.match(main, /function serializePortableFolder\(folder\)/);
-  assert.match(main, /function resolveConfiguredFolder\(folder\)/);
-  assert.match(main, /function resolveConfigFolders\(config\)/);
-  assert.match(main, /source\.map\(resolveConfiguredFolder\)/);
-  assert.match(main, /serializePortableFolder\(folder\)/);
+  // The (de)serialization logic moved to app/main/portable-folders.js (covered
+  // behaviourally in test/portable-folders.test.js). Here: confirm main.js wires the
+  // factory with the real portable root, and round-trip a folder through the module.
+  assert.match(main, /const \{ createPortableFolders \} = require\('\.\/portable-folders'\)/);
+  assert.match(main, /const \{ serializePortableFolder, resolveConfiguredFolder, resolveConfigFolders \} = createPortableFolders/);
+  assert.match(main, /portableRoot: PORTABLE_ROOT/);
+  const { createPortableFolders } = require('../app/main/portable-folders');
+  const pf = createPortableFolders({ fs, path, portableRoot: () => '/opt/Hive' });
+  const stored = pf.serializePortableFolder('/opt/Hive/Music');
+  assert.deepEqual(stored, { type: 'portable', path: 'Music' });
+  assert.equal(pf.resolveConfiguredFolder(stored), path.resolve('/opt/Hive/Music'));
 });
 
 test('audio integrity exposes a safe repair action and report actions', () => {

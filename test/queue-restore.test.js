@@ -1,23 +1,12 @@
 'use strict';
 const test = require('node:test');
 const assert = require('node:assert/strict');
-const fs = require('node:fs');
-const path = require('node:path');
 
-// renderer.js is one browser-side closure, so load just the two pure queue
-// restore helpers out of it and test what they do, not how they are written.
-const renderer = fs.readFileSync(path.join(__dirname, '..', 'app/renderer/renderer.js'), 'utf8');
-function extract(startMarker, endMarker) {
-  const start = renderer.indexOf(startMarker);
-  const end = renderer.indexOf(endMarker, start);
-  assert.ok(start >= 0 && end > start, `could not find ${startMarker}`);
-  return renderer.slice(start, end);
-}
-const { restoreQueueItems, pickQueueSnapshot } = new Function(
-  extract('function restoreQueueItems(', '// Picks the queue snapshot to restore.') +
-  extract('function pickQueueSnapshot(', 'function saveQueueSession()') +
-  'return { restoreQueueItems, pickQueueSnapshot };'
-)();
+// The pure queue restore helpers now live in their own dual-mode module
+// (app/renderer/queue-serialize.js); require them and test what they do. The
+// fine-grained unit cases live in test/queue-serialize.test.js; this file keeps
+// the end-to-end restart/shutdown-snapshot scenarios.
+const { restoreQueueItems, pickQueueSnapshot } = require('../app/renderer/queue-serialize');
 
 const A = '/music/a.flac', B = '/music/b.mp3', C = '/music/c.wav';
 const item = p => ({ path: p, source: 'local', title: `Title ${p}`, artist: 'Artist', duration: 200 });

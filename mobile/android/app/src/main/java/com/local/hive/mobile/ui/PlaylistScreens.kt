@@ -133,7 +133,7 @@ fun StreamRow(stream: StreamTrack, playing: Boolean, isPlaying: Boolean, full: B
                         SongMenuQuick(if (liked) "Loved" else "Love", if (liked) Icons.Rounded.Favorite else Icons.Rounded.FavoriteBorder, active = liked) { dismiss(); vm.setStreamLiked(stream, !liked) }
                         if (!stream.key.startsWith("pc:")) SongMenuQuick("Download", Icons.Rounded.Download) {
                             dismiss()
-                            if (com.local.hive.mobile.soulseek.SoulseekSettings(context).configured) downloadStreams(context, listOf(stream), toast) else signIn = true
+                            if (soulseekConfigured(context)) downloadStreams(context, listOf(stream), toast) else signIn = true
                         }
                     }
                     HiveMenuItem("Go to album", Icons.Rounded.Album) { dismiss(); go.album(stream) }
@@ -361,7 +361,7 @@ fun PlaylistScreen(vm: MainViewModel, id: Long, actions: TrackActions, bottomPad
                         if (!editing) {
                             val t = row.track
                             if (t != null) TrackRow(t, t.id in loved, now.trackId == t.id, now.isPlaying, actions.copy(onRemoveFromPlaylist = { remove() }), onClick = { vm.playRows(rows, i) })
-                            else StreamRow(row.stream!!, now.mediaId == row.stream.key, now.isPlaying, full, onClick = { vm.playRows(rows, i) }, onRemove = remove, vm = vm)
+                            else { val s = row.stream!!; StreamRow(s, now.mediaId == s.key, now.isPlaying, full, onClick = { vm.playRows(rows, i) }, onRemove = remove, vm = vm) }
                         } else {
                             val lifted = dragKey == k
                             Row(
@@ -484,7 +484,7 @@ fun HistoryScreen(vm: MainViewModel, actions: TrackActions, bottomPadding: Dp, o
                         PanelSlice {
                             val t = row.track
                             if (t != null) TrackRow(t, t.id in loved, now.trackId == t.id, now.isPlaying, actions, onClick = { vm.playRows(rows, i) })
-                            else StreamRow(row.stream!!, now.mediaId == row.stream.key, now.isPlaying, full, onClick = { vm.playRows(rows, i) }, vm = vm)
+                            else { val s = row.stream!!; StreamRow(s, now.mediaId == s.key, now.isPlaying, full, onClick = { vm.playRows(rows, i) }, vm = vm) }
                         }
                     }
                 }

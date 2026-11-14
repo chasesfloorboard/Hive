@@ -1,5 +1,24 @@
 # Hive - project briefing for Claude Code
 
+## Module conventions for EVERY future change (binding — this is how the ship stays clean)
+
+The goal: a bug lives in one small, named, tested file, never in a multi-thousand-line screen/ViewModel.
+
+1. **New code goes in a focused module/file, never piled into an existing large one.** The mobile app is
+   already split into Gradle modules by concern (`:core` `:streaming` `:playback` `:sync` `:soulseek`
+   `:widget`); keep that discipline. A new feature gets its own file/class in the right module; a Compose
+   screen or ViewModel that's growing past ~1k lines gets a slice pulled out, not more piled on. When you fix
+   a bug in a big file, prefer to extract the slice you touch — leave it smaller, never larger.
+2. **One concern per file.** Put shared logic in `:core` (pure, unit-testable), not copy-pasted into screens.
+3. **Every change:** build + unit tests green (`cd mobile/android && JAVA_HOME=/usr/lib/jvm/java-21-openjdk
+   bash gradlew --no-daemon testDebugUnitTest assembleDebug`), and **commit per change** — never let the
+   working tree drift (the vc177→vc188 incident: ~11 shipped betas lived only as uncommitted changes).
+4. **Tests assert behaviour, not source text.** Edit the stable per-subsystem test; don't append build-N files.
+
+The desktop app follows the same spirit (its version is in `docs/ai/ARCHITECTURE.md` → "Conventions for EVERY
+future change": `createX(deps)` factories for the main process, dual-mode `window.HiveX` modules for the
+renderer, a test per module, an eslint gate). Both apps: small, named, tested, one concern per file.
+
 ## Working from the cloud (claude.ai/code), with the user's PC off
 
 The user sometimes talks to Claude from their phone while their PC is off. A

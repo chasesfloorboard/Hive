@@ -6,11 +6,8 @@ const path = require('node:path');
 // The library search, as the phone's: a song matches when every typed word is
 // somewhere in its tags, in any order, ignoring case, accents and punctuation.
 function loadFold() {
-  const source = fs.readFileSync(path.join(__dirname, '..', 'app', 'renderer', 'renderer.js'), 'utf8');
-  const start = source.indexOf('function foldSearchText(value) {');
-  const end = source.indexOf('\n  }', start);
-  assert.ok(start >= 0 && end > start);
-  return new Function(`${source.slice(start, end + 4)}; return foldSearchText;`)();
+  // foldSearchText lives in the extracted search-text.js now (docs/ai/ARCHITECTURE.md).
+  return require('../app/renderer/search-text').foldSearchText;
 }
 
 test('search matches every word in any order, ignoring brackets, case and accents', () => {

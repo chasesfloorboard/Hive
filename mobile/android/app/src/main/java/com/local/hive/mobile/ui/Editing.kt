@@ -62,7 +62,6 @@ import androidx.compose.ui.unit.dp
 import com.local.hive.mobile.data.TagEdit
 import com.local.hive.mobile.data.TagWriter
 import com.local.hive.mobile.data.Track
-import com.local.hive.mobile.stream.AmCard
 import com.local.hive.mobile.ui.theme.Hive
 import com.local.hive.mobile.ui.theme.HiveShape
 import com.local.hive.mobile.ui.theme.HiveText
@@ -249,7 +248,6 @@ private suspend fun coverJpeg(bytes: ByteArray): ByteArray? = withContext(Dispat
 }
 
 /** Apple's covers come as any size asked for: the largest Hive keeps. */
-private fun bigCover(url: String) = url.replace(Regex("""/\d+x\d+bb\.jpg$"""), "/1400x1400bb.jpg")
 
 /**
  * One picture place in the cover editor: the front cover ([back] -1) or a back
@@ -277,12 +275,12 @@ fun CoverSheet(vm: MainViewModel, tracks: List<Track>, onDismiss: () -> Unit, on
     val first = tracks.first()
     val oneSong = tracks.size == 1
     var query by remember { mutableStateOf("${first.displayAlbumArtist} ${first.album}".trim()) }
-    var results by remember { mutableStateOf<List<AmCard>?>(null) }
+    var results by remember { mutableStateOf<List<com.local.hive.mobile.discovery.CoverChoice>?>(null) }
     var slots by remember { mutableStateOf(listOf(CoverSlot(-1, first.artworkUri))) }
     val changes = remember { androidx.compose.runtime.mutableStateMapOf<Int, Any>() }
     var selected by remember { mutableStateOf(-1) }
     var busy by remember { mutableStateOf(false) }
-    LaunchedEffect(Unit) { results = vm.findAlbums(query) }
+    LaunchedEffect(Unit) { results = vm.searchCovers(query) }
     LaunchedEffect(Unit) {
         // The back covers now: a song's own, or for an album, the first back cover its songs have.
         val backs = if (oneSong) vm.pictures(first).filter { it.back }.map { it.data }
@@ -393,22 +391,23 @@ fun CoverSheet(vm: MainViewModel, tracks: List<Track>, onDismiss: () -> Unit, on
             }
         }
         Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-            HiveField(query, { query = it }, "Search covers online", Modifier.weight(1f), onDone = { results = null; scope.launch { results = vm.findAlbums(query) } })
-            HiveButton("Search") { results = null; scope.launch { results = vm.findAlbums(query) } }
+            HiveField(query, { query = it }, "Search covers online", Modifier.weight(1f), onDone = { results = null; scope.launch { results = vm.searchCovers(query) } })
+            HiveButton("Search") { results = null; scope.launch { results = vm.searchCovers(query) } }
         }
         val found = results
         when {
             found == null -> Busy("Looking for covers…")
             found.isEmpty() -> Text("No covers found. Try other words, or choose a photo.", style = HiveText.small, color = c.textDim)
             else -> LazyVerticalGrid(GridCells.Fixed(3), Modifier.heightIn(max = 380.dp), horizontalArrangement = Arrangement.spacedBy(8.dp), verticalArrangement = Arrangement.spacedBy(8.dp)) {
-                items(found.filter { it.artwork.isNotBlank() }, key = { it.id }) { a ->
-                    val big = bigCover(a.artwork)
+                items(found.filter { it.thumbUrl.isNotBlank() }, key = { it.id }) { a ->
+                    // The grid shows the ~300px thumb; the saved copy is the ~1200px cover.
+                    val big = a.fullUrl
                     Column(Modifier.clip(RoundedCornerShape(10.dp)).clickable { pick(big) }) {
                         Box(Modifier.fillMaxWidth().aspectRatio(1f).then(if (changes[selected] == big) Modifier.border(2.dp, c.accent, HiveShape.art) else Modifier)) {
-                            Artwork(a.artwork, Modifier.fillMaxWidth().aspectRatio(1f), HiveShape.art, Icons.Rounded.Image)
+                            Artwork(a.thumbUrl, Modifier.fillMaxWidth().aspectRatio(1f), HiveShape.art, Icons.Rounded.Image)
                         }
-                        Text(a.name, style = HiveText.small, color = c.text, maxLines = 1, overflow = TextOverflow.Ellipsis, modifier = Modifier.padding(top = 4.dp))
-                        Text(a.curator.replace(Regex("""^(Album|Single|EP)\W+"""), ""), style = HiveText.small, color = c.textDim, maxLines = 1, overflow = TextOverflow.Ellipsis)
+                        Text(a.title, style = HiveText.small, color = c.text, maxLines = 1, overflow = TextOverflow.Ellipsis, modifier = Modifier.padding(top = 4.dp))
+                        Text(a.artist, style = HiveText.small, color = c.textDim, maxLines = 1, overflow = TextOverflow.Ellipsis)
                     }
                 }
             }
@@ -444,20 +443,20 @@ fun AutoTagSheet(vm: MainViewModel, tracks: List<Track>, onDismiss: () -> Unit, 
     val write = rememberWriteAccess(onToast)
     val first = tracks.first()
     var query by remember { mutableStateOf("${first.displayAlbumArtist} ${first.album}".trim()) }
-    var results by remember { mutableStateOf<List<AmCard>?>(null) }
-    var release by remember { mutableStateOf<com.local.hive.mobile.stream.AmCollection?>(null) }
+    var results by remember { mutableStateOf<List<com.local.hive.mobile.discovery.AlbumHit>?>(null) }
+    var release by remember { mutableStateOf<com.local.hive.mobile.discovery.AlbumMeta?>(null) }
     var loading by remember { mutableStateOf(false) }
     var withCover by remember { mutableStateOf(true) }
     var busy by remember { mutableStateOf(false) }
-    LaunchedEffect(Unit) { results = vm.findAlbums(query) }
+    LaunchedEffect(Unit) { results = vm.searchAlbums(query) }
 
     EditSheet(onDismiss) {
         EditHeader("Auto-tag", tracks)
         val r = release
         if (r == null) {
             Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-                HiveField(query, { query = it }, "Find the album on Apple Music", Modifier.weight(1f), onDone = { results = null; scope.launch { results = vm.findAlbums(query) } })
-                HiveButton("Search") { results = null; scope.launch { results = vm.findAlbums(query) } }
+                HiveField(query, { query = it }, "Find the album", Modifier.weight(1f), onDone = { results = null; scope.launch { results = vm.searchAlbums(query) } })
+                HiveButton("Search") { results = null; scope.launch { results = vm.searchAlbums(query) } }
             }
             val found = results
             when {
@@ -467,34 +466,34 @@ fun AutoTagSheet(vm: MainViewModel, tracks: List<Track>, onDismiss: () -> Unit, 
                     Row(Modifier.fillMaxWidth().clip(HiveShape.row).clickable {
                         loading = true
                         scope.launch {
-                            release = runCatching { vm.appleAlbum(a.url) }.getOrNull()
+                            release = runCatching { vm.albumDetails(a.id) }.getOrNull()
                             loading = false
                             if (release == null) onToast("Couldn't open that album")
                         }
                     }.padding(vertical = 6.dp), verticalAlignment = Alignment.CenterVertically) {
-                        Artwork(a.artwork, Modifier.size(52.dp), HiveShape.thumb, Icons.Rounded.Album)
+                        Artwork(a.coverUrl.ifBlank { null }, Modifier.size(52.dp), HiveShape.thumb, Icons.Rounded.Album)
                         Spacer(Modifier.width(12.dp))
                         Column(Modifier.weight(1f)) {
-                            Text(a.name, style = HiveText.rowStrong, color = c.text, maxLines = 1, overflow = TextOverflow.Ellipsis)
-                            Text(a.curator.replace(Regex("""^(Album|Single|EP)\W+"""), ""), style = HiveText.small, color = c.textDim, maxLines = 1, overflow = TextOverflow.Ellipsis)
+                            Text(a.title, style = HiveText.rowStrong, color = c.text, maxLines = 1, overflow = TextOverflow.Ellipsis)
+                            Text(listOfNotNull(a.artist.ifBlank { null }, a.year.ifBlank { null }, countOf(a.trackCount, "song").takeIf { a.trackCount > 0 }).joinToString(" · "), style = HiveText.small, color = c.textDim, maxLines = 1, overflow = TextOverflow.Ellipsis)
                         }
                     }
                 }
             }
         } else {
-            val matches = remember(r) { matchRelease(tracks, r.songs) { it.title } }
+            val matches = remember(r) { matchRelease(tracks, r.tracks) { it.title } }
             Row(verticalAlignment = Alignment.CenterVertically) {
-                Artwork(r.artwork, Modifier.size(64.dp), HiveShape.art, Icons.Rounded.Album)
+                Artwork(r.coverUrl.ifBlank { null }, Modifier.size(64.dp), HiveShape.art, Icons.Rounded.Album)
                 Spacer(Modifier.width(12.dp))
                 Column(Modifier.weight(1f)) {
-                    Text(r.name, style = HiveText.rowStrong, color = c.text, maxLines = 2, overflow = TextOverflow.Ellipsis)
-                    Text(listOfNotNull(r.curator, r.songs.firstNotNullOfOrNull { it.year.ifBlank { null } }, countOf(r.songs.size, "song")).joinToString(" · "), style = HiveText.small, color = c.textDim)
+                    Text(r.title, style = HiveText.rowStrong, color = c.text, maxLines = 2, overflow = TextOverflow.Ellipsis)
+                    Text(listOfNotNull(r.artist.ifBlank { null }, r.year.ifBlank { null }, countOf(r.tracks.size, "song")).joinToString(" · "), style = HiveText.small, color = c.textDim)
                 }
                 Text("Change", style = HiveText.rowStrong, color = c.accent, modifier = Modifier.clip(HiveShape.pill).clickable { release = null }.padding(10.dp))
             }
             HiveLabel("Your songs become")
             matches.sortedBy { it.second }.forEach { (t, i) ->
-                val s = r.songs[i]
+                val s = r.tracks[i]
                 Row(Modifier.fillMaxWidth().padding(vertical = 3.dp), verticalAlignment = Alignment.CenterVertically) {
                     Text("${i + 1}", style = HiveText.numbers, color = c.textDim, modifier = Modifier.width(28.dp))
                     Column(Modifier.weight(1f)) {
@@ -514,12 +513,12 @@ fun AutoTagSheet(vm: MainViewModel, tracks: List<Track>, onDismiss: () -> Unit, 
                 HiveButton(if (busy) "Saving…" else "Apply", primary = true, enabled = matches.isNotEmpty() && !busy) {
                     busy = true
                     scope.launch {
-                        val cover = if (withCover && r.artwork.isNotBlank()) vm.download(bigCover(r.artwork))?.let { coverJpeg(it) } else null
-                        val year = r.songs.firstNotNullOfOrNull { it.year.take(4).ifBlank { null } }
-                        val genre = r.songs.firstNotNullOfOrNull { it.genre.ifBlank { null } }
+                        val cover = if (withCover && r.coverUrl.isNotBlank()) vm.download(r.coverUrl)?.let { coverJpeg(it) } else null
+                        val year = r.year.take(4).ifBlank { null }
+                        // MusicBrainz's basic release lookup carries no genre, so genre is left as it is.
                         val edits = matches.associate { (t, i) ->
-                            val s = r.songs[i]
-                            t to TagEdit(title = s.title, artist = s.artist.ifBlank { r.curator }, album = r.name, albumArtist = r.curator, year = year, genre = genre, track = "${i + 1}")
+                            val s = r.tracks[i]
+                            t to TagEdit(title = s.title, artist = s.artist.ifBlank { r.artist }, album = r.title, albumArtist = r.artist, year = year, genre = null, track = "${i + 1}")
                         }
                         write(edits.keys.toList()) { allowed -> vm.saveEdits(edits.filterKeys { it in allowed }, cover?.let { com.local.hive.mobile.data.CoverEdit(front = it) }) { onToast(it); onDismiss() } }
                         busy = false

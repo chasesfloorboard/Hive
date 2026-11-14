@@ -17,11 +17,12 @@ const { rendererTrackPayload } = require('../app/main/scan-payload');
 // --max-old-space-size=8192 raised once before. Every other JSON write (small,
 // meant to stay human-readable for debugging) keeps its indentation.
 test('the library cache is written as compact JSON, unlike every other JSON write', () => {
-  const main = fs.readFileSync(path.join(__dirname, '..', 'app', 'main', 'main.js'), 'utf8');
-  const start = main.indexOf('async function writeJsonSafe(p, data)');
-  const end = main.indexOf('\n}', start);
+  // writeJsonSafe now lives in the extracted safe JSON layer (docs/ai/ARCHITECTURE.md).
+  const jsonStore = fs.readFileSync(path.join(__dirname, '..', 'app', 'main', 'json-store.js'), 'utf8');
+  const start = jsonStore.indexOf('async function writeJsonSafe(p, data)');
+  const end = jsonStore.indexOf('\n  }', start);
   assert.ok(start >= 0 && end > start, 'expected to find writeJsonSafe');
-  const block = main.slice(start, end);
+  const block = jsonStore.slice(start, end);
   assert.match(block, /const payload = isLibraryCache \? JSON\.stringify\(data\) : JSON\.stringify\(data, null, 2\);/);
 });
 

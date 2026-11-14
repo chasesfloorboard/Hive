@@ -144,9 +144,19 @@ fun PcAlbumScreen(vm: MainViewModel, key: String, bottomPadding: Dp, onBack: () 
                         }
                     }
                 }
-                item { PanelTop() }
-                itemsIndexed(album.tracks, key = { _, t -> t.id }) { i, t ->
-                    PanelSlice { PcTrackRow(vm, t, now.mediaId == "pc:${t.id}", now.isPlaying, t.track.takeIf { it > 0 } ?: (i + 1), subtitle = if (t.artist != album.artist) t.artist else "") { vm.playPc(album.tracks, i) } }
+                // A PC album on more than one disc gets a "Disc N" heading at each disc start, each disc
+                // in its own panel — matching the local-library album view (CollectionScreens).
+                val manyDiscs = album.tracks.mapTo(HashSet()) { it.disc }.size > 1
+                if (!manyDiscs) item { PanelTop() }
+                album.tracks.forEachIndexed { i, t ->
+                    if (manyDiscs && t.disc != album.tracks.getOrNull(i - 1)?.disc) {
+                        if (i > 0) item(key = "pb-$i") { PanelBottom() }
+                        item(key = "disc${t.disc}-$i") { YearHeading(if (t.disc > 0) "Disc ${t.disc}" else "No disc number") }
+                        item(key = "pt-$i") { PanelTop() }
+                    }
+                    item(key = t.id) {
+                        PanelSlice { PcTrackRow(vm, t, now.mediaId == "pc:${t.id}", now.isPlaying, t.track.takeIf { it > 0 } ?: (i + 1), subtitle = if (t.artist != album.artist) t.artist else "") { vm.playPc(album.tracks, i) } }
+                    }
                 }
                 item { PanelBottom() }
             }

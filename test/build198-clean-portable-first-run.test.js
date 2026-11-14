@@ -10,7 +10,8 @@ const launcher = fs.readFileSync(path.join(root, 'scripts', 'hive-launcher.sh'),
 
 test('stable profile migration is explicit and the in-project backup is the recovery source', () => {
   assert.match(main, /function configureStableDataPaths\(\)/);
-  assert.match(main, /function restoreHiveUserBackupSync\(dataRoot\)/);
+  // The backup mirror now lives in app/main/user-data-backup.js; main wires it and restores on startup.
+  assert.match(main, /restoreHiveUserBackupSync\(dataRoot\)/);
   assert.match(main, /User Data Backup/);
 });
 

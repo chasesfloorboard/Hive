@@ -5,7 +5,8 @@ import test from 'node:test';
 const renderer = fs.readFileSync(new URL('../app/renderer/renderer.js', import.meta.url), 'utf8');
 
 test('current-track artwork uses one shared rotator for player, queue, album, and expanded surfaces', () => {
-  assert.match(renderer, /const nowPlayingRotator = createCoverRotator\(\);/);
+  // One shared instance, now built from the extracted cover-rotator.js module.
+  assert.match(renderer, /const nowPlayingRotator = window\.HiveCoverRotator\.createCoverRotator\(\{ coverSrc, placeholderCover \}\);/);
   assert.match(renderer, /const targets = \[el\.pbCover, el\.npCover\];/);
   assert.match(renderer, /const queueThumb = el\.queueList\?\.querySelector/);
   assert.match(renderer, /document\.querySelectorAll\('\.album-card'\)/);

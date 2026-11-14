@@ -43,10 +43,10 @@ import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.Dp
 import androidx.compose.ui.unit.dp
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
-import com.local.hive.mobile.stream.Episode
-import com.local.hive.mobile.stream.Feed
-import com.local.hive.mobile.stream.Podcast
-import com.local.hive.mobile.stream.PodcastStore
+import com.local.hive.mobile.discovery.Episode
+import com.local.hive.mobile.discovery.Feed
+import com.local.hive.mobile.discovery.Podcast
+import com.local.hive.mobile.discovery.PodcastStore
 import com.local.hive.mobile.ui.theme.Hive
 import com.local.hive.mobile.ui.theme.HiveGlassLayers
 import com.local.hive.mobile.ui.theme.HiveShape

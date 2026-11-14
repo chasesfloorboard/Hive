@@ -14,7 +14,12 @@ test('queue virtualization positions pooled rows at their absolute queue indices
 test('lyrics normalization extracts text from common lyric object shapes instead of rendering [object Object]', () => {
   assert.match(source, /function normalizeLyricsText\(raw\)/);
   assert.match(source, /normalizeLyricsText\(raw\)/);
-  assert.match(source, /normalizeLyricsText\(common\?\.lyrics\)/);
+  // The tag-editor lyrics field moved to tag-editor-fields.js; it must route the raw
+  // (possibly object-shaped) lyrics THROUGH the injected normalizer, not String() it, so
+  // object shapes are extracted rather than coerced to [object Object].
+  const { createTagEditorFields } = require('../app/renderer/tag-editor-fields');
+  const tef = createTagEditorFields({ nativeTagValue: () => '', normalizeMetadataText: () => '', normalizeLyricsText: (raw) => `NORMALIZED:${typeof raw}` });
+  assert.equal(tef.editorTextValue({ lyrics: { plainLyrics: 'x' } }, {}, 'lyrics'), 'NORMALIZED:object');
   const scanner = fs.readFileSync(path.join(__dirname, '..', 'app', 'workers', 'scanner-worker.js'), 'utf8');
   assert.match(scanner, /normalizeMetadataText\(common\.lyrics\)/);
 });

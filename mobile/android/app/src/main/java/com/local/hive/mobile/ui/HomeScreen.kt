@@ -964,40 +964,20 @@ private fun FavoriteSquare(title: String, covers: List<Any>, round: Boolean, ico
 private fun BrowseTab(vm: MainViewModel, nav: HomeNavigation, bottom: Dp) {
     val link by vm.link.collectAsStateWithLifecycle()
     val tiles = buildList {
-        add(Triple("Apple Music", "Charts and albums", Icons.Rounded.Explore) to "apple")
-        add(Triple("Spotify", "Playlists and links", Icons.Rounded.GraphicEq) to "spotify")
+        // Apple Music / Spotify / Google Drive — present only in Hive Mobile (see browseStreamingTiles).
+        addAll(browseStreamingTiles())
         add(Triple("Radio", "Stations worldwide", Icons.Rounded.Radio) to "radio")
         add(Triple("Podcasts", "Shows and episodes", Icons.Rounded.Podcasts) to "podcasts")
-        add(Triple("Google Drive", "Import a shared folder", Icons.Rounded.CloudDownload) to "drive")
         if (link.paired) {
             add(Triple("PC library", "Every song on your PC", Icons.Rounded.Computer) to "pc")
             add(Triple("Playing on your PC", "Control it from here", Icons.Rounded.Devices) to "remote")
         }
         add(Triple("Yearly Wrap", "Your year in music", Icons.Rounded.AutoAwesome) to "wrap")
     }
-    val context = androidx.compose.ui.platform.LocalContext.current
-    val toast = LocalToast.current
     var drive by remember { mutableStateOf(false) }
-    // A Drive link already copied fills the box in.
-    if (drive) {
-        val copied = remember {
-            runCatching { (context.getSystemService(android.content.ClipboardManager::class.java)).primaryClip?.getItemAt(0)?.coerceToText(context)?.toString().orEmpty() }.getOrDefault("")
-                .takeIf { com.local.hive.mobile.soulseek.DriveLinks.parse(it) != null }.orEmpty()
-        }
-        NameDialog("Import from Google Drive", copied, "Import", onDismiss = { drive = false }, hint = "Link to a shared folder or song") { text ->
-            drive = false
-            if (com.local.hive.mobile.soulseek.DriveImportWorker.enqueue(context, text)) toast("Importing from Google Drive. It's in your downloads, and becomes a playlist when it's done.")
-            else toast("That isn't a Google Drive link. Share the folder as “Anyone with the link” and copy its link.")
-        }
-    }
-    // Popular playlists, for when you don't know what to play: Spotify's and Apple Music's front
-    // pages, taken in turn. Kept for the session by each service (30 minutes for Apple).
-    val popular by produceState(emptyList<Pair<com.local.hive.mobile.ui.ServiceCard, String>>()) {
-        val sp = runCatching { vm.spotify.picks() }.getOrDefault(emptyList()).map { ServiceCard(it.name, it.subtitle.ifBlank { "Spotify" }, it.artwork, it.url) to "spotify/c?url=${android.net.Uri.encode(it.url)}" }
-        val am = runCatching { vm.appleMusic.browse() }.getOrDefault(emptyList()).flatMap { it.cards }.filter { it.kind == "playlist" }
-            .map { val url = it.url.ifBlank { "https://music.apple.com/us/playlist/x/${it.id}" }; ServiceCard(it.name, it.curator.ifBlank { "Apple Music" }, it.artwork, url) to "apple/c?url=${android.net.Uri.encode(url)}" }
-        value = (0 until maxOf(sp.size, am.size)).flatMap { i -> listOfNotNull(sp.getOrNull(i), am.getOrNull(i)) }.distinctBy { it.first.url }.take(16)
-    }
+    if (drive) DriveImportDialog(onDismiss = { drive = false })
+    // Popular Spotify/Apple playlists (Hive Mobile only); empty in Hive Clean.
+    val popular = rememberBrowsePopular()
     LazyColumn(Modifier.fillMaxSize(), contentPadding = PaddingValues(start = 16.dp, end = 16.dp, top = 10.dp, bottom = bottom + 12.dp), verticalArrangement = Arrangement.spacedBy(12.dp)) {
         if (popular.isNotEmpty()) {
             item { Text("Popular playlists", style = HiveText.year, color = Hive.colors.text, modifier = Modifier.padding(start = 2.dp, top = 4.dp)) }

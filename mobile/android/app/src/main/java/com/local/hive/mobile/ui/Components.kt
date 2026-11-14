@@ -884,28 +884,11 @@ fun <T> CoverRow(row: List<T>, card: @Composable (item: T, modifier: Modifier) -
 /** A song Hive's old YouTube downloads saved (Music/Hive/<Artist - Title>.m4a), which a Soulseek copy can replace. */
 val Track.isYouTubeDownload: Boolean get() = folder.trim('/').equals("Music/Hive", ignoreCase = true) && fileName.endsWith(".m4a", ignoreCase = true)
 
-/**
- * A lossy song Hive downloaded itself from Soulseek (a lossless copy wasn't found then): a
- * lossless copy can still replace it. Only Hive's own files, which Android lets Hive delete.
- */
-fun Track.isLossySoulseekDownload(context: android.content.Context): Boolean {
-    val home = com.local.hive.mobile.soulseek.SoulseekSettings(context).folder.trim('/')
-    return home.isNotEmpty() && folder.trim('/').startsWith("Music/$home/", ignoreCase = true) &&
-        fileName.substringAfterLast('.').lowercase() !in setOf("flac", "wav", "alac", "aiff", "ape", "wv")
-}
+// isLossySoulseekDownload / replaceableFromSoulseek / replaceFromSoulseek moved to the StreamingSeam
+// (mobile) / its Clean no-op, so Soulseek is absent from the Play build.
 
-/** Whether a Soulseek copy can take this song's place: a YouTube download, or a lossy Soulseek one. */
-fun Track.replaceableFromSoulseek(context: android.content.Context) = isYouTubeDownload || isLossySoulseekDownload(context)
-
-/** Downloads [track] from Soulseek; the new copy takes the old one's place (see SoulseekWorker.takeOver). */
-fun replaceFromSoulseek(context: android.content.Context, track: Track, onToast: (String) -> Unit) {
-    if (!com.local.hive.mobile.soulseek.SoulseekSettings(context).configured) { onToast("Sign in to Soulseek in Settings first"); return }
-    val lossless = !track.isYouTubeDownload
-    com.local.hive.mobile.soulseek.SoulseekWorker.enqueue(context, com.local.hive.mobile.soulseek.SoulseekRequest(
-        track.displayAlbumArtist.substringBefore(",").trim(), track.album,
-        listOf(com.local.hive.mobile.soulseek.SoulseekRequest.Track(track.title, track.durationMs, replaces = track.id)), "track", losslessOnly = lossless))
-    onToast(if (lossless) "Looking for a lossless copy of ${track.title} on Soulseek" else "Getting ${track.title} from Soulseek; it replaces the old copy")
-}
+/** A small cover card for a service's playlist/album in the Browse tab (shared by both editions). */
+data class ServiceCard(val name: String, val subtitle: String, val artwork: String, val url: String)
 
 @Composable
 fun TrackMenu(expanded: Boolean, loved: Boolean, onDismiss: () -> Unit, track: Track, actions: TrackActions) {

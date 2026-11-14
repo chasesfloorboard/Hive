@@ -494,15 +494,12 @@ test('XFADE starts a companion that holds later commands until it plays, then fa
 // Opus files carry R128_* gains (Q7.8 dB relative to -23 LUFS) instead of
 // REPLAYGAIN_*; Hive converts them to ReplayGain's -18 LUFS reference (+5 dB).
 test('ReplayGain falls back to R128 gains, converted to the -18 LUFS reference', () => {
-  const fs = require('fs');
-  const path = require('path');
-  const src = fs.readFileSync(path.join(__dirname, '..', 'app', 'renderer', 'renderer.js'), 'utf8');
-  const start = src.indexOf('function r128GainToReplayGainText(raw) {');
-  assert.ok(start >= 0, 'r128GainToReplayGainText must exist');
-  const body = src.slice(start, src.indexOf('\n  }\n', start) + 4);
-  const r128GainToReplayGainText = new Function(`${body}; return r128GainToReplayGainText;`)();
+  // r128GainToReplayGainText now lives in the extracted replaygain.js (docs/ai/ARCHITECTURE.md) — require it
+  // directly instead of carving it out of renderer source; renderer still wires it (asserted below).
+  const { r128GainToReplayGainText } = require('../app/renderer/replaygain');
   assert.equal(r128GainToReplayGainText('-1280'), '0.00 dB');
   assert.equal(r128GainToReplayGainText('-2560'), '-5.00 dB');
   assert.equal(r128GainToReplayGainText(''), '');
+  const src = require('fs').readFileSync(require('path').join(__dirname, '..', 'app', 'renderer', 'renderer.js'), 'utf8');
   assert.match(src, /if \(!gainText\) gainText = r128GainToReplayGainText\(/);
 });

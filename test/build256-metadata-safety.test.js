@@ -82,9 +82,13 @@ test('Build 256: rating and Love writes stage changes before committing them', (
 // metadata:saveBatch queue (runMetadataBatch), since both ultimately reach
 // the same writer functions.
 test('every metadata/artwork write entry point rejects a path outside the configured library folders', () => {
-  assert.match(main, /async function isTrackPathAllowedInLibrary\(trackPath\) \{/);
-  const guardBlock = main.slice(main.indexOf('async function isTrackPathAllowedInLibrary'), main.indexOf('\n}', main.indexOf('async function isTrackPathAllowedInLibrary')));
+  // The guard itself now lives in app/main/library-boundary.js (docs/ai/ARCHITECTURE.md); main wires it and
+  // calls it at every write entry point (asserted below).
+  const boundary = fs.readFileSync(path.join(root, 'app/main/library-boundary.js'), 'utf8');
+  assert.match(boundary, /async function isTrackPathAllowedInLibrary\(trackPath\) \{/);
+  const guardBlock = boundary.slice(boundary.indexOf('async function isTrackPathAllowedInLibrary'), boundary.indexOf('\n  }', boundary.indexOf('async function isTrackPathAllowedInLibrary')));
   assert.match(guardBlock, /folders\.some\(folder => isPathInsideFolder\(resolved, folder\)\)/);
+  assert.match(main, /createLibraryBoundary\(\{/);
 
   for (const channel of ['track:writeArtwork', 'track:modifyArtwork', 'track:removeFrontArtwork', 'track:removeArtwork', 'track:writeTags']) {
     const start = main.indexOf(`ipcMain.handle('${channel}',`);
@@ -105,9 +109,16 @@ test('every metadata/artwork write entry point rejects a path outside the config
 });
 
 test('album auto-tag maps every track conservatively and writes only changed metadata', () => {
-  assert.match(renderer, /function autoTagNeedsMetadata\(track\)/);
-  assert.match(renderer, /function buildAutoTagMapping\(localTracks, remoteTracks\)/);
-  assert.match(renderer, /if \(candidate\.score < 45\) continue;/);
+  // The conservative matching/mapping moved to auto-tag-matching.js (full cases in
+  // test/auto-tag-matching.test.js); assert the safety behaviours behaviourally here.
+  const { buildAutoTagMapping, autoTagChangedFields, autoTagNeedsMetadata } =
+    require('../app/renderer/auto-tag-matching').createAutoTagMatching({ normalizeForSearch: v => String(v || '').toLowerCase().replace(/[^a-z0-9]+/g, '') });
+  assert.equal(autoTagNeedsMetadata({ title: '', artist: 'A', album: 'B', albumArtist: 'C' }), true);
+  // A weak positional-only guess (score < 45) is refused when the pairing is ambiguous.
+  assert.deepEqual(buildAutoTagMapping([{ path: '/a', title: '' }, { path: '/b', title: '' }], [{ title: 'One' }, { title: 'Two' }]), []);
+  // Only differing, non-empty fields are written back.
+  assert.equal(autoTagChangedFields({ path: '/a', album: 'Old' }, { title: 'T' }, { title: 'New' }).album, 'New');
+  // The renderer side still wires the mapping into the "only changed fields" preview/apply.
   assert.match(renderer, /const changed = mapped\.map\(m => \({ \.\.\.m, tags: autoTagChangedFields/);
   assert.match(renderer, /mapped\.length !== albumTracks\.length/);
   assert.match(renderer, /Only fields that differ will be changed/);

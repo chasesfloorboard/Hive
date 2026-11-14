@@ -17,7 +17,7 @@ import com.local.hive.mobile.data.StreamTrack
 import com.local.hive.mobile.data.Track
 import com.local.hive.mobile.link.DiscoveredHive
 import com.local.hive.mobile.link.HiveLinkClient
-import com.local.hive.mobile.link.TrackMatcher
+import com.local.hive.mobile.data.TrackMatcher
 import com.local.hive.mobile.playback.toMediaItem
 import kotlinx.coroutines.flow.Flow
 import kotlinx.coroutines.flow.MutableStateFlow
@@ -192,6 +192,7 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
         dao.upsertRatings(listOf(com.local.hive.mobile.data.Rating(trackId, stars.coerceAtLeast(0f), System.currentTimeMillis(), pending = true)))
         if (app.linkStore.pairing != null) app.sync.syncNow()
     }
+    // Artist photos from Deezer (keyless, compliant), or the artist's own album covers — both editions.
     suspend fun artistImage(name: String) = app.artistImages.lookup(name)
     /** Artist photos from the internet (true), or the artist's album covers (false). */
     val artistPhotos: StateFlow<Boolean> = app.artistImages.online
@@ -252,7 +253,6 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
         runCatching { cached.writeText(pc.joinToString(",")) }
         emit((pc + phone).distinct().sortedDescending())
     }
-    suspend fun lyrics(now: com.local.hive.mobile.playback.NowPlaying) = app.lyrics.find(now.artist, now.title, now.album, now.durationMs)
     suspend fun tracksById(ids: List<Long>): List<Track> = dao.tracks(ids).associateBy { it.id }.let { map -> ids.mapNotNull { map[it] } }
 
     // ---- playback ----
@@ -291,7 +291,7 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
     fun offerBackupFile(uri: android.net.Uri, onError: (String) -> Unit) = viewModelScope.launch {
         runCatching { app.phoneBackup.offerFile(uri) }.onFailure { onError(it.message ?: it.javaClass.simpleName) }
     }
-    fun restoreBackup(offer: com.local.hive.mobile.data.PhoneBackup.Offer, onError: (String) -> Unit) = viewModelScope.launch {
+    fun restoreBackup(offer: com.local.hive.mobile.link.PhoneBackup.Offer, onError: (String) -> Unit) = viewModelScope.launch {
         runCatching { app.phoneBackup.restore(offer, if (offer.pcDevice != null) app.sync.pcConnection() else null) }
             .onFailure { onError(it.message ?: it.javaClass.simpleName) }
     }
@@ -379,7 +379,7 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
     fun fillSpotifyCovers(rows: List<com.local.hive.mobile.data.PlaylistRow>) = viewModelScope.launch {
         val bare = rows.mapNotNull { it.stream }.filter { it.key.startsWith("sp:") && it.artworkUrl.isBlank() }
         if (bare.isEmpty()) return@launch
-        val covers = runCatching { app.spotify.covers(bare.map { it.key.removePrefix("sp:") }) }.getOrDefault(emptyMap())
+        val covers = runCatching { app.streamingGateway.spotifyCovers(bare.map { it.key.removePrefix("sp:") }) }.getOrDefault(emptyMap())
         val filled = bare.mapNotNull { s -> covers[s.key.removePrefix("sp:")]?.let { s.copy(artworkUrl = it) } }
         if (filled.isNotEmpty()) dao.upsertStreamTracks(filled)
     }
@@ -425,16 +425,18 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
     fun playNextRows(rows: List<PlaylistRow>) = app.player.playNextMedia(rows.mapNotNull(::mediaFor))
     fun addToQueueRows(rows: List<PlaylistRow>) = app.player.addToQueueMedia(rows.mapNotNull(::mediaFor))
 
-    // ---- Apple Music and Spotify ----
-
-    val appleMusic get() = app.appleMusic
-    val spotify get() = app.spotify
+    // ---- Apple Music and Spotify (streamed-song navigation; the service screens live on StreamingVm) ----
 
     /**
      * Where "Go to album" takes a streamed song: the album on the phone when it's here, the PC's
      * album for a song from the PC, else the album's own Spotify or Apple Music page. Null when none is found.
      */
     suspend fun streamAlbumRoute(s: StreamTrack): String? {
+        fun enc(x: String): String = android.net.Uri.encode(x)
+        // A song playing FROM a service goes to that service's own album page — what the user is browsing.
+        // The now-playing track carries a blank url, so this routes by its am:/sp: key, not s.url.
+        if (s.key.startsWith("am:")) app.streamingGateway.appleAlbumOf(s.key.removePrefix("am:"))?.let { return "apple/c?url=" + enc(it) }
+        if (s.key.startsWith("sp:")) app.streamingGateway.spotifyAlbumOf(s.key.removePrefix("sp:"))?.let { return "spotify/c?url=" + enc(it) }
         fun norm(x: String) = x.lowercase().replace(Regex("""\s*[(\[].*?(deluxe|edition|remaster|version|expanded).*?[)\]]"""), "").trim()
         if (s.album.isNotBlank()) {
             val albums = dao.albums().first()
@@ -442,13 +444,11 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
             (here.firstOrNull { norm(it.artist) == norm(s.artist) || norm(s.artist).startsWith(norm(it.artist)) } ?: here.singleOrNull())
                 ?.let { return "album/${it.albumId}" }
         }
-        fun enc(x: String): String = android.net.Uri.encode(x)
         return when {
             s.key.startsWith(com.local.hive.mobile.link.PcLibrary.MEDIA_PREFIX) -> {
                 val t = app.pcLibrary.tracks.value.firstOrNull { com.local.hive.mobile.link.PcLibrary.MEDIA_PREFIX + it.id == s.key } ?: return null
                 if (t.album.isBlank()) null else "pc/album?key=" + enc((t.albumArtist.ifBlank { t.artist }).lowercase() + "\u0000" + t.album.lowercase())
             }
-            s.key.startsWith("sp:") -> app.spotify.albumOf(s.key.removePrefix("sp:"))?.let { "spotify/c?url=" + enc(it) }
             "music.apple.com" in s.url && "/album/" in s.url -> "apple/c?url=" + enc(s.url.substringBefore('?'))
             else -> null
         }
@@ -456,27 +456,13 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
 
     /** Where "Go to artist" takes a streamed song: the artist's songs on the phone, or null when there are none. */
     suspend fun streamArtistRoute(s: StreamTrack): String? {
+        // A song playing from Apple Music goes to that artist's Apple Music page. (Spotify has no artist
+        // screen yet, so a Spotify song falls through to the artist's own songs on the phone, if any.)
+        if (s.key.startsWith("am:")) app.streamingGateway.appleArtistOf(s.key.removePrefix("am:"))?.let { return "apple/a?url=" + android.net.Uri.encode(it) }
         val name = s.artist.split(", ", " & ", " feat. ", " ft. ").first().trim()
         val artists = dao.artists().first()
         val hit = artists.firstOrNull { it.artist.equals(s.artist, true) } ?: artists.firstOrNull { it.artist.equals(name, true) } ?: return null
         return "artist/" + android.net.Uri.encode(hit.artist)
-    }
-    val spotifyAccount get() = app.spotifyAccount
-    val appleAccount get() = app.appleAccount
-    val appleUser = app.appleAccount.user
-    val spotifyUser = app.spotifyAccount.user
-
-    /** Spotify search, with this phone's own sign-in (Hive on the PC no longer starts its Spotify app to search). */
-    suspend fun searchSpotify(q: String): com.local.hive.mobile.stream.SpotifyAccount.Results {
-        if (spotifyUser.value.signedIn) return app.spotifyAccount.search(q)
-        // No sign-in: the same albums are found on Apple Music's open catalogue, and each one's Spotify
-        // link is resolved on demand when it is shared. (Spotify links still open without a sign-in.)
-        val am = app.appleMusic.search(q)
-        return com.local.hive.mobile.stream.SpotifyAccount.Results(
-            playlists = emptyList(),
-            albums = am.albums.map { com.local.hive.mobile.stream.SpCard("album", it.id, it.name, it.curator, it.artwork, sourceUrl = it.url.ifBlank { "https://music.apple.com/us/album/x/${it.id}" }) },
-            songs = emptyList(),
-        )
     }
     /** Hive on the PC, while reachable; with it, songs the phone lacks play in full. */
     val pcStreams = app.sync.streams
@@ -489,7 +475,7 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
         // A library song of Hive's own, kept in a copied playlist, streams as itself.
         s.key.startsWith("pc:") -> app.pcLibrary.trackUrl(s.key.removePrefix("pc:"))
         pcStreams.value?.songs == true -> pcStreams.value!!.songUrl(s)
-        app.youTubeMusic.enabled.value -> com.local.hive.mobile.stream.YouTubeMusic.uriFor(com.local.hive.mobile.stream.WantedSong(s.key, s.title, s.artist, s.album, s.durationMs))
+        app.youTubeMusic.enabled.value -> com.local.hive.mobile.data.ytmUriFor(com.local.hive.mobile.data.WantedSong(s.key, s.title, s.artist, s.album, s.durationMs))
         else -> null
     }
     private var matchIndex: Triple<List<Track>, TrackMatcher.Index, Map<String, Track>>? = null
@@ -510,7 +496,14 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
     private suspend fun streamMedia(songs: List<StreamTrack>): List<MediaItem?> {
         val matched = songs.map { localMatch(it) to it }
         dao.upsertStreamTracks(matched.filter { it.first == null }.map { it.second })
-        return matched.map { (local, song) -> local?.toMediaItem() ?: streamUri(song)?.let { song.toMediaItem(it) } }
+        // A streamed song that matches a local file plays the local file, but keeps the SERVICE's cover of
+        // that exact song for the now-playing screen (a known high-res URL) instead of the local file's
+        // small embedded art — the big cover must never be low quality. The local cover is still used when
+        // the service has none.
+        return matched.map { (local, song) ->
+            local?.toMediaItem(song.artworkUrl.takeIf { it.isNotBlank() }?.let(android.net.Uri::parse))
+                ?: streamUri(song)?.let { song.toMediaItem(it) }
+        }
     }
     fun playStreams(songs: List<StreamTrack>, index: Int = 0, shuffle: Boolean = false) = viewModelScope.launch {
         val items = streamMedia(songs)
@@ -534,24 +527,8 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
     }
 
     val equaliser get() = app.equaliser
-    val scrobbler get() = app.scrobbler
     /** The playing song's genre, for the equaliser's "Auto-Select by Genre". */
     val currentGenre = combine(nowPlaying.map { it.trackId }.distinctUntilChanged(), tracks) { id, list -> list.firstOrNull { it.id == id }?.genre.orEmpty() }.distinctUntilChanged().state("")
-
-    // ---- radio ----
-    val radio get() = app.radio
-    val savedStations = app.radioStore.saved
-    fun toggleStation(s: com.local.hive.mobile.stream.Station) = app.radioStore.toggle(s)
-    fun playStation(s: com.local.hive.mobile.stream.Station) = app.player.playMedia(listOf(s.toMediaItem()))
-
-    // ---- podcasts ----
-    val podcasts get() = app.podcasts
-    val podcastSubscriptions = app.podcastStore.subscriptions
-    val podcastProgress = app.podcastStore.progress
-    fun togglePodcast(p: com.local.hive.mobile.stream.Podcast) = app.podcastStore.toggle(p)
-    fun markEpisode(e: com.local.hive.mobile.stream.Episode, played: Boolean) = app.podcastStore.setProgress(e.mediaId, if (played) com.local.hive.mobile.stream.PodcastStore.FINISHED else 0)
-    /** Plays an episode, then the older ones after it, as a podcast app does. */
-    fun playEpisodes(episodes: List<com.local.hive.mobile.stream.Episode>, index: Int) = app.player.playMedia(episodes.drop(index).map { it.toMediaItem() })
 
     // ---- Hive on the PC: its library, streamed ----
     val pcLibrary get() = app.pcLibrary
@@ -652,7 +629,7 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
      */
     val nowLoved: StateFlow<Boolean?> = combine(app.player.state, lovedIds, streamLikes, app.pcLibrary.lovedIds) { now, loved, likes, pc ->
         if (now.mediaId?.startsWith(com.local.hive.mobile.link.PcLibrary.MEDIA_PREFIX) == true) viewModelScope.launch { app.pcLibrary.load() }
-        com.local.hive.mobile.link.heartFor(now.mediaId, now.title, now.artist, loved, likes, pc)
+        com.local.hive.mobile.data.heartFor(now.mediaId, now.title, now.artist, loved, likes, pc)
     }.state(null)
 
     /** Likes a streamed song (shared with Hive on the PC). */
@@ -704,7 +681,7 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
             runCatching { com.local.hive.mobile.data.TagWriter.write(app, track, edit, cover) }
                 .onSuccess { saved += track }
                 .onFailure { problem = it.message ?: "A song couldn't be changed" }
-            edit.lyrics?.let { app.lyrics.saveOwn(track.artist, track.title, it) }
+            edit.lyrics?.let { app.lyricsStore.saveOwn(track.artist, track.title, it) }
         }
         if (saved.any { it.id == playing }) app.player.reloadCurrent()
         app.pcEdits.addTags(saved.associate { it.id to wanted.getValue(it) }.filterValues { !it.isEmpty })
@@ -740,8 +717,28 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
         forgetShownCovers()
     }
 
+    // ---- compliant, keyless discovery (metadata, covers, lyrics, radio, podcasts) — both editions ----
+    // Lives in its own holder [DiscoveryVm] now; MainViewModel delegates so screens keep calling
+    // vm.searchAlbums / vm.radio / vm.podcasts / … unchanged while the concern leaves this file.
+    val discovery = DiscoveryVm(app)
+    suspend fun searchAlbums(query: String) = discovery.searchAlbums(query)
+    suspend fun albumDetails(id: String) = discovery.albumDetails(id)
+    suspend fun searchCovers(query: String) = discovery.searchCovers(query)
+    suspend fun lyrics(now: com.local.hive.mobile.playback.NowPlaying) = discovery.lyrics(now)
+    suspend fun saveOwnLyrics(artist: String, title: String, text: String) = discovery.saveOwnLyrics(artist, title, text)
+    val radio get() = discovery.radio
+    val savedStations get() = discovery.savedStations
+    fun toggleStation(s: com.local.hive.mobile.discovery.Station) = discovery.toggleStation(s)
+    fun playStation(s: com.local.hive.mobile.discovery.Station) = discovery.playStation(s)
+    val podcasts get() = discovery.podcasts
+    val podcastSubscriptions get() = discovery.podcastSubscriptions
+    val podcastProgress get() = discovery.podcastProgress
+    fun togglePodcast(p: com.local.hive.mobile.discovery.Podcast) = discovery.togglePodcast(p)
+    fun markEpisode(e: com.local.hive.mobile.discovery.Episode, played: Boolean) = discovery.markEpisode(e, played)
+    /** Plays an episode, then the older ones after it, as a podcast app does. */
+    fun playEpisodes(episodes: List<com.local.hive.mobile.discovery.Episode>, index: Int) = discovery.playEpisodes(episodes, index)
+
     suspend fun track(id: Long) = dao.track(id)
-    suspend fun saveOwnLyrics(artist: String, title: String, text: String) = app.lyrics.saveOwn(artist, title, text)
 
     /** A song's pictures with their types (front and back covers), for the cover editor. */
     suspend fun pictures(track: Track) = com.local.hive.mobile.data.TagWriter.pictures(app, track)
@@ -770,13 +767,6 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
     suspend fun download(url: String): ByteArray? = kotlinx.coroutines.withContext(Dispatchers.IO) {
         runCatching { okhttp3.OkHttpClient().newCall(okhttp3.Request.Builder().url(url).build()).execute().use { if (it.isSuccessful) it.body.bytes() else null } }.getOrNull()
     }
-
-    /** Albums on Apple Music matching [query], for a cover or Auto-tag. */
-    suspend fun findAlbums(query: String): List<com.local.hive.mobile.stream.AmCard> =
-        runCatching { app.appleMusic.search(query.trim()).albums }.getOrDefault(emptyList())
-
-    /** An Apple Music album's songs and details, for Auto-tag. */
-    suspend fun appleAlbum(url: String) = app.appleMusic.collection(url)
 
     // ---- smart playlists ----
 
@@ -857,6 +847,14 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
 
     private val _autoConnect = MutableStateFlow(app.linkStore.autoConnect)
     val autoConnect: StateFlow<Boolean> = _autoConnect.asStateFlow()
+    private val _betaUpdates = MutableStateFlow(app.linkStore.betaUpdates)
+    val betaUpdates: StateFlow<Boolean> = _betaUpdates.asStateFlow()
+    fun setBetaUpdates(on: Boolean) {
+        app.linkStore.betaUpdates = on
+        _betaUpdates.value = on
+        // Check straight away so turning it on finds a newer beta build (or turning it off re-checks stable).
+        app.appUpdater.checkAnywhere(force = true)
+    }
     fun setAutoConnect(on: Boolean) {
         app.linkStore.autoConnect = on
         _autoConnect.value = on
@@ -898,6 +896,8 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
     /** Bumped to send the UI back to the home screen (e.g. unlocking the phone from the lock player). */
     val goHomeTick = MutableStateFlow(0)
     fun goHome() { goHomeTick.value++ }
+    /** A Spotify/Apple Music link to open — set from a tapped web link or a shared link; cleared once shown. */
+    val openLink = MutableStateFlow<String?>(null)
     private val _songSyncOn = MutableStateFlow(app.linkStore.songSync)
     val songSyncOn: StateFlow<Boolean> = _songSyncOn.asStateFlow()
     fun checkSongs() = viewModelScope.launch(kotlinx.coroutines.Dispatchers.Default) { app.songSync.check() }

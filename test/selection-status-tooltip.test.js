@@ -70,5 +70,8 @@ test('updateSelectionStatus sets a duration tooltip with the size as a separate,
   assert.match(block, /node\.dataset\.tooltipSecondary = formatFileSizeShort\(totalBytes\);/);
   assert.match(block, /delete node\.dataset\.tooltip;/);
   assert.match(block, /delete node\.dataset\.tooltipSecondary;/);
-  assert.match(renderer, /sub\.className='tooltip-secondary'/);
+  // The consumer side — turning data-tooltip-secondary into a dimmer second span —
+  // moved to the global tooltip system (app/renderer/tooltip-system.js) and is covered
+  // behaviourally in test/tooltip-system.test.js. This test owns only the producer:
+  // that updateSelectionStatus writes the two dataset parts.
 });

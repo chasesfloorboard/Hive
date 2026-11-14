@@ -66,6 +66,18 @@ function createLibraryCacheStore({
     if (!flushTimer) flushTimer = unref(setTimer(() => { flushTimer = null; flush().catch(onError); }, flushDelayMs));
   }
 
+  // Apply a SYNCHRONOUS mutation to the LIVE cache object and persist it. Prefer this over
+  // get()-await-work-then-set(cachedRef) for any caller that awaits between reading and writing: the
+  // mutation lands on whatever `data` is current the moment it runs (e.g. a scan result that arrived during
+  // the caller's await), instead of silently overwriting it with the stale snapshot the caller captured
+  // earlier. `fn` must not await — do the slow work before calling mutate and pass a synchronous apply.
+  async function mutate(fn) {
+    const current = (await get()) || { tracks: [] };
+    const next = fn(current);
+    set(next === undefined ? current : next);
+    return data;
+  }
+
   function flush() {
     if (flushTimer) { clearTimer(flushTimer); flushTimer = null; }
     writing = writing.catch(() => {}).then(async () => {
@@ -97,7 +109,9 @@ function createLibraryCacheStore({
     data = null;
   }
 
-  return { get, set, flush, clear, needsFlush: () => dirty || writesInFlight > 0 };
+  // A monotonic content version: bumps on every set()/clear() (i.e. every mutation callers persist).
+  // Hive Link uses it to skip rebuilding the phone library payload when nothing changed.
+  return { get, set, mutate, flush, clear, needsFlush: () => dirty || writesInFlight > 0, generation: () => generation };
 }
 
 module.exports = { createLibraryCacheStore };

@@ -1,0 +1,16 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!--
+  Hive Clean (Google Play, strict). The merged manifest drops the permissions Google Play forbids or that
+  this edition doesn't need:
+   - READ_LOGS: a sideload-only diagnostics permission (car log).
+   - SYSTEM_ALERT_WINDOW: the lock-screen player's draw-over-other-apps overlay; Play restricts it.
+   - REQUEST_INSTALL_PACKAGES (contributed by :sync's AppUpdater): Play forbids an app installing APKs itself,
+     and Hive Clean never self-updates (see HiveApp.selfUpdates = false).
+-->
+<manifest xmlns:android="http://schemas.android.com/apk/res/android"
+    xmlns:tools="http://schemas.android.com/tools">
+
+    <uses-permission android:name="android.permission.READ_LOGS" tools:node="remove" />
+    <uses-permission android:name="android.permission.SYSTEM_ALERT_WINDOW" tools:node="remove" />
+    <uses-permission android:name="android.permission.REQUEST_INSTALL_PACKAGES" tools:node="remove" />
+</manifest>

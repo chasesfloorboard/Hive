@@ -26,5 +26,10 @@ jobs:
       - name: Install Node dependencies
         run: npm ci
 
+      - name: Lint
+        # Fails only on genuine bug shapes (duplicate keys/args, NaN compares, bad typeof…); the silent-catch
+        # and dead-code backlog is reported as non-blocking warnings. See eslint.config.js.
+        run: npm run lint
+
       - name: Run test suite
         run: npm test

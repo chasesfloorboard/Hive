@@ -524,17 +524,19 @@ fun SearchScreen(vm: MainViewModel, actions: TrackActions, bottomPadding: Dp, on
             }
             Spacer(Modifier.width(10.dp))
             SearchField(query, { query = it }, if (online) "Search Apple Music & Spotify…" else "Search library…", onSubmit = {}, onClear = { query = "" }, modifier = Modifier.weight(1f), focus = focus)
-            Spacer(Modifier.width(10.dp))
-            // Library or online (Apple Music and Spotify): lit while searching online.
-            Box(
-                Modifier.size(42.dp).hiveGlass(CircleShape).then(if (online) Modifier.background(c.accent.copy(alpha = 0.22f), CircleShape) else Modifier)
-                    .clickable {
-                        online = !online
-                        // With something typed, the results take the screen instead of the keyboard.
-                        if (query.isNotBlank()) focusManager.clearFocus()
-                    }.semantics { contentDescription = if (online) "Search your library" else "Search Apple Music and Spotify" },
-                contentAlignment = Alignment.Center,
-            ) { OnlineSearchIcon(if (online) c.accent else c.text, Modifier.fillMaxSize()) }
+            // Library or online (Apple Music and Spotify): lit while searching online. Hidden in Hive Clean.
+            if (streamingSearchAvailable()) {
+                Spacer(Modifier.width(10.dp))
+                Box(
+                    Modifier.size(42.dp).hiveGlass(CircleShape).then(if (online) Modifier.background(c.accent.copy(alpha = 0.22f), CircleShape) else Modifier)
+                        .clickable {
+                            online = !online
+                            // With something typed, the results take the screen instead of the keyboard.
+                            if (query.isNotBlank()) focusManager.clearFocus()
+                        }.semantics { contentDescription = if (online) "Search your library" else "Search Apple Music and Spotify" },
+                    contentAlignment = Alignment.Center,
+                ) { OnlineSearchIcon(if (online) c.accent else c.text, Modifier.fillMaxSize()) }
+            }
         }
         Spacer(Modifier.height(8.dp))
         if (online) {

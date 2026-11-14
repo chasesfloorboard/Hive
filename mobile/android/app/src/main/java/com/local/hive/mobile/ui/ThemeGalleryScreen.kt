@@ -45,7 +45,7 @@ private fun ThemeGalleryList(vm: MainViewModel) {
     val context = LocalContext.current
     val c = Hive.colors
     var state by remember { mutableStateOf<Pair<List<ThemeGallery.Theme>, Boolean>?>(null) }
-    LaunchedEffect(Unit) { state = ThemeGallery.load(context, com.local.hive.mobile.stream.AppleMusic.defaultHttp()) }
+    LaunchedEffect(Unit) { state = ThemeGallery.load(context, com.local.hive.mobile.data.defaultHttp()) }
     val saved by vm.themes.saved.collectAsStateWithLifecycle()
     val current by vm.themes.name.collectAsStateWithLifecycle()
     val s = state

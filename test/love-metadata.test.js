@@ -208,10 +208,18 @@ test('the track context menu and playbar Love button always resolve to the autho
 // Backstop for the same bug: even before the above resolution runs, a freshly
 // restored queue entry should never blankly read as unloved with a 0 rating.
 test('serializeQueueTrack carries loved/rating so a restored queue entry is never blankly unloved', () => {
-  const start = renderer.indexOf('function serializeQueueTrack(t) {');
-  const end = renderer.indexOf('\n  }', start);
-  const block = renderer.slice(start, end);
-  assert.match(block, /loved:!!t\.loved, rating:Number\(t\.rating\)\|\|0, ratingRaw:Number\(t\.ratingRaw\)\|\|0/);
+  // serializeQueueTrack moved to app/renderer/queue-serialize.js; assert the backstop
+  // behaviourally (the full unit cases live in test/queue-serialize.test.js).
+  const { serializeQueueTrack } = require('../app/renderer/queue-serialize');
+  const loved = serializeQueueTrack({ path: '/m/fav.flac', loved: true, rating: 5, ratingRaw: 196 });
+  assert.equal(loved.loved, true);
+  assert.equal(loved.rating, 5);
+  assert.equal(loved.ratingRaw, 196);
+  // Coercion backstop: a track with no love/rating is a definite not-loved/zero, not undefined.
+  const plain = serializeQueueTrack({ path: '/m/x.mp3' });
+  assert.equal(plain.loved, false);
+  assert.equal(plain.rating, 0);
+  assert.equal(plain.ratingRaw, 0);
 });
 
 test('an M4A whose tags grow keeps its audio where its chunk offsets say', () => {

@@ -10,19 +10,34 @@ const root = path.resolve(__dirname, '..');
 const renderer = fs.readFileSync(path.join(root, 'app/renderer/renderer.js'), 'utf8');
 const html = fs.readFileSync(path.join(root, 'app/renderer/index.html'), 'utf8');
 
-// Finding #1: the global tooltip system converts every `title` attribute to
-// a non-ARIA `data-tooltip` and deletes `title`, which silently removed the
-// only accessible name icon-only controls had. Fixed by also mirroring the
-// text into aria-label (when the element doesn't already have one) before
-// title is removed, so this applies to every current and future
-// title-only icon button, not just an enumerated list.
+// Finding #1: the global tooltip system (app/renderer/tooltip-system.js) converts
+// every `title` attribute to a non-ARIA `data-tooltip` and deletes `title`, which
+// silently removed the only accessible name icon-only controls had. Fixed by also
+// mirroring the text into aria-label (when the element doesn't already have one)
+// before title is removed, so this applies to every current and future title-only
+// icon button, not just an enumerated list. Verified behaviourally against the module.
 test('the tooltip system preserves an accessible name when it strips title', () => {
-  const start = renderer.indexOf('function prepareTooltipNode(node) {');
-  const end = renderer.indexOf('\n  }', start);
-  assert.ok(start >= 0 && end > start, 'expected to find prepareTooltipNode()');
-  const block = renderer.slice(start, end);
-  assert.match(block, /if \(title && !node\.getAttribute\('aria-label'\)\) node\.setAttribute\('aria-label', title\);/);
-  assert.match(block, /node\.removeAttribute\('title'\);/);
+  const { createTooltipSystem } = require('../app/renderer/tooltip-system');
+  class FakeElement {}
+  const sys = createTooltipSystem({
+    document: { documentElement: {}, body: {}, addEventListener() {}, createElement: () => ({}), querySelectorAll: () => [] },
+    window: { Element: FakeElement, innerWidth: 1, innerHeight: 1, MutationObserver: class { observe() {} } },
+  });
+  const fakeNode = (attrs) => Object.assign(new FakeElement(), {
+    getAttribute: (k) => (k in attrs ? attrs[k] : null),
+    setAttribute: (k, v) => { attrs[k] = v; },
+    removeAttribute: (k) => { delete attrs[k]; },
+  });
+  // A title-only icon button: after prepareTooltipNode it keeps an accessible name.
+  const iconBtn = { title: 'Shuffle' };
+  sys.prepareTooltipNode(fakeNode(iconBtn));
+  assert.equal(iconBtn['aria-label'], 'Shuffle', 'accessible name mirrored to aria-label');
+  assert.equal(iconBtn.title, undefined, 'native title stripped (no duplicate Chromium popup)');
+  assert.equal(iconBtn['data-tooltip'], 'Shuffle', 'themed tooltip text retained');
+  // An element that already has its own aria-label is not overwritten.
+  const labelled = { title: 'Hover text', 'aria-label': 'Keep me' };
+  sys.prepareTooltipNode(fakeNode(labelled));
+  assert.equal(labelled['aria-label'], 'Keep me', 'existing accessible name preserved');
 });
 
 // Finding #2: 9 of 13 .modal-close buttons had no accessible name at all

@@ -33,7 +33,10 @@ test('Tags (2) is a curated standard-tag panel, not a raw native key/value edito
 });
 
 test('ReplayGain conversion exposes deterministic dB-to-linear diagnostic coverage', () => {
-  assert.match(renderer, /function replayGainDbToLinear\(db\)/);
-  assert.match(renderer, /Math\.pow\(10, n \/ 20\)/);
+  // The pure dB-to-linear math lives in replaygain.js now (docs/ai/ARCHITECTURE.md); renderer wires it.
+  const replaygain = fs.readFileSync(path.join(root, 'app', 'renderer', 'replaygain.js'), 'utf8');
+  assert.match(replaygain, /function replayGainDbToLinear\(db\)/);
+  assert.match(replaygain, /Math\.pow\(10, n \/ 20\)/);
+  assert.match(renderer, /window\.HiveReplayGain/);
   assert.match(renderer, /engineTrackGain\s*=\s*Math\.max\(0, Math\.min\(8, effective\)\)/);
 });

@@ -54,7 +54,9 @@ jobs:
 
       - name: Test and build
         working-directory: mobile/android
-        run: bash gradlew --no-daemon testDebugUnitTest assembleRelease
+        # Only the "mobile" edition (Hive Mobile, F-Droid/sideload) ships from here. Hive Clean is the
+        # Google Play edition and is published separately as a signed AAB with an offline upload key.
+        run: bash gradlew --no-daemon testMobileDebugUnitTest assembleMobileRelease
 
       # Never publishes an APK a phone would refuse: it must be signed by the key it was given.
       - name: Check the signing key
@@ -62,7 +64,7 @@ jobs:
         run: |
           apksigner=$(ls -d "$ANDROID_HOME"/build-tools/*/apksigner | sort -V | tail -1)
           want=$(keytool -list -v -keystore "$HIVE_KEYSTORE" -storepass android -alias androiddebugkey | grep -m1 'SHA256:' | sed 's/.*SHA256: *//; s/://g' | tr 'A-F' 'a-f')
-          got=$("$apksigner" verify --print-certs mobile/android/app/build/outputs/apk/release/app-release.apk | grep -m1 'certificate SHA-256 digest' | sed 's/.*digest: *//')
+          got=$("$apksigner" verify --print-certs mobile/android/app/build/outputs/apk/mobile/release/app-mobile-release.apk | grep -m1 'certificate SHA-256 digest' | sed 's/.*digest: *//')
           echo "key given: $want"; echo "APK signed: $got"
           [ -n "$want" ] && [ "$want" = "$got" ] || { echo "::error::The APK isn't signed with HIVE_MOBILE_KEYSTORE's key"; exit 1; }
 
@@ -79,7 +81,7 @@ jobs:
             echo "Hive Mobile $name ($code) is not newer than the release ($published); nothing to publish."
             exit 0
           fi
-          cp mobile/android/app/build/outputs/apk/release/app-release.apk HiveMobile.apk
+          cp mobile/android/app/build/outputs/apk/mobile/release/app-mobile-release.apk HiveMobile.apk
           jq -n --argjson code "$code" --arg name "$name" --argjson size "$(stat -c %s HiveMobile.apk)" --arg sha "$(sha256sum HiveMobile.apk | cut -d' ' -f1)" \
             '{versionCode:$code, versionName:$name, size:$size, sha256:$sha}' > HiveMobile.json
           cat HiveMobile.json

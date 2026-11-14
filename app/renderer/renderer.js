@@ -180,19 +180,15 @@
     if (pos >= threshold) { scrobbleSubmitted=true; try { await window.beehive.scrobbleSubmit?.(t); } catch {} }
   }
 
-  function isSpotifyTrack(t) { return String(t?.source || '').toLowerCase() === 'spotify' && !!t?.spotifyUri; }
-  function spotifyArtworkUrl(t) {
-    if (!isSpotifyTrack(t)) return '';
-    for (const value of [t?.artworkUrl, t?.cover]) {
-      const url = normalizeSpotifyArtworkSource(value);
-      if (/^https?:\/\//i.test(url)) return url;
-    }
-    return '';
-  }
-  function spotifyCachedArtworkSrc(t) {
-    if (!isSpotifyTrack(t) || !t?.spotifyArtworkCacheFile) return '';
-    return window.beehive.coverUrl?.(String(t.spotifyArtworkCacheFile)) || '';
-  }
+  // Cover-art URL helpers live in cover-art.js (docs/ai/ARCHITECTURE.md). The two that wrap a bare local path
+  // as mbcover:// take the resolver, so renderer injects window.beehive.coverUrl via thin wrappers.
+  const { isSpotifyTrack, normalizeSpotifyArtworkSource, spotifyArtworkUrl, placeholderCover } = window.HiveCoverArt;
+  function coverSrc(coverFile) { return window.HiveCoverArt.coverSrc(coverFile, window.beehive.coverUrl); }
+  function spotifyCachedArtworkSrc(t) { return window.HiveCoverArt.spotifyCachedArtworkSrc(t, window.beehive.coverUrl); }
+  // Album grouping/ordering lives in album-model.js (docs/ai/ARCHITECTURE.md); buildAlbums takes the
+  // renderer-side cover resolver (visualCoverForTrack), injected via a thin wrapper.
+  const { albumKey, mediaPositionNumber, albumTrackCompare } = window.HiveAlbumModel;
+  function buildAlbums(tracks) { return window.HiveAlbumModel.buildAlbums(tracks, visualCoverForTrack); }
   // YouTube Music tracks (Hive 2.0) play through the same media element as
   // podcasts; their stream URL is resolved when they're loaded.
   function isYoutubeMusicTrack(t) { return String(t?.source || '').toLowerCase() === 'youtube' && String(t?.path || '').startsWith('ytm:'); }
@@ -633,14 +629,8 @@
   function replayGainClippingGuard() {
     try { const v = localStorage.getItem(REPLAYGAIN_CLIPPING_KEY); return v === null ? true : v === 'true'; } catch { return true; }
   }
-  function replayGainDbToLinear(db) {
-    const n = Number.parseFloat(String(db ?? '').replace(/dB/i, '').trim());
-    return Number.isFinite(n) ? Math.pow(10, n / 20) : 1;
-  }
-  function replayGainPeakValue(value) {
-    const n = Number.parseFloat(String(value ?? '').trim());
-    return Number.isFinite(n) && n > 0 ? n : 0;
-  }
+  // ReplayGain parse/convert math lives in replaygain.js (docs/ai/ARCHITECTURE.md).
+  const { replayGainDbToLinear, replayGainPeakValue, r128GainToReplayGainText } = window.HiveReplayGain;
   // MusicBee's "Smart" ReplayGain: album gain while an album is playing in
   // order (the neighbouring queue entry is from the same album and shuffle
   // is off), track gain otherwise.
@@ -651,10 +641,6 @@
     if (!normalizeMetadataText(track?.album || '')) return false;
     const i = currentQueue.indexOf(track);
     return i >= 0 && [currentQueue[i - 1], currentQueue[i + 1]].some(n => n && key(n) === own);
-  }
-  function r128GainToReplayGainText(raw) {
-    const q = Number.parseInt(String(raw ?? '').trim(), 10);
-    return Number.isFinite(q) ? `${(q / 256 + 5).toFixed(2)} dB` : '';
   }
   async function resolveReplayGainForTrack(track) {
     engineTrackGain = 1;
@@ -1775,28 +1761,12 @@
   // ---------------------------------------------------------------------
   let appleMusicModal = null;
   function isAppleMusicPreview(t) { return isPodcastTrack(t) && String(t?.path || '').startsWith('applemusic:'); }
-  function appleMatchKey(text) {
-    return String(text || '').toLowerCase()
-      .replace(/[\(\[](feat\.?|ft\.?|with|mixed|explicit|clean)[^\)\]]*[\)\]]/g, ' ')
-      .replace(/\s+(feat\.?|ft\.?)\s+.*$/, ' ')
-      .normalize('NFKD').replace(/[̀-ͯ]/g, '').replace(/&/g, 'and').replace(/[^a-z0-9]+/g, '');
-  }
-  function appleLibraryIndex() {
-    const index = new Map();
-    for (const t of library.tracks || []) {
-      if (!isLocalPlaybackTrack(t)) continue;
-      const key = appleMatchKey(t.title);
-      if (!key) continue;
-      if (!index.has(key)) index.set(key, []);
-      index.get(key).push(t);
-    }
-    return index;
-  }
-  function appleLocalMatch(index, at) {
-    const candidates = index.get(appleMatchKey(at.title)) || [];
-    const firstArtist = appleMatchKey(String(at.artist || '').split(/,|&| x /i)[0]);
-    return candidates.find(t => { const a = appleMatchKey(`${t.artist} ${t.albumArtist || ''}`); return firstArtist && a.includes(firstArtist); }) || null;
-  }
+  // Streamed-track <-> local-library fuzzy matching lives in streaming-match.js (loaded
+  // before renderer.js; docs/ai/ARCHITECTURE.md). Inject the local-track predicate and a
+  // lazy library-tracks getter so appleLibraryIndex() still reads the live library.
+  const { appleLibraryIndex, appleLocalMatch } = window.HiveStreamingMatch.createStreamingMatch({
+    isLocalPlaybackTrack, getLibraryTracks: () => library.tracks || [],
+  });
   function applePreviewTrack(at, collection) {
     return { path: `applemusic:${at.appleId}`, source: 'podcast', streamUrl: at.previewUrl, title: at.title, artist: at.artist, album: at.album,
       year: at.year || '', duration: 30, cover: '', artworkUrl: at.artwork || '', podcastId: '', podcastFeedUrl: at.url || '',
@@ -2700,13 +2670,10 @@
   // time. Pauses do not consume the five-second window, and changing/skipping
   // tracks abandons an unqualified candidate. This prevents accidental clicks,
   // quick previews, and immediate skips from inflating play counts.
-  const PLAY_COUNT_QUALIFY_MS = 5000;
+  // Pure track-identity + the qualify threshold live in track-key.js (docs/ai/ARCHITECTURE.md).
+  const { PLAY_COUNT_QUALIFY_MS, playCountTrackKey, wrapTrackKey } = window.HiveTrackKey;
   let playCountSession = null;
   let playCountTimer = null;
-
-  function playCountTrackKey(t) {
-    return String(t?.path || t?.spotifyUri || t?.streamUrl || '');
-  }
 
   function clearPlayCountTimer() {
     if (playCountTimer) {
@@ -3188,7 +3155,6 @@
   // actual active listening time with pauses excluded. History remains a separate
   // latest-per-track view and is not repurposed as a play-count database.
   let wrapListeningSession = null;
-  function wrapTrackKey(t) { return [t?.path,t?.spotifyUri,t?.streamUrl,t?.title,t?.artist,t?.album].map(v=>String(v||'')).join('|'); }
   function wrapBeginListening(t) {
     if (!t) return;
     const key=wrapTrackKey(t);
@@ -3329,7 +3295,6 @@
     npFormat: document.getElementById('np-format'),
     npBitrate: document.getElementById('np-bitrate'),
     npTitle: document.getElementById('np-title'),
-    npArtist: document.getElementById('np-artist'),
     npAlbum: document.getElementById('np-album'),
     npTech: document.getElementById('np-tech'),
 
@@ -4218,64 +4183,20 @@
     return `${m}:${s.toString().padStart(2, '0')}`;
   }
 
-  function albumKey(t) {
-    // Spotify album names are not globally unique and older imports could fall
-    // back to the synthetic label "Spotify". When the bridge provides the
-    // canonical album URI, use it so unrelated Spotify albums can never share
-    // one album artwork/card just because their display names match.
-    if (isSpotifyTrack(t) && t.albumUri) return `spotify||${String(t.albumUri).toLowerCase()}`;
-    return `${(t.albumArtist || t.artist || '').toLowerCase()}||${(t.album || '').toLowerCase()}`;
-  }
 
   // Track/disc values can arrive from different readers as numbers, "10/14",
   // or occasionally small objects. Album ordering must use the numeric first
   // component rather than falling through to the title tie-breaker (which made
   // a renamed "Brain Stew" sort ahead of tracks 1–9).
-  function mediaPositionNumber(value) {
-    if (value == null) return 0;
-    if (typeof value === 'object') {
-      const n = Number(value.no ?? value.number ?? value.position ?? 0);
-      return Number.isFinite(n) && n > 0 ? n : 0;
-    }
-    const match = String(value).trim().match(/^\s*(\d+)/);
-    const n = match ? Number(match[1]) : Number(value);
-    return Number.isFinite(n) && n > 0 ? n : 0;
-  }
 
-  function albumTrackCompare(a, b) {
-    return mediaPositionNumber(a?.disk) - mediaPositionNumber(b?.disk)
-      || mediaPositionNumber(a?.track) - mediaPositionNumber(b?.track)
-      || songCollator.compare(String(a?.title || ''), String(b?.title || ''))
-      || songCollator.compare(String(a?.path || ''), String(b?.path || ''));
-  }
 
   // Build one lowercase search index per track so searching a 20k-song library
   // does not repeatedly stringify every metadata field on every keystroke.
-  function buildTrackSearchIndex(t) {
-    const values = [];
-    const add = v => {
-      if (v == null) return;
-      if (typeof v === 'object') {
-        if (Array.isArray(v)) v.forEach(add);
-        else Object.values(v).forEach(add);
-        return;
-      }
-      values.push(String(v));
-    };
-    Object.entries(t || {}).forEach(([key, value]) => {
-      if (key === '_searchText' || key === 'covers') return;
-      add(value);
-    });
-    return foldSearchText(values.join(' '));
-  }
+  // Pure search / typeahead / matching text normalisation lives in search-text.js (docs/ai/ARCHITECTURE.md).
+  const { foldSearchText, normalizeForSearch, normalizeMusicText, normalizeArtistSearchValue, normalizeTypeaheadText, buildTrackSearchIndex } = window.HiveSearchText;
 
   // Search ignores case, accents and punctuation: "(It Goes Like) Nanana (Edit)" is
   // "it goes like nanana edit", and Björk is bjork, as on the phone.
-  function foldSearchText(value) {
-    return ` ${String(value || '').toLowerCase().normalize('NFKD').replace(/[\u0300-\u036f]/g, '')
-      .replace(/æ/g, 'ae').replace(/œ/g, 'oe').replace(/ø/g, 'o').replace(/ß/g, 'ss')
-      .replace(/[^\p{L}\p{N}]+/gu, ' ').trim()} `;
-  }
   // The typed words: a song matches when every one is somewhere in its tags, in any order.
   let searchWordsFor = null, searchWordsCache = [];
   function searchWords() {
@@ -4283,9 +4204,6 @@
     return searchWordsCache;
   }
 
-  function normalizeArtistSearchValue(value) {
-    return String(value || '').trim().replace(/\s+/g, ' ').toLowerCase();
-  }
 
   function trackMatchesArtistSearch(t) {
     if (!artistSearchTerm) return true;
@@ -4318,58 +4236,8 @@
     return library.tracks;
   }
 
-  function buildAlbums(tracks) {
-    const map = new Map();
-    for (const t of tracks) {
-      const key = albumKey(t);
-      const visual = visualCoverForTrack(t);
-      if (!map.has(key)) {
-        map.set(key, { key, title: t.album, artist: t.albumArtist || t.artist, year: t.year, cover: visual, artworkUrl: spotifyArtworkUrl(t), covers: t.covers, tracks: [] });
-      }
-      const a = map.get(key);
-      a.tracks.push(t);
-      if (!a.cover && visual) { a.cover = visual; a.artworkUrl = spotifyArtworkUrl(t); a.covers = t.covers; }
-      if (!a.year && t.year) a.year = t.year;
-    }
-    const list = Array.from(map.values());
-    for (const a of list) {
-      a.tracks.sort(albumTrackCompare);
-    }
-    list.sort((a, b) => (a.year || 0) - (b.year || 0) || a.title.localeCompare(b.title));
-    return list;
-  }
 
-  function normalizeSpotifyArtworkSource(value) {
-    const source = String(value || '').trim();
-    if (/^spotify:image:/i.test(source)) {
-      const id = source.slice('spotify:image:'.length).trim();
-      if (/^[A-Za-z0-9_-]+$/.test(id)) return `https://i.scdn.co/image/${id}`;
-    }
-    return source;
-  }
 
-  function coverSrc(coverFile) {
-    // Spotify's internal Player metadata uses spotify:image:<id> rather than a
-    // browser-ready URL. Convert that provider URI before the generic mbcover:
-    // resolver sees it; mbcover is only for Hive's local cached artwork.
-    const normalized = normalizeSpotifyArtworkSource(coverFile);
-    // Optimistic artwork edits use the freshly downloaded/selected image as a
-    // data URL while the background metadata worker embeds it into every file.
-    // Keep that preview visible immediately instead of routing the data URL
-    // through mbcover:// (which only serves scanner-generated cached covers).
-    // Real bug, confirmed live: saving an album's artwork optimistically
-    // stores an ALREADY mbcover://-wrapped URL into track.cover (via
-    // setPendingArtwork's coverSrc(chosen.path) call for the local-file-pick
-    // path) -- buildAlbums() then carries that into album.cover, and the
-    // album grid calls coverSrc(album.cover) again on render, double-wrapping
-    // it into a nested mbcover://mbcover%3A%2F%2F... URL that can never
-    // resolve to a real file. The image renders blank (not even the no-cover
-    // placeholder) until the next full library scan overwrites track.cover
-    // with a plain, unwrapped path again. coverSrc must be idempotent, the
-    // same way it already is for https:/data:image:/blob: sources.
-    if (/^(?:https?:\/\/|data:image\/|blob:|mbcover:\/\/|mbfile:\/\/)/i.test(normalized)) return normalized;
-    return window.beehive.coverUrl(normalized) || placeholderCover();
-  }
 
   // Automatic visual artwork is deliberately memory-only. When a currently
   // playing track has no embedded artwork, Hive may find an online album
@@ -4704,13 +4572,6 @@
     return out;
   }
 
-  let placeholderCache = null;
-  function placeholderCover() {
-    if (placeholderCache) return placeholderCache;
-    const svg = `<svg xmlns='http://www.w3.org/2000/svg' width='200' height='200'><rect width='100%' height='100%' fill='%231c1c22'/><text x='50%' y='55%' font-size='60' text-anchor='middle' fill='%233a3a44' font-family='sans-serif'>♪</text></svg>`;
-    placeholderCache = `data:image/svg+xml;utf8,${svg}`;
-    return placeholderCache;
-  }
 
   // Use the same no-artwork image for an idle player as for tracks without
   // embedded cover art, rather than leaving the browser's broken-image icon.
@@ -4727,31 +4588,10 @@
     });
   }
 
-  let sidebarFolderTooltip = null;
-  function ensureSidebarFolderTooltip() {
-    if (sidebarFolderTooltip) return sidebarFolderTooltip;
-    sidebarFolderTooltip = document.createElement('div');
-    sidebarFolderTooltip.className = 'beehive-tooltip sidebar-folder-tooltip';
-    document.body.appendChild(sidebarFolderTooltip);
-    return sidebarFolderTooltip;
-  }
-  function showSidebarFolderTooltip(_item, folder, e) {
-    const tip = ensureSidebarFolderTooltip();
-    tip.textContent = String(folder || '');
-    if (e) lastSidebarFolderPointer = { x: e.clientX, y: e.clientY };
-    tip.classList.add('visible');
-    requestAnimationFrame(() => moveSidebarFolderTooltip(lastSidebarFolderPointer));
-  }
-  let lastSidebarFolderPointer = { x: 0, y: 0 };
-  function moveSidebarFolderTooltip(e) {
-    if (!e) return;
-    lastSidebarFolderPointer = { x: e.clientX, y: e.clientY };
-    if (!sidebarFolderTooltip?.classList.contains('visible')) return;
-    const r = sidebarFolderTooltip.getBoundingClientRect();
-    sidebarFolderTooltip.style.left = `${Math.max(8, Math.min(window.innerWidth - r.width - 8, e.clientX + 14))}px`;
-    sidebarFolderTooltip.style.top = `${Math.max(8, Math.min(window.innerHeight - r.height - 8, e.clientY + 16))}px`;
-  }
-  function hideSidebarFolderTooltip() { sidebarFolderTooltip?.classList.remove('visible'); }
+  // The pointer-following tooltip for sidebar folder rows (shows the full path) lives in
+  // sidebar-folder-tooltip.js (loaded before renderer.js; docs/ai/ARCHITECTURE.md).
+  const { showSidebarFolderTooltip, moveSidebarFolderTooltip, hideSidebarFolderTooltip } =
+    window.HiveSidebarFolderTooltip.createSidebarFolderTooltip({ document, window });
 
   const FOLDER_ICON = '🗀\ufe0e';
   function folderNavKey(folder) { return `folder:${String(folder || '')}`; }
@@ -4773,7 +4613,7 @@
           { label:'Rescan library', action:()=>runScan(true) },
           { label:'Play library', action:()=>playQueue(folderTracks,0) },
           { label:'Queue library', action:()=>addTracksToQueue(folderTracks) },
-          { label:'Library Info', action:()=>showSidebarListInfo({key:folderNavKey(folder),name:folderName,description:folder,tracks:folderTracks,folder}) },
+          { label:'Library info', action:()=>showSidebarListInfo({key:folderNavKey(folder),name:folderName,description:folder,tracks:folderTracks,folder}) },
           { label:'Remove library', icon:'trash', danger:true, action:()=>removeLibraryFolder(folder) }
         ]);
       });
@@ -5786,9 +5626,14 @@
     el.emptyState.dataset.collectionEmpty = '1';
     el.emptyState.classList.remove('hidden');
   }
-  function renderSpecialAlbums(tracks){
+  // [openAlbumKey]: an album to inline-expand once the grid is built (album-focus passes it instead of
+  // querying the grid synchronously, which no longer works now that cards are built across frames).
+  async function renderSpecialAlbums(tracks, openAlbumKey = null){
+    // Shared with renderAlbums: both write el.albumsGrid, so a newer render of EITHER must abort this one
+    // mid-chunk rather than interleave cards from two collections.
+    const generation = ++albumRenderGeneration;
     el.albumsGrid.classList.add('album-browse-grid');
-    const preservedOpenAlbumKey = el.albumsGrid.querySelector('.album-card.inline-expanded')?.dataset.key || null;
+    const preservedOpenAlbumKey = openAlbumKey || el.albumsGrid.querySelector('.album-card.inline-expanded')?.dataset.key || null;
     const filtered0=searchTerm ? tracks.filter(trackMatchesSearch) : tracks;
     showCollectionEmpty(filtered0.length);
     const grouped=buildAlbums(filtered0);
@@ -5820,6 +5665,11 @@
       return card;
     };
 
+    // Build the section skeletons (headings + empty grids) synchronously -- that part is cheap -- and
+    // collect {grid, albums} so the EXPENSIVE per-card construction (innerHTML + several event handlers
+    // each) happens a screenful at a time across animation frames, instead of blocking the main thread
+    // for the whole (possibly thousands of) album grid. Mirrors renderAlbums' chunked builder.
+    const sections = [];
     if (albumYearDividers) {
       const years = new Map();
       for (const album of grouped) {
@@ -5859,9 +5709,9 @@
           if (ay !== by) return by - ay;
           return songCollator.compare(a.title || '', b.title || '') || songCollator.compare(a.artist || '', b.artist || '');
         });
-        yearAlbums.forEach(a => grid.appendChild(makeCard(a)));
         section.appendChild(grid);
         el.albumsGrid.appendChild(section);
+        sections.push({ grid, albums: yearAlbums });
       }
     } else {
       const ordered = grouped.slice().sort((a,b) => {
@@ -5877,7 +5727,26 @@
         }
         return songCollator.compare(a.title || '', b.title || '') || songCollator.compare(a.artist || '', b.artist || '');
       });
-      for (const a of ordered) el.albumsGrid.appendChild(makeCard(a));
+      sections.push({ grid: el.albumsGrid, albums: ordered });
+    }
+
+    // Yield a frame after the grouping/sorting, then construct CHUNK_SIZE cards per frame (12, as in
+    // renderAlbums -- each card binds several handlers). A newer render bumps albumRenderGeneration and
+    // this aborts, so two collections never interleave their cards.
+    await new Promise(resolve => requestAnimationFrame(resolve));
+    if (generation !== albumRenderGeneration) return;
+    const CHUNK_SIZE = 12;
+    let firstChunk = true;
+    for (const section of sections) {
+      for (let i = 0; i < section.albums.length; i += CHUNK_SIZE) {
+        if (generation !== albumRenderGeneration) return;
+        const fragment = document.createDocumentFragment();
+        for (const a of section.albums.slice(i, i + CHUNK_SIZE)) fragment.appendChild(makeCard(a));
+        section.grid.appendChild(fragment);
+        if (firstChunk) { firstChunk = false; observeLazyImages(el.albumsGrid); applyAlbumSelectionClasses(el.albumsGrid); }
+        await new Promise(resolve => requestAnimationFrame(resolve));
+        if (generation !== albumRenderGeneration) return;
+      }
     }
 
     // The highlight follows the user's selected album, not the currently playing
@@ -5896,14 +5765,11 @@
     if (preservedOpenAlbumKey) {
       const preservedAlbum = grouped.find(a => String(a?.key || '') === String(preservedOpenAlbumKey));
       const preservedCard = el.albumsGrid.querySelector(`.album-card[data-key="${CSS.escape(String(preservedOpenAlbumKey))}"]`);
-      if (preservedAlbum && preservedCard) toggleInlineAlbum(preservedCard, preservedAlbum);
+      if (preservedAlbum && preservedCard && generation === albumRenderGeneration) toggleInlineAlbum(preservedCard, preservedAlbum);
     }
   }
 
 
-  function normalizeTypeaheadText(value) {
-    return String(value || '').toLocaleLowerCase().replace(/[^\p{L}\p{N}]+/gu, ' ').trim();
-  }
 
   function clearSongSelection() {
     selectedSongPaths.clear();
@@ -6150,62 +6016,9 @@
     shuffleRestoreQueue = restored;
   }
 
-  function serializeQueueTrack(t) {
-    if (!t?.path) return null;
-    // loved/rating/ratingRaw are a backstop only -- the authoritative source
-    // is always libraryTrackByPath, resolved at the point of use (context
-    // menu, playbar Love button, etc.) since embedded tags can change after a
-    // queue was saved. Carrying them here just means a restored queue entry
-    // is never blankly "not Loved" before that resolution has a chance to run.
-    return { path:String(t.path), source:String(t.source||'local'), spotifyUri:String(t.spotifyUri||''), spotifyId:String(t.spotifyId||''), spotifyContextUri:String(t.spotifyContextUri||t.contextUri||''), contextUri:String(t.contextUri||t.spotifyContextUri||''), streamUrl:String(t.streamUrl||''), title:String(t.title||''), artist:String(t.artist||''), album:String(t.album||''), albumUri:String(t.albumUri||''), albumArtist:String(t.albumArtist||''), duration:Number(t.duration)||0, cover:String(t.cover||''), artworkUrl:String(t.artworkUrl||''), spotifyArtworkCacheFile:String(t.spotifyArtworkCacheFile||''), year:String(t.year||''), podcastId:String(t.podcastId||''), podcastFeedUrl:String(t.podcastFeedUrl||''), podcastDescription:String(t.podcastDescription||''), pubDate:String(t.pubDate||''), loved:!!t.loved, rating:Number(t.rating)||0, ratingRaw:Number(t.ratingRaw)||0,
-      // Streamed songs: where they came from, for "Open in …" after a restart.
-      ...(t.appleMusicUrl ? { appleMusicUrl:String(t.appleMusicUrl) } : {}), ...(t.ytVideoId ? { ytVideoId:String(t.ytVideoId) } : {}), ...(t.genre ? { genre:String(t.genre) } : {}) };
-  }
-  function restoreQueueItems(items, paths, byPath, allowSerializedLocal = false) {
-    if (!Array.isArray(items) || !items.length) {
-      // A paths-only snapshot (the backend playback-state.json) is normally
-      // restored before the library has loaded, so byPath is empty. Keep a
-      // minimal local entry instead of dropping the track; queue rows re-resolve
-      // against the library object once it arrives (populateQueueVirtualRow).
-      return (paths||[]).map(p => {
-        const key = String(p || '');
-        if (!key) return null;
-        return byPath.get(key) || (allowSerializedLocal ? { path:key, source:'local', title:key.split(/[\\/]/).pop().replace(/\.[^.]+$/, '') } : null);
-      }).filter(Boolean);
-    }
-    return items.map(item => {
-      if (item && (item.source === 'spotify' || item.source === 'podcast' || item.source === 'youtube')) return {...item};
-      const pathKey = String(item?.path || item || '');
-      return byPath.get(pathKey) || (allowSerializedLocal && item && item.path ? {...item} : null);
-    }).filter(Boolean);
-  }
-
-  // Picks the queue snapshot to restore. Ordered by queueSavedAt, which only
-  // queue saves write: the backend file's savedAt is bumped by every transport
-  // (position) save, including the one on shutdown right after the queue save,
-  // so comparing savedAt made the paths-only backend copy win almost every
-  // time. On a tie the snapshot with serialized queueItems wins, and a
-  // paths-only winner borrows queueItems from a snapshot of the same queue.
-  function pickQueueSnapshot(snapshots) {
-    const usable = (snapshots || []).filter(s => Array.isArray(s?.paths) && s.paths.length);
-    if (!usable.length) return null;
-    const queueTime = s => Number(s.queueSavedAt ?? s.savedAt) || 0;
-    const hasItems = s => Array.isArray(s.queueItems) && s.queueItems.length > 0;
-    const best = usable.reduce((a, b) => {
-      if (queueTime(b) !== queueTime(a)) return queueTime(b) > queueTime(a) ? b : a;
-      return hasItems(b) && !hasItems(a) ? b : a;
-    });
-    if (hasItems(best)) return best;
-    const samePaths = s => s.paths.length === best.paths.length && s.paths.every((p, i) => String(p) === String(best.paths[i]));
-    const donor = usable.find(s => s !== best && hasItems(s) && samePaths(s));
-    // The backend file never stores the pre-shuffle order either.
-    return donor ? {
-      ...best,
-      queueItems: donor.queueItems,
-      shuffleBasePaths: best.shuffleBasePaths?.length ? best.shuffleBasePaths : donor.shuffleBasePaths,
-      shuffleBaseItems: best.shuffleBaseItems?.length ? best.shuffleBaseItems : donor.shuffleBaseItems
-    } : best;
-  }
+  // Pure queue/session snapshot (de)serialization lives in queue-serialize.js
+  // (loaded before renderer.js; docs/ai/ARCHITECTURE.md renderer de-monolith).
+  const { serializeQueueTrack, restoreQueueItems, pickQueueSnapshot } = window.HiveQueueSerialize;
 
   function saveQueueSession() {
     if (!playbackPersistenceReady || playbackRestorePending) return;
@@ -7258,7 +7071,7 @@
       }
       const ordered = [...groups.values()].map(list => list.slice().sort((a, b) =>
         String(a?.album || '').localeCompare(String(b?.album || ''), undefined, { sensitivity: 'base' }) ||
-        (Number(a?.disk) || 1) - (Number(b?.disk) || 1) || (Number(a?.track) || 0) - (Number(b?.track) || 0)));
+        mediaPositionNumber(a?.disk ?? a?.disc) - mediaPositionNumber(b?.disk ?? b?.disc) || (Number(a?.track) || 0) - (Number(b?.track) || 0)));
       return shuffleForPlayback(ordered).flat();
     }
     const out = shuffleForPlayback(tracks);
@@ -7587,63 +7400,14 @@
     }
     return (smartPlaylistNamesCache.byPath.get(path) || []).join(' | ');
   }
-  const smartNum = v => Number(v || 0);
-  const smartText = v => normalizeMetadataText(v);
-  // One getter per field: a rule reads only its own field (every field of the song, including the
-  // playlist lookup, used to be built for every comparison).
-  const SMART_FIELD_GETTERS = {
-    title:t=>t.title, artist:t=>t.artist, album:t=>t.album, albumArtist:t=>t.albumArtist,
-    genre:t=>t.genre, composer:t=>t.composer, publisher:t=>t.publisher, conductor:t=>t.conductor,
-    comment:t=>normalizeMetadataText(t.comment), grouping:t=>t.grouping, copyright:t=>t.copyright,
-    originalArtist:t=>t.originalArtist, originalAlbum:t=>t.originalAlbum, originalYear:t=>t.originalYear,
-    language:t=>t.language, mood:t=>t.mood, occasion:t=>t.occasion, keywords:t=>t.keywords,
-    tempo:t=>t.tempo, bpm:t=>t.tempo, isrc:t=>t.isrc, barcode:t=>t.barcode,
-    year:t=>smartNum(t.year), releaseDate:t=>smartText(t.releaseDate || t.year || ''), plays:t=>smartNum(t.playCount), skipCount:t=>smartNum(t.skipCount), rating:t=>smartNum(t.rating), love:t=>t.loved?'Loved':'Not Loved', favorite:t=>!!t.loved,
-    duration:t=>smartNum(t.duration), time:t=>smartNum(t.duration), sampleRate:t=>smartNum(t.sampleRate), bitrate:t=>smartNum(t.bitrate),
-    track:t=>smartNum(t.track), disc:t=>smartNum(t.disk), trackCount:t=>smartNum(t.trackCount), discCount:t=>smartNum(t.discCount),
-    addedAt:t=>smartNum(t.addedAt), dateAdded:t=>smartNum(t.addedAt), lastPlayedAt:t=>smartNum(t.lastPlayedAt),
-    playlist:t=>smartPlaylistNamesFor(t.path),
-    path:t=>smartText(t.path), codec:t=>smartText(t.codec), fileType:t=>smartText(t.codec), channels:t=>smartNum(t.channels),
-    season:t=>smartText(t.season), ticketed:t=>smartText(t.ticketed), trackGain:t=>smartText(t.trackGain), sortAlbum:t=>smartText(t.sortAlbum || t.album),
-    sortAlbumArtist:t=>smartText(t.sortAlbumArtist || t.albumArtist), sortArtist:t=>smartText(t.sortArtist || t.artist), sortComposer:t=>smartText(t.sortComposer || t.composer), sortTitle:t=>smartText(t.sortTitle || t.title),
-    videoKind:t=>smartText(t.videoKind), virtual1:t=>hivebeeVirtualValue(t,'virtual1'), virtual2:t=>hivebeeVirtualValue(t,'virtual2'), virtual3:t=>hivebeeVirtualValue(t,'virtual3'),
-    lyrics:t=>normalizeMetadataText(t.lyrics), albumRating:t=>smartNum(t.albumRating), quality:t=>smartText(t.quality),
-  };
-  function smartFieldValue(t,field){
-    // A song's own custom tag of that name wins, as before.
-    const custom = t.customTags;
-    if (custom && Object.prototype.hasOwnProperty.call(custom, field) && custom[field] !== undefined) return custom[field];
-    const get = SMART_FIELD_GETTERS[field];
-    const value = get ? get(t) : undefined;
-    return value !== undefined ? value : smartText(t[field]);
-  }
-  function smartRelativeSpanMs(text){
-    const m=String(text||'').trim().toLowerCase().match(/^(\d+(?:\.\d+)?)\s*([hdwmy]?)$/);
-    if(!m)return 0;
-    const unit={h:3600e3,d:86400e3,w:7*86400e3,m:30.4375*86400e3,y:365.25*86400e3}[m[2]||'d'];
-    return Number(m[1])*unit;
-  }
-  function smartCompare(t,rule){
-    const value=smartFieldValue(t,rule.field), op=rule.op, target=rule.value ?? '';
-    if(rule.field==='favorite') return op==='is' ? value === (target==='true') : value !== (target==='true');
-    if(rule.field==='love') { const wanted=String(target).toLowerCase(); return op==='is' ? String(value).toLowerCase()===wanted : String(value).toLowerCase()!==wanted; }
-    // MusicBee-style relative dates: "in the last 30d / 2w / 6m / 1y / 12h"
-    // (a bare number means days), for date added and last played.
-    if(op==='inLast'||op==='notInLast'){
-      const span=smartRelativeSpanMs(target); if(!span)return false;
-      const when=Number(value)||0, inside=when>0 && when>=Date.now()-span;
-      return op==='inLast'?inside:!inside;
-    }
-    const numericFields=['year','originalYear','plays','skipCount','rating','duration','sampleRate','bitrate','track','disc','trackCount','discCount','addedAt','lastPlayedAt','channels','tempo','quality'];
-    if(numericFields.includes(rule.field)){
-      const n=Number(target); if(!Number.isFinite(n))return false;
-      if(op==='eq')return Number(value)===n; if(op==='gt')return Number(value)>n; if(op==='gte')return Number(value)>=n; if(op==='lt')return Number(value)<n; if(op==='lte')return Number(value)<=n;
-      return false;
-    }
-    const a=String(value).toLowerCase(), b=String(target).toLowerCase();
-    if(op==='contains')return a.includes(b); if(op==='notcontains')return !a.includes(b); if(op==='is')return a===b; if(op==='not')return a!==b; if(op==='starts')return a.startsWith(b); if(op==='ends')return a.endsWith(b); if(op==='empty')return !a.trim(); if(op==='notempty')return !!a.trim();
-    return false;
-  }
+  // Smart-playlist rule matching/dedup/sort lives in smart-rules.js (docs/ai/ARCHITECTURE.md). The stateful
+  // resolvers (playlist names, virtual fields) and the shuffle are injected; the source/evaluate layer stays here.
+  const { smartCompare, smartDeduplicate, sortSmartTracks } = window.HiveSmartRules.createSmartRules({
+    normalizeMetadataText,
+    playlistNamesFor: p => smartPlaylistNamesFor(p),
+    virtualValue: (t, key) => hivebeeVirtualValue(t, key),
+    shuffleForPlayback,
+  });
   function smartSourceTracks(pl){
     const source=pl?.sourceType||'library';
     if(source==='playlist'){
@@ -7655,28 +7419,6 @@
       return folder ? library.tracks.filter(t=>String(t.path||'').toLowerCase()===folder || String(t.path||'').toLowerCase().startsWith(folder+'\\') || String(t.path||'').toLowerCase().startsWith(folder+'/')) : [];
     }
     return library.tracks.slice();
-  }
-  function smartDeduplicate(tracks){
-    const seen=new Set(), out=[];
-    for(const t of tracks){
-      const key=String(t.path||'').toLowerCase();
-      const identity=String(t.title||'').trim().toLowerCase()+'|'+String(t.artist||'').trim().toLowerCase()+'|'+String(t.duration||0);
-      const k=identity || key;
-      if(seen.has(k)) continue;
-      seen.add(k); out.push(t);
-    }
-    return out;
-  }
-  function sortSmartTracks(out,sort){
-    if(sort==='random') return shuffleForPlayback(out);
-    if(sort==='title') out.sort((a,b)=>String(a.title||'').localeCompare(String(b.title||''),undefined,{numeric:true,sensitivity:'base'}));
-    else if(sort==='artist') out.sort((a,b)=>String(a.artist||'').localeCompare(String(b.artist||''),undefined,{numeric:true,sensitivity:'base'}));
-    else if(sort==='album') out.sort((a,b)=>String(a.album||'').localeCompare(String(b.album||''),undefined,{numeric:true,sensitivity:'base'}));
-    else if(sort==='playsDesc') out.sort((a,b)=>Number(b.playCount||0)-Number(a.playCount||0));
-    else if(sort==='ratingDesc') out.sort((a,b)=>Number(b.rating||0)-Number(a.rating||0));
-    else if(sort==='lastPlayedDesc') out.sort((a,b)=>Number(b.lastPlayedAt||0)-Number(a.lastPlayedAt||0));
-    else out.sort((a,b)=>Number(b.addedAt||0)-Number(a.addedAt||0));
-    return out;
   }
   function evaluateSmartPlaylist(pl){
     const rules=Array.isArray(pl.rules)?pl.rules.filter(r=>r?.field):[];
@@ -7800,7 +7542,6 @@
     }
     return raw.replace(/\\/g,'/').replace(/\/+$/,'').toLowerCase();
   }
-  function normalizeMusicText(value){ return String(value||'').normalize('NFKD').replace(/[\u0300-\u036f]/g,'').toLowerCase().replace(/[^a-z0-9]+/g,' ').trim(); }
   function matchImportedTrack(entry){
     const ep=normalizePlaylistPath(entry.path);
     let t=libraryTrackByNormalizedPath.get(ep);
@@ -7954,7 +7695,7 @@
         source:'spotify', spotifyUri:entry.spotifyUri || `spotify:track:${entry.spotifyId}`,
         spotifyId:entry.spotifyId || '', spotifyContextUri:entry.contextUri || data.contextUri || (data.id ? `spotify:playlist:${data.id}` : ''), contextUri:entry.contextUri || data.contextUri || (data.id ? `spotify:playlist:${data.id}` : ''), title:entry.title || 'Unknown title', artist:entry.artist || 'Unknown artist',
         album:entry.album || '', albumUri:entry.albumUri || '', year:entry.year || '', duration:spotifyDurationSeconds(entry.duration), cover:entry.cover || entry.artworkUrl || '', artworkUrl:entry.artworkUrl || entry.cover || '', track:i+1,
-        albumArtist:entry.albumArtist || entry.artist || '', year:entry.year || ''
+        albumArtist:entry.albumArtist || entry.artist || ''
       })).filter(t=>t.spotifyUri);
       if(!spotifyTracks.length){ showAppNotice(`Spotify playlist “${data.name}” did not contain playable tracks.`); return false; }
       if (await youtubeMusicAvailable(true)) { await importSpotifyPlaylistAsYoutube(data, spotifyTracks); return true; }
@@ -9252,7 +8993,7 @@
         showAppNotice(`Added ${paths.length === 1 ? 'the selected track' : `${paths.length} selected tracks`} to the queue.`);
       }
     }, {
-      label: '+ New Playlist',
+      label: '+ New playlist',
       icon: 'plus',
       action: async () => {
         const name = await themedPrompt('Playlist name:', 'My Playlist', 'New playlist');
@@ -9983,72 +9724,14 @@
   // additionally write a second, bogus 'pcount' TXXX tag), and compilation is a
   // checkbox, whose real state lives in `.checked`, not the `.value` this
   // generic text-field loop reads.
-  const TAG_EDITOR_FIELDS = [
-    ['title', 'tag-title'], ['artist', 'tag-artist'], ['album', 'tag-album'], ['albumartist', 'tag-albumArtist'],
-    ['genre', 'tag-genre'], ['year', 'tag-year'], ['track', 'tag-track'], ['disk', 'tag-disk'],
-    ['composer', 'tag-composer'], ['publisher', 'tag-publisher'], ['conductor', 'tag-conductor'], ['bpm', 'tag-bpm'],
-    ['grouping', 'tag-grouping'], ['copyright', 'tag-copyright'], ['comment', 'tag-comment'],
-    ...Array.from({length:19}, (_, i) => [`custom${i+2}`, `tag-custom${i+2}`]),
-    ['lyrics', 'tag-lyrics'], ['lyricist', 'tag-lyricist'], ['originalartist', 'tag-originalArtist'],
-    ['originalalbum', 'tag-originalAlbum'], ['originalyear', 'tag-originalYear'], ['quality', 'tag-quality'],
-    ['tempo', 'tag-tempo'], ['mood', 'tag-mood'], ['occasion', 'tag-occasion'], ['keywords', 'tag-keywords'], ['language', 'tag-language']
-  ];
-
-  function editorTextValue(common, native, key) {
-    const text = (v) => Array.isArray(v) ? (v[0] ?? '') : v;
-    if (key === 'genre') return text(common?.genre);
-    if (key === 'composer') return text(common?.composer);
-    // Tag-editor audit: music-metadata maps some fields only for some formats
-    // (e.g. original artist/album only from ID3 TOPE/TOAL, publisher only as
-    // "label"). Fall back to the raw tag so a value saved by Hive -- or by
-    // another tagger -- always shows up again when the editor reopens.
-    if (key === 'publisher') return text(common?.label) || text(common?.publisher) || nativeTagValue(native, 'PUBLISHER') || nativeTagValue(native, 'TPUB') || nativeTagValue(native, '©pub');
-    if (key === 'conductor') return text(common?.conductor);
-    if (key === 'comment') return normalizeMetadataText(common?.comment);
-    if (key === 'lyrics') return normalizeLyricsText(common?.lyrics);
-    if (key === 'lyricist') return text(common?.lyricist) || nativeTagValue(native, 'LYRICIST');
-    if (key === 'originalartist') return text(common?.originalartist) || nativeTagValue(native, 'ORIGINALARTIST');
-    if (key === 'originalalbum') return text(common?.originalalbum) || nativeTagValue(native, 'ORIGINALALBUM');
-    if (key === 'originalyear') return common?.originalyear || String(common?.originaldate || '').slice(0, 4) || nativeTagValue(native, 'ORIGINALYEAR');
-    if (key === 'mood') return text(common?.mood) || nativeTagValue(native, 'MOOD');
-    if (key === 'occasion') return text(common?.occasion) || nativeTagValue(native, 'OCCASION');
-    if (key === 'quality') return nativeTagValue(native, 'QUALITY');
-    if (key === 'tempo') return common?.tempo ?? nativeTagValue(native, 'TEMPO');
-    if (key === 'keywords') return text(common?.keywords);
-    if (key === 'language') return common?.language || nativeTagValue(native, 'LANGUAGE') || '';
-    if (key === 'replaygain_track_gain') return nativeTagValue(native, 'REPLAYGAIN_TRACK_GAIN');
-    if (key === 'replaygain_track_peak') return nativeTagValue(native, 'REPLAYGAIN_TRACK_PEAK');
-    if (key === 'replaygain_album_gain') return nativeTagValue(native, 'REPLAYGAIN_ALBUM_GAIN');
-    if (key === 'replaygain_album_peak') return nativeTagValue(native, 'REPLAYGAIN_ALBUM_PEAK');
-    if (key === 'r128_track_gain') return nativeTagValue(native, 'R128_TRACK_GAIN');
-    if (key === 'track') return common?.track?.no ?? '';
-    if (key === 'disk') return common?.disk?.no ?? '';
-    if (key === 'compilation') {
-      const commonCompilation = common?.compilation === true || String(common?.compilation || '').trim() === '1';
-      const nativeCompilation = nativeTagValue(native, 'TCMP') || nativeTagValue(native, 'COMPILATION') || nativeTagValue(native, 'cpil');
-      return (commonCompilation || /^(1|true|yes)$/i.test(String(nativeCompilation || '').trim())) ? '1' : '';
-    }
-    if (key === 'pcount') return nativeTagValue(native, 'p_count') || nativeTagValue(native, 'PCOUNT') || nativeTagValue(native, 'PCNT');
-    if (/^custom\d+$/.test(key)) return nativeTagValue(native, key);
-    return common?.[key] ?? '';
-  }
-
-  function editorSortValue(native, key, fallback='') {
-    const sortIds = { title:'TSOT', album:'TSOA', albumartist:'TSO2', artist:'TSOP', composer:'TSOC' };
-    return nativeTagValue(native, sortIds[key] || '') || fallback || '';
-  }
-
-  function editorNativeObject(native) {
-    const out = {};
-    for (const tagList of Object.values(native || {})) {
-      for (const tag of (Array.isArray(tagList) ? tagList : [])) {
-        if (!tag?.id || tag.value === undefined) continue;
-        const raw = tag.value?.text ?? tag.value?.description ?? tag.value?.value ?? tag.value;
-        if (typeof raw === 'string' || typeof raw === 'number' || typeof raw === 'boolean') out[tag.id] = raw;
-      }
-    }
-    return out;
-  }
+  // Tag-editor field helpers (the field<->input-id table, reading field values from
+  // music-metadata common/native with per-format fallbacks, native sort values,
+  // flattening native tags, and the multi-file merge/compare) live in tag-editor-fields.js
+  // (loaded before renderer.js; docs/ai/ARCHITECTURE.md). They were duplicated between the
+  // editor load path and the save/diff path; the module is the single source now.
+  // nativeTagValue / normalizeMetadataText / normalizeLyricsText stay here and are injected.
+  const { TAG_EDITOR_FIELDS, editorTextValue, editorSortValue, editorNativeObject, editorComparable, mergeEditorValues } =
+    window.HiveTagEditorFields.createTagEditorFields({ nativeTagValue, normalizeMetadataText, normalizeLyricsText });
 
 
   function applyEmptyEditGhosts(root = document) {
@@ -10061,16 +9744,7 @@
     });
   }
 
-  function editorComparable(v) {
-    if (v === undefined || v === null) return '';
-    if (typeof v === 'object') return JSON.stringify(v);
-    return String(v).trim();
-  }
-
-  function mergeEditorValues(values) {
-    const normalized = values.map(editorComparable);
-    return normalized.every(v => v === normalized[0]) ? (values[0] ?? '') : '';
-  }
+  // editorComparable + mergeEditorValues now come from tag-editor-fields.js (destructured above).
 
   // Tag editor checkboxes over a selection: checked/unchecked when every file
   // agrees, indeterminate when they differ. Save writes a checkbox to a
@@ -10396,7 +10070,7 @@
                 else el.tagStatus.textContent = 'No image was available on the clipboard.';
               } catch(err) { el.tagStatus.textContent = err.message || 'Could not paste artwork.'; }
             } },
-          { label:'Remove Picture', danger:true, action:()=>deleteArtworkItem(index) }
+          { label:'Remove picture', danger:true, action:()=>deleteArtworkItem(index) }
         ]);
       };
       const thumb = card.querySelector('.artwork-library-thumb-wrap');
@@ -11555,20 +11229,11 @@
   // cover won. When the only local file is the title track itself, the user
   // almost certainly has the single: rank Single releases first. Otherwise
   // prefer releases whose track count is closest to the local file count.
-  function rankAutoTagReleases(results, localTracks) {
-    const wanted = localTracks.length;
-    const loneTitle = wanted === 1 ? normalizeForSearch(localTracks[0]?.title || autoTagFilenameStem(localTracks[0]) || '') : '';
-    const bonus = item => {
-      const type = String(item.releaseType || '').toLowerCase();
-      if (loneTitle && type === 'single' && loneTitle.includes(normalizeForSearch(item.collectionName || ''))) return 50;
-      if (!wanted || !item.trackCount) return 0;
-      return item.trackCount >= wanted ? Math.max(0, 20 - (item.trackCount - wanted)) : -40;
-    };
-    return results
-      .map((item, index) => ({ item, index, rank: Number(item.score || 0) + bonus(item) }))
-      .sort((a, b) => b.rank - a.rank || a.index - b.index)
-      .map(({ item }) => item);
-  }
+  // Pure MusicBrainz auto-tag matching/ranking lives in auto-tag-matching.js (loaded
+  // before renderer.js; docs/ai/ARCHITECTURE.md). normalizeForSearch is injected; the
+  // DOM/IO (search, select, apply) below calls across this seam.
+  const { rankAutoTagReleases, autoTagChangedFields, autoTagFilenameStem, buildAutoTagMapping } =
+    window.HiveAutoTagMatching.createAutoTagMatching({ normalizeForSearch });
 
   async function runAutoTagSearch(modal, options = {}) {
     const album = modal.querySelector('#auto-tag-album')?.value.trim() || '';
@@ -11601,95 +11266,6 @@
     } catch (err) {
       status.textContent = err?.message || 'MusicBrainz search failed.';
     }
-  }
-
-  function autoTagNeedsMetadata(track) {
-    const title = String(track?.title || '').trim();
-    const artist = String(track?.artist || '').trim();
-    const album = String(track?.album || '').trim();
-    const albumArtist = String(track?.albumArtist || '').trim();
-    return !title || !artist || !album || !albumArtist;
-  }
-
-  function autoTagChangedFields(local, remote, release) {
-    if (!local?.path || !remote) return {};
-    const desired = {
-      album: String(release?.title || '').trim(),
-      albumArtist: String(release?.artist || '').trim(),
-      artist: String(remote?.artist || release?.artist || '').trim(),
-      title: String(remote?.title || '').trim(),
-      track: String(remote?.position || '').trim(),
-      disk: String(remote?.disc || '').trim(),
-      year: String(release?.year || '').trim(),
-      publisher: String(release?.label || '').trim()
-    };
-    const fields = {};
-    const comparable = value => normalizeForSearch(value);
-    for (const [key, value] of Object.entries(desired)) {
-      if (!value) continue;
-      const current = String(local?.[key] ?? '').trim();
-      if (comparable(current) !== comparable(value)) fields[key] = value;
-    }
-    return fields;
-  }
-
-  function autoTagFilenameStem(track) {
-    const raw = String(track?.path || '').split(/[\\/]/).pop() || '';
-    return normalizeForSearch(raw.replace(/\.[^.]+$/, '').replace(/^\s*\d{1,3}[\s._-]+/, ''));
-  }
-
-  function autoTagTrackNumber(value) {
-    const n = Number.parseInt(String(value ?? '').split('/')[0], 10);
-    return Number.isFinite(n) && n > 0 ? n : 0;
-  }
-
-  function autoTagMatchScore(local, remote) {
-    const localTitle = normalizeForSearch(local?.title || '');
-    const remoteTitle = normalizeForSearch(remote?.title || '');
-    const fileStem = autoTagFilenameStem(local);
-    const remoteStem = normalizeForSearch(remote?.title || '');
-    let score = 0;
-    if (localTitle && remoteTitle && localTitle === remoteTitle) score += 100;
-    else if (fileStem && remoteStem && (fileStem === remoteStem || fileStem.includes(remoteStem) || remoteStem.includes(fileStem))) score += 80;
-    const lt = autoTagTrackNumber(local?.track), rt = autoTagTrackNumber(remote?.position);
-    const ld = autoTagTrackNumber(local?.disk), rd = autoTagTrackNumber(remote?.disc);
-    if (lt && rt && lt === rt) score += 45;
-    if (ld && rd && ld === rd) score += 10;
-    const la = normalizeForSearch(local?.artist || '');
-    const ra = normalizeForSearch(remote?.artist || '');
-    if (la && ra && (la === ra || la.includes(ra) || ra.includes(la))) score += 12;
-    const durationLocal = Number(local?.duration || 0), durationRemote = Number(remote?.duration || 0);
-    if (durationLocal > 0 && durationRemote > 0 && Math.abs(durationLocal - durationRemote) <= 2.5) score += 25;
-    return score;
-  }
-
-  function buildAutoTagMapping(localTracks, remoteTracks) {
-    const locals = (localTracks || []).map((track, index) => ({ track, index, needs: autoTagNeedsMetadata(track) }));
-    const remotes = (remoteTracks || []).map((track, index) => ({ track, index }));
-    const candidates = [];
-    for (const remote of remotes) {
-      for (const local of locals) {
-        const score = autoTagMatchScore(local.track, remote.track);
-        if (score > 0) candidates.push({ localIndex:local.index, remoteIndex:remote.index, score });
-      }
-    }
-    candidates.sort((a,b) => b.score - a.score || a.localIndex - b.localIndex || a.remoteIndex - b.remoteIndex);
-    const usedLocal = new Set(), usedRemote = new Set(), mapping = [];
-    for (const candidate of candidates) {
-      if (usedLocal.has(candidate.localIndex) || usedRemote.has(candidate.remoteIndex)) continue;
-      // Do not use a weak positional guess when multiple possible files exist.
-      if (candidate.score < 45) continue;
-      usedLocal.add(candidate.localIndex); usedRemote.add(candidate.remoteIndex);
-      mapping.push({ ...candidate, local:locals[candidate.localIndex].track, remote:remotes[candidate.remoteIndex].track });
-    }
-    const remainingLocals = locals.filter(x => !usedLocal.has(x.index));
-    const remainingRemotes = remotes.filter(x => !usedRemote.has(x.index));
-    // If the album has exactly one incomplete local file and exactly one remote
-    // track left, elimination is safe and avoids position-based corruption.
-    if (remainingLocals.length === 1 && remainingRemotes.length === 1) {
-      mapping.push({ localIndex:remainingLocals[0].index, remoteIndex:remainingRemotes[0].index, score:50, local:remainingLocals[0].track, remote:remainingRemotes[0].track, byElimination:true });
-    }
-    return mapping;
   }
 
   async function selectAutoTagRelease(modal, index) {
@@ -11792,9 +11368,6 @@
     if (applyBtn && modal._autoTagMappedAll && modal._autoTagCover) applyBtn.disabled = false;
   }
 
-  function normalizeForSearch(value) {
-    return String(value || '').toLowerCase().normalize('NFKD').replace(/[\u0300-\u036f]/g, '').replace(/[^a-z0-9]+/g, ' ').trim().replace(/\s+/g, ' ');
-  }
 
   async function applyAutoTagRelease(modal) {
     const release = modal._autoTagRelease;
@@ -12073,8 +11646,12 @@
       e.preventDefault(); clearTimeout(clickTimer);
       const m = resolve();
       setAlbumHighlight(card, m);
-      // Double-clicking the original album card always means "play album".
-      // If its inline viewer is already open, leave that viewer open.
+      // Double-click plays the album. A single click opens its inline track viewer (the "dip").
+      // On a SLOW double-click the single-click's 180ms timer can fire first and open this card's
+      // dip; clearTimeout above only cancels a still-pending timer, so close an already-opened dip
+      // here — otherwise a double-click-to-play leaves the viewer stuck open over the grid.
+      const key = String(card.dataset.key || '');
+      if (openAlbumKey === key) { closeAllInlineAlbums(); openAlbumKey = null; updateActiveTabLabel(); saveActiveTabState(); }
       if (m?.tracks?.length) playAlbum(m);
     });
     card.draggable = viewMode === 'albums';
@@ -12462,11 +12039,31 @@
   }
 
   // A "perfect" album: two or more tracks, every one loved. Its card wears a heart badge in the
-  // cover's corner, as on Hive Mobile (PerfectBadge there).
+  // cover's corner, as on Hive Mobile (PerfectBadge there). "Perfect" is judged against the album's
+  // FULL track list in the library, never the tracks a filtered view happens to pass in -- otherwise
+  // every album shown in Favorites (which by definition lists only loved tracks) would look perfect.
+  // The set of fully-loved album keys is built once from the library and reused until love or the
+  // library changes (invalidatePerfectAlbums), so a big grid doesn't rescan the library per card.
+  let _perfectAlbumKeys = null;
+  function invalidatePerfectAlbums() { _perfectAlbumKeys = null; }
+  function perfectAlbumKeys() {
+    if (_perfectAlbumKeys) return _perfectAlbumKeys;
+    const total = new Map(), loved = new Map();
+    for (const t of (library.tracks || [])) {
+      let key = ''; try { key = String(albumKey(t) || ''); } catch { continue; }
+      if (!key) continue;
+      total.set(key, (total.get(key) || 0) + 1);
+      if (t && t.loved) loved.set(key, (loved.get(key) || 0) + 1);
+    }
+    const set = new Set();
+    for (const [key, n] of total) if (n >= 2 && loved.get(key) === n) set.add(key);
+    _perfectAlbumKeys = set;
+    return set;
+  }
   function isPerfectAlbum(a) {
-    const tracks = Array.isArray(a?.tracks) ? a.tracks : [];
     const title = String(a?.title || '').trim();
-    return tracks.length >= 2 && !!title && !/^unknown album$/i.test(title) && tracks.every(t => !!t?.loved);
+    if (!title || /^unknown album$/i.test(title)) return false;
+    return perfectAlbumKeys().has(String(a?.key || ''));
   }
   function addPerfectBadge(card, a) {
     card._hiveAlbum = a;
@@ -12487,6 +12084,7 @@
   // A heart changed: the badge on that song's album card follows.
   function refreshPerfectBadgeFor(track) {
     if (!track) return;
+    invalidatePerfectAlbums();
     let key = '';
     try { key = String(albumKey(track) || ''); } catch { return; }
     if (!key) return;
@@ -13108,40 +12706,10 @@
     element.innerHTML = sanitizeRichText(value);
   }
 
-  // A title too long for its box glides across to show the rest, then back
-  // (the playbar's always; a tab's while hovered, see .marquee in styles.css).
-  const marqueeResize = new ResizeObserver(entries => { for (const entry of entries) measureMarquee(entry.target); });
-  function setMarqueeText(box, text) {
-    if (box.dataset.marqueeText === text && box.firstElementChild?.classList.contains('marquee-track')) return;
-    box.dataset.marqueeText = text;
-    box.innerHTML = '<span class="marquee-track"></span>';
-    box.firstElementChild.textContent = text;
-    marquee(box);
-  }
-  function marquee(box) {
-    if (!box) return;
-    let track = box.firstElementChild;
-    if (!track?.classList.contains('marquee-track') || box.childNodes.length !== 1) {
-      track = document.createElement('span');
-      track.className = 'marquee-track';
-      track.append(...box.childNodes);
-      box.appendChild(track);
-    }
-    box.classList.add('marquee');
-    marqueeResize.observe(box);
-    requestAnimationFrame(() => measureMarquee(box));
-  }
-  function measureMarquee(box) {
-    const track = box.firstElementChild;
-    if (!track) return;
-    const shift = Math.ceil(track.scrollWidth - box.clientWidth);
-    const on = shift > 2;
-    box.classList.toggle('marquee-on', on);
-    if (!on) return;
-    box.style.setProperty('--marquee-shift', `${-shift}px`);
-    // About 32px a second while moving; the moves take 70% of each round trip.
-    box.style.setProperty('--marquee-time', `${Math.max(7, (2 * shift / 32) / 0.7).toFixed(1)}s`);
-  }
+  // A title too long for its box glides across to show the rest, then back (the playbar's
+  // always; a tab's while hovered, see .marquee in styles.css). The behaviour lives in
+  // marquee.js (loaded before renderer.js; docs/ai/ARCHITECTURE.md).
+  const { setMarqueeText, marquee } = window.HiveMarquee.createMarquee({ document, window });
 
   // The page title: a collection's own name (a playlist, Favorites, History, a folder), else the
   // view mode. Switching tabs used to reset it to the mode, so Favorites was titled "Albums".
@@ -13315,10 +12883,22 @@
     if (el.sectionTitleText) el.sectionTitleText.textContent = currentViewTitle(mode);
     if(specialView){
       if(specialView==='playlist' && activePlaylistId){
+        const renderActivePlaylist=(list)=>{
+          const pl=list.find(p=>String(p.id)===String(activePlaylistId));
+          if(pl) renderMusicViewer(playlistLabel(pl), tracksForPlaylist(pl), 'playlist');
+          saveActiveTabState();
+          updateActiveTabLabel();
+        };
         const pl=playlists.find(p=>String(p.id)===String(activePlaylistId));
-        if(pl) renderMusicViewer(playlistLabel(pl), tracksForPlaylist(pl), 'playlist');
-        saveActiveTabState();
-        updateActiveTabLabel();
+        if(pl){ renderActivePlaylist(playlists); return; }
+        // The playlist list wasn't loaded at click time (startup race, or a session reload emptied
+        // it): switching to Tracks/Artists would otherwise light the button and change the title but
+        // never re-render, leaving the old view frozen. Reload the playlists and render so the
+        // mode switch always lands on a playlist tab (e.g. Favorites).
+        Promise.resolve(window.beehive.getPlaylists()).then(list=>{
+          if(Array.isArray(list)&&list.length) playlists=list.map(normalizeSpotifyPlaylistRecord);
+          renderActivePlaylist(playlists);
+        }).catch(()=>renderActivePlaylist(playlists));
         return;
       }
       if(specialView==='history'){
@@ -13336,10 +12916,9 @@
         el.albumsGrid.classList.remove('hidden');
         const tracks = library.tracks.filter(track => String(track?.album || '').trim() === albumFocusTitle);
         if (el.sectionTitleText) el.sectionTitleText.textContent = tracks[0]?.album || 'Album';
-        renderSpecialAlbums(tracks);
-        const album = buildAlbums(tracks)[0];
-        const card = el.albumsGrid.querySelector('.album-card[data-key]');
-        if (album && card) toggleInlineAlbum(card, album);
+        // Open the focused album once the grid is built (it now fills across frames, so the card isn't
+        // in the DOM synchronously — renderSpecialAlbums inline-expands openAlbumKey when it's done).
+        renderSpecialAlbums(tracks, buildAlbums(tracks)[0]?.key || null);
       }
       return;
     }
@@ -13361,8 +12940,11 @@
 
   // ---------------- queue / playback ----------------
   function albumTracksForPlayback(album) {
+    // Order by disc then track, reading `disk ?? disc` so a multi-disc album tagged with only `disc`
+    // (MusicBrainz/canonical path) plays disc 1 then disc 2 — matching albumTrackCompare/discOf, not
+    // interleaved. Keying on `disk` alone (what this did) played such albums 1,1,2,2,3,3.
     return (album?.tracks || []).slice().sort((a,b) =>
-      (Number(a?.disk) || 0) - (Number(b?.disk) || 0) ||
+      mediaPositionNumber(a?.disk ?? a?.disc) - mediaPositionNumber(b?.disk ?? b?.disc) ||
       (Number(a?.track) || 0) - (Number(b?.track) || 0) ||
       songCollator.compare(String(a?.title || ''), String(b?.title || ''))
     );
@@ -14782,7 +14364,8 @@
     el.npAlbum.textContent = t.album || 'Unknown album';
     const release = String(t.releaseDate || t.year || '').trim();
     el.npYear.textContent = release ? release.slice(0, 4) : '';
-    const disc = t.disk != null && t.disk !== '' ? String(t.disk) : '';
+    const discRaw = t.disk != null && t.disk !== '' ? t.disk : t.disc;
+    const disc = discRaw != null && discRaw !== '' ? String(discRaw) : '';
     const trackNo = t.track != null && t.track !== '' ? String(t.track) : '';
     // Only what the song's tags say: no "Disc —" for a song without a disc number.
     el.npTrack.textContent = [disc ? `Disc ${disc}` : '', trackNo ? `Track ${trackNo}` : ''].filter(Boolean).join('  ·  ');
@@ -14895,113 +14478,11 @@
   // decode a new frame on the UI thread exactly when Discord is rendering a
   // video stream. Pre-decode the next covers and switch instantly rather than
   // doing a 420ms opacity animation over a large image.
-  function createCoverRotator() {
-    let timer = null;
-    let items = [];
-    let idx = 0;
-    let imgs = [];
-    let generation = 0;
-    const decoded = new Map(); // source -> decoded Image
-
-    function sourceFor(item) {
-      return item && item.file ? coverSrc(item.file) : placeholderCover();
-    }
-
-    function preload(src, token) {
-      if (!src) return Promise.resolve(null);
-      const existing = decoded.get(src);
-      if (existing) return Promise.resolve(existing);
-      const img = new Image();
-      img.decoding = 'async';
-      const promise = new Promise(resolve => {
-        let settled = false;
-        const finish = value => {
-          if (settled) return;
-          settled = true;
-          if (value) decoded.set(src, img);
-          resolve(value ? img : null);
-        };
-        img.onload = async () => {
-          try { if (typeof img.decode === 'function') await img.decode(); } catch {}
-          finish(true);
-        };
-        img.onerror = () => finish(false);
-      });
-      img.src = src;
-      img.__beehiveDecodePromise = promise;
-      return promise;
-    }
-
-    function apply() {
-      const item = items[idx];
-      const src = sourceFor(item);
-      imgs.forEach(img => {
-        if (!img || !img.isConnected) return;
-        img.style.transition = 'none';
-        img.style.opacity = '1';
-        img.src = src;
-      });
-      if (items.length > 1) preload(sourceFor(items[(idx + 1) % items.length]), generation);
-    }
-
-    function stop() {
-      clearInterval(timer);
-      timer = null;
-      generation++;
-      imgs = [];
-      items = [];
-      idx = 0;
-    }
-
-    async function start(coverItems, imgEls) {
-      // A single rotator owns the artwork index and timer for every synchronized
-      // surface. This prevents the player, queue, album card and expanded album
-      // from drifting apart by even one 4-second tick.
-      const nextItems = (coverItems && coverItems.length) ? coverItems.slice() : [{ file: null }];
-      const nextImgs = Array.from(new Set((imgEls || []).filter(Boolean)));
-      clearInterval(timer);
-      timer = null;
-      generation++;
-      const token = generation;
-      items = nextItems;
-      imgs = nextImgs;
-      idx = 0;
-      await preload(sourceFor(items[0]), token);
-      if (token !== generation) return;
-      apply();
-      if (items.length > 1) {
-        timer = setInterval(async () => {
-          const nextIndex = (idx + 1) % items.length;
-          await preload(sourceFor(items[nextIndex]), token);
-          if (token !== generation) return;
-          idx = nextIndex;
-          apply();
-        }, 4000);
-      }
-    }
-
-    function retarget(imgEls) {
-      const additions = (imgEls || []).filter(Boolean).filter(img => {
-        if (!img || img.dataset?.beehiveRotatorAttached === '1') return false;
-        if (img.dataset) img.dataset.beehiveRotatorAttached = '1';
-        return true;
-      });
-      if (!additions.length) return;
-      imgs = Array.from(new Set([...(imgs || []), ...additions]));
-      if (!items.length) return;
-      const src = sourceFor(items[idx]);
-      additions.forEach(img => {
-        if (!img || !img.isConnected) return;
-        img.style.transition = 'none';
-        img.style.opacity = '1';
-        if (img.src !== src) img.src = src;
-      });
-    }
-
-    return { start, stop, retarget };
-  }
-
-  const nowPlayingRotator = createCoverRotator();
+  // The synchronized cover-art rotator (the shared 4s crossfade clock for the playbar,
+  // now-playing card, grid card and expanded album) lives in cover-rotator.js (loaded
+  // before renderer.js; docs/ai/ARCHITECTURE.md). coverSrc/placeholderCover are injected;
+  // the glue that collects target <img>s stays below.
+  const nowPlayingRotator = window.HiveCoverRotator.createCoverRotator({ coverSrc, placeholderCover });
 
   // Re-collects which on-screen <img> elements should be showing/rotating
   // the current track's cover(s): playbar, now-playing card, its grid card
@@ -16004,6 +15485,7 @@
   // ---------------- library loading / scanning ----------------
   function applyLibrary(lib, options = {}) {
     library = lib || library || { tracks: [] };
+    invalidatePerfectAlbums();
     queuePluginLibraryUpdate();
     applyStreamLovesToFiles();
     libraryTrackByPath = new Map();
@@ -19325,7 +18807,7 @@
       {label:'Choose picture…', action:async()=>{ try { const type = document.getElementById('tag-picture-type'); if (type) type.value = 'Cover (Front)'; const chosen = await window.beehive.chooseCover(); await setPendingArtwork(chosen); } catch(err) { el.tagStatus.textContent = err.message || 'Could not choose artwork.'; } }},
       {label:'Find online…', action:()=>searchEditorArtwork()},
       {label:'Paste picture', action:async()=>{ try { const type = document.getElementById('tag-picture-type'); if (type) type.value = 'Cover (Front)'; const chosen = await window.beehive.pasteCover(); if (chosen) await setPendingArtwork(chosen); else el.tagStatus.textContent='No image was available on the clipboard.'; } catch(err) { el.tagStatus.textContent = err.message || 'Could not paste artwork.'; } }},
-      {label:'Remove Picture', danger:true, action:removePicture}
+      {label:'Remove picture', danger:true, action:removePicture}
     ]);
   });
 
@@ -19986,13 +19468,13 @@
       button.disabled = true;
       button.textContent = 'Generating report…';
       const report = await window.beehive.generateAudioIntegrityReport(audioIntegrityLastResult);
-      button.textContent = 'Report Generated';
+      button.textContent = 'Report generated';
       await themedAlert(`Full TXT report saved inside Hive.\n\n${report?.path || 'Audio Integrity reports folder'}`, 'Audio Integrity report');
     } catch (err) {
       await themedAlert(`The Audio Integrity report could not be generated.\n\n${String(err?.message || err)}`, 'Audio Integrity report');
     } finally {
       button.disabled = false;
-      button.textContent = 'Generate Full TXT Report';
+      button.textContent = 'Generate full TXT report';
     }
   });
   document.querySelector('#audio-integrity-open-reports-btn')?.addEventListener('click', async () => {
@@ -20864,7 +20346,7 @@
       if(scrobblePodcasts) scrobblePodcasts.checked=!!s.includePodcasts;
       if(lbEnabled) lbEnabled.checked=!!s.listenbrainz?.enabled;
       if(lfEnabled) lfEnabled.checked=!!s.lastfm?.enabled;
-      if(scrobbleStatusEl) scrobbleStatusEl.textContent=`ListenBrainz: ${s.listenbrainz?.configured?'configured':'not configured'} · Last.fm: ${s.lastfm?.configured?'authorized':'not authorized'}`;
+      if(scrobbleStatusEl) scrobbleStatusEl.textContent=`ListenBrainz: ${s.listenbrainz?.configured?'configured':'not configured'} · Last.fm: ${s.lastfm?.configured?'authorised':'not authorised'}`;
       // status() only exposes booleans (safe to poll). Without also loading
       // the actual saved credentials here, these fields always looked blank
       // on every Settings reopen even after a successful save -- there was
@@ -20885,8 +20367,8 @@
     } catch(err) { if(scrobbleStatusEl) scrobbleStatusEl.textContent=err?.message||'Could not save scrobbling settings.'; }
   }
   [scrobbleEnabled,scrobblePercent,scrobbleSeconds,scrobblePodcasts,lbEnabled,lbToken,lfEnabled,lfKey,lfSecret,lfSession].forEach(x=>x?.addEventListener('change',saveScrobbleUi));
-  lfBegin?.addEventListener('click',async()=>{ try { const r=await window.beehive.lastfmBeginAuth(); if(r?.url) { window.open(r.url,'_blank'); if(scrobbleStatusEl) scrobbleStatusEl.textContent='Last.fm authorization opened. Authorize it, then click Finish authorization.'; } } catch(err){ if(scrobbleStatusEl) scrobbleStatusEl.textContent=err?.message||'Could not start Last.fm authorization.'; } });
-  lfFinish?.addEventListener('click',async()=>{ try { const r=await window.beehive.lastfmFinishAuth(); if(lfSession) lfSession.value=''; if(lfEnabled) lfEnabled.checked=true; if(scrobbleStatusEl) scrobbleStatusEl.textContent='Last.fm authorization completed.'; await refreshScrobbleSettings(); } catch(err){ if(scrobbleStatusEl) scrobbleStatusEl.textContent=err?.message||'Could not finish Last.fm authorization.'; } });
+  lfBegin?.addEventListener('click',async()=>{ try { const r=await window.beehive.lastfmBeginAuth(); if(r?.url) { window.open(r.url,'_blank'); if(scrobbleStatusEl) scrobbleStatusEl.textContent='Last.fm authorisation opened. Authorise it, then click Finish authorisation.'; } } catch(err){ if(scrobbleStatusEl) scrobbleStatusEl.textContent=err?.message||'Could not start Last.fm authorisation.'; } });
+  lfFinish?.addEventListener('click',async()=>{ try { const r=await window.beehive.lastfmFinishAuth(); if(lfSession) lfSession.value=''; if(lfEnabled) lfEnabled.checked=true; if(scrobbleStatusEl) scrobbleStatusEl.textContent='Last.fm authorisation completed.'; await refreshScrobbleSettings(); } catch(err){ if(scrobbleStatusEl) scrobbleStatusEl.textContent=err?.message||'Could not finish Last.fm authorisation.'; } });
   refreshScrobbleSettings();
 
   // ---- Theme gallery: Browse themes / Share theme (see app/main/theme-store.js) ----
@@ -21612,60 +21094,11 @@
 
   loadDiscordPresenceSettings();
 
-  // Convert Chromium's native `title` popups into themed Hive tooltips. A Mutation
-  // Observer also catches dynamically created rows, cards, and context-menu items.
-  let globalTooltip = null, globalTooltipTimer = null, globalTooltipTarget = null;
-  function tooltipTextFor(node) { return node?.getAttribute?.('data-tooltip') || node?.getAttribute?.('title') || ''; }
-  function prepareTooltipNode(node) {
-    if (!(node instanceof Element) || node === globalTooltip) return;
-    const title = node.getAttribute('title');
-    // A new title replaces the tooltip: code updates title as state changes (Shuffle on/off,
-    // Maximize/Restore), and the tooltip used to keep its first text forever.
-    if (title) node.setAttribute('data-tooltip', title);
-    // Moving the description into a non-ARIA data attribute silently removed
-    // the only accessible name a lot of icon-only controls had (screen
-    // readers don't look at data-tooltip). Preserve it as aria-label so
-    // stripping title here never regresses accessibility, for these
-    // elements and any future ones that lean on title alone.
-    if (title && !node.getAttribute('aria-label')) node.setAttribute('aria-label', title);
-    if (title) node.removeAttribute('title');
-  }
-  function positionGlobalTooltip(e) {
-    if (!globalTooltip || !globalTooltip.classList.contains('visible')) return;
-    const r=globalTooltip.getBoundingClientRect(), pad=10;
-    let left=e.clientX+12, top=e.clientY+16;
-    if (left+r.width > window.innerWidth-pad) left=Math.max(pad,e.clientX-r.width-12);
-    if (top+r.height > window.innerHeight-pad) top=Math.max(pad,e.clientY-r.height-12);
-    globalTooltip.style.left=`${left}px`; globalTooltip.style.top=`${top}px`;
-  }
-  document.addEventListener('pointerover', e => {
-    const node=e.target?.closest?.('[data-tooltip]'); if(!node) return;
-    // Moving between parts of the same thing (an album card's cover, title and
-    // artist) fires pointerover again: the tooltip it shows stays as it is,
-    // instead of hiding and appearing a second time.
-    if(node===globalTooltipTarget) return;
-    const text=tooltipTextFor(node); if(!text) return;
-    prepareTooltipNode(node); globalTooltipTarget=node;
-    if(!globalTooltip){ globalTooltip=document.createElement('div'); globalTooltip.className='beehive-global-tooltip'; document.body.appendChild(globalTooltip); }
-    if(globalTooltipTimer)clearTimeout(globalTooltipTimer); globalTooltip.classList.remove('visible');
-    globalTooltipTimer=setTimeout(()=>{
-      if(globalTooltipTarget!==node)return;
-      // Optional second, dimmer part (e.g. file size after a duration).
-      const secondary=String(node.dataset.tooltipSecondary||'');
-      if(secondary){
-        globalTooltip.textContent='';
-        const main=document.createElement('span'); main.className='tooltip-primary'; main.textContent=text;
-        const sub=document.createElement('span'); sub.className='tooltip-secondary'; sub.textContent=secondary;
-        globalTooltip.append(main,sub);
-      } else globalTooltip.textContent=text;
-      globalTooltip.classList.add('visible'); positionGlobalTooltip(e);
-    }, 420);
-  });
-  document.addEventListener('pointermove', e => positionGlobalTooltip(e));
-  document.addEventListener('pointerout', e => { const node=e.target?.closest?.('[data-tooltip]'); if(node && !node.contains(e.relatedTarget)){ if(globalTooltipTimer)clearTimeout(globalTooltipTimer); globalTooltipTarget=null; globalTooltip?.classList.remove('visible'); } });
-  const tooltipObserver=new MutationObserver(mutations=>{ for(const m of mutations){ if(m.type==='attributes' && m.attributeName==='title') prepareTooltipNode(m.target); for(const node of m.addedNodes){ if(node.nodeType===1){ prepareTooltipNode(node); node.querySelectorAll?.('[title]').forEach(prepareTooltipNode); } } } });
-  tooltipObserver.observe(document.documentElement,{subtree:true,childList:true,attributes:true,attributeFilter:['title']});
-  document.querySelectorAll('[title]').forEach(prepareTooltipNode);
+  // The global hover-tooltip system — themed replacement for Chromium's native `title`
+  // popups plus delegated `data-tooltip` hints, with a MutationObserver that catches
+  // dynamically added rows, cards and context-menu items — lives in tooltip-system.js
+  // (loaded before renderer.js; docs/ai/ARCHITECTURE.md renderer DOM/view de-monolith).
+  window.HiveTooltip.createTooltipSystem({ document, window }).install();
 
   window.beehive.getVersion().then((info) => {
     if (info) el.aboutVersion.textContent = `Version ${info.version}`;
@@ -22216,8 +21649,8 @@ Playlists: ${n(savedPlaylists)}`);
     try {
       const archivePath = await window.beehive.chooseMusicBeeWrappedImport();
       if (!archivePath) {
-        button.textContent = 'Import canceled';
-        if (el.musicBeeWrappedImportStatus) el.musicBeeWrappedImportStatus.textContent = 'Import canceled.';
+        button.textContent = 'Import cancelled';
+        if (el.musicBeeWrappedImportStatus) el.musicBeeWrappedImportStatus.textContent = 'Import cancelled.';
         setTimeout(() => { button.disabled = false; button.textContent = original; }, 2000);
         return;
       }
@@ -22286,7 +21719,7 @@ Open Yearly Wrap to browse the imported years.`, 'Yearly Wrap');
     button.disabled = true; button.textContent = 'Exporting Wrapped archive…';
     try {
       const destination = await window.beehive.chooseHiveWrappedExport();
-      if (!destination) { button.textContent = 'Export canceled'; return; }
+      if (!destination) { button.textContent = 'Export cancelled'; return; }
       const result = await window.beehive.exportHiveWrapped(destination);
       button.textContent = 'Wrapped archive exported';
       if (el.musicBeeWrappedImportStatus) el.musicBeeWrappedImportStatus.textContent = `Hive Wrapped archive exported · ${(result?.years || []).join(', ')}`;

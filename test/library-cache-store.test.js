@@ -143,3 +143,24 @@ test('an edit made while a write is in progress is saved by a later flush', asyn
   await store.flush();
   assert.deepEqual(written.map(w => w.tracks[0].loved), [false, true]);
 });
+
+test('mutate applies to the live cache so a concurrent set() is not clobbered', async () => {
+  const written = [];
+  const store = createLibraryCacheStore({
+    read: async () => ({ tracks: [{ path: '/a', playCount: 1 }] }),
+    write: async (snap) => { written.push(snap); },
+    flushDelayMs: 0,
+  });
+  await store.get(); // load the cache into memory
+  // A scan lands a new cache (an extra track) while a caller is off doing slow work.
+  store.set({ tracks: [{ path: '/a', playCount: 1 }, { path: '/b', playCount: 1 }] });
+  // The caller now applies its play-count update via mutate (a synchronous apply).
+  await store.mutate(live => {
+    live.tracks = live.tracks.map(t => ({ ...t, playCount: t.playCount + 1 }));
+    return live;
+  });
+  const result = await store.get();
+  assert.equal(result.tracks.length, 2, 'the concurrent scan result (track /b) is preserved, not clobbered');
+  assert.deepEqual(result.tracks.map(t => t.path).sort(), ['/a', '/b']);
+  assert.deepEqual(result.tracks.map(t => t.playCount), [2, 2], 'the mutation applied on top of the live data');
+});

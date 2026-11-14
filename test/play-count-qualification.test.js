@@ -9,7 +9,11 @@ const source = fs.readFileSync(path.join(root, 'app', 'renderer', 'renderer.js')
 const css = fs.readFileSync(path.join(root, 'app', 'renderer', 'styles.css'), 'utf8');
 
 test('play counts require five seconds of actual playback and survive pauses without counting skips', () => {
-  assert.match(source, /const PLAY_COUNT_QUALIFY_MS = 5000/);
+  // The qualify threshold + pure track-key helpers now live in track-key.js (docs/ai/ARCHITECTURE.md);
+  // renderer destructures them from window.HiveTrackKey and keeps the session logic.
+  const trackKey = fs.readFileSync(path.join(root, 'app', 'renderer', 'track-key.js'), 'utf8');
+  assert.match(trackKey, /const PLAY_COUNT_QUALIFY_MS = 5000/);
+  assert.match(source, /window\.HiveTrackKey/);
   assert.match(source, /function beginPlayCountSession\(t\)/);
   assert.match(source, /function pausePlayCountSession\(\)/);
   assert.match(source, /function endPlayCountSession\(\)/);

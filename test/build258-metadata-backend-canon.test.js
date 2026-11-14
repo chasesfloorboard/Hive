@@ -118,9 +118,11 @@ test('native rating reader matches namespaced MP4 freeform ids, not just bare id
   // FLAC/generic path compares a bare id, so without stripping the namespace
   // prefix a rating Hive itself wrote to an M4A file was silently unreadable
   // (write succeeded; only display read-back was broken).
-  const start = main.indexOf('async function readNativeEmbeddedRating');
-  const end = main.indexOf('\n}', start);
-  const block = main.slice(start, end);
+  // The embedded-rating readers now live in app/main/rating-reader.js (docs/ai/ARCHITECTURE.md).
+  const ratingReader = fs.readFileSync(path.join(root, 'app/main/rating-reader.js'), 'utf8');
+  const start = ratingReader.indexOf('async function readNativeEmbeddedRating');
+  const end = ratingReader.indexOf('\n  }', start);
+  const block = ratingReader.slice(start, end);
   assert.match(block, /rawId\.slice\(rawId\.lastIndexOf\(':'\)\s*\+\s*1\)/);
 });
 

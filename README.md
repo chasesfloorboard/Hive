@@ -5,11 +5,11 @@
 <h1 align="center">Hive</h1>
 
 <p align="center">
-  <strong>An offline music library manager and player.</strong>
+  <strong>Self-hosted music for your desktop and your phone — in sync, no cloud, no account.</strong>
 </p>
 
 <p align="center">
-  Local music. Native playback. Your metadata stays yours.
+  Native playback. Metadata that lives in your files. Favourites, plays and playlists that follow you between devices.
 </p>
 
 <p align="center">
@@ -22,7 +22,9 @@
 
 ---
 
-Hive is a Linux-first desktop music player built around your local library. It combines native GStreamer playback with a focused Electron interface for large collections, embedded metadata, artwork, playlists, queue management, and library tools.
+Hive is a music ecosystem you host yourself. A Linux-first desktop player — native GStreamer playback behind a focused Electron interface built for large collections — pairs with an Android companion over your own network (LAN or Tailscale) and keeps favourites, play counts and playlists in step across both. No streaming service, no account, nothing leaves your devices. Your library stays a pile of real files with the tags written into them, usable by anything, for as long as you keep them.
+
+The desktop app handles embedded metadata, artwork, playlists, queue management and library tools; the phone plays the music already on it and offers its own updates straight from the desktop. Pick up where you left off on either one.
 
 ![Hive's album grid, with the playing song's cover filling the panel on the right and its colours tinting the window.](resources/screenshots/hive-main-library.png)
 

@@ -53,7 +53,7 @@ import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
-import com.local.hive.mobile.stream.Lyrics
+import com.local.hive.mobile.discovery.Lyrics
 import com.local.hive.mobile.ui.theme.Hive
 import com.local.hive.mobile.ui.theme.HiveAmbient
 import com.local.hive.mobile.ui.theme.HiveGlassLayers

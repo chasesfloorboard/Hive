@@ -149,7 +149,7 @@
 
       <!-- ============ RIGHT QUEUE PANEL ============ -->
       <aside id="queue-panel" class="glass">
-        <div class="queue-header"><span class="queue-header-title">Playing Tracks</span><button id="queue-menu-btn" class="panel-menu-btn" type="button" title="Queue options: Auto-DJ, sleep timer, stop after this track" aria-label="Queue options"><svg viewBox="0 0 24 24" width="16" height="16" fill="currentColor" aria-hidden="true"><circle cx="5" cy="12" r="1.7"/><circle cx="12" cy="12" r="1.7"/><circle cx="19" cy="12" r="1.7"/></svg></button></div>
+        <div class="queue-header"><span class="queue-header-title">Playing tracks</span><button id="queue-menu-btn" class="panel-menu-btn" type="button" title="Queue options: Auto-DJ, sleep timer, stop after this track" aria-label="Queue options"><svg viewBox="0 0 24 24" width="16" height="16" fill="currentColor" aria-hidden="true"><circle cx="5" cy="12" r="1.7"/><circle cx="12" cy="12" r="1.7"/><circle cx="19" cy="12" r="1.7"/></svg></button></div>
         <ol id="queue-list" class="is-empty" tabindex="0" data-row-list aria-label="Queue"></ol>
         <div id="queue-art-resize" class="queue-art-resize" title="Drag to resize queue and cover art"></div>
         <div id="now-playing-card" class="now-playing-card hidden">
@@ -606,7 +606,7 @@
               </div>
             </div>
             <label class="settings-row">
-              <span class="settings-row-text"><span class="settings-row-label">Colored Now Playing</span><span class="settings-hint">Tint the Now Playing area with the album's color.</span></span>
+              <span class="settings-row-text"><span class="settings-row-label">Coloured Now Playing</span><span class="settings-hint">Tint the Now Playing area with the album's colour.</span></span>
               <input type="checkbox" id="setting-playbar-now-playing-bg" />
             </label>
           </section>
@@ -762,12 +762,12 @@
               <div class="settings-field-grid">
                 <label class="settings-field">API key<input id="setting-lastfm-key" type="text" autocomplete="off" /></label>
                 <label class="settings-field">Shared secret<input id="setting-lastfm-secret" type="password" autocomplete="off" /></label>
-                <label class="settings-field settings-field-wide">Session key<input id="setting-lastfm-session" type="password" autocomplete="off" placeholder="Authorize below or paste a session key" /></label>
+                <label class="settings-field settings-field-wide">Session key<input id="setting-lastfm-session" type="password" autocomplete="off" placeholder="Authorise below or paste a session key" /></label>
               </div>
               <div class="settings-row settings-row-actions-only">
                 <span class="settings-row-control">
-                  <button id="lastfm-authorize-btn" class="sidebar-add" type="button">Authorize…</button>
-                  <button id="lastfm-finish-btn" class="sidebar-add" type="button">Finish authorization</button>
+                  <button id="lastfm-authorize-btn" class="sidebar-add" type="button">Authorise…</button>
+                  <button id="lastfm-finish-btn" class="sidebar-add" type="button">Finish authorisation</button>
                 </span>
               </div>
             </div>
@@ -877,7 +877,7 @@
         <div class="disk-delete-detail">This clears Hive's stored play counts and Hive's own native listening history (used for Yearly Wrap and Wrapped-data exports/imports). Any MusicBee Wrapped archive you've already imported is kept. Your music files, tags, ratings, skip counts, last-played information, and playlists will not be deleted or modified.</div>
         <div class="disk-delete-actions">
           <button id="clear-play-counts-cancel" class="modal-action secondary" type="button">Cancel</button>
-          <button id="clear-play-counts-confirm" class="modal-action danger" type="button">Clear Play Counts</button>
+          <button id="clear-play-counts-confirm" class="modal-action danger" type="button">Clear play counts</button>
         </div>
       </div>
     </div>
@@ -908,7 +908,7 @@
       <div class="modal-body about-body">
         <div class="about-brand"><img class="about-brand-logo" id="about-hive-logo" alt="Hive" aria-hidden="true"><span>Hive</span></div>
         <div id="about-version" class="dim small"></div>
-        <p class="dim">A MusicBee-styled music player for Linux and Windows, with a smoky glass rice aesthetic and dynamic accent colors pulled from album art.</p>
+        <p class="dim">A MusicBee-styled music player for Linux and Windows, with a smoky glass rice aesthetic and dynamic accent colours pulled from album art.</p>
         <div class="about-update-check">
           <button id="about-check-updates-btn" class="sidebar-add" type="button">Check for updates</button>
           <div id="about-update-status" class="settings-status" aria-live="polite"></div>
@@ -935,7 +935,7 @@
   <!-- ============ IMPORT PLAYLIST ============ -->
   <div id="playlist-import-modal" class="modal-overlay hidden">
     <div class="modal glass playlist-modal">
-      <div class="modal-header"><h3>Import Playlist</h3><button class="modal-close" aria-label="Close" data-close>✕</button></div>
+      <div class="modal-header"><h3>Import playlist</h3><button class="modal-close" aria-label="Close" data-close>✕</button></div>
       <div class="modal-body playlist-form playlist-import-form">
         <p class="dim">Import a playlist file, or a Google Drive folder of songs. Spotify and Apple Music playlists are imported from their pages in the sidebar.</p>
         <button id="playlist-import-file" class="playlist-import-choice"><strong>Import playlist file</strong><span>M3U / M3U8 from your computer</span></button>
@@ -1091,7 +1091,7 @@
           <div class="smart-advanced-body">
             <div class="smart-advanced-grid">
               <label>Description<textarea id="smart-playlist-description" rows="2" placeholder="Optional description"></textarea></label>
-              <label>Open playlist as<select id="smart-playlist-display"><option value="songs">Songs</option><option value="albums">Albums</option><option value="artists">Artists</option></select></label>
+              <label>Open playlist as<select id="smart-playlist-display"><option value="songs">Tracks</option><option value="albums">Albums</option><option value="artists">Artists</option></select></label>
             </div>
             <label class="smart-switch-row"><span><strong>Remove duplicate tracks</strong><small>Ignore the same track when it appears on multiple albums.</small></span><input type="checkbox" id="smart-filter-duplicates"></label>
             <label class="smart-switch-row"><span><strong>Export a static copy</strong><small>Also create a normal playlist copy when the smart playlist refreshes.</small></span><input type="checkbox" id="smart-export-static"></label>
@@ -1233,7 +1233,7 @@
           <div class="lyrics-result-card">
             <div class="lyrics-result-top">
               <div><strong id="tag-lyrics-result-title">Lyrics</strong><span id="tag-lyrics-result-meta">Embedded lyrics are preferred.</span></div>
-              <div class="lyrics-result-actions"><button id="tag-lyrics-edit" class="sidebar-add compact-action" type="button">Edit Lyrics</button><button id="tag-lyrics-search" class="sidebar-add compact-action" type="button">Search online</button></div>
+              <div class="lyrics-result-actions"><button id="tag-lyrics-edit" class="sidebar-add compact-action" type="button">Edit lyrics</button><button id="tag-lyrics-search" class="sidebar-add compact-action" type="button">Search online</button></div>
             </div>
             <div id="tag-lyrics-preview" class="tag-lyrics-preview"></div>
             <textarea id="tag-lyrics" class="lyrics-editor-text" rows="12" placeholder="Lyrics will appear here when embedded or automatically found online." hidden></textarea>
@@ -1354,11 +1354,25 @@
   <script src="../main/file-organiser.js"></script>
   <script src="colorExtract.js"></script>
   <script src="accent-contrast.js"></script>
+  <script src="track-key.js"></script>
+  <script src="replaygain.js"></script>
+  <script src="search-text.js"></script>
+  <script src="cover-art.js"></script>
+  <script src="album-model.js"></script>
+  <script src="smart-rules.js"></script>
   <script src="yearly-wrap-view.js"></script>
   <script src="drag-out.js"></script>
   <script src="keyboard-access.js"></script>
   <script src="plugin-frame.js"></script>
   <script src="plugin-sandbox.js"></script>
+  <script src="tooltip-system.js"></script>
+  <script src="queue-serialize.js"></script>
+  <script src="streaming-match.js"></script>
+  <script src="auto-tag-matching.js"></script>
+  <script src="tag-editor-fields.js"></script>
+  <script src="marquee.js"></script>
+  <script src="cover-rotator.js"></script>
+  <script src="sidebar-folder-tooltip.js"></script>
   <script src="renderer.js"></script>
   <script src="hive-link-settings.js"></script>
   <script src="soulseek-downloads.js"></script>

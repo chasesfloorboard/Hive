@@ -117,7 +117,7 @@ private val coverPopEnter = fadeIn(tween(200, delayMillis = 40, easing = Motion.
 private val coverPopExit = fadeOut(tween(Motion.UNDER_FADE_MS, easing = LinearEasing))
 
 /** A page that knows its own transition, so its covers can be shared with the page before it. */
-private fun androidx.navigation.NavGraphBuilder.page(
+internal fun androidx.navigation.NavGraphBuilder.page(
     route: String,
     arguments: List<androidx.navigation.NamedNavArgument> = emptyList(),
     content: @Composable (androidx.navigation.NavBackStackEntry) -> Unit,
@@ -152,6 +152,14 @@ private fun HiveContent(vm: MainViewModel, openPlayerInitially: Boolean) {
     // An Apple Music link opens the artist page for an artist, the collection page otherwise.
     fun appleRoute(url: String) = if ("/artist/" in url) "apple/a?url=${enc(url)}" else "apple/c?url=${enc(url)}"
     fun go(path: String) { nav.navigate(path) { launchSingleTop = true } }
+    // A Spotify/Apple Music link tapped elsewhere (or shared to Hive) opens its album/playlist here.
+    val openLink by vm.openLink.collectAsStateWithLifecycle()
+    LaunchedEffect(openLink) {
+        val url = openLink ?: return@LaunchedEffect
+        playerOpen = false; queueOpen = false; lyricsOpen = false
+        nav.navigate(if ("open.spotify.com" in url) "spotify/c?url=${enc(url)}" else appleRoute(url)) { launchSingleTop = true }
+        vm.openLink.value = null
+    }
     // Every ⋮/⋯ menu ends with Settings (HiveMenu's `settings`); from the player too, so it closes first.
     val openSettings = remember(nav) { { playerOpen = false; queueOpen = false; lyricsOpen = false; go("settings") } }
     var toast by remember { mutableStateOf<String?>(null) }
@@ -284,18 +292,8 @@ private fun HiveContent(vm: MainViewModel, openPlayerInitially: Boolean) {
                             val name = entry.arguments?.getString("name").orEmpty()
                             SongsScreen(vm, name.trimEnd('/').substringAfterLast('/').ifBlank { name }, vm.folderTracks(name), actions, bottomPadding) { nav.popBackStack() }
                         }
-                        page("apple") {
-                            AppleMusicScreen(vm, bottomPadding, onBack = { nav.popBackStack() }, onOpenSettings = homeNav.openSettings) { url -> nav.navigate(appleRoute(url)) }
-                        }
-                        page("apple/a?url={url}") { entry ->
-                            AppleArtistScreen(vm, entry.arguments?.getString("url").orEmpty(), bottomPadding, onBack = { nav.popBackStack() }) { url -> nav.navigate(appleRoute(url)) }
-                        }
-                        page("apple/c?url={url}") { entry ->
-                            AppleCollectionScreen(
-                                vm, entry.arguments?.getString("url").orEmpty(), bottomPadding, onBack = { nav.popBackStack() },
-                                onOpen = { url -> nav.navigate(appleRoute(url)) }, onOpenPlaylist = homeNav.openUserPlaylist, onToast = { toast = it },
-                            )
-                        }
+                        // Apple Music + Spotify pages — real in Hive Mobile, absent in Hive Clean (see the streamingRoutes seam).
+                        streamingRoutes(vm, nav, bottomPadding, onOpenSettings = homeNav.openSettings, appleRoute = { appleRoute(it) }, onOpenPlaylist = homeNav.openUserPlaylist, onToast = { toast = it })
                         page("pcplaylist?id={id}") { entry ->
                             PcPlaylistScreen(vm, entry.arguments?.getString("id").orEmpty(), actions, bottomPadding, onBack = { nav.popBackStack() }, onOpenPlaylist = homeNav.openUserPlaylist, onToast = { toast = it })
                         }
@@ -306,12 +304,6 @@ private fun HiveContent(vm: MainViewModel, openPlayerInitially: Boolean) {
                         page("podcasts") { PodcastsScreen(vm, bottomPadding, onBack = { nav.popBackStack() }) { url -> nav.navigate("podcast?feed=${enc(url)}") } }
                         page("podcast?feed={feed}") { entry -> PodcastShowScreen(vm, entry.arguments?.getString("feed").orEmpty(), bottomPadding) { nav.popBackStack() } }
                         page("radio") { RadioScreen(vm, bottomPadding, onBack = { nav.popBackStack() }, onToast = { toast = it }) }
-                        page("spotify") {
-                            SpotifyScreen(vm, bottomPadding, onBack = { nav.popBackStack() }, onOpenSettings = homeNav.openSettings) { url -> nav.navigate(if ("open.spotify.com" in url) "spotify/c?url=${enc(url)}" else appleRoute(url)) }
-                        }
-                        page("spotify/c?url={url}") { entry ->
-                            SpotifyCollectionScreen(vm, entry.arguments?.getString("url").orEmpty(), bottomPadding, onBack = { nav.popBackStack() }, onOpenPlaylist = homeNav.openUserPlaylist, onToast = { toast = it })
-                        }
                         page("userplaylist/{id}", listOf(navArgument("id") { type = NavType.LongType })) { entry ->
                             PlaylistScreen(vm, entry.arguments?.getLong("id") ?: 0L, actions, bottomPadding) { nav.popBackStack() }
                         }

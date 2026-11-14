@@ -11,10 +11,13 @@ const scanner = fs.readFileSync(scannerPath, 'utf8');
 test('renderer has one object-safe text normalizer for comments and lyrics', () => {
   assert.match(renderer, /function normalizeMetadataText\(raw\)/);
   assert.match(renderer, /normalizeMetadataText\(t\?\.comment\)/);
-  assert.match(renderer, /normalizeMetadataText\(t\.lyrics\)/);
   assert.match(renderer, /t\.comment\s*=\s*normalizeMetadataText\(t\.comment\)/);
-  assert.match(renderer, /comment:(?:t=>)?normalizeMetadataText\(t\.comment\)/);
   assert.doesNotMatch(renderer, /get:t=>String\(t\?\.comment \|\| ''\)/);
+  // The smart-playlist field getters that normalise comment/lyrics moved to smart-rules.js, which is handed
+  // normalizeMetadataText as an injected dependency (docs/ai/ARCHITECTURE.md).
+  const smartRules = fs.readFileSync(path.join(__dirname, '..', 'app', 'renderer', 'smart-rules.js'), 'utf8');
+  assert.match(smartRules, /comment: t => normalizeMetadataText\(t\.comment\)/);
+  assert.match(smartRules, /lyrics: t => normalizeMetadataText\(t\.lyrics\)/);
 });
 
 test('scanner normalizes object-shaped comments and lyrics before building track records', () => {

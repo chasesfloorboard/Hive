@@ -9,7 +9,7 @@ const css = fs.readFileSync(path.join(root, 'app', 'renderer', 'styles.css'), 'u
 
 test('Build 171 exposes Add to submenu with New Playlist, Favorites, and writable user playlists', () => {
   assert.match(renderer, /function buildAddToPlaylistSubmenu\(tracks\)/);
-  assert.match(renderer, /label:\s*'\+ New Playlist'/);
+  assert.match(renderer, /label:\s*'\+ New playlist'/);
   assert.match(renderer, /starFavoritesPlaylist\(\)/);
   assert.match(renderer, /String\(pl\.source \|\| ''\)\.toLowerCase\(\) === 'spotify'/);
   assert.match(renderer, /label:'Add to',icon:'plus',(?:menuKey:'addTo',)?submenu:buildAddToPlaylistSubmenu\(queueTracks\)/);

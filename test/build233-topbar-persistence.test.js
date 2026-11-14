@@ -23,14 +23,22 @@ test('Build 233 keeps themed search and window controls interactive', () => {
 test('Build 233 provides an in-project Hive user-data backup and recovery path', () => {
   assert.match(main, /function hiveUserBackupRoot\(\)/);
   assert.match(main, /User Data Backup/);
-  assert.match(main, /function backupHiveUserDataSync\(\)/);
-  assert.match(main, /function restoreHiveUserBackupSync\(dataRoot\)/);
-  assert.match(main, /backupHiveUserDataSync\(\)/);
+  // The backup mirror now lives in its own module (docs/ai/ARCHITECTURE.md); main wires it and restores on startup.
+  const backupMod = fs.readFileSync(path.join(root, 'app/main/user-data-backup.js'), 'utf8');
+  assert.match(backupMod, /function createUserDataBackup/);
+  assert.match(backupMod, /function restoreHiveUserBackupSync/);
+  assert.match(backupMod, /function backupHiveUserDataSync/);
+  assert.match(main, /createUserDataBackup\(\{/);
   assert.match(main, /restoreHiveUserBackupSync\(dataRoot\)/);
 });
 
 test('Build 233 mirrors persisted JSON outside cache/session/log data', () => {
-  assert.match(main, /p !== LIBRARY_CACHE_PATH\(\)/);
-  assert.match(main, /User-data JSON backup skipped/);
-  assert.match(main, /copyFile\(p, backupPath\)/);
+  // The safe JSON layer now lives in app/main/json-store.js (docs/ai/ARCHITECTURE.md); main wires it.
+  const jsonStore = fs.readFileSync(path.join(root, 'app/main/json-store.js'), 'utf8');
+  assert.match(jsonStore, /p !== cachePath && !damagedJsonFiles\.has\(p\)/);
+  assert.match(jsonStore, /session\$\{path\.sep\}/);
+  assert.match(jsonStore, /User-data JSON backup skipped/);
+  // The backup write is durable/atomic (atomicReplace), not a bare non-atomic copyFile.
+  assert.match(jsonStore, /atomicReplace\(backupPath, payload\)/);
+  assert.match(main, /createJsonStore\(\{/);
 });

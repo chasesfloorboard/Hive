@@ -13,8 +13,8 @@ android {
         applicationId = "com.local.hive.mobile"
         minSdk = 29
         targetSdk = 36
-        versionCode = 167
-        versionName = "3.0.1"
+        versionCode = 196
+        versionName = "3.0.30"
         testInstrumentationRunner = "androidx.test.runner.AndroidJUnitRunner"
     }
 
@@ -33,6 +33,15 @@ android {
             proguardFiles(getDefaultProguardFile("proguard-android-optimize.txt"), "proguard-rules.pro")
             signingConfig = signingConfigs.findByName("hive") ?: signingConfigs.getByName("debug")
         }
+    }
+    // Two editions, installable side-by-side:
+    //  - "mobile" = Hive Mobile — the full F-Droid variant (Apple/Spotify logins optional, never required).
+    //  - "clean"  = Hive Clean  — the Google Play variant (local library only; no streaming/soulseek; no logins).
+    // Hive Clean takes a distinct applicationId so it installs ALONGSIDE Hive Mobile for testing.
+    flavorDimensions += "edition"
+    productFlavors {
+        create("mobile") { dimension = "edition" } // applicationId stays com.local.hive.mobile (defaultConfig)
+        create("clean") { dimension = "edition"; applicationId = "io.github.chasesfloorboard.hiveclean" }
     }
     compileOptions {
         sourceCompatibility = JavaVersion.VERSION_17
@@ -58,13 +67,22 @@ dependencies {
     implementation(libs.lifecycle.process)
     implementation(libs.media3.exoplayer)
     implementation(libs.media3.session)
+    implementation(project(":core"))
+    // Apple Music / Spotify / YouTube Music / Scrobbler / Genius and Soulseek are the FULL F-Droid edition
+    // only ("mobile"). Hive Clean (Google Play) is built without them. ("mobileImplementation" is the string
+    // form — the Kotlin DSL has no generated accessor for a flavor configuration.)
+    "mobileImplementation"(project(":streaming"))
+    "mobileImplementation"(project(":soulseek"))
+    implementation(project(":widget"))
+    implementation(project(":playback"))
+    implementation(project(":sync"))
+    implementation(libs.jaudiotagger)
     implementation(libs.room.runtime)
     implementation(libs.room.ktx)
     ksp(libs.room.compiler)
     implementation(libs.work.runtime)
     implementation(libs.okhttp)
     // Writes tags and covers into the song files (the tag editor, Change cover, Auto-tag).
-    implementation(libs.jaudiotagger)
     implementation(libs.okhttp.sse)
     implementation(libs.coil.compose)
     // Covers from Apple Music and Spotify.

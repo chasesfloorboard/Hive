@@ -1014,10 +1014,11 @@ html[data-hive-theme="light"] .artist-back-icon { filter: invert(1); }
   border-radius: 0;
   overflow: visible;
   transition: transform 180ms ease;
-  /* Keep a large cached library cheap to paint. Chromium can skip layout/paint
-     for off-screen cards while their intrinsic size remains predictable. */
-  content-visibility: auto;
-  contain-intrinsic-size: 178px 232px;
+  /* NOTE: we intentionally do NOT set `content-visibility: auto` here. It turns on
+     paint containment, which clips anything drawn outside the card box — including the
+     cover's soft drop shadow and glow (they ended in a hard rectangular cut instead of
+     fading out) and a hover lift. Covers already lazy-load their images, which is the
+     expensive part of a large library; the layout/paint of the simple cards is cheap. */
 }
 .album-card:hover { transform: translateY(-4px) scale(1.015); }
 .album-card .art-wrap {
@@ -1579,11 +1580,11 @@ input[type="range"]::-webkit-slider-thumb {
 .song-header-btn.active { color:var(--text); background:var(--accent-soft); border-color:var(--border); }
 .song-virtual-spacer { width:1px; opacity:0; pointer-events:none; }
 .song-virtual-window { position:absolute; left:0; right:0; top:0; }
-/* Tracks are already window-virtualized in JS. Avoid content-visibility/paint
-   containment here: Chromium can make transformed virtual rows incorrectly
-   ineligible for painting near the end of a scroll range, which presents as
-   rows disappearing even though the data and spacer are still present. */
-.song-row { contain:layout paint; }
+/* Tracks are already window-virtualized in JS. Keep ONLY layout containment here, never paint
+   (or content-visibility): paint containment makes transformed virtual rows incorrectly
+   ineligible for painting near the end of a scroll range (rows disappear even though the data
+   and spacer are present), and it clips the row's own hover shadow/glow to a hard edge. */
+.song-row { contain:layout; }
 #content-tools { margin-left:auto; }
 .playlist-manager { text-align:left; max-width:900px; margin:10px auto; }
 .playlist-manager-kicker { margin:0 0 4px; color:var(--text-dimmer); font-size:9px; font-weight:700; letter-spacing:.12em; text-transform:uppercase; }
@@ -6385,7 +6386,11 @@ html[data-hive-theme="light"] #ambient-cover { opacity: .16; filter: blur(120px)
 /* ===== Motion: things answer the pointer ===== */
 :root { --ease-out: cubic-bezier(.2,.8,.2,1); --ease-spring: cubic-bezier(.3,1.35,.5,1); }
 .album-card .art-wrap { transition: transform .26s var(--ease-out), box-shadow .26s var(--ease-out) !important; }
-.album-card:hover .art-wrap { transform: translateY(-4px); box-shadow: 0 16px 32px rgba(0,0,0,.42), 0 4px 10px rgba(0,0,0,.25) !important; }
+/* The whole card lifts on hover (.album-card:hover above), raising the entire cover cleanly.
+   The cover itself just deepens its shadow for a "floating toward you" feel — and that shadow
+   now fades softly, because the card no longer has content-visibility paint containment clipping
+   it to a hard rectangular edge. */
+.album-card:hover .art-wrap { box-shadow: 0 16px 32px rgba(0,0,0,.42), 0 4px 10px rgba(0,0,0,.25) !important; }
 .album-card:active .art-wrap { transform: translateY(-1px) scale(.985); transition-duration: .09s !important; }
 button:not(:disabled):active, .view-btn:active, .sidebar-item:active, .tab:active { transform: scale(.965); }
 button, .view-btn, .tab { transition-property: transform, background-color, color, border-color, box-shadow, opacity; transition-duration: .14s; transition-timing-function: var(--ease-out); }
@@ -6421,17 +6426,15 @@ button, .view-btn, .tab { transition-property: transform, background-color, colo
 #settings-modal .settings-row.settings-row-stacked > .settings-row-text { flex: none !important; text-align: left !important; }
 #settings-modal .settings-row.settings-row-stacked > .settings-chip-grid { margin-left: 0 !important; justify-content: flex-start !important; width: 100%; }
 
-/* Years as a timeline: a year with one or two albums sits beside the next
-   one instead of taking a whole row. A year whose album is open spans the row. */
-#albums-grid:has(> .album-year-section) { display: flex !important; flex-wrap: wrap !important; align-items: flex-start !important; column-gap: 36px !important; row-gap: 26px !important; }
-#albums-grid > .album-year-section { flex: 0 1 auto !important; width: auto !important; max-width: 100% !important; margin: 0 !important; }
-#albums-grid > .album-year-section:has(.inline-album-dropdown) { flex-basis: 100% !important; }
+/* Each release year takes its own full-width band: the year label and its rule
+   run all the way across the Music viewport, with that year's albums in the grid
+   beneath it, and the next year starts a fresh band below. */
+#albums-grid:has(> .album-year-section) { display: block !important; }
+#albums-grid > .album-year-section { display: block !important; width: 100% !important; max-width: 100% !important; margin: 0 0 22px !important; }
 #albums-grid > .album-year-section .album-year-heading { margin-bottom: 12px !important; font-size: 15px !important; font-weight: 700 !important; color: var(--text) !important; }
 #albums-grid > .album-year-section .album-year-heading > span { font-variant-numeric: tabular-nums; }
 #albums-grid > .album-year-section .album-year-rule { background: color-mix(in srgb, var(--text) 10%, transparent) !important; min-width: 24px; }
-#albums-grid > .album-year-section .album-year-grid { width: auto !important; }
-#albums-grid > .album-year-section:has(.inline-album-dropdown) .album-year-grid { width: 100% !important; }
-body #albums-grid > .album-year-section .album-year-grid { display: flex !important; flex-wrap: wrap !important; gap: 26px 18px !important; grid-template-columns: none !important; }
+body #albums-grid > .album-year-section .album-year-grid { display: flex !important; flex-wrap: wrap !important; gap: 26px 18px !important; width: 100% !important; grid-template-columns: none !important; }
 body #albums-grid > .album-year-section .album-year-grid > .album-card { flex: 0 0 184px !important; width: 184px !important; }
 body #albums-grid > .album-year-section .album-year-grid > .inline-album-dropdown { flex: 0 0 100% !important; width: 100% !important; }
 

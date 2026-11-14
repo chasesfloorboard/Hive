@@ -5,23 +5,19 @@
     <!-- Only for the car diagnostics log (CarLog); granted by hand over USB. -->
     <uses-permission android:name="android.permission.READ_LOGS" tools:ignore="ProtectedPermissions" />
     <uses-permission android:name="android.permission.READ_MEDIA_AUDIO" />
-    <!-- Song sync's file mirror writes the music folder file for file (sideloaded app, not the Play Store). -->
-    <uses-permission android:name="android.permission.MANAGE_EXTERNAL_STORAGE" tools:ignore="ScopedStorage" />
-    <uses-permission android:name="android.permission.READ_EXTERNAL_STORAGE" android:maxSdkVersion="32" />
+    <!-- Song sync's file mirror writes the music folder file for file (sideloaded app, not the Play Store). -->    <uses-permission android:name="android.permission.READ_EXTERNAL_STORAGE" android:maxSdkVersion="32" />
     <uses-permission android:name="android.permission.INTERNET" />
     <uses-permission android:name="android.permission.ACCESS_NETWORK_STATE" />
     <uses-permission android:name="android.permission.ACCESS_WIFI_STATE" />
     <uses-permission android:name="android.permission.CHANGE_WIFI_MULTICAST_STATE" />
-    <uses-permission android:name="android.permission.FOREGROUND_SERVICE" />
-    <uses-permission android:name="android.permission.FOREGROUND_SERVICE_MEDIA_PLAYBACK" />
-    <!-- Song sync copies songs with Hive on the PC as a WorkManager foreground job. -->
+    <uses-permission android:name="android.permission.FOREGROUND_SERVICE" />    <!-- Song sync copies songs with Hive on the PC as a WorkManager foreground job. -->
     <uses-permission android:name="android.permission.FOREGROUND_SERVICE_DATA_SYNC" />
     <uses-permission android:name="android.permission.POST_NOTIFICATIONS" />
     <uses-permission android:name="android.permission.WAKE_LOCK" />
     <!-- The lock-screen player: Android lets an app open a screen from the background only with "Display over other apps". -->
     <uses-permission android:name="android.permission.SYSTEM_ALERT_WINDOW" />
-    <uses-permission android:name="android.permission.REQUEST_INSTALL_PACKAGES" />
-
+    <!-- ...and, more reliably on recent Android (and in the car), a full-screen-intent notification. -->
+    <uses-permission android:name="android.permission.USE_FULL_SCREEN_INTENT" />
     <!-- Seeker (Soulseek), for "Download with Seeker". -->
     <queries>
         <package android:name="com.companyname.andriodapp1" />
@@ -42,6 +38,8 @@
             android:name=".MainActivity"
             android:exported="true"
             android:launchMode="singleTask"
+            android:screenOrientation="portrait"
+            android:configChanges="orientation|screenSize|screenLayout|smallestScreenSize"
             android:windowSoftInputMode="adjustResize">
             <intent-filter>
                 <action android:name="android.intent.action.MAIN" />
@@ -56,17 +54,14 @@
                 <action android:name="android.media.action.MEDIA_PLAY_FROM_SEARCH" />
                 <category android:name="android.intent.category.DEFAULT" />
             </intent-filter>
-            <!-- Spotify sign-in returns here from the browser. -->
-            <intent-filter>
-                <action android:name="android.intent.action.VIEW" />
-                <category android:name="android.intent.category.DEFAULT" />
-                <category android:name="android.intent.category.BROWSABLE" />
-                <data android:scheme="hive-mobile" android:host="spotify-auth" />
-            </intent-filter>
+            <!-- Spotify/Apple Music link + sign-in + share intent-filters are the full ("Hive Mobile")
+                 edition's: they live in app/src/mobile/AndroidManifest.xml so Hive Clean neither
+                 advertises handling streaming links nor navigates to streaming routes it doesn't build. -->
         </activity>
 
-        <!-- Apple Music's own sign-in page (unofficial library access). -->
-        <activity android:name=".AppleSignInActivity" android:exported="false" android:windowSoftInputMode="adjustResize" />
+        <!-- Apple Music's sign-in page (.AppleSignInActivity) is the full ("Hive Mobile") edition's and
+             is declared in app/src/mobile/AndroidManifest.xml, so Hive Clean's manifest never references a
+             class absent from its build. -->
 
         <!-- Hive over the lock screen while music plays, in its own task away from Recents. -->
         <activity
@@ -93,22 +88,7 @@
             <meta-data
                 android:name="android.support.FILE_PROVIDER_PATHS"
                 android:resource="@xml/shared_files" />
-        </provider>
-
-        <receiver android:name=".link.AppUpdater$InstallResult" android:exported="false" />
-        <receiver
-            android:name=".widget.HiveWidgetReceiver"
-            android:exported="true"
-            android:label="Hive">
-            <intent-filter>
-                <action android:name="android.appwidget.action.APPWIDGET_UPDATE" />
-            </intent-filter>
-            <meta-data
-                android:name="android.appwidget.provider"
-                android:resource="@xml/hive_widget" />
-        </receiver>
-
-        <service
+        </provider>        <service
             android:name="androidx.work.impl.foreground.SystemForegroundService"
             android:foregroundServiceType="dataSync"
             tools:node="merge" />
@@ -124,33 +104,5 @@
             <meta-data
                 android:name="androidx.emoji2.text.EmojiCompatInitializer"
                 tools:node="remove" />
-        </provider>
-
-        <provider
-            android:name=".playback.CoverProvider"
-            android:authorities="${applicationId}.covers"
-            android:exported="false"
-            android:grantUriPermissions="true" />
-
-        <!-- The car's or headphones' play button reaches Hive even after Android closed it, so it
-             resumes your queue instead of handing the button to the last other app that played. -->
-        <receiver
-            android:name="androidx.media3.session.MediaButtonReceiver"
-            android:exported="true">
-            <intent-filter>
-                <action android:name="android.intent.action.MEDIA_BUTTON" />
-            </intent-filter>
-        </receiver>
-
-        <service
-            android:name=".playback.PlaybackService"
-            android:exported="true"
-            android:foregroundServiceType="mediaPlayback">
-            <intent-filter>
-                <action android:name="androidx.media3.session.MediaLibraryService" />
-                <action android:name="androidx.media3.session.MediaSessionService" />
-                <action android:name="android.media.browse.MediaBrowserService" />
-            </intent-filter>
-        </service>
-    </application>
+        </provider>    </application>
 </manifest>

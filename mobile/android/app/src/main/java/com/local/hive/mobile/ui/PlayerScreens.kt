@@ -612,7 +612,7 @@ private fun FullPlayerContent(
                                 // Downloaded with Soulseek, as the album pages' button does (YouTube Music only streams it).
                                 HiveMenuItem("Download", Icons.Rounded.Download) {
                                     menu = false
-                                    if (com.local.hive.mobile.soulseek.SoulseekSettings(context).configured) downloadStreams(context, listOf(nowStream(now)), onToast) else signIn = true
+                                    if (soulseekConfigured(context)) downloadStreams(context, listOf(nowStream(now)), onToast) else signIn = true
                                 }
                                 HiveMenuDivider()
                             }

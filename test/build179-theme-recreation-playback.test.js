@@ -30,7 +30,13 @@ test('queue restoration falls back to serialized session metadata whenever the l
   assert.match(renderer, /const rendererRecreationMode\s*=\s*new URLSearchParams\(location\.search\)\.get\('preservePlayback'\)\s*===\s*'1'/);
   assert.match(renderer, /restoreQueueItems\(queueState\.queueItems, queueState\.paths, byPath, true\)/);
   assert.match(renderer, /restoreQueueItems\(queueState\.shuffleBaseItems, queueState\.shuffleBasePaths, byPath, true\)/);
-  assert.match(renderer, /allowSerializedLocal\s*&&\s*item\s*&&\s*item\.path/);
+  // The serialized-local fallback inside restoreQueueItems (keep a saved local entry when
+  // the library has not loaded) moved to queue-serialize.js; assert it behaviourally here,
+  // in full in test/queue-serialize.test.js.
+  const { restoreQueueItems } = require('../app/renderer/queue-serialize');
+  const kept = restoreQueueItems([{ path: '/x.mp3', source: 'local', title: 'X' }], null, new Map(), true);
+  assert.equal(kept.length, 1, 'serialized-local entry kept when the library is not loaded');
+  assert.deepEqual(restoreQueueItems([{ path: '/x.mp3', source: 'local' }], null, new Map(), false), [], 'and dropped when not allowed');
 });
 
 test('renderer recreation adopts the existing GStreamer transport instead of starting a second playback session', () => {

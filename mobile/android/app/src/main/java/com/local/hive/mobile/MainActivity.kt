@@ -55,6 +55,7 @@ class MainActivity : ComponentActivity() {
         val missing = wanted.filter { ContextCompat.checkSelfPermission(this, it) != PackageManager.PERMISSION_GRANTED }
         if (missing.isNotEmpty()) permissions.launch(missing.toTypedArray())
         handleSpotifyReturn(intent)
+        handleMusicLink(intent)
         if (savedInstanceState == null) handleVoice(intent)
         // "Hive Mobile x is ready": tapping the notification installs it.
         if (intent?.getBooleanExtra(EXTRA_INSTALL_UPDATE, false) == true) (application as HiveApp).appUpdater.install(this)
@@ -67,6 +68,11 @@ class MainActivity : ComponentActivity() {
         (application as HiveApp).appUpdater.checkAnywhere()
     }
 
+    // Whether Hive's own UI was the app in use — so the lock-screen player knows whether unlocking
+    // should return to Hive (it was) or to whatever app the user was really in (it wasn't).
+    override fun onStart() { super.onStart(); isForeground = true }
+    override fun onStop() { super.onStop(); isForeground = false; lastForegroundAt = System.currentTimeMillis() }
+
     override fun onNewIntent(intent: Intent) {
         super.onNewIntent(intent)
         setIntent(intent)
@@ -74,6 +80,7 @@ class MainActivity : ComponentActivity() {
         if (intent.getBooleanExtra(EXTRA_GO_HOME, false)) vm.goHome()
         if (intent.getBooleanExtra(EXTRA_INSTALL_UPDATE, false)) (application as HiveApp).appUpdater.install(this)
         handleSpotifyReturn(intent)
+        handleMusicLink(intent)
         handleVoice(intent)
     }
 
@@ -94,12 +101,44 @@ class MainActivity : ComponentActivity() {
     private fun handleSpotifyReturn(intent: Intent?) {
         val data = intent?.data ?: return
         if (data.scheme == "hive-mobile" && data.host == "spotify-auth") {
-            val app = application as HiveApp
-            app.scope.launch { app.spotifyAccount.complete(data) }
+            // Spotify OAuth completion lives in the Mobile edition only (see the completeSpotifyReturn seam).
+            com.local.hive.mobile.ui.completeSpotifyReturn(application, data)
         }
     }
 
+    /** A tapped Spotify/Apple Music album link (ACTION_VIEW), or one shared to Hive (ACTION_SEND): open it. */
+    private fun handleMusicLink(intent: Intent?) {
+        musicUrlFrom(intent)?.let { vm.openLink.value = it }
+    }
+
+    private fun musicUrlFrom(intent: Intent?): String? {
+        intent ?: return null
+        val text = when (intent.action) {
+            Intent.ACTION_VIEW -> intent.data?.toString()
+            Intent.ACTION_SEND -> intent.getStringExtra(Intent.EXTRA_TEXT)
+            else -> null
+        } ?: return null
+        // A shared string may read "Artist — Album https://open.spotify.com/album/…": pull the link out.
+        val url = Regex("""https?://(open\.spotify\.com|music\.apple\.com)/\S+""").find(text)?.value
+            ?.trimEnd('.', ',', ')', '"', '\'') ?: return null
+        val supported = ("open.spotify.com" in url && Regex("""/(album|playlist)/""").containsMatchIn(url)) ||
+            ("music.apple.com" in url && Regex("""/(album|playlist|artist)/""").containsMatchIn(url))
+        return if (supported) url else null
+    }
+
     companion object {
+        /** Whether Hive's main UI is on screen right now. */
+        @Volatile var isForeground = false; private set
+        /** When Hive's main UI last left the screen. */
+        @Volatile private var lastForegroundAt = 0L
+        /**
+         * Was Hive's own UI the app in use just before the screen locked? True while it's showing, and for
+         * a moment after — the screen-off broadcast and this activity's onStop race, so a phone locked
+         * straight from Hive mustn't read as "wasn't in Hive". A second spent in another app is longer than
+         * that moment, so switching away before locking correctly reads as false.
+         */
+        fun wasRecentlyForeground() = isForeground || System.currentTimeMillis() - lastForegroundAt < 1_500L
+
         const val EXTRA_GO_HOME = "go_home"
         const val EXTRA_OPEN_PLAYER = "open_player"
         /** Opens the deleted-songs choice (from its notification). */

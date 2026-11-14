@@ -76,7 +76,11 @@
         iframe.hidden = true;
         const entry = { plugin, iframe, mounted: null, done: resolve, timer: 0 };
         frames.set(plugin.id, entry);
-        entry.timer = setTimeout(() => { hooks.log?.(plugin.id, 'did not finish loading'); entry.done?.(false); entry.done = null; }, loadTimeoutMs);
+        // A plugin whose top-level code hangs (an infinite loop or runaway allocation in new Function(...))
+        // never posts 'loaded'. Don't just log and move on — stop() removes the iframe, which terminates the
+        // runaway script, clears the timer, and resolves the load promise false. Otherwise the hung frame
+        // keeps burning CPU/memory in the renderer for the whole session.
+        entry.timer = setTimeout(() => { hooks.log?.(plugin.id, 'did not finish loading — stopped'); stop(plugin.id); }, loadTimeoutMs);
         // The frame holds plugin-frame.html and nothing else. A plugin that navigates it away (to a
         // page without the frame's CSP) is stopped: its frame is removed as soon as the page loads,
         // and Hive's main process gives frames no network meanwhile.

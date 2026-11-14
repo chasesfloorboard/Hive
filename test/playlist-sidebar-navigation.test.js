@@ -316,7 +316,10 @@ test('playlist reads/writes are serialized so two near-simultaneous mutations ca
   // "before" snapshot; whichever writes last silently discards the other's
   // change. This exact class of bug was already fixed for play-stats.json
   // (withStatsMutation) but never applied to playlists.json.
-  assert.match(main, /function withJsonFileLock\(filePath, fn\)/);
+  // withJsonFileLock is defined in the extracted safe JSON layer (docs/ai/ARCHITECTURE.md);
+  // what matters here is that the playlists handlers in main.js serialize through it.
+  const jsonStore = fs.readFileSync(path.join(root, 'app/main/json-store.js'), 'utf8');
+  assert.match(jsonStore, /function withJsonFileLock\(filePath, fn\)/);
 
   const saveStart = main.indexOf("ipcMain.handle('playlists:save'");
   const saveEnd = main.indexOf("\n});", saveStart);

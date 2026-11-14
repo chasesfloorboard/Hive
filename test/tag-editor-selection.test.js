@@ -11,6 +11,13 @@ const path = require('path');
 const vm = require('vm');
 
 const renderer = fs.readFileSync(path.join(__dirname, '../app/renderer/renderer.js'), 'utf8');
+// editorComparable + mergeEditorValues moved to tag-editor-fields.js (full unit cases in
+// test/tag-editor-fields.test.js); the DOM glue (setMergedCheck, tagCheckboxChanged) stays
+// in renderer and still leans on them, so we inject the module's versions into the vm.
+const { createTagEditorFields } = require('../app/renderer/tag-editor-fields');
+const { editorComparable, mergeEditorValues } = createTagEditorFields({
+  nativeTagValue: () => '', normalizeMetadataText: v => String(v ?? ''), normalizeLyricsText: v => String(v ?? ''),
+});
 
 function functionSource(name) {
   const start = renderer.indexOf(`function ${name}(`);
@@ -24,11 +31,10 @@ function functionSource(name) {
 }
 
 function load(nodes) {
-  const context = { document: { getElementById: id => nodes[id] || null } };
+  const context = { document: { getElementById: id => nodes[id] || null }, editorComparable, mergeEditorValues };
   vm.createContext(context);
   const isTrue = renderer.match(/const isTrueTagValue = [^\n]+/)[0];
-  vm.runInContext([functionSource('editorComparable'), functionSource('mergeEditorValues'), isTrue,
-    functionSource('setMergedCheck'), functionSource('tagCheckboxChanged'),
+  vm.runInContext([isTrue, functionSource('setMergedCheck'), functionSource('tagCheckboxChanged'),
     'this.api = { mergeEditorValues, setMergedCheck, tagCheckboxChanged };'].join('\n'), context);
   return context.api;
 }

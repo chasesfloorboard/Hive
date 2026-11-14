@@ -166,12 +166,12 @@ test('album cover context menu opens the tag editor for every track in the album
 });
 
 test('album track ordering parses numeric positions before title tie-breaking', () => {
-  const start = renderer.indexOf('function mediaPositionNumber(value)');
-  const end = renderer.indexOf('\n  function buildTrackSearchIndex', start);
-  assert.ok(start >= 0 && end > start);
-  const block = renderer.slice(start, end);
-  assert.ok(block.includes('String(value).trim().match(/^\\s*(\\d+)/)'));
-  assert.match(block, /function albumTrackCompare\(a, b\)/);
-  assert.match(renderer, /a\.tracks\.sort\(albumTrackCompare\)/);
+  // mediaPositionNumber + albumTrackCompare + buildAlbums moved to album-model.js (docs/ai/ARCHITECTURE.md);
+  // the per-album-view sort stays in renderer.
+  const albumModel = fs.readFileSync(path.join(root, 'app', 'renderer', 'album-model.js'), 'utf8');
+  assert.match(albumModel, /function mediaPositionNumber\(value\)/);
+  assert.ok(albumModel.includes('String(value).trim().match(/^\\s*(\\d+)/)'));
+  assert.match(albumModel, /function albumTrackCompare\(a, b\)/);
+  assert.match(albumModel, /a\.tracks\.sort\(albumTrackCompare\)/);
   assert.match(renderer, /slice\(\)\.sort\(albumTrackCompare\)/);
 });

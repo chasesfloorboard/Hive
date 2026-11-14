@@ -1,0 +1,47 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!--
+  Hive Mobile (F-Droid, full). Streaming-link handling is a Mobile-edition feature, so its intent-filters
+  live here rather than in the shared manifest. The manifest merger adds them to MainActivity for the
+  `mobile` flavor only; Hive Clean (Google Play, strict) never receives these intents, so it neither
+  advertises handling Spotify/Apple Music links nor tries to navigate to streaming routes it doesn't build.
+-->
+<manifest xmlns:android="http://schemas.android.com/apk/res/android">
+    <application>
+        <activity android:name=".MainActivity">
+            <!-- Spotify sign-in returns here from the browser. -->
+            <intent-filter>
+                <action android:name="android.intent.action.VIEW" />
+                <category android:name="android.intent.category.DEFAULT" />
+                <category android:name="android.intent.category.BROWSABLE" />
+                <data android:scheme="hive-mobile" android:host="spotify-auth" />
+            </intent-filter>
+            <!-- Open a Spotify album/playlist link in Hive. No autoVerify: we don't own the domain, so Hive
+                 appears as a choice rather than hijacking the link. -->
+            <intent-filter>
+                <action android:name="android.intent.action.VIEW" />
+                <category android:name="android.intent.category.DEFAULT" />
+                <category android:name="android.intent.category.BROWSABLE" />
+                <data android:scheme="https" android:host="open.spotify.com" android:pathPattern="/.*album/.*" />
+                <data android:scheme="https" android:host="open.spotify.com" android:pathPattern="/.*playlist/.*" />
+            </intent-filter>
+            <!-- Open an Apple Music album/playlist link in Hive. -->
+            <intent-filter>
+                <action android:name="android.intent.action.VIEW" />
+                <category android:name="android.intent.category.DEFAULT" />
+                <category android:name="android.intent.category.BROWSABLE" />
+                <data android:scheme="https" android:host="music.apple.com" android:pathPattern="/.*/album/.*" />
+                <data android:scheme="https" android:host="music.apple.com" android:pathPattern="/.*/playlist/.*" />
+            </intent-filter>
+            <!-- "Share → Hive" of a Spotify/Apple Music link from inside those apps. Hive pulls the music
+                 link out of the shared text and opens it; other shared text just opens Hive normally. -->
+            <intent-filter>
+                <action android:name="android.intent.action.SEND" />
+                <category android:name="android.intent.category.DEFAULT" />
+                <data android:mimeType="text/plain" />
+            </intent-filter>
+        </activity>
+
+        <!-- Apple Music's own sign-in page (unofficial library access) — Mobile edition only. -->
+        <activity android:name=".AppleSignInActivity" android:exported="false" android:windowSoftInputMode="adjustResize" />
+    </application>
+</manifest>

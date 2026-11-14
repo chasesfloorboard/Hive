@@ -79,12 +79,9 @@ fun SettingsScreen(vm: MainViewModel, bottomPadding: Dp, onOpenEqualiser: () -> 
                     }
                 }
                 SettingsPage.Backup -> item { Section("", "Your plays, favorites, playlists, ratings and settings, kept in the cloud. Restoring replaces what's on this phone.") { BackupRows(vm) } }
-                SettingsPage.Accounts -> {
-                    item { Section("Apple Music", "Your playlists and songs, through Apple's web player sign-in. Unofficial: Apple may stop it working at any time.") { AppleRows(vm) } }
-                    item { Section("Spotify", "Your playlists and Liked Songs, and Spotify search.") { SpotifyRows(vm) } }
-                    item { Section("Scrobbling", "Send what you play to ListenBrainz or Last.fm.") { ScrobbleRows(vm) } }
-                    item { Section("Soulseek", "Download albums from Apple Music and Spotify pages. Hive shares nothing.") { SoulseekRows() } }
-                }
+                // The streaming accounts (Apple Music, Spotify, scrobbling, Soulseek) — real in Hive Mobile,
+                // empty in Hive Clean (see the accountsSettings seam).
+                SettingsPage.Accounts -> accountsSettings(vm)
                 SettingsPage.Advanced -> advancedSettings(vm) { page = SettingsPage.Developer }
                 SettingsPage.Developer -> developerSettings(vm) { page = SettingsPage.Advanced }
                 SettingsPage.Gallery -> themeGallery(vm)
@@ -108,7 +105,7 @@ private fun SettingsPageFrame(title: String, bottomPadding: Dp, state: androidx.
 
 private fun androidx.compose.foundation.lazy.LazyListScope.mainSettings(vm: MainViewModel, onOpenEqualiser: () -> Unit, open: (SettingsPage) -> Unit) {
     // What matters most first: the version and its update, then how Hive looks; the advanced things last.
-    item { Section("", "") { AppUpdateRow() } }
+    item { Section("", "") { AppUpdateRow(); BetaUpdatesRow(vm) } }
     item {
         Section("Look", "") {
             ThemePicker(vm)
@@ -163,7 +160,7 @@ private fun androidx.compose.foundation.lazy.LazyListScope.mainSettings(vm: Main
             val b by vm.backupStatus.collectAsStateWithLifecycle()
             val link by vm.link.collectAsStateWithLifecycle()
             NavRow("Backup", backupSummary(b, link.paired), warn = b.cloudName == null || b.cloudError != null) { open(SettingsPage.Backup) }
-            NavRow("Accounts", "Apple Music, Spotify, Last.fm, ListenBrainz, Soulseek") { open(SettingsPage.Accounts) }
+            if (streamingAccountsAvailable()) NavRow("Accounts", "Apple Music, Spotify, Last.fm, ListenBrainz, Soulseek") { open(SettingsPage.Accounts) }
         }
     }
     item { Section("", "") { NavRow("Advanced", "Crossfade details, theme schedule, library details") { open(SettingsPage.Advanced) } } }
@@ -204,11 +201,16 @@ private fun androidx.compose.foundation.lazy.LazyListScope.advancedSettings(vm: 
 }
 
 /** Where the backups are, in a few words. */
-private fun backupSummary(b: com.local.hive.mobile.data.PhoneBackup.Status, paired: Boolean): String = when {
-    b.cloudError != null -> b.cloudError
-    b.cloudName == null -> "Not backed up to the cloud yet. Tap to set it up."
-    b.cloudAt > 0 -> "Saved ${whenSaved(b.cloudAt)} to ${b.cloudName.substringBefore(" › ")}"
-    else -> "Saving to ${b.cloudName.substringBefore(" › ")}…"
+private fun backupSummary(b: com.local.hive.mobile.link.PhoneBackup.Status, paired: Boolean): String {
+    // Bind to locals: cross-module properties (b is in :sync) can't smart-cast after a null check.
+    val cloudError = b.cloudError
+    val cloudName = b.cloudName
+    return when {
+        cloudError != null -> cloudError
+        cloudName == null -> "Not backed up to the cloud yet. Tap to set it up."
+        b.cloudAt > 0 -> "Saved ${whenSaved(b.cloudAt)} to ${cloudName.substringBefore(" › ")}"
+        else -> "Saving to ${cloudName.substringBefore(" › ")}…"
+    }
 }
 
 /** A row that opens a page: what it holds, a word on where things stand, and a chevron. */
@@ -291,6 +293,16 @@ private fun AppUpdateRow() {
     }
 }
 
+/** Beta (in-development) updates: when on, this device pulls new builds from the beta channel instead of
+ *  waiting for a stable release. Off by default — only a device you deliberately turn it on for. */
+@Composable
+private fun BetaUpdatesRow(vm: MainViewModel) {
+    val on by vm.betaUpdates.collectAsStateWithLifecycle()
+    SettingRow("Beta updates", if (on) "This phone gets in-development builds as soon as they're out." else "Get in-development builds early. Leave off to stay on stable releases.") {
+        HiveToggle(listOf("Off", "On"), if (on) 1 else 0, { i -> vm.setBetaUpdates(i == 1) })
+    }
+}
+
 /** Songs deleted on one side since they were on both: the user decides what happens on the other. */
 @Composable
 private fun DeletedSongsRow(vm: MainViewModel, always: Boolean = false) {
@@ -318,7 +330,7 @@ internal fun Section(title: String, description: String, content: @Composable ()
 }
 
 @Composable
-private fun SettingRow(label: String, hint: String, control: @Composable () -> Unit) {
+internal fun SettingRow(label: String, hint: String, control: @Composable () -> Unit) {
     val c = Hive.colors
     Row(Modifier.fillMaxWidth().padding(horizontal = 18.dp, vertical = 10.dp), verticalAlignment = Alignment.CenterVertically) {
         Column(Modifier.weight(1f), verticalArrangement = Arrangement.spacedBy(2.dp)) {
@@ -472,7 +484,7 @@ private fun PairRows(vm: MainViewModel) {
     }
     val context = androidx.compose.ui.platform.LocalContext.current
     Text(
-        "Don't have Hive on your computer yet?  Get it from github.com/chasesfloorboard/Hive",
+        "Don't have Hive on your computer yet? Get it from github.com/chasesfloorboard/Hive",
         style = HiveText.small, color = c.accent,
         modifier = Modifier.fillMaxWidth().padding(horizontal = 18.dp, vertical = 12.dp).clickable {
             runCatching { context.startActivity(android.content.Intent(android.content.Intent.ACTION_VIEW, android.net.Uri.parse("https://github.com/chasesfloorboard/Hive"))) }
@@ -480,77 +492,6 @@ private fun PairRows(vm: MainViewModel) {
     )
 }
 
-
-/** The Soulseek account (signing in checks it with the server, in the same window the download button opens), the format, and where downloads go. */
-@Composable
-private fun SoulseekRows() {
-    val context = androidx.compose.ui.platform.LocalContext.current
-    val settings = remember { com.local.hive.mobile.soulseek.SoulseekSettings(context) }
-    var signedIn by remember { mutableStateOf(settings.configured) }
-    var signIn by remember { mutableStateOf(false) }
-    var quality by remember { mutableStateOf(settings.quality) }
-    if (signedIn) SettingRow("Signed in as ${settings.username}", "Downloads use this account. Seeker on the same account is signed out while Hive downloads.") {
-        HiveButton("Sign out") { settings.password = ""; signedIn = false }
-    } else SettingRow("Not signed in", "Your Soulseek account (the one Seeker uses works).") { HiveButton("Sign in", primary = true) { signIn = true } }
-    if (signIn) SoulseekSignInDialog(onDismiss = { signIn = false }, onSignedIn = { signIn = false; signedIn = true }, confirm = "Sign in")
-    SettingRow("Prefer", if (quality == com.local.hive.mobile.soulseek.Quality.Lossless) "FLAC when someone shares it, else MP3 320." else "MP3 320 (smaller), else FLAC.") {
-        HiveToggle(listOf("FLAC", "MP3"), quality.ordinal, { i -> quality = com.local.hive.mobile.soulseek.Quality.entries[i]; settings.quality = quality })
-    }
-    // Where downloads go: the phone or the SD card, into Music/<folder>/<artist>/<album>.
-    val storages = remember { com.local.hive.mobile.soulseek.SoulseekSettings.storages(context) }
-    var volume by remember { mutableStateOf(settings.volumeNow(context)) }
-    var folder by remember { mutableStateOf(settings.folder) }
-    SettingRow("Save to", if (storages.size > 1) "Downloads go on ${storages.firstOrNull { it.first == volume }?.second ?: "the phone"}." else "This phone (no SD card in).") {
-        if (storages.size > 1) HiveToggle(storages.map { it.second }, storages.indexOfFirst { it.first == volume }.coerceAtLeast(0), { i -> volume = storages[i].first; settings.volume = volume })
-    }
-    Column(Modifier.padding(horizontal = 14.dp, vertical = 4.dp)) {
-        HiveField(folder, { folder = it; settings.folder = it }, "Folder in Music (blank: Music itself)", type = KeyboardType.Text, modifier = Modifier.fillMaxWidth())
-        Text("Saved as Music/${folder.trim().trim('/').let { if (it.isBlank()) "" else "$it/" }}Artist/Album", style = HiveText.small, color = Hive.colors.textDim, modifier = Modifier.padding(start = 4.dp, top = 6.dp))
-    }
-    var list by remember { mutableStateOf(false) }
-    SettingRow("Downloads", "Albums coming in, song by song, and the latest done.") { HiveButton("Open") { list = true } }
-    if (list) DownloadsSheet(onDismiss = { list = false })
-}
-
-@Composable
-private fun AppleRows(vm: MainViewModel) {
-    val context = androidx.compose.ui.platform.LocalContext.current
-    val user by vm.appleUser.collectAsStateWithLifecycle()
-    if (user.signedIn) {
-        SettingRow("Signed in", "Your playlists and songs appear on the Apple Music page.") { HiveButton("Sign out") { vm.appleAccount.signOut() } }
-    } else {
-        SettingRow("Your Apple Music library", "Sign in on Apple's own page. Hive never sees your password.") {
-            HiveButton("Sign in", primary = true) { context.startActivity(android.content.Intent(context, com.local.hive.mobile.AppleSignInActivity::class.java)) }
-        }
-    }
-    user.error?.let { Text(it, style = HiveText.small, color = Color(0xFFFF8A8A), modifier = Modifier.padding(horizontal = 18.dp, vertical = 4.dp)) }
-}
-
-@Composable
-private fun SpotifyRows(vm: MainViewModel) {
-    val c = Hive.colors
-    val context = androidx.compose.ui.platform.LocalContext.current
-    val user by vm.spotifyUser.collectAsStateWithLifecycle()
-    var clientId by remember(user.clientId) { mutableStateOf(user.clientId) }
-    if (user.signedIn) {
-        SettingRow("Signed in as ${user.name.ifBlank { "you" }}", "Your playlists and Liked Songs appear on the Spotify page.") { HiveButton("Sign out") { vm.spotifyAccount.signOut() } }
-    } else {
-        Text(
-            "Once: create an app at developer.spotify.com/dashboard, add the redirect URI ${com.local.hive.mobile.stream.SpotifyAccount.REDIRECT}, add your Spotify account under User Management, then paste the app's Client ID here.",
-            style = HiveText.small, color = c.textDim, modifier = Modifier.padding(horizontal = 18.dp, vertical = 6.dp),
-        )
-        Box(Modifier.padding(horizontal = 14.dp, vertical = 4.dp)) {
-            HiveField(clientId, { clientId = it.trim() }, "Client ID", type = KeyboardType.Ascii, modifier = Modifier.fillMaxWidth())
-        }
-        Row(Modifier.padding(horizontal = 14.dp, vertical = 8.dp)) {
-            HiveButton("Sign in with Spotify", enabled = clientId.length >= 16, primary = true) {
-                vm.spotifyAccount.setClientId(clientId)
-                runCatching { context.startActivity(android.content.Intent(android.content.Intent.ACTION_VIEW, vm.spotifyAccount.authorizeUrl())) }
-            }
-        }
-    }
-    user.error?.let { Text(it, style = HiveText.small, color = Color(0xFFFF8A8A), modifier = Modifier.padding(horizontal = 18.dp, vertical = 4.dp)) }
-}
 
 @Composable
 private fun ThemePicker(vm: MainViewModel) {
@@ -670,51 +611,6 @@ private fun ThemeSwatch(pack: com.local.hive.mobile.ui.theme.ThemePack, selected
         }
         Text(pack.name, style = HiveText.small, color = if (selected) c.text else c.textDim, maxLines = 1, overflow = androidx.compose.ui.text.style.TextOverflow.Ellipsis, modifier = Modifier.padding(top = 6.dp))
     }
-}
-
-@Composable
-private fun ScrobbleRows(vm: MainViewModel) {
-    val context = androidx.compose.ui.platform.LocalContext.current
-    val s by vm.scrobbler.settings.collectAsStateWithLifecycle()
-    val scope = androidx.compose.runtime.rememberCoroutineScope()
-    var token by remember(s.listenBrainzToken) { mutableStateOf(s.listenBrainzToken) }
-    var key by remember(s.lastFmKey) { mutableStateOf(s.lastFmKey) }
-    var secret by remember(s.lastFmSecret) { mutableStateOf(s.lastFmSecret) }
-    var error by remember { mutableStateOf<String?>(null) }
-
-    SettingRow("ListenBrainz", if (s.listenBrainz && s.listenBrainzToken.isNotBlank()) "On" else "Paste your user token from listenbrainz.org/settings.") {
-        HiveToggle(listOf("Off", "On"), if (s.listenBrainz) 1 else 0, { i -> vm.scrobbler.update { it.copy(listenBrainz = i == 1, listenBrainzToken = token.trim()) } })
-    }
-    Box(Modifier.padding(horizontal = 14.dp, vertical = 4.dp)) {
-        HiveField(token, { token = it.trim(); vm.scrobbler.update { st -> st.copy(listenBrainzToken = it.trim()) } }, "User token", type = KeyboardType.Password, modifier = Modifier.fillMaxWidth())
-    }
-    if (s.lastFmSession.isNotBlank()) {
-        SettingRow("Last.fm", "Signed in as ${s.lastFmUser}") {
-            HiveToggle(listOf("Off", "On"), if (s.lastFm) 1 else 0, { i -> vm.scrobbler.update { it.copy(lastFm = i == 1) } })
-        }
-        SettingRow("Sign out of Last.fm", "") { HiveButton("Sign out") { vm.scrobbler.update { it.copy(lastFm = false, lastFmSession = "", lastFmUser = "") } } }
-    } else {
-        SettingRow("Last.fm", "Your API key and shared secret from last.fm/api/account/create, then sign in.") {}
-        Row(Modifier.padding(horizontal = 14.dp, vertical = 4.dp), horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-            HiveField(key, { key = it.trim() }, "API key", type = KeyboardType.Ascii, modifier = Modifier.weight(1f))
-            HiveField(secret, { secret = it.trim() }, "Shared secret", type = KeyboardType.Password, modifier = Modifier.weight(1f))
-        }
-        Row(Modifier.padding(horizontal = 14.dp, vertical = 8.dp), horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-            HiveButton("Sign in", enabled = key.length >= 16 && secret.length >= 16, primary = s.lastFmPendingToken.isBlank()) {
-                vm.scrobbler.update { it.copy(lastFmKey = key, lastFmSecret = secret) }
-                scope.launch {
-                    runCatching { vm.scrobbler.lastFmAuthUrl() }
-                        .onSuccess { url -> error = null; runCatching { context.startActivity(android.content.Intent(android.content.Intent.ACTION_VIEW, url)) } }
-                        .onFailure { error = it.message }
-                }
-            }
-            if (s.lastFmPendingToken.isNotBlank()) HiveButton("I've allowed Hive", primary = true) {
-                scope.launch { runCatching { vm.scrobbler.finishLastFm() }.onSuccess { error = null }.onFailure { error = it.message } }
-            }
-        }
-    }
-    if (s.queued > 0) Text("${countOf(s.queued, "listen")} waiting to be sent", style = HiveText.small, color = Hive.colors.textDim, modifier = Modifier.padding(horizontal = 18.dp, vertical = 4.dp))
-    (error ?: s.lastError)?.let { Text(it, style = HiveText.small, color = Color(0xFFFF8A8A), modifier = Modifier.padding(horizontal = 18.dp, vertical = 4.dp)) }
 }
 
 /** The library in numbers: albums, artists, how long and how big, and its formats. */

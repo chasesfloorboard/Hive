@@ -40,5 +40,13 @@ test('Spotify provider state is wired from the main-process bridge into the rend
 });
 
 test('Spotify queue persistence retains provider playback context', () => {
-  assert.ok(renderer.includes("spotifyContextUri:String(t.spotifyContextUri||t.contextUri||'')"));
+  // serializeQueueTrack moved to app/renderer/queue-serialize.js; assert the context-uri
+  // preservation behaviourally (full cases in test/queue-serialize.test.js).
+  const { serializeQueueTrack } = require('../app/renderer/queue-serialize');
+  const fromSpotify = serializeQueueTrack({ path: 'spotify:track:1', source: 'spotify', spotifyContextUri: 'spotify:playlist:9' });
+  assert.equal(fromSpotify.spotifyContextUri, 'spotify:playlist:9');
+  assert.equal(fromSpotify.contextUri, 'spotify:playlist:9', 'cross-filled from spotifyContextUri');
+  // And the other direction: a bare contextUri back-fills spotifyContextUri.
+  const fromContext = serializeQueueTrack({ path: 'spotify:track:2', source: 'spotify', contextUri: 'spotify:album:7' });
+  assert.equal(fromContext.spotifyContextUri, 'spotify:album:7');
 });

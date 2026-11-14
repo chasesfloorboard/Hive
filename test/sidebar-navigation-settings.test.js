@@ -23,7 +23,7 @@ test('sidebar automatic shuffle applies to the Tracks view without changing Albu
   assert.match(source, /currentSidebarContextNav\(\)/);
   assert.match(source, /manualSongSortActive\(\)/);
   assert.match(source, /sidebarVisualShuffleEnabled\(nav\)/);
-  assert.match(source, /function renderSpecialAlbums\(tracks\)/);
+  assert.match(source, /function renderSpecialAlbums\(tracks/);
   assert.match(source, /if \(albumYearDividers\) \{/);
 });
 

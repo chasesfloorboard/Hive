@@ -164,6 +164,23 @@ function trackIdFor(track) { return String(track?.id || sha256(path.resolve(Stri
 function num(value) { const n = Number(value); return Number.isFinite(n) ? n : 0; }
 function text(value) { const v = value === undefined || value === null ? '' : String(value); return v === 'None' ? '' : v; }
 
+function isLoopbackAddress(addr) {
+  const a = String(addr || '');
+  return a === '::1' || a === '::ffff:127.0.0.1' || a.startsWith('127.');
+}
+
+// The privileged bearer token must never travel in cleartext where a network peer on the home Wi-Fi could
+// sniff it. Once this Hive has brought up its encrypted port, a Bearer token is accepted ONLY over TLS --
+// with one safe exception: loopback (127.x / ::1), which covers both the test harness and the USB
+// adb-reverse path, neither of which touches the sniffable network. Before TLS is up there is nothing to
+// enforce (and the one-time pairing itself uses a code, not the token). Returns true when the token's
+// transport is acceptable.
+function bearerTokenTransportOk({ tlsReady, encrypted, remoteAddress }) {
+  if (!tlsReady) return true;
+  if (encrypted) return true;
+  return isLoopbackAddress(remoteAddress);
+}
+
 // Game mod audio (Elden Ring, the Nurse Harrow mod) that landed in a music folder: not music.
 const NOT_MUSIC = /elden\s*ring|nurse\s*harrow/i;
 const isNotMusic = t => NOT_MUSIC.test([t?.path, t?.title, t?.artist, t?.album].map(text).join(' '));
@@ -219,7 +236,18 @@ function lanAddresses() {
   return out;
 }
 
-function createHiveLink({ dataDir, getTracks, setLove, onPaired, streamSong = null, coversDir = null, remote = null, getPlaylists = null, savePlaylist = null, deletePlaylist = null, getPlays = null, recordPlays = null, spotifySearch = null, songTarget = null, onSongAdded = () => {}, acceptPhonePlays = false, getWrap = null, getWrapYears = null, getListening = null, files = null, onFileChanged = () => {}, getThemes = null, getCurrentTheme = null, onPairRequest = null, deleteSongs = null, editSongs = null, setRating = null, trackStats = null, getStreamLoves = null, applyStreamLoves = null, mobileApp = null, onInbox = () => {}, log = () => {}, port = DEFAULT_PORT, discoveryPort = DISCOVERY_PORT, tlsPort = port + 2, acceptPhoneChanges = false }) {
+// Stream a file to the HTTP response safely: destroy the file stream if the client disconnects (so a
+// pulled-away phone / dropped connection never leaks a file descriptor), and destroy the response if the
+// read fails mid-stream (a library drive stall, or the file moved/truncated by a concurrent scan/tag-write,
+// otherwise throws an uncaught 'error' on the stream). Several handlers had one guard, the other, or
+// neither; this is the one place both are guaranteed.
+function pipeFileToResponse(stream, res) {
+  res.on('close', () => { try { stream.destroy(); } catch {} });
+  stream.on('error', () => { try { res.destroy(); } catch {} });
+  return stream.pipe(res);
+}
+
+function createHiveLink({ dataDir, getTracks, setLove, onPaired, streamSong = null, coversDir = null, remote = null, getPlaylists = null, savePlaylist = null, deletePlaylist = null, getPlays = null, recordPlays = null, spotifySearch = null, songTarget = null, onSongAdded = () => {}, acceptPhonePlays = false, getWrap = null, getWrapYears = null, getListening = null, files = null, onFileChanged = () => {}, getThemes = null, getCurrentTheme = null, onPairRequest = null, deleteSongs = null, editSongs = null, setRating = null, trackStats = null, libraryGeneration = null, getStreamLoves = null, applyStreamLoves = null, mobileApp = null, onInbox = () => {}, log = () => {}, port = DEFAULT_PORT, discoveryPort = DISCOVERY_PORT, tlsPort = port + 2, acceptPhoneChanges = false }) {
   const statePath = path.join(dataDir, 'hive-link.json');
   let state = loadState();
   let server = null;
@@ -462,6 +490,13 @@ function createHiveLink({ dataDir, getTracks, setLove, onPaired, streamSong = nu
     const fromQuery = url && url.pathname === '/api/cover' ? String(url.searchParams.get('t') || '') : '';
     const token = header.startsWith('Bearer ') ? header.slice(7).trim() : fromQuery;
     if (!token) return null;
+    // A Bearer-header token is the full privileged credential; refuse it in cleartext from a network peer
+    // once the encrypted port exists (the phone's SyncEngine already uses TLS for it). The read-only ?t=
+    // cover fallback (fromQuery, not a Bearer header) is deliberately left working over plain HTTP.
+    if (header.startsWith('Bearer ') && !bearerTokenTransportOk({ tlsReady, encrypted: !!req.socket?.encrypted, remoteAddress: req.socket?.remoteAddress })) {
+      log('Hive Link refused a bearer token sent in cleartext from a non-loopback peer; the phone must use the encrypted port');
+      return null;
+    }
     const hash = sha256(token);
     const device = state.devices.find(d => d.tokenHash === hash);
     if (device) { device.lastSeen = Date.now(); saveSoon(); }
@@ -799,6 +834,13 @@ function createHiveLink({ dataDir, getTracks, setLove, onPaired, streamSong = nu
 
   let libraryCache = null;
   async function libraryPayload() {
+    // Rebuilding 30k rows + JSON.stringify (~10MB) + sha256 + gzip costs ~100ms of synchronous
+    // main-process time. Skip it entirely when nothing that affects the payload has changed: the cache
+    // store's generation covers rating/playCount/tag/scan edits (every one goes through set()), and
+    // state.seq covers Love writes. A matching (generation, seq) means the bytes are identical.
+    const hasGen = typeof libraryGeneration === 'function';
+    const key = hasGen ? `${libraryGeneration()}:${state.seq}` : null;
+    if (hasGen && libraryCache && libraryCache.key === key) return libraryCache;
     const tracks = await getTracks();
     const rows = tracks
       .filter(t => t && t.path && !/^(ytm|podcast|radio|applemusic|spotify):/i.test(String(t.path)))
@@ -810,7 +852,7 @@ function createHiveLink({ dataDir, getTracks, setLove, onPaired, streamSong = nu
         albumArtist: text(t.albumArtist),
         duration: Math.round(num(t.duration) * 1000),
         track: num(t.track),
-        disc: num(t.disk),
+        disc: num(t.disk ?? t.disc),
         year: text(t.year),
         genre: text(t.genre),
         loved: t.loved === true || t.loved === 'True',
@@ -823,7 +865,9 @@ function createHiveLink({ dataDir, getTracks, setLove, onPaired, streamSong = nu
       }));
     const json = JSON.stringify({ seq: state.seq, tracks: rows });
     const etag = `"${sha256(json).slice(0, 24)}"`;
-    if (libraryCache?.etag !== etag) libraryCache = { etag, gzip: zlib.gzipSync(json) };
+    // Reuse the prior gzip bytes when the content is byte-identical (same etag); recompress otherwise.
+    const gzip = libraryCache?.etag === etag ? libraryCache.gzip : zlib.gzipSync(json);
+    libraryCache = { key, etag, gzip };
     return libraryCache;
   }
 
@@ -974,7 +1018,7 @@ function createHiveLink({ dataDir, getTracks, setLove, onPaired, streamSong = nu
         const found = trusted(device) ? await mobileAppInfo() : null;
         if (!found) return send(res, 404, { error: 'No Hive Mobile update here.' });
         res.writeHead(200, { 'Content-Type': 'application/vnd.android.package-archive', 'Content-Length': found.size });
-        return fs.createReadStream(found.path).on('error', () => res.destroy()).pipe(res);
+        return pipeFileToResponse(fs.createReadStream(found.path), res);
       }
       case 'GET /api/love/changes':
         await recordFileLoves();
@@ -1264,7 +1308,7 @@ function createHiveLink({ dataDir, getTracks, setLove, onPaired, streamSong = nu
       try { st = await fs.promises.stat(abs); } catch { return refuse(404, 'Hive no longer has that file.'); }
       if (!st.isFile()) return refuse(404, 'Hive no longer has that file.');
       res.writeHead(200, { 'Content-Type': 'application/octet-stream', 'Content-Length': st.size, 'X-Mtime': String(Math.floor(st.mtimeMs)) });
-      return fs.createReadStream(abs).pipe(res);
+      return pipeFileToResponse(fs.createReadStream(abs), res);
     }
     const size = Number(req.headers['content-length']);
     if (!Number.isFinite(size) || size < 0) return refuse(411, 'The file needs its length.');
@@ -1395,7 +1439,7 @@ function createHiveLink({ dataDir, getTracks, setLove, onPaired, streamSong = nu
     const file = backupId(id) && path.join(phoneBackupsDir, `${id}.zip`);
     if (!file || !fs.existsSync(file)) return send(res, 404, { error: 'No backup of that phone here.' });
     res.writeHead(200, { 'Content-Type': 'application/zip', 'Content-Length': fs.statSync(file).size });
-    return fs.createReadStream(file).on('error', () => res.destroy()).pipe(res);
+    return pipeFileToResponse(fs.createReadStream(file), res);
   }
 
   async function receiveSong(req, res, params, device) {
@@ -1617,9 +1661,7 @@ function createHiveLink({ dataDir, getTracks, setLove, onPaired, streamSong = nu
       'Content-Type': type, 'Accept-Ranges': 'bytes', 'Content-Length': end - start + 1,
       ...(m ? { 'Content-Range': `bytes ${start}-${end}/${size}` } : {})
     });
-    const body = fs.createReadStream(file, { start, end });
-    res.on('close', () => body.destroy());
-    body.pipe(res);
+    return pipeFileToResponse(fs.createReadStream(file, { start, end }), res);
   }
 
   // A song from Apple Music or Spotify that Hive doesn't have: found on
@@ -1723,4 +1765,4 @@ function createHiveLink({ dataDir, getTracks, setLove, onPaired, streamSong = nu
   };
 }
 
-module.exports = { createHiveLink, trackIdFor, DEFAULT_PORT, DISCOVERY_PORT, PROTOCOL_VERSION, isLinkRef };
+module.exports = { createHiveLink, trackIdFor, DEFAULT_PORT, DISCOVERY_PORT, PROTOCOL_VERSION, isLinkRef, bearerTokenTransportOk, isLoopbackAddress };
