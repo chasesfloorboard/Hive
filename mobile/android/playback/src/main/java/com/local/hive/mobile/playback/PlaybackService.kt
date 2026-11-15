@@ -297,7 +297,15 @@ class PlaybackService : MediaLibraryService() {
                 // starting as you connect to the car with the phone pocketed) can't show anything -- it just
                 // opens and is stopped ("pushed away") -- so wait for the next real wake instead. In the car
                 // the phone is held unlocked, so it never reports as locked; treat the car as lock-equivalent.
-                if (isPlaying && awake && (locked || CarLog.inCar(this@PlaybackService))) bridge.showLockPlayerIfWanted(this@PlaybackService, bridge.wasRecentlyForeground())
+                if (isPlaying && awake && (locked || CarLog.inCar(this@PlaybackService))) {
+                    // In the car the screen stays off, so the only thing that clears a dismissal (sentAway) --
+                    // a screen on/off cycle -- never happens, and the player, once sent away (Back, Home, or a
+                    // text notification the user swiped), never came back for the rest of the drive. A new song
+                    // is the user actively listening: clear the dismissal so the player returns. Out of the car
+                    // the normal screen cycle still governs it.
+                    if (CarLog.inCar(this@PlaybackService)) bridge.lockScreenChanged()
+                    bridge.showLockPlayerIfWanted(this@PlaybackService, bridge.wasRecentlyForeground())
+                }
             }
         })
         // Listens that couldn't be sent last time go now.
