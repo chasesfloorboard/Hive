@@ -141,7 +141,15 @@ class SoulseekWorker(context: Context, params: WorkerParameters) : CoroutineWork
         val have = alreadyHave(request)
         for (i in have) downloads.song(request.id, i) { it.copy(state = "done", percent = 100, from = "already in your library") }
         if (have.isNotEmpty()) log("Already in the library, not downloaded: " + have.joinToString { request.tracks[it].title })
-        if (have.size == request.tracks.size) { finish("${request.label} is already in your library", request, "done"); return Result.success() }
+        if (have.size == request.tracks.size) {
+            // Everything requested is already in the library. Mark the job done QUIETLY -- no notification.
+            // It used to post a "... is already in your library" notice, which re-fired every time the
+            // resumer re-queued this finished request on an app restart: a repeated, pointless nag. With
+            // all songs marked done (above) and the job marked done here, resumable() skips it, so it also
+            // stops coming back.
+            downloads.update(request.id) { it.copy(state = "done", message = "${request.label} is already in your library") }
+            return Result.success()
+        }
         if (!settings.configured) {
             // Not signed in to Soulseek: YouTube, as Hive on the PC does then.
             val got = fromYouTube(request, notDone(request))

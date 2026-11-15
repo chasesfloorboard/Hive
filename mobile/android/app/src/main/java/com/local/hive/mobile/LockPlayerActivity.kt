@@ -19,33 +19,23 @@ import com.local.hive.mobile.ui.LockPlayer
 import com.local.hive.mobile.ui.MainViewModel
 
 /**
- * Hive's player shown over the lock screen, the way Samsung Music's lock
- * player is: a screen allowed to show while the phone is locked, in its own
- * task away from Recents, gone as soon as the phone is unlocked.
+ * Hive's player shown over the lock screen: a screen allowed to show while the phone is locked, in its
+ * own task away from Recents. It comes up when the phone wakes on a locked screen and STAYS after a
+ * face/fingerprint unlock, so you can see and use it. Only Back or Home dismisses it -- returning to
+ * whatever was open before the player (the previous app, or the home screen), never forcing Hive
+ * forward. Left untouched, it steps aside after a while so the screen can sleep.
  */
 class LockPlayerActivity : ComponentActivity() {
     private val vm: MainViewModel by viewModels()
 
     private val unlocked = object : BroadcastReceiver() {
-        override fun onReceive(context: Context, intent: Intent) {
-            // In the car the phone is held unlocked (face/extend-unlock), so USER_PRESENT fires without the
-            // user leaving -- don't take it as "done with the player" there; Home still sends it away.
-            if (CarLog.inCar(context)) return
-            openHome(); leaving("unlocked"); finish()
-        }
+        // A face/fingerprint/PIN unlock no longer dismisses the player: it stays up so you can see and use
+        // it, and only Back or Home sends it away. Kept registered (no-op) in case it is wanted again.
+        override fun onReceive(context: Context, intent: Intent) {}
     }
-    // Close the instant the keyguard unlocks (face/fingerprint). This is event-driven, so the player is
-    // never seen past the unlock -- not even the ~1s the old idle poll could leave it. (API 34+; the idle
-    // watcher below is the fallback on older devices and if the event is ever missed.)
-    private val keyguardUnlock: Any? =
-        if (android.os.Build.VERSION.SDK_INT >= 34)
-            KeyguardManager.KeyguardLockedStateListener { locked ->
-                // Just finish — the keyguard is mid-dismiss here, so launching Hive now paints a black
-                // window. Finishing reveals whatever is behind (Hive if the user was in it, already drawn).
-                if (!locked && !CarLog.inCar(this@LockPlayerActivity) && !leaving && !isFinishing) { leaving("keyguard unlocked"); finish() }
-            }
-        else null
-    /** Set when the player goes because it should (unlocked, swiped up): nothing brings it back then. */
+    // The player deliberately stays up after an unlock, so there is no keyguard-unlock listener to close it.
+    private val keyguardUnlock: Any? = null
+    /** Set when the player goes because the user dismissed it (Back/Home): nothing brings it back then. */
     private var leaving = false
     private fun leaving(why: String) {
         leaving = true
@@ -53,20 +43,11 @@ class LockPlayerActivity : ComponentActivity() {
     }
 
     /**
-     * Where unlocking from the lock player lands. If Hive was the app in use when the player came up,
-     * Hive comes forward (EXTRA_GO_HOME steps its UI back to home). If the user was in another app and
-     * Hive was only playing in the background, the player just gets out of the way — moving its task to
-     * the back reveals the app that was there, so unlocking returns to that app, not to Hive. Guarded so
-     * the unlock paths — face/PIN (ACTION_USER_PRESENT) and swipe-up — only act once.
+     * Dismissing the player returns to whatever was open before it -- the app the user was in, or the home
+     * screen -- never forcing Hive forward. moveTaskToBack sends the player's task behind the one it covered.
      */
-    private fun openHome() {
-        if (leaving) return
-        if (hiveWasForeground) runCatching {
-            startActivity(
-                Intent(this, MainActivity::class.java).putExtra(MainActivity.EXTRA_GO_HOME, true)
-                    .addFlags(Intent.FLAG_ACTIVITY_NEW_TASK),
-            )
-        } else runCatching { moveTaskToBack(true) }
+    private fun dismissToPrevious() {
+        runCatching { moveTaskToBack(true) }
     }
     /** When the player last came to the front, and whether the user then sent it away with Home. */
     private var resumedAt = 0L
@@ -76,19 +57,12 @@ class LockPlayerActivity : ComponentActivity() {
     private val idleWatch = object : Runnable {
         override fun run() {
             val awake = (getSystemService(POWER_SERVICE) as android.os.PowerManager).isInteractive
-            val locked = (getSystemService(KEYGUARD_SERVICE) as KeyguardManager).isKeyguardLocked
-            // Unlocked while the player was showing — fallback to the event-driven keyguard listener (and
-            // the only path on < API 34): the player belongs over the lock screen only, so once the phone is
-            // unlocked it gets out of the way and Hive comes forward, never lingering as a separate window.
-            if (awake && !locked && !CarLog.inCar(this@LockPlayerActivity) && !leaving) {
-                openHome(); leaving("unlocked while showing"); finish()
-                return
-            }
-            // Left idle well past the lock screen's own timeout: step aside so the screen can sleep (the
-            // phone may not sleep a foreign window the way it sleeps its lock screen). In the car the phone
-            // stays on while it charges, so the player stays up for the whole drive.
-            if (awake && locked && !leaving && !CarLog.inCar(this@LockPlayerActivity) && System.currentTimeMillis() - touchedAt > SLEEP_AFTER_MS + IDLE_GRACE_MS) {
-                CarLog.lockPlayer(this@LockPlayerActivity, "left idle, the lock screen takes over so the screen can go off")
+            // The player no longer closes itself on unlock -- it stays until the user dismisses it. The one
+            // automatic exit is this: left untouched well past the lock screen's own timeout, step aside so
+            // the screen can sleep (the phone may not sleep a foreign window the way it sleeps its lock
+            // screen). In the car the phone stays on while it charges, so there the player stays up.
+            if (awake && !leaving && !CarLog.inCar(this@LockPlayerActivity) && System.currentTimeMillis() - touchedAt > SLEEP_AFTER_MS + IDLE_GRACE_MS) {
+                CarLog.lockPlayer(this@LockPlayerActivity, "left idle, stepping aside so the screen can sleep")
                 wentHome = true
                 moveTaskToBack(true)
                 return
@@ -140,7 +114,7 @@ class LockPlayerActivity : ComponentActivity() {
         }
         // Back closes the player to reveal the lock screen and its notifications (the phone stays
         // locked); it comes back when the phone next sleeps and wakes. Swiping up still unlocks.
-        onBackPressedDispatcher.addCallback(this, object : OnBackPressedCallback(true) { override fun handleOnBackPressed() = revealLockScreen() })
+        onBackPressedDispatcher.addCallback(this, object : OnBackPressedCallback(true) { override fun handleOnBackPressed() = dismissToBack() })
         setContent { HiveThemed(vm) { LockPlayer(vm, onUnlock = ::unlock) } }
         if (android.os.Build.VERSION.SDK_INT >= 31) getSystemService(android.media.AudioManager::class.java)
             .addOnModeChangedListener(ContextCompat.getMainExecutor(this), callWatch as android.media.AudioManager.OnModeChangedListener)
@@ -177,10 +151,8 @@ class LockPlayerActivity : ComponentActivity() {
         window.decorView.postDelayed(idleWatch, 1_000)
         // Never over a call: the phone's call screen comes first.
         if (inCall(this)) { steppedAside = true; moveTaskToBack(true); return }
-        // Opened (or still here) with the phone already unlocked: nothing to cover, so get out of the way at
-        // once -- just finish, so the task behind (what the user was in) shows as it is. Do NOT launch Hive
-        // here: starting an activity mid keyguard-dismiss paints a black window.
-        if (!(getSystemService(KEYGUARD_SERVICE) as KeyguardManager).isKeyguardLocked && !CarLog.inCar(this)) { leaving("phone not locked"); finish(); return }
+        // The player used to finish itself here when the phone was already unlocked. It now stays after an
+        // unlock (see the class doc), so that is gone -- Back/Home or the idle step-aside dismiss it.
     }
 
     /**
@@ -211,25 +183,26 @@ class LockPlayerActivity : ComponentActivity() {
     }
 
     /**
-     * Back: step the player off the lock screen so its notifications show, with the phone still locked.
-     * Treated like Home — it stays away until the phone next sleeps and wakes ([screenChanged] clears
-     * sentAway, and the screen-on signal re-shows it), so re-locking and opening brings the player back.
+     * Back: dismiss the player to whatever was behind it -- the app that was open before it (if the phone
+     * is unlocked), or the lock screen (if still locked). It stays away until the phone next sleeps and
+     * wakes ([screenChanged] clears sentAway and the screen-on signal re-shows it), so re-locking brings it
+     * back. Same effect as Home.
      */
-    private fun revealLockScreen() {
+    private fun dismissToBack() {
         wentHome = true
         sentAway = true
-        CarLog.lockPlayer(this, "back: reveal lock screen")
+        CarLog.lockPlayer(this, "back: to previous app / lock screen")
         runCatching { moveTaskToBack(true) }
     }
 
     private fun unlock() {
-        // Already unlocked (face unlock): straight to Hive, no dismiss request that would never answer.
+        // Already unlocked (face unlock): dismiss straight to whatever was open before, no keyguard request.
         if (!(getSystemService(KEYGUARD_SERVICE) as KeyguardManager).isKeyguardLocked) {
-            openHome(); leaving("back after unlock"); finish()
+            dismissToPrevious(); leaving("unlock: to previous"); finish()
             return
         }
         (getSystemService(KEYGUARD_SERVICE) as KeyguardManager).requestDismissKeyguard(this, object : KeyguardManager.KeyguardDismissCallback() {
-            override fun onDismissSucceeded() { openHome(); leaving("swiped up"); finish() }
+            override fun onDismissSucceeded() { dismissToPrevious(); leaving("swiped up: to previous"); finish() }
         })
     }
 
