@@ -15,6 +15,7 @@ import com.local.hive.mobile.data.PlaylistRow
 import com.local.hive.mobile.data.PlaylistSummary
 import com.local.hive.mobile.data.StreamTrack
 import com.local.hive.mobile.data.Track
+import com.local.hive.mobile.data.applying
 import com.local.hive.mobile.link.DiscoveredHive
 import com.local.hive.mobile.link.HiveLinkClient
 import com.local.hive.mobile.data.TrackMatcher
@@ -698,7 +699,13 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
                 viewModelScope.launch { kotlinx.coroutines.delay(4_000); refreshCovers(albums, front) }
             } ?: run { coil3.SingletonImageLoader.get(app).memoryCache?.clear(); forgetShownCovers() }
         }
-        app.requestRescan(delayMs = 500)
+        // Show the change at once: write the edited rows into the library DB now so the open album and lists
+        // repopulate immediately. Without this they only updated after the full MediaStore rescan below, which
+        // can take a second or two — long enough that it looked like nothing happened until the album was
+        // reopened. The rescan stays authoritative and reconciles what this can't know (a new albumId when the
+        // album name/artist changed; the cover is handled above).
+        if (saved.isNotEmpty()) runCatching { dao.upsertTracks(saved.map { it.applying(wanted.getValue(it)) }) }
+        app.requestRescan(delayMs = 0)
         app.sync.matchAgainNextSync()
         if (app.linkStore.pairing != null) viewModelScope.launch { kotlinx.coroutines.delay(3_000); app.sync.syncNow() }
         onDone(when {
@@ -722,6 +729,7 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
     // vm.searchAlbums / vm.radio / vm.podcasts / … unchanged while the concern leaves this file.
     val discovery = DiscoveryVm(app)
     suspend fun searchAlbums(query: String) = discovery.searchAlbums(query)
+    suspend fun searchAlbums(artist: String, album: String) = discovery.searchAlbums(artist, album)
     suspend fun albumDetails(id: String) = discovery.albumDetails(id)
     suspend fun searchCovers(query: String) = discovery.searchCovers(query)
     suspend fun lyrics(now: com.local.hive.mobile.playback.NowPlaying) = discovery.lyrics(now)

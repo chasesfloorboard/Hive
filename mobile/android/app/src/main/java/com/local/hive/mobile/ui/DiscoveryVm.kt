@@ -19,6 +19,8 @@ class DiscoveryVm(private val app: HiveApp) {
     // screen cancels cleanly.)
     suspend fun searchAlbums(query: String): List<com.local.hive.mobile.discovery.AlbumHit> =
         com.local.hive.mobile.data.runCatchingNotCancelled { metadata.searchAlbums(query) }.getOrDefault(emptyList())
+    suspend fun searchAlbums(artist: String, album: String): List<com.local.hive.mobile.discovery.AlbumHit> =
+        com.local.hive.mobile.data.runCatchingNotCancelled { metadata.searchAlbums(artist, album) }.getOrDefault(emptyList())
     suspend fun albumDetails(id: String): com.local.hive.mobile.discovery.AlbumMeta? =
         com.local.hive.mobile.data.runCatchingNotCancelled { metadata.album(id) }.getOrNull()
     private val coverSearch = com.local.hive.mobile.discovery.ITunesCoverSearch()

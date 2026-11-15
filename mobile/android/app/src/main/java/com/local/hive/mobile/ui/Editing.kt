@@ -448,7 +448,10 @@ fun AutoTagSheet(vm: MainViewModel, tracks: List<Track>, onDismiss: () -> Unit, 
     var loading by remember { mutableStateOf(false) }
     var withCover by remember { mutableStateOf(true) }
     var busy by remember { mutableStateOf(false) }
-    LaunchedEffect(Unit) { results = vm.searchAlbums(query) }
+    // The first look-up is a precise fielded search from the songs' own artist + album tags, so a common
+    // album (e.g. "OCTANE" by Don Toliver) is found directly instead of being buried under unrelated
+    // same-titled releases. Typing in the box below still does a plain free-text search.
+    LaunchedEffect(Unit) { results = vm.searchAlbums(first.displayAlbumArtist, first.album) }
 
     EditSheet(onDismiss) {
         EditHeader("Auto-tag", tracks)

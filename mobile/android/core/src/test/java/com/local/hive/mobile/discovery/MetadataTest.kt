@@ -107,4 +107,45 @@ class MetadataTest {
         assertTrue(ITunesCoverSearch(server.url("/").toString().trimEnd('/')).search("  ").isEmpty())
         assertEquals(0, server.requestCount)
     }
+
+    @Test fun search_offers_a_cover_when_cover_art_archive_is_absent() = runTest {
+        // The real search endpoint omits cover-art-archive, so a cover must still be offered; only an
+        // explicit front=false denies one. (Gating on front=="true" blanked every search result's cover.)
+        server.enqueue(MockResponse().setBody(
+            """{"releases":[
+                 {"id":"rel-x","title":"OCTANE","date":"2026-01-01","track-count":18,
+                  "artist-credit":[{"name":"Don Toliver","joinphrase":""}]},
+                 {"id":"rel-y","title":"No Art","date":"2000","track-count":1,
+                  "artist-credit":[{"name":"X","joinphrase":""}],"cover-art-archive":{"front":"false"}}
+               ]}"""))
+        val hits = MusicBrainzMetadata(base()).searchAlbums("Don Toliver OCTANE")
+        assertEquals("https://coverartarchive.org/release/rel-x/front-500", hits[0].coverUrl)
+        assertEquals("", hits[1].coverUrl)
+    }
+
+    @Test fun fielded_search_queries_artist_and_release_fields() = runTest {
+        server.enqueue(MockResponse().setBody(
+            """{"releases":[{"id":"rel-oct","title":"OCTANE","date":"2026","track-count":18,
+                 "artist-credit":[{"name":"Don Toliver","joinphrase":""}]}]}"""))
+        val hits = MusicBrainzMetadata(base()).searchAlbums("Don Toliver", "OCTANE")
+        assertEquals(1, hits.size)
+        assertEquals("rel-oct", hits[0].id)
+        val sent = java.net.URLDecoder.decode(server.takeRequest().path!!, "UTF-8")
+        assertTrue(sent, sent.contains("""artist:"Don Toliver""""))
+        assertTrue(sent, sent.contains("""release:"OCTANE""""))
+    }
+
+    @Test fun fielded_search_falls_back_to_free_text_when_the_fielded_query_is_empty() = runTest {
+        server.enqueue(MockResponse().setBody("""{"releases":[]}"""))
+        server.enqueue(MockResponse().setBody(
+            """{"releases":[{"id":"rel-z","title":"OCTANE","date":"2026","track-count":18,
+                 "artist-credit":[{"name":"Don Toliver","joinphrase":""}]}]}"""))
+        val hits = MusicBrainzMetadata(base()).searchAlbums("Don Toliver", "OCTANE")
+        assertEquals(2, server.requestCount)
+        assertEquals("rel-z", hits[0].id)
+        val fielded = java.net.URLDecoder.decode(server.takeRequest().path!!, "UTF-8")
+        val freeText = java.net.URLDecoder.decode(server.takeRequest().path!!, "UTF-8")
+        assertTrue(fielded, fielded.contains("""artist:"Don Toliver""""))
+        assertTrue(freeText, freeText.contains("Don Toliver OCTANE") && !freeText.contains("artist:"))
+    }
 }

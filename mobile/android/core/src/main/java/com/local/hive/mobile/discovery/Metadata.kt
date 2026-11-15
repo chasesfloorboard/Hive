@@ -53,6 +53,10 @@ data class AlbumMeta(
 interface MetadataProvider {
     /** Albums matching [query] (free text, e.g. "artist album"), best matches first. */
     suspend fun searchAlbums(query: String): List<AlbumHit>
+    /** Albums for a known [artist] + [album] — a precise fielded search, best matches first. Defaults to a
+     *  combined free-text search for providers that cannot do fielded queries. */
+    suspend fun searchAlbums(artist: String, album: String): List<AlbumHit> =
+        searchAlbums(listOf(artist, album).map { it.trim() }.filter { it.isNotEmpty() }.joinToString(" "))
     /** One release's full details and tracklist by its MusicBrainz id, or null. */
     suspend fun album(id: String): AlbumMeta?
 }
@@ -60,8 +64,24 @@ interface MetadataProvider {
 /** MusicBrainz-backed [MetadataProvider]. Keyless, no login — the compliant default for both editions. */
 class MusicBrainzMetadata(private val base: String = "https://musicbrainz.org/ws/2") : MetadataProvider {
 
-    override suspend fun searchAlbums(query: String): List<AlbumHit> = withContext(Dispatchers.IO) {
-        val q = query.trim()
+    override suspend fun searchAlbums(query: String): List<AlbumHit> = search(query.trim())
+
+    override suspend fun searchAlbums(artist: String, album: String): List<AlbumHit> {
+        val a = artist.trim(); val al = album.trim()
+        if (a.isEmpty() && al.isEmpty()) return emptyList()
+        // A fielded Lucene query is far more precise than free text: "Don Toliver OCTANE" as free text lets
+        // unrelated releases literally titled "Octane" outrank the real album, while
+        // artist:"Don Toliver" AND release:"OCTANE" finds it directly. Fall back to the combined free-text
+        // search when the fielded one is empty (e.g. slightly-off tags) so a near-miss still returns something.
+        val fielded = listOfNotNull(
+            a.takeIf { it.isNotEmpty() }?.let { "artist:\"${lucenePhrase(it)}\"" },
+            al.takeIf { it.isNotEmpty() }?.let { "release:\"${lucenePhrase(it)}\"" },
+        ).joinToString(" AND ")
+        val hits = search(fielded)
+        return if (hits.isNotEmpty() || a.isEmpty() || al.isEmpty()) hits else search("$a $al")
+    }
+
+    private suspend fun search(q: String): List<AlbumHit> = withContext(Dispatchers.IO) {
         if (q.isBlank()) return@withContext emptyList()
         val url = "$base/release/?fmt=json&limit=15&query=" + ArtNet.enc(q)
         val root = ArtNet.musicbrainz { ArtNet.getJson(url) } as? JsonObject ?: return@withContext emptyList()
@@ -74,7 +94,10 @@ class MusicBrainzMetadata(private val base: String = "https://musicbrainz.org/ws
                 year = r.string("date").orEmpty().take(4),
                 trackCount = r.intOf("track-count").takeIf { it > 0 }
                     ?: (r["media"] as? JsonArray).orEmpty().sumOf { m -> (m as? JsonObject)?.intOf("track-count") ?: 0 },
-                coverUrl = if (hasFrontCover(r) && id.isNotBlank()) "https://coverartarchive.org/release/$id/front-500" else "",
+                // The search endpoint usually omits cover-art-archive, so gating on front=="true" (which the
+                // lookup can do) blanked every search cover. Point at the Cover Art Archive whenever it is not
+                // explicitly denied; a release with no art 404s and the row shows its placeholder.
+                coverUrl = if (id.isNotBlank() && frontCoverNotDenied(r)) "https://coverartarchive.org/release/$id/front-500" else "",
             )
         }.filter { it.id.isNotBlank() && it.title.isNotBlank() }
     }
@@ -115,6 +138,14 @@ class MusicBrainzMetadata(private val base: String = "https://musicbrainz.org/ws
 
     private fun hasFrontCover(r: JsonObject): Boolean =
         ((r["cover-art-archive"] as? JsonObject)?.get("front") as? JsonPrimitive)?.contentOrNull == "true"
+
+    /** True unless the response explicitly says there is no front cover. The search endpoint usually omits
+     *  cover-art-archive entirely, so "absent" must read as "maybe", not "no". */
+    private fun frontCoverNotDenied(r: JsonObject): Boolean =
+        ((r["cover-art-archive"] as? JsonObject)?.get("front") as? JsonPrimitive)?.contentOrNull != "false"
+
+    /** Escape a value for use inside a Lucene quoted phrase (backslash and double-quote only). */
+    private fun lucenePhrase(s: String): String = s.replace("\\", "\\\\").replace("\"", "\\\"")
 
     private fun JsonObject.intOf(key: String): Int = (this[key] as? JsonPrimitive)?.contentOrNull?.toDoubleOrNull()?.toInt() ?: 0
 }
