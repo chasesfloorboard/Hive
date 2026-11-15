@@ -280,9 +280,10 @@ class PlaybackService : MediaLibraryService() {
                 // on SCREEN_OFF used to turn the screen straight back on (the launch / full-screen-intent wakes
                 // it), which re-fired this receiver and looped every ~10s, re-posting the lock-player
                 // notification. The player now appears on the next wake instead of pre-staging while off.
-                // In the car the phone is held unlocked (face/extend-unlock), so it never reports as locked on
-                // wake; treat "in the car" as lock-equivalent so the player can still come up there.
-                if (intent.action != Intent.ACTION_SCREEN_ON || !(locked || CarLog.inCar(context))) return
+                // Only when the lock screen is actually up (keyguard locked). The player belongs ON the lock
+                // screen and must never pop up over an unlocked phone -- in the car as everywhere. A car phone
+                // held unlocked by trust simply shows no player on wake, which is correct.
+                if (intent.action != Intent.ACTION_SCREEN_ON || !locked) return
                 if (wantsLockPlayer(player)) bridge.showLockPlayerIfWanted(this@PlaybackService, bridge.wasRecentlyForeground())
             }
         }
@@ -292,17 +293,15 @@ class PlaybackService : MediaLibraryService() {
                 lastPlayingAt = System.currentTimeMillis()
                 val locked = (getSystemService(KEYGUARD_SERVICE) as android.app.KeyguardManager).isKeyguardLocked
                 val awake = (getSystemService(POWER_SERVICE) as android.os.PowerManager).isInteractive
-                if (CarLog.carConnected && isPlaying) CarLog.lockPlayer(this@PlaybackService, "play started; showing=${awake && (locked || CarLog.inCar(this@PlaybackService))}")
-                // Only raise the player if the screen is actually on. Launching it over an off screen (music
-                // starting as you connect to the car with the phone pocketed) can't show anything -- it just
-                // opens and is stopped ("pushed away") -- so wait for the next real wake instead. In the car
-                // the phone is held unlocked, so it never reports as locked; treat the car as lock-equivalent.
-                if (isPlaying && awake && (locked || CarLog.inCar(this@PlaybackService))) {
-                    // In the car the screen stays off, so the only thing that clears a dismissal (sentAway) --
-                    // a screen on/off cycle -- never happens, and the player, once sent away (Back, Home, or a
-                    // text notification the user swiped), never came back for the rest of the drive. A new song
-                    // is the user actively listening: clear the dismissal so the player returns. Out of the car
-                    // the normal screen cycle still governs it.
+                if (CarLog.carConnected && isPlaying) CarLog.lockPlayer(this@PlaybackService, "play started; showing=${awake && locked}")
+                // Raise the player ONLY when the lock screen is up (keyguard locked) and the screen is on --
+                // never over an unlocked phone. Music resuming while you are using the unlocked phone must not
+                // pop it up; it belongs on the lock screen.
+                if (isPlaying && awake && locked) {
+                    // In the car the screen stays off, so the usual thing that clears a dismissal -- a screen
+                    // on/off cycle -- never happens, and the player, once sent away by Back/Home or a swiped
+                    // notification, never came back for the rest of the drive. A new song while the lock screen
+                    // is up is the user actively listening: clear the dismissal so it returns.
                     if (CarLog.inCar(this@PlaybackService)) bridge.lockScreenChanged()
                     bridge.showLockPlayerIfWanted(this@PlaybackService, bridge.wasRecentlyForeground())
                 }
