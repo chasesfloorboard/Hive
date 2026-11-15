@@ -33,8 +33,26 @@ class LockPlayerActivity : ComponentActivity() {
         // it, and only Back or Home sends it away. Kept registered (no-op) in case it is wanted again.
         override fun onReceive(context: Context, intent: Intent) {}
     }
-    // The player deliberately stays up after an unlock, so there is no keyguard-unlock listener to close it.
-    private val keyguardUnlock: Any? = null
+    /** When the keyguard last unlocked (face/fingerprint): the spurious onUserLeaveHint it fires is ignored. */
+    private var unlockedAt = 0L
+    // Keep the player up across a face/fingerprint unlock. The keyguard dismiss reveals home and backgrounds
+    // this activity, so note the unlock and re-foreground it once the dismiss settles (a re-launch mid-dismiss
+    // paints a black window). Only while the user hasn't dismissed it with Back/Home.
+    private val keyguardUnlock: Any? =
+        if (android.os.Build.VERSION.SDK_INT >= 34)
+            KeyguardManager.KeyguardLockedStateListener { locked ->
+                if (!locked) {
+                    unlockedAt = System.currentTimeMillis()
+                    if (!leaving && !wentHome && !isFinishing) window.decorView.postDelayed({
+                        if (!leaving && !wentHome && !isFinishing) runCatching {
+                            startActivity(Intent(this@LockPlayerActivity, LockPlayerActivity::class.java)
+                                .addFlags(Intent.FLAG_ACTIVITY_NEW_TASK or Intent.FLAG_ACTIVITY_NO_ANIMATION or Intent.FLAG_ACTIVITY_EXCLUDE_FROM_RECENTS))
+                            CarLog.lockPlayer(this@LockPlayerActivity, "stays up after unlock")
+                        }
+                    }, 450)
+                }
+            }
+        else null
     /** Set when the player goes because the user dismissed it (Back/Home): nothing brings it back then. */
     private var leaving = false
     private fun leaving(why: String) {
@@ -136,9 +154,13 @@ class LockPlayerActivity : ComponentActivity() {
      */
     override fun onUserLeaveHint() {
         super.onUserLeaveHint()
-        if (!CarLog.inCar(this) || System.currentTimeMillis() - resumedAt > HOME_AFTER_MS) {
-            wentHome = true; sentAway = true; CarLog.lockPlayer(this, "home pressed")
-        }
+        // A face/fingerprint unlock fires a spurious onUserLeaveHint as the keyguard dismisses -- ignore it so
+        // an unlock is never taken as a Home press that sends the player away. A real Home press comes well
+        // after any unlock. (In the car, Android Auto's takeover on wake looks the same, hence the resume
+        // guard too.)
+        if (System.currentTimeMillis() - unlockedAt < HOME_AFTER_MS) return
+        if (CarLog.inCar(this) && System.currentTimeMillis() - resumedAt < HOME_AFTER_MS) return
+        wentHome = true; sentAway = true; CarLog.lockPlayer(this, "home pressed")
     }
 
     override fun onResume() {
@@ -224,7 +246,9 @@ class LockPlayerActivity : ComponentActivity() {
         @Volatile private var sentAway = false
 
         /** The screen went off or came on: a player sent away with Home may show again. */
-        fun screenChanged() { sentAway = false; screenChangedAt = System.currentTimeMillis() }
+        // A real screen on/off is a genuine wake, not the launch re-triggering itself, so clear the anti-loop
+        // cooldown too -- otherwise locking and waking within 5s was refused with "shown a moment ago".
+        fun screenChanged() { sentAway = false; lastShowAttemptAt = 0L; screenChangedAt = System.currentTimeMillis() }
         /** When the screen last went off or came on. */
         @Volatile private var screenChangedAt = 0L
         /** Android Auto takes the screen over as the phone wakes; later than this, what pushed the player away was the user. */
