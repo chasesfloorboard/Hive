@@ -165,6 +165,7 @@ class LockPlayerActivity : ComponentActivity() {
 
     override fun onResume() {
         super.onResume()
+        resumed = true
         resumedAt = System.currentTimeMillis()
         touchedAt = resumedAt
         wentHome = false
@@ -175,6 +176,11 @@ class LockPlayerActivity : ComponentActivity() {
         if (inCall(this)) { steppedAside = true; moveTaskToBack(true); return }
         // The player used to finish itself here when the phone was already unlocked. It now stays after an
         // unlock (see the class doc), so that is gone -- Back/Home or the idle step-aside dismiss it.
+    }
+
+    override fun onPause() {
+        super.onPause()
+        resumed = false
     }
 
     /**
@@ -244,6 +250,10 @@ class LockPlayerActivity : ComponentActivity() {
         private val broughtBack = mutableListOf<Long>()
         /** Home pressed on the player: it stays away until the phone next goes to sleep or wakes (see [screenChanged]). */
         @Volatile private var sentAway = false
+        /** The player is on screen right now (between onResume and onPause). When it is NOT, a re-show must
+         *  start a FRESH activity, because Android 16+ refuses to bring a backgrounded one to the front
+         *  (background-activity-launch) -- the "shows once then never again" bug. See [showIfWanted]. */
+        @Volatile private var resumed = false
 
         /** The screen went off or came on: a player sent away with Home may show again. */
         // A real screen on/off is a genuine wake, not the launch re-triggering itself, so clear the anti-loop
@@ -306,6 +316,13 @@ class LockPlayerActivity : ComponentActivity() {
             hiveWasForeground = hiveForeground
             val open = Intent(context, LockPlayerActivity::class.java)
                 .addFlags(Intent.FLAG_ACTIVITY_NEW_TASK or Intent.FLAG_ACTIVITY_NO_ANIMATION or Intent.FLAG_ACTIVITY_EXCLUDE_FROM_RECENTS)
+            // Android 16+ won't bring a BACKGROUNDED activity to the front (background-activity-launch), so
+            // once the player had been sent away (Home/Back) and backgrounded, re-launching only delivered
+            // onNewIntent to the hidden instance and nothing appeared -- the "shows once, then never again"
+            // bug. When the player isn't on screen, CLEAR_TASK finishes any backgrounded instance so this is
+            // a FRESH start (the one launch Android still allows). When it IS on screen (a re-show on a song
+            // change), don't clear -- no needless recreate.
+            if (!resumed) open.addFlags(Intent.FLAG_ACTIVITY_CLEAR_TASK)
             // The player is raised ONLY by this direct launch, which works from a locked, screen-on phone
             // (the only time we launch — SCREEN_ON while locked, or music starting with the screen on). There
             // is deliberately no full-screen-intent fallback: that posted a "Hive" push notification showing

@@ -407,14 +407,9 @@ fun StreamTrack.toMediaItem(uri: String): MediaItem = MediaItem.Builder()
     )
     .build()
 
-/**
- * [artworkOverride]: a cover to show instead of the local album-art URI — passed when a streamed song
- * (Apple Music / Spotify) is playing from a matched local file, so the full-screen player shows the
- * service's high-resolution cover of that exact song rather than the local file's small embedded one.
- * The now-playing cover must never be low quality (it keeps regressing when the local embedded art is
- * small and the online upgrade can't match it), so when a known high-res cover is in hand, use it.
- */
-fun Track.toMediaItem(artworkOverride: android.net.Uri? = null): MediaItem = MediaItem.Builder()
+/** A library song as a player item. Its cover is always its own local album art (never a service cover),
+ *  so an owned song shows one consistent picture on the player, the bar, and after a restart. */
+fun Track.toMediaItem(): MediaItem = MediaItem.Builder()
     .setMediaId(id.toString())
     .setUri(uri)
     .setMediaMetadata(
@@ -428,9 +423,8 @@ fun Track.toMediaItem(artworkOverride: android.net.Uri? = null): MediaItem = Med
             // Album-less songs (untagged YouTube rips, "<unknown>") must NOT use the shared album-art URI:
             // MediaStore groups them into one folder-"album", so that path shows one neighbour's cover (a
             // stray bjork.jpg) on every one of them. Use the per-song URI (its OWN embedded picture only, or
-            // none) — the same cover the song rows already show. Real albums keep the album cover. A streamed
-            // song playing from a local match still wins with the service's high-res cover (artworkOverride).
-            .setArtworkUri(artworkOverride ?: if (album.isBlank()) songArtUri else artworkUri)
+            // none) — the same cover the song rows already show. Real albums keep the album cover.
+            .setArtworkUri(if (album.isBlank()) songArtUri else artworkUri)
             .setDurationMs(durationMs.takeIf { it > 0 })
             .setIsPlayable(true)
             .setIsBrowsable(false)

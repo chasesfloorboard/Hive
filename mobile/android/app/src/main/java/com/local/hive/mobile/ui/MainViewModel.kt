@@ -497,12 +497,13 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
     private suspend fun streamMedia(songs: List<StreamTrack>): List<MediaItem?> {
         val matched = songs.map { localMatch(it) to it }
         dao.upsertStreamTracks(matched.filter { it.first == null }.map { it.second })
-        // A streamed song that matches a local file plays the local file, but keeps the SERVICE's cover of
-        // that exact song for the now-playing screen (a known high-res URL) instead of the local file's
-        // small embedded art — the big cover must never be low quality. The local cover is still used when
-        // the service has none.
+        // A streamed song you own (it matches a local file) plays that file and shows YOUR OWN album art for
+        // it — the same cover on the now-playing screen, the bar, and after a restart. The service's high-res
+        // cover is deliberately NOT used for an owned song: it was the one picture that disagreed between the
+        // matched and unmatched paths, the later Spotify-cover backfill, and a restart, so the cover kept
+        // changing for the same song. A song you don't own (streamed in full) still shows the service's cover.
         return matched.map { (local, song) ->
-            local?.toMediaItem(song.artworkUrl.takeIf { it.isNotBlank() }?.let(android.net.Uri::parse))
+            local?.toMediaItem()
                 ?: streamUri(song)?.let { song.toMediaItem(it) }
         }
     }
