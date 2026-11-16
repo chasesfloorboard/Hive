@@ -109,6 +109,9 @@ object EmbeddedPictures {
     const val FRONT = 3
     const val BACK = 4
 
+    /** The picture to show: the front cover when the file marks one, else the first picture. */
+    fun bestBytes(pictures: List<Picture>): ByteArray? = (pictures.firstOrNull { it.type == FRONT } ?: pictures.firstOrNull())?.data
+
     /** Upper bound on an ID3 tag we will allocate, guarding against corrupt size fields. */
     private const val MAX_TAG_BYTES = 64 * 1024 * 1024
 

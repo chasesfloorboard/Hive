@@ -90,6 +90,19 @@ class EmbeddedPicturesTest {
         assertEquals(listOf(false, true), EmbeddedPictures.readTyped(flac.inputStream()).map { it.back })
     }
 
+    @Test fun bestBytesPrefersTheFrontCoverOverAPrecedingNonFrontPicture() {
+        val other = EmbeddedPictures.Picture(back, 0)
+        val cover = EmbeddedPictures.Picture(front, EmbeddedPictures.FRONT)
+        assertArrayEquals(front, EmbeddedPictures.bestBytes(listOf(other, cover)))
+    }
+
+    @Test fun bestBytesFallsBackToTheFirstPictureWhenNoneIsMarkedFront() {
+        val first = EmbeddedPictures.Picture(back, 0)
+        val second = EmbeddedPictures.Picture(front, EmbeddedPictures.BACK)
+        assertArrayEquals(back, EmbeddedPictures.bestBytes(listOf(first, second)))
+        assertEquals(null, EmbeddedPictures.bestBytes(emptyList()))
+    }
+
     @Test fun aFileWithoutTagsHasNone() = assertEquals(0, EmbeddedPictures.read(ByteArray(64).inputStream()).size)
 
     @Test fun readsCoverFromAFlacThatHasALeadingId3Tag() {

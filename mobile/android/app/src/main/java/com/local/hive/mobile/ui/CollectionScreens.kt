@@ -12,6 +12,7 @@ import androidx.compose.foundation.layout.aspectRatio
 import androidx.compose.material.icons.rounded.MoreVert
 import androidx.compose.material.icons.rounded.Edit
 import androidx.compose.material.icons.rounded.Image
+import androidx.compose.material.icons.rounded.HideImage
 import androidx.compose.material.icons.rounded.AutoFixHigh
 import androidx.compose.material.icons.rounded.Share
 import androidx.compose.ui.draw.shadow
@@ -149,7 +150,9 @@ fun AlbumScreen(
     val titleAlpha by animateFloatAsState(if (list.firstVisibleItemIndex > 0) 1f else 0f, tween(180), label = "title")
     val veil by list.pageVeil()
     val favorite = FavoriteAlbum.keyOf(title, artist) in vm.favoriteAlbumKeys.collectAsStateWithLifecycle().value
-    val cover = Uri.parse("content://media/external/audio/albumart/$albumId")
+    val hidden by vm.hiddenAlbumCovers.collectAsStateWithLifecycle()
+    val cleared = albumId in hidden
+    val cover = com.local.hive.mobile.data.AlbumCovers.model(albumId, hidden)?.let { Uri.parse(it) }
     PickableList(tracks = tracks)
 
     HiveGlassLayers(Modifier.fillMaxSize(), content = {
@@ -158,14 +161,14 @@ fun AlbumScreen(
             item {
                 Column(Modifier.fillMaxWidth().statusBarsPadding().padding(top = 60.dp, start = 24.dp, end = 24.dp, bottom = 8.dp), horizontalAlignment = Alignment.CenterHorizontally) {
                     // An album whose first song carries several pictures turns through them, as its card does on the PC.
-                    val frame = rotatingCover(cover, tracks.firstOrNull()?.id)
+                    val frame = if (cleared) CoverFrame(null, null) else rotatingCover(cover, tracks.firstOrNull()?.id)
                     // Hold the cover: see it full size, save it, or change it.
                     val haptics = androidx.compose.ui.platform.LocalHapticFeedback.current
                     var viewing by remember { mutableStateOf(false) }
                     Artwork(frame.current, Modifier.sharedCover("album-$albumId").fillMaxWidth(0.72f).aspectRatio(1f)
                         .pressable(onClick = {}, pressedScale = 0.98f, onLongClick = { haptics.performHapticFeedback(androidx.compose.ui.hapticfeedback.HapticFeedbackType.LongPress); viewing = true }),
                         HiveShape.art, Icons.Rounded.LibraryMusic, glow = colors?.primary, elevation = 30.dp, replacing = frame.previous)
-                    if (viewing) CoverViewer(vm, tracks, cover, title) { viewing = false }
+                    if (viewing) CoverViewer(vm, if (cleared) emptyList() else tracks, cover, title) { viewing = false }
                     Text(title, style = HiveText.heroTitle, color = c.text, textAlign = TextAlign.Center, maxLines = 2, overflow = TextOverflow.Ellipsis, modifier = Modifier.padding(top = 22.dp))
                     if (artist.isNotBlank()) Text(artist, style = HiveText.rowStrong, color = c.accent, modifier = Modifier.padding(top = 6.dp).clip(HiveShape.pill).clickable { onOpenArtist(artist) }.padding(horizontal = 8.dp, vertical = 2.dp))
                     Text(listOfNotNull(year.takeIf { it > 0 }?.toString(), countOf(tracks.size, "track"), formatLength(tracks.sumOf { it.durationMs })).joinToString(" · "), style = HiveText.small, color = c.textDim, modifier = Modifier.padding(top = 4.dp))
@@ -261,6 +264,10 @@ private fun CollectionMenu(tracks: List<Track>, vm: MainViewModel, actions: Trac
                 HiveMenuDivider()
                 HiveMenuItem("Edit album", Icons.Rounded.Edit) { open = false; editor.editTags(tracks) }
                 HiveMenuItem("Edit covers", Icons.Rounded.Image) { open = false; editor.changeCover(tracks) }
+                val albumId = tracks.first().albumId
+                val coverCleared = albumId in vm.hiddenAlbumCovers.collectAsStateWithLifecycle().value
+                if (coverCleared) HiveMenuItem("Show cover", Icons.Rounded.Image) { open = false; vm.showAlbumCover(albumId) }
+                else HiveMenuItem("Remove cover", Icons.Rounded.HideImage) { open = false; vm.hideAlbumCover(albumId) }
                 HiveMenuItem("Auto-tag album", Icons.Rounded.AutoFixHigh) { open = false; editor.autoTag(tracks) }
             }
             extra?.let { HiveMenuDivider(); it { open = false } }

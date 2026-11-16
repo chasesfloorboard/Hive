@@ -193,7 +193,7 @@ object TagWriter {
 
     /** The song's own front cover at full size, or null. */
     suspend fun cover(context: Context, track: Track): ByteArray? = withContext(Dispatchers.IO) {
-        runCatching { context.contentResolver.openInputStream(track.uri)?.use { EmbeddedPictures.readTyped(it) }?.let { p -> (p.firstOrNull { it.type == EmbeddedPictures.FRONT } ?: p.firstOrNull())?.data } }.getOrNull()
+        runCatching { context.contentResolver.openInputStream(track.uri)?.use { EmbeddedPictures.readTyped(it) }?.let(EmbeddedPictures::bestBytes) }.getOrNull()
             ?: runCatching { android.media.MediaMetadataRetriever().use { r -> r.setDataSource(context, track.uri); r.embeddedPicture } }.getOrNull()
     }
 }

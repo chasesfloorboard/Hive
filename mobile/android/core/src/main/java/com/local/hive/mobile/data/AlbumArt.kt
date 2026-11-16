@@ -38,7 +38,7 @@ class AlbumArtFetcher(private val context: Context, private val albumId: Long, p
         // An album Hive filed itself (WAV songs, which Android doesn't read tags from): its id is
         // minus its first song's, and the cover is read from that song's own tags.
         if (albumId < 0) return@withContext ownAlbum(-albumId)
-        val kept = File(File(context.cacheDir, "embedded-art").apply { mkdirs() }, "$albumId.img")
+        val kept = File(File(context.cacheDir, "embedded-art-v2").apply { mkdirs() }, "$albumId.img")
         val hq = File(File(context.cacheDir, "hq-art").apply { mkdirs() }, "$albumId.jpg")
         // Hive's own extracted copy of the album's embedded cover, kept once per album.
         if (kept.length() > 0) return@withContext result(kept.readBytes())
@@ -47,8 +47,10 @@ class AlbumArtFetcher(private val context: Context, private val albumId: Long, p
         // the song's folder. MediaStore's albumart (content://.../albumart) scrapes a folder image as the
         // cover of a tag-less "album", wearing one picture across unrelated songs; Hive never shows that.
         val embedded = song?.let {
-            runCatching { MediaMetadataRetriever().use { r -> r.setDataSource(context, it.uri); r.embeddedPicture } }.getOrNull()?.let(::fitted)
-                ?: ownPicture(it.uri)
+            // The song's own front cover, read full-size from the file's tags; MediaMetadataRetriever (which can
+            // hand back a reduced-resolution rendition) is only the fallback, so the big player cover stays sharp.
+            ownPicture(it.uri)
+                ?: runCatching { MediaMetadataRetriever().use { r -> r.setDataSource(context, it.uri); r.embeddedPicture } }.getOrNull()?.let(::fitted)
         }
         if (embedded != null && longestSide(embedded) >= SMALL) runCatching { kept.writeBytes(embedded) }
         val side = embedded?.let { longestSide(it) } ?: 0
@@ -79,7 +81,7 @@ class AlbumArtFetcher(private val context: Context, private val albumId: Long, p
     }
 
     private fun ownAlbum(songId: Long): FetchResult? {
-        val kept = File(File(context.cacheDir, "embedded-art").apply { mkdirs() }, "$albumId.img")
+        val kept = File(File(context.cacheDir, "embedded-art-v2").apply { mkdirs() }, "$albumId.img")
         if (kept.length() > 0) return result(kept.readBytes())
         val uri = ContentUris.withAppendedId(MediaStore.Audio.Media.EXTERNAL_CONTENT_URI, songId)
         val picture = ownPicture(uri) ?: return null
@@ -89,7 +91,8 @@ class AlbumArtFetcher(private val context: Context, private val albumId: Long, p
 
     /** The first of a song's own pictures that can be shown, read by Hive rather than Android. */
     private fun ownPicture(uri: android.net.Uri): ByteArray? =
-        runCatching { context.contentResolver.openInputStream(uri)?.use { EmbeddedPictures.read(it) } }.getOrNull().orEmpty().firstNotNullOfOrNull(::fitted)
+        runCatching { context.contentResolver.openInputStream(uri)?.use { EmbeddedPictures.readTyped(it) } }.getOrNull()
+            ?.let(EmbeddedPictures::bestBytes)?.let(::fitted)
 
     private fun isThumbnail(): Boolean {
         fun px(d: coil3.size.Dimension) = (d as? coil3.size.Dimension.Pixels)?.px ?: Int.MAX_VALUE
@@ -207,8 +210,9 @@ class SongArtFetcher(private val context: Context, private val songId: Long, pri
         // *album* art, and for a tag-less song MediaStore invents an album from the folder name and
         // scrapes any stray image sitting in that folder as its cover — so a coverless song would wear a
         // neighbour's picture (e.g. a lone bjork.jpg in the folder). No embedded picture → no picture.
-        val bytes = runCatching { MediaMetadataRetriever().use { r -> r.setDataSource(context, uri); r.embeddedPicture } }.getOrNull()?.let(AlbumArtFetcher::fitted)
-            ?: runCatching { context.contentResolver.openInputStream(uri)?.use { EmbeddedPictures.read(it) } }.getOrNull().orEmpty().firstNotNullOfOrNull(AlbumArtFetcher::fitted)
+        val bytes = runCatching { context.contentResolver.openInputStream(uri)?.use { EmbeddedPictures.readTyped(it) } }.getOrNull()
+                ?.let(EmbeddedPictures::bestBytes)?.let(AlbumArtFetcher::fitted)
+            ?: runCatching { MediaMetadataRetriever().use { r -> r.setDataSource(context, uri); r.embeddedPicture } }.getOrNull()?.let(AlbumArtFetcher::fitted)
             ?: throw IllegalStateException("This song has no picture")
         SourceFetchResult(ImageSource(Buffer().write(bytes), options.fileSystem), null, DataSource.DISK)
     }

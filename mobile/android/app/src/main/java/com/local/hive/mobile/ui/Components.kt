@@ -839,6 +839,9 @@ fun CoverCard(
     picked: Boolean = false,
     /** A "perfect" album (every track loved): shows the loved-album badge in the corner. */
     perfect: Boolean = false,
+    /** Reserve this many title lines so every card in a row is the same height — the Browse "Explore" heading
+     *  below the popular row must not shift up/down when one card's title wraps to two lines. */
+    minTitleLines: Int = 1,
     onLongClick: (() -> Unit)? = null,
     onClick: () -> Unit,
 ) {
@@ -855,7 +858,7 @@ fun CoverCard(
                 }
             }
         }
-        Text(title, style = HiveText.cardTitle, color = c.text, maxLines = 2, overflow = TextOverflow.Ellipsis, modifier = Modifier.padding(top = 10.dp))
+        Text(title, style = HiveText.cardTitle, color = c.text, maxLines = 2, minLines = minTitleLines, overflow = TextOverflow.Ellipsis, modifier = Modifier.padding(top = 10.dp))
         if (subtitle.isNotBlank()) Text(subtitle, style = HiveText.cardSub, color = c.textDim, maxLines = 1, overflow = TextOverflow.Ellipsis)
     }
 }

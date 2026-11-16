@@ -984,7 +984,7 @@ private fun BrowseTab(vm: MainViewModel, nav: HomeNavigation, bottom: Dp) {
             item {
                 LazyRow(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(14.dp)) {
                     items(popular, key = { it.first.url }) { (card, route) ->
-                        CoverCard(card.artwork.ifBlank { null }, card.name, card.subtitle, Modifier.width(136.dp), Icons.AutoMirrored.Rounded.QueueMusic) { nav.open(route) }
+                        CoverCard(card.artwork.ifBlank { null }, card.name, card.subtitle, Modifier.width(136.dp), Icons.AutoMirrored.Rounded.QueueMusic, minTitleLines = 2) { nav.open(route) }
                     }
                 }
             }

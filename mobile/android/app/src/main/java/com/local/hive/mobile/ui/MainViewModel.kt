@@ -369,6 +369,11 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
     val playlistImages: StateFlow<Map<String, String>> = app.playlistImages.images
     fun setPlaylistImage(key: String, picture: android.net.Uri) = viewModelScope.launch { app.playlistImages.set(key, picture) }
     fun removePlaylistImage(key: String) = viewModelScope.launch { app.playlistImages.remove(key) }
+
+    /** Albums whose cover the user cleared, so they fall back to the placeholder (see AlbumCovers). */
+    val hiddenAlbumCovers: StateFlow<Set<Long>> = app.albumCovers.hidden
+    fun hideAlbumCover(albumId: Long) = app.albumCovers.hide(albumId)
+    fun showAlbumCover(albumId: Long) = app.albumCovers.show(albumId)
     // ---- playlists ----
 
     val playlists: StateFlow<List<PlaylistSummary>> = dao.playlists().state(emptyList())

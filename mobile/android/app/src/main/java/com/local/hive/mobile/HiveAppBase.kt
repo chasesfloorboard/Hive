@@ -107,6 +107,7 @@ abstract class HiveAppBase : Application(), coil3.SingletonImageLoader.Factory, 
     val database by lazy { LibraryDatabase.open(this) }
     val likedAlbums by lazy { com.local.hive.mobile.data.LikedAlbums(this, database.dao()) }
     val playlistImages by lazy { com.local.hive.mobile.data.PlaylistImages(this) }
+    val albumCovers by lazy { com.local.hive.mobile.data.AlbumCovers(this) }
     override val equaliser by lazy { com.local.hive.mobile.playback.EqualiserStore(this) }
     // The compliant discovery tier — keyless, shared by both editions (see :core/discovery).
     val radio by lazy { com.local.hive.mobile.discovery.RadioDirectory() }
