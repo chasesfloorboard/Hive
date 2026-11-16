@@ -45,8 +45,7 @@ class LockPlayerActivity : ComponentActivity() {
                     unlockedAt = System.currentTimeMillis()
                     if (!leaving && !wentHome && !isFinishing) window.decorView.postDelayed({
                         if (!leaving && !wentHome && !isFinishing) runCatching {
-                            startActivity(Intent(this@LockPlayerActivity, LockPlayerActivity::class.java)
-                                .addFlags(Intent.FLAG_ACTIVITY_NEW_TASK or Intent.FLAG_ACTIVITY_NO_ANIMATION or Intent.FLAG_ACTIVITY_EXCLUDE_FROM_RECENTS))
+                            startActivity(launchIntent(this@LockPlayerActivity))
                             CarLog.lockPlayer(this@LockPlayerActivity, "stays up after unlock")
                         }
                     }, 450)
@@ -296,6 +295,16 @@ class LockPlayerActivity : ComponentActivity() {
          * [hiveForeground] records whether Hive's own UI was the app in use, which decides where a later
          * unlock lands; a call coming back (no fresh signal) keeps the value from when the player first showed.
          */
+        /** The intent that raises the player -- EVERY launch site goes through this. When the player is NOT
+         *  already on screen, CLEAR_TASK makes it a FRESH start: Android 16+ refuses to bring a backgrounded
+         *  activity to the front, so a plain re-launch (a reorder) silently does nothing -- the "shows once,
+         *  then never again" bug. A fresh start is the one launch Android still allows. When the player IS on
+         *  screen (a re-show on a song change), no CLEAR_TASK, so it is not needlessly recreated / flickered. */
+        private fun launchIntent(context: Context): Intent =
+            Intent(context, LockPlayerActivity::class.java)
+                .addFlags(Intent.FLAG_ACTIVITY_NEW_TASK or Intent.FLAG_ACTIVITY_NO_ANIMATION or Intent.FLAG_ACTIVITY_EXCLUDE_FROM_RECENTS)
+                .apply { if (!resumed) addFlags(Intent.FLAG_ACTIVITY_CLEAR_TASK) }
+
         fun showIfWanted(context: Context, hiveForeground: Boolean = hiveWasForeground) {
             // Each of these used to return silently, so a drive where the player never came up left no clue
             // which gate closed. Name the reason in the car log.
@@ -314,15 +323,7 @@ class LockPlayerActivity : ComponentActivity() {
             if (blocked != null) { CarLog.lockPlayer(context, "not shown: $blocked"); return }
             lastShowAttemptAt = System.currentTimeMillis()
             hiveWasForeground = hiveForeground
-            val open = Intent(context, LockPlayerActivity::class.java)
-                .addFlags(Intent.FLAG_ACTIVITY_NEW_TASK or Intent.FLAG_ACTIVITY_NO_ANIMATION or Intent.FLAG_ACTIVITY_EXCLUDE_FROM_RECENTS)
-            // Android 16+ won't bring a BACKGROUNDED activity to the front (background-activity-launch), so
-            // once the player had been sent away (Home/Back) and backgrounded, re-launching only delivered
-            // onNewIntent to the hidden instance and nothing appeared -- the "shows once, then never again"
-            // bug. When the player isn't on screen, CLEAR_TASK finishes any backgrounded instance so this is
-            // a FRESH start (the one launch Android still allows). When it IS on screen (a re-show on a song
-            // change), don't clear -- no needless recreate.
-            if (!resumed) open.addFlags(Intent.FLAG_ACTIVITY_CLEAR_TASK)
+            val open = launchIntent(context)
             // The player is raised ONLY by this direct launch, which works from a locked, screen-on phone
             // (the only time we launch — SCREEN_ON while locked, or music starting with the screen on). There
             // is deliberately no full-screen-intent fallback: that posted a "Hive" push notification showing

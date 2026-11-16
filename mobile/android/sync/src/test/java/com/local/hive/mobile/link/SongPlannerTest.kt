@@ -1,6 +1,7 @@
 package com.local.hive.mobile.link
 
 import com.local.hive.mobile.data.Track
+import com.local.hive.mobile.data.TrackMatcher
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertTrue
 import org.junit.Test
@@ -122,5 +123,26 @@ class SongPlannerTest {
     @Test fun keysIgnoreFormattingButNotTheSong() {
         assertEquals(SongPlanner.keyOf("Together (feat. Nikki Nair)", "The Avalanches", ""), SongPlanner.keyOf("Together", "The Avalanches", ""))
         assertTrue(SongPlanner.keyOf("Black", "Pearl Jam", "") != SongPlanner.keyOf("Black", "Sevdaliza", ""))
+    }
+
+    @Test fun aReplaceLedgerEntryCarriesTheReplacedCopysAlbumSoOtherReleasesSurvive() {
+        // HAD ENOUGH is on two releases, the same recording (same length), so only the album tells them
+        // apart. A replace of the JACKBOYS copy must retire ONLY the JACKBOYS copy on the PC.
+        val onJackboys = SongPlanner.replaceLedgerEntry("HAD ENOUGH", "Don Toliver", "Don Toliver", 157_000, "JACKBOYS")
+        val onHeaven = SongPlanner.replaceLedgerEntry("HAD ENOUGH", "Don Toliver", "Don Toliver", 157_000, "Heaven or Hell")
+        // Same song and length -> same version key; the album is the only thing that differs.
+        assertEquals(SongPlanner.versionKey("HAD ENOUGH", "Don Toliver", "Don Toliver", 157_000), SongPlanner.ledgerVersionKey(onJackboys))
+        assertEquals(SongPlanner.ledgerVersionKey(onJackboys), SongPlanner.ledgerVersionKey(onHeaven))
+        assertTrue("the two releases produce different ledger entries", onJackboys != onHeaven)
+        assertEquals(TrackMatcher.normalize("JACKBOYS"), SongPlanner.ledgerAlbum(onJackboys))
+        assertEquals("case and spacing are ignored", TrackMatcher.normalize("Heaven Or Hell"), SongPlanner.ledgerAlbum(onHeaven))
+    }
+
+    @Test fun aLegacyLedgerEntryRecordsNoAlbumAndFallsBackToTheVersionKey() {
+        // Entries queued before this change are bare version keys (no album separator): ledgerAlbum is null,
+        // so sendReplacements keeps matching them on the version key alone (the pre-change behaviour).
+        val legacy = SongPlanner.versionKey("HAD ENOUGH", "Don Toliver", "Don Toliver", 157_000)
+        assertEquals(legacy, SongPlanner.ledgerVersionKey(legacy))
+        assertEquals(null, SongPlanner.ledgerAlbum(legacy))
     }
 }

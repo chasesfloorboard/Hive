@@ -512,7 +512,7 @@ class SoulseekWorker(context: Context, params: WorkerParameters) : CoroutineWork
         }.getOrElse { log("Couldn't delete the old copy: $it"); false }
         log(if (gone) "Replaced ${old?.fileName ?: oldId}" else "Kept the old copy of ${old?.fileName ?: oldId}")
         if (gone && old != null) app.linkStore.replacedSongs = app.linkStore.replacedSongs +
-            com.local.hive.mobile.link.SongPlanner.versionKey(old.title, old.artist, old.albumArtist, old.durationMs)
+            com.local.hive.mobile.link.SongPlanner.replaceLedgerEntry(old.title, old.artist, old.albumArtist, old.durationMs, old.album)
     }
 
     /** Kept in logcat (tag HiveSoulseek) and download-log.txt, for when a download doesn't go as planned. */

@@ -77,6 +77,22 @@ object SongPlanner {
     fun versionKey(title: String, artist: String, albumArtist: String, durationMs: Long): String =
         keyOf(title, artist, albumArtist) + "|" + (durationMs + 500) / 1000
 
+    /** Separates the version key from the replaced copy's album in a replace-ledger entry. It cannot occur
+     *  in a tag, so an entry WITHOUT it is a legacy (pre-album) entry whose album is unknown. */
+    private const val ALBUM_SEP = '\u0001'
+
+    /** A replace-ledger entry: a song's version key plus the album the replaced copy came from. Carrying the
+     *  album lets a replace retire ONLY that release's copy on the PC, never a same-titled copy on another
+     *  album (e.g. HAD ENOUGH on JACKBOYS must not be trashed when replacing the Heaven or Hell copy). */
+    fun replaceLedgerEntry(title: String, artist: String, albumArtist: String, durationMs: Long, album: String): String =
+        versionKey(title, artist, albumArtist, durationMs) + ALBUM_SEP + TrackMatcher.normalize(album)
+
+    /** The version key of a ledger entry (a legacy entry is itself the version key). */
+    fun ledgerVersionKey(entry: String): String = entry.substringBefore(ALBUM_SEP)
+
+    /** The replaced copy's normalized album, or null for a legacy entry that recorded none. */
+    fun ledgerAlbum(entry: String): String? = if (entry.indexOf(ALBUM_SEP) >= 0) entry.substringAfter(ALBUM_SEP) else null
+
     /** Game mod audio (Elden Ring, the Nurse Harrow mod) that landed among the music: not music. */
     private val NOT_MUSIC = Regex("elden\\s*ring|nurse\\s*harrow", RegexOption.IGNORE_CASE)
     fun isNotMusic(vararg fields: String): Boolean = fields.any { NOT_MUSIC.containsMatchIn(it) }
@@ -505,8 +521,16 @@ class SongSync(
         val phone = dao.allTracks()
         val left = HashSet<String>()
         val gone = ArrayList<PcTrack>()
-        for (key in replaced) {
-            val olds = pc.filter { SongPlanner.versionKey(it.title, it.artist, it.albumArtist, it.duration) == key }
+        for (entry in replaced) {
+            val key = SongPlanner.ledgerVersionKey(entry)
+            // Retire only the PC copies from the SAME release as the replaced copy: a same-titled copy on
+            // another album (HAD ENOUGH on JACKBOYS vs on Heaven or Hell) must survive. A legacy entry
+            // (no album recorded) falls back to matching on the version key alone.
+            val albumNorm = SongPlanner.ledgerAlbum(entry)
+            val olds = pc.filter {
+                SongPlanner.versionKey(it.title, it.artist, it.albumArtist, it.duration) == key &&
+                    (albumNorm == null || TrackMatcher.normalize(it.album) == albumNorm)
+            }
             // Gone from the PC already, or the new copy is gone from the phone too: nothing to send.
             val name = key.substringBeforeLast('|')
             val seconds = key.substringAfterLast('|').toLongOrNull() ?: 0
@@ -520,7 +544,7 @@ class SongSync(
                     }.status
                 }.onFailure { android.util.Log.w("HiveSongSync", "Replacing ${old.title} on the PC: ${it.message}") }.getOrNull()
                 // An older Hive on the PC answers "exists": it doesn't replace songs yet, so try again later.
-                if (status == "replaced") gone += old else left += key
+                if (status == "replaced") gone += old else left += entry
             }
         }
         // Drop only the keys this run actually finished (replaced on the PC, or nothing left to
