@@ -436,6 +436,12 @@ fun SongsScreen(
     // Its songs, or the albums and artists they're from.
     var view by rememberSaveable { mutableStateOf(SongsView.Tracks) }
     var groupSort by rememberSaveable { mutableStateOf(GroupSort.Most) }
+    // Playing a matched song shouldn't dead-end at the matches: the queue is [matches] then [the rest],
+    // and the rest is shown below, dimmed. `now.shuffle` keeps the rest shuffled when shuffle is on.
+    val now by vm.nowPlaying.collectAsStateWithLifecycle()
+    val searching = q.isNotEmpty() && view == SongsView.Tracks
+    val rest = remember(all, tracks) { val m = tracks.mapTo(HashSet()) { it.id }; all.filterNot { it.id in m } }
+    val restOrdered = remember(rest, now.shuffle) { if (now.shuffle) rest.shuffled() else rest }
     val counts = remember(tracks) { songsCounts(tracks) }
     // Laid out as a playlist of your own: its picture (or four of its covers), name, length, Shuffle and Play.
     val images by vm.playlistImages.collectAsStateWithLifecycle()
@@ -455,7 +461,7 @@ fun SongsScreen(
             Text(title, style = HiveText.heroTitle, color = c.text, textAlign = TextAlign.Center, maxLines = 2, overflow = TextOverflow.Ellipsis, modifier = Modifier.padding(top = 22.dp))
             Text(listOf(countOf(all.size, "track"), formatLength(all.sumOf { it.durationMs })).joinToString(" · "), style = HiveText.small, color = c.textDim, modifier = Modifier.padding(top = 6.dp))
             Row(Modifier.padding(top = 18.dp), horizontalArrangement = Arrangement.spacedBy(12.dp), verticalAlignment = Alignment.CenterVertically) {
-                ControlButton(HiveIcons.Shuffle, "Shuffle", { vm.shuffle(tracks) }, size = 46.dp)
+                ControlButton(HiveIcons.Shuffle, "Shuffle", { vm.shuffle(all) }, size = 46.dp)
                 AccentPlayButton(false, { vm.play(tracks) }, size = 58.dp)
             }
         }
@@ -468,8 +474,8 @@ fun SongsScreen(
     HiveGlassLayers(Modifier.fillMaxSize(), content = {
         AlbumBackdrop(colors)
         Box(Modifier.fillMaxSize().nestedScroll(search.connection)) {
-            if (view == SongsView.Tracks) TrackList(vm, tracks, actions, bottomPadding, if (q.isEmpty()) "Nothing here yet" else "Nothing matches", if (q.isEmpty()) "" else "Nothing in $title matches “${query.trim()}”.",
-                header = { Column { hero() } }, list = list,
+            if (view == SongsView.Tracks) TrackList(vm, if (searching) tracks + restOrdered else tracks, actions, bottomPadding, if (q.isEmpty()) "Nothing here yet" else "Nothing matches", if (q.isEmpty()) "" else "Nothing in $title matches “${query.trim()}”.",
+                header = { Column { hero() } }, list = list, dimFrom = if (searching) tracks.size else null,
                 sortHeader = { count, _, _ -> SongsHeader(view, counts, { view = it }, listOf(ownOrder) + sorts.map { it.label }, sortAt, { sortAt = it }, "$count · ${(listOf(ownOrder) + sorts.map { it.label })[sortAt.coerceIn(0, sorts.size)]}") },
                 indexed = sorts.getOrNull(sortAt - 1) == TrackSort.Title)
             else LazyColumn(Modifier.fillMaxSize(), state = list, contentPadding = PaddingValues(bottom = bottomPadding + 16.dp)) {

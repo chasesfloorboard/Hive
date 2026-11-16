@@ -66,6 +66,8 @@ import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import com.local.hive.mobile.ui.theme.Motion
 import androidx.compose.ui.input.nestedscroll.nestedScroll
+import androidx.compose.ui.draw.alpha
+import androidx.compose.ui.draw.blur
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.draw.shadow
 import androidx.compose.ui.focus.FocusRequester
@@ -303,6 +305,11 @@ fun PlaylistScreen(vm: MainViewModel, id: Long, actions: TrackActions, bottomPad
     val positions = remember(shownKeys) { shownKeys.withIndex().associate { it.value to it.index } }
     val listed = if (editing || q.isEmpty()) (if (editing) order else shownKeys) else shownKeys.filter { k -> byKey[k]?.let { r -> LibrarySort.matches(songText(r), q) } == true }
     val listedRows = listed.mapNotNull { byKey[it] }
+    // Playing a matched song shouldn't dead-end at the matches: the queue is [matches] then [the rest],
+    // and the rest is shown below, dimmed. Shuffle keeps the rest shuffled when shuffle is on.
+    val searching = !editing && q.isNotEmpty()
+    val restRows = remember(searching, rows, listed) { if (!searching) emptyList() else listed.toHashSet().let { m -> shownKeys.filterNot { it in m }.mapNotNull { byKey[it] } } }
+    fun playFromSearch(searchPos: Int, fullIndex: Int) { if (searching) vm.playRows(listedRows + (if (now.shuffle) restRows.shuffled() else restRows), searchPos) else vm.playRows(rows, fullIndex) }
     PickableList(tracks = listedRows.mapNotNull { it.track }, streams = listedRows.filter { it.track == null }.mapNotNull { it.stream })
     val search = rememberPullToReveal(keepShown = query.isNotEmpty())
     val name = playlist?.name.orEmpty()
@@ -360,8 +367,8 @@ fun PlaylistScreen(vm: MainViewModel, id: Long, actions: TrackActions, bottomPad
                     PanelSlice {
                         if (!editing) {
                             val t = row.track
-                            if (t != null) TrackRow(t, t.id in loved, now.trackId == t.id, now.isPlaying, actions.copy(onRemoveFromPlaylist = { remove() }), onClick = { vm.playRows(rows, i) })
-                            else { val s = row.stream!!; StreamRow(s, now.mediaId == s.key, now.isPlaying, full, onClick = { vm.playRows(rows, i) }, onRemove = remove, vm = vm) }
+                            if (t != null) TrackRow(t, t.id in loved, now.trackId == t.id, now.isPlaying, actions.copy(onRemoveFromPlaylist = { remove() }), onClick = { playFromSearch(pos, i) })
+                            else { val s = row.stream!!; StreamRow(s, now.mediaId == s.key, now.isPlaying, full, onClick = { playFromSearch(pos, i) }, onRemove = remove, vm = vm) }
                         } else {
                             val lifted = dragKey == k
                             Row(
@@ -404,6 +411,17 @@ fun PlaylistScreen(vm: MainViewModel, id: Long, actions: TrackActions, bottomPad
                                     contentAlignment = Alignment.Center,
                                 ) { Icon(Icons.Rounded.DragHandle, "Drag ${row.title} to reorder", tint = if (lifted) c.accent else c.textDim, modifier = Modifier.size(22.dp)) }
                             }
+                        }
+                    }
+                }
+                // The rest of the playlist, below the matches and dimmed; tapping still plays from its real spot.
+                if (searching && restRows.isNotEmpty()) itemsIndexed(restRows, key = { _, r -> "rest:${r.entry.rowId}" }) { _, r ->
+                    val full2 = positions[r.entry.rowId.toString()] ?: 0
+                    PanelSlice {
+                        Box(Modifier.blur(3.dp).alpha(0.45f)) {
+                            val t = r.track
+                            if (t != null) TrackRow(t, t.id in loved, now.trackId == t.id, now.isPlaying, actions, onClick = { vm.playRows(rows, full2) })
+                            else { val s = r.stream!!; StreamRow(s, now.mediaId == s.key, now.isPlaying, full, onClick = { vm.playRows(rows, full2) }, vm = vm) }
                         }
                     }
                 }

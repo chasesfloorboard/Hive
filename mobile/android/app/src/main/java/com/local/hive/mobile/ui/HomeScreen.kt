@@ -74,6 +74,8 @@ import androidx.compose.ui.Alignment
 import androidx.compose.animation.togetherWith
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.input.nestedscroll.nestedScroll
+import androidx.compose.ui.draw.alpha
+import androidx.compose.ui.draw.blur
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.draw.shadow
 import androidx.compose.ui.graphics.vector.ImageVector
@@ -434,6 +436,8 @@ fun TrackList(
     rows: List<PlaylistRow>? = null,
     /** The list's scroll, for a page that fades its title in as the header scrolls away. */
     list: androidx.compose.foundation.lazy.LazyListState = rememberLazyListState(),
+    /** When searching: rows at this index and after are the non-matching rest, shown dimmed below the matches. */
+    dimFrom: Int? = null,
 ) {
     val loved by vm.lovedIds.collectAsStateWithLifecycle()
     val now by vm.nowPlaying.collectAsStateWithLifecycle()
@@ -466,7 +470,8 @@ fun TrackList(
                 }
                 if (rows == null) itemsIndexed(tracks, key = { _, t -> t.id }, contentType = { _, _ -> "track" }) { i, t ->
                     // Rows glide into place when the list changes (a sort, a deletion, a new song).
-                    Box(Modifier.animateItem()) { TrackRow(t, t.id in loved, now.trackId == t.id, now.isPlaying, actions, onClick = { vm.play(tracks, i) }) }
+                    // While searching, the non-matching rest (index >= dimFrom) is dimmed so the matches stand out.
+                    Box(Modifier.animateItem().then(if (dimFrom != null && i >= dimFrom) Modifier.blur(3.dp).alpha(0.45f) else Modifier)) { TrackRow(t, t.id in loved, now.trackId == t.id, now.isPlaying, actions, onClick = { vm.play(tracks, i) }) }
                 } else itemsIndexed(rows, key = { _, r -> r.track?.id?.toString() ?: r.stream?.key.orEmpty() }, contentType = { _, _ -> "track" }) { i, r ->
                     Box(Modifier.animateItem()) {
                         val t = r.track
