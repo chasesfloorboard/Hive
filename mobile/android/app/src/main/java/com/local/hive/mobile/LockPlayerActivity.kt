@@ -165,6 +165,10 @@ class LockPlayerActivity : ComponentActivity() {
     override fun onResume() {
         super.onResume()
         resumed = true
+        // In the car the phone is plugged in and mounted: keep the screen on so the player stays visible for the
+        // whole drive instead of being dropped when the screen sleeps. Off-car, let it sleep like the lock screen.
+        if (CarLog.inCar(this)) window.addFlags(android.view.WindowManager.LayoutParams.FLAG_KEEP_SCREEN_ON)
+        else window.clearFlags(android.view.WindowManager.LayoutParams.FLAG_KEEP_SCREEN_ON)
         resumedAt = System.currentTimeMillis()
         touchedAt = resumedAt
         wentHome = false
