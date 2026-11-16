@@ -13,8 +13,8 @@ android {
         applicationId = "com.local.hive.mobile"
         minSdk = 29
         targetSdk = 36
-        versionCode = 206
-        versionName = "3.0.40"
+        versionCode = 207
+        versionName = "3.0.41"
         testInstrumentationRunner = "androidx.test.runner.AndroidJUnitRunner"
     }
 

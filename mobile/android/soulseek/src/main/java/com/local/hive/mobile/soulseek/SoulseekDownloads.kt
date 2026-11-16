@@ -110,6 +110,21 @@ class SoulseekSettings(context: Context) {
 }
 
 /**
+ * Whether a library track is a copy of a requested track ON THE SAME ALBUM: the album names match
+ * (normalized), the request's artist is among the library track's artists, and the lengths match (within
+ * 10 s, or the request's is unknown). The TITLE is matched by the caller. A copy of the song on a DIFFERENT
+ * album (another release -- e.g. the track on JACKBOYS while downloading Heaven or Hell) is NOT a match, so
+ * an album download always pulls that album's own copy of every track, even one you already own elsewhere.
+ */
+internal fun sameAlbumCopy(
+    reqAlbum: String, reqArtists: Set<String>, reqDurationMs: Long,
+    haveAlbum: String, haveArtist: String, haveAlbumArtist: String, haveDurationMs: Long,
+): Boolean =
+    com.local.hive.mobile.data.TrackMatcher.normalize(haveAlbum) == com.local.hive.mobile.data.TrackMatcher.normalize(reqAlbum) &&
+        com.local.hive.mobile.data.TrackMatcher.artistParts(haveArtist.ifBlank { haveAlbumArtist }).any { it in reqArtists } &&
+        (reqDurationMs <= 0L || kotlin.math.abs(haveDurationMs - reqDurationMs) <= 10_000L)
+
+/**
  * Downloads an album (or song) from Soulseek in the background: logs in,
  * searches, picks the best folder (AlbumPicker), and fetches the songs one by
  * one into Music/<folder>/<artist>/<album> on the phone or SD card (Settings › Soulseek). If a peer stops answering,
@@ -136,8 +151,9 @@ class SoulseekWorker(context: Context, params: WorkerParameters) : CoroutineWork
         if (downloads.jobs.value.none { it.id == request.id }) downloads.add(jobFor(request))
         // A run that was stopped (Hive closed by the system) starts over on the songs not yet done.
         downloads.update(request.id) { j -> j.copy(state = "searching", message = "Searching Soulseek…", songs = j.songs.map { if (it.state == "done") it else DownloadSong(it.title) }) }
-        // Songs the library already has a playable copy of aren't downloaded again (a better copy
-        // meant to replace one, [SoulseekRequest.Track.replaces], still is).
+        // Songs the library already has a playable copy of ON THIS ALBUM aren't downloaded again. A copy of
+        // the song from a DIFFERENT release still is -- every album keeps its own copy (a better copy meant
+        // to replace one, [SoulseekRequest.Track.replaces], still is too).
         val have = alreadyHave(request)
         for (i in have) downloads.song(request.id, i) { it.copy(state = "done", percent = 100, from = "already in your library") }
         if (have.isNotEmpty()) log("Already in the library, not downloaded: " + have.joinToString { request.tracks[it].title })
@@ -315,8 +331,10 @@ class SoulseekWorker(context: Context, params: WorkerParameters) : CoroutineWork
     }
 
     /**
-     * The requested songs the library already has a playable copy of: same title, the artist among
-     * its artists, a real length (Android could read it), and the same length give or take 10 s.
+     * The requested songs the library already has a playable copy of ON THE SAME ALBUM: same album, same
+     * title, the artist among its artists, a real length (Android could read it), and the same length give
+     * or take 10 s. A copy of the song on a DIFFERENT album (another release) does NOT count -- an album
+     * download always pulls that album's own copy of every track, even one you already have elsewhere.
      */
     private suspend fun alreadyHave(request: SoulseekRequest): Set<Int> {
         val library = runCatching { (applicationContext as SoulseekHost).dao.allTracks() }.getOrDefault(emptyList())
@@ -325,8 +343,7 @@ class SoulseekWorker(context: Context, params: WorkerParameters) : CoroutineWork
         return request.tracks.indices.filterTo(HashSet()) { i ->
             val t = request.tracks[i]
             t.replaces == null && byTitle[com.local.hive.mobile.data.TrackMatcher.normalize(t.title)].orEmpty().any { have ->
-                com.local.hive.mobile.data.TrackMatcher.artistParts(have.artist.ifBlank { have.albumArtist }).any { it in artists } &&
-                    (t.durationMs <= 0 || kotlin.math.abs(have.durationMs - t.durationMs) <= 10_000)
+                sameAlbumCopy(request.album, artists, t.durationMs, have.album, have.artist, have.albumArtist, have.durationMs)
             }
         }
     }
