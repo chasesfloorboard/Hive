@@ -199,61 +199,11 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
     val artistPhotos: StateFlow<Boolean> = app.artistImages.online
     fun setArtistPhotos(on: Boolean) = app.artistImages.setOnline(on)
 
-    // ---- Yearly Wrap: Hive's own when paired, so phone and PC show the same ----
-
-    private val wrapCache get() = java.io.File(app.filesDir, "pc-wrap").apply { mkdirs() }
-
-    private fun yearSpan(year: Int): Pair<Long, Long> {
-        val zone = java.time.ZoneId.systemDefault()
-        return java.time.LocalDate.of(year, 1, 1).atStartOfDay(zone).toInstant().toEpochMilli() to
-            java.time.LocalDate.of(year + 1, 1, 1).atStartOfDay(zone).toInstant().toEpochMilli()
-    }
-
-    private suspend fun pcWrap(text: String): Wrap? = runCatching { linkClient.parseWrap(text) }.getOrNull()?.let { pc ->
-        kotlinx.coroutines.withContext(kotlinx.coroutines.Dispatchers.Default) { Wrap.fromPc(pc, dao.albums().first()) { name -> pcLibrary.coverFor(name) } }
-    }
-
-    /**
-     * A year's Wrap, at once and then up to date. Paired: Hive's Wrap as last fetched (kept on the
-     * phone) with this phone's plays Hive hasn't counted yet added on top; then, when the PC can be
-     * reached (at home or over Tailscale), only the new plays are sent and Hive's fresh Wrap, both
-     * devices together, replaces it. Not paired: this phone's plays.
-     */
-    fun wrap(year: Int): kotlinx.coroutines.flow.Flow<Wrap> = kotlinx.coroutines.flow.flow {
-        val (from, to) = yearSpan(year)
-        suspend fun phoneOnly() = kotlinx.coroutines.withContext(kotlinx.coroutines.Dispatchers.Default) { Wrap.from(year, dao.playsBetween(from, to)) }
-        if (app.linkStore.pairing == null) { emit(phoneOnly()); return@flow }
-        val cached = java.io.File(wrapCache, "$year.json")
-        suspend fun withUnsent(w: Wrap) = kotlinx.coroutines.withContext(kotlinx.coroutines.Dispatchers.Default) { w + dao.unsentPlaysBetween(from, to) }
-        val kept = cached.takeIf { it.exists() }?.let { runCatching { it.readText() }.getOrNull() }?.let { pcWrap(it) }
-        emit(kept?.let { withUnsent(it) } ?: phoneOnly())
-        if (!app.sync.syncPlaysNow()) return@flow
-        val conn = app.sync.pcConnection() ?: return@flow
-        val fresh = runCatching { linkClient.wrapJson(conn, year) }.getOrNull() ?: return@flow
-        runCatching { cached.writeText(fresh) }
-        pcWrap(fresh)?.let { emit(withUnsent(it)) }
-    }
-
-    /** One month of a Wrap, from the plays on this phone (the PC's among them, for songs the phone has). */
-    suspend fun wrapMonth(year: Int, month: Int): Pair<Wrap, List<com.local.hive.mobile.data.PlayRow>> = kotlinx.coroutines.withContext(kotlinx.coroutines.Dispatchers.Default) {
-        val zone = java.time.ZoneId.systemDefault()
-        val start = java.time.LocalDate.of(year, month, 1).atStartOfDay(zone)
-        val rows = dao.playsBetween(start.toInstant().toEpochMilli(), start.plusMonths(1).toInstant().toEpochMilli()).sortedBy { it.playedAt }
-        Wrap.from(year, rows) to rows
-    }
-
-    /** Years with a Wrap, newest first: as last known at once, then Hive's when it can be reached. */
-    fun wrapYears(): kotlinx.coroutines.flow.Flow<List<Int>> = kotlinx.coroutines.flow.flow {
-        val first = dao.firstPlay()?.let { java.time.Instant.ofEpochMilli(it).atZone(java.time.ZoneId.systemDefault()).year }
-        val phone = (java.time.Year.now().value downTo (first ?: java.time.Year.now().value)).toList()
-        if (app.linkStore.pairing == null) { emit(phone); return@flow }
-        val cached = java.io.File(wrapCache, "years.txt")
-        val kept = cached.takeIf { it.exists() }?.readText()?.split(',')?.mapNotNull { it.trim().toIntOrNull() }
-        emit((kept.orEmpty() + phone).distinct().sortedDescending())
-        val pc = app.sync.pcConnection()?.let { conn -> runCatching { linkClient.wrapYears(conn) }.getOrNull() } ?: return@flow
-        runCatching { cached.writeText(pc.joinToString(",")) }
-        emit((pc + phone).distinct().sortedDescending())
-    }
+    // ---- Yearly Wrap: Hive's own when paired, so phone and PC show the same (see WrapVm) ----
+    private val wrapVm = WrapVm(app)
+    fun wrap(year: Int) = wrapVm.wrap(year)
+    suspend fun wrapMonth(year: Int, month: Int) = wrapVm.wrapMonth(year, month)
+    fun wrapYears() = wrapVm.wrapYears()
     suspend fun tracksById(ids: List<Long>): List<Track> = dao.tracks(ids).associateBy { it.id }.let { map -> ids.mapNotNull { map[it] } }
 
     // ---- playback ----
@@ -271,31 +221,19 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
         return kotlinx.coroutines.withContext(kotlinx.coroutines.Dispatchers.Default) { com.local.hive.mobile.playback.AutoDj.build(seeds, library, plays, lovedIds.value) }
     }
 
-    // ---- love ----
+    // ---- backup and restore (see BackupVm) ----
+    private val backupVm = BackupVm(app, viewModelScope)
+    val restoreOffer = backupVm.restoreOffer
+    fun declineRestore() = backupVm.declineRestore()
+    val backupStatus = backupVm.backupStatus
+    fun refreshBackupStatus() = backupVm.refreshBackupStatus()
+    fun backUpToCloud(uri: android.net.Uri) = backupVm.backUpToCloud(uri)
+    fun stopCloudBackup() = backupVm.stopCloudBackup()
+    fun offerPcBackup(onResult: (String?) -> Unit) = backupVm.offerPcBackup(onResult)
+    fun offerBackupFile(uri: android.net.Uri, onError: (String) -> Unit) = backupVm.offerBackupFile(uri, onError)
+    fun restoreBackup(offer: com.local.hive.mobile.link.PhoneBackup.Offer, onError: (String) -> Unit) = backupVm.restoreBackup(offer, onError)
 
-    /** A backup a fresh install could restore (see PhoneBackup). */
-    val restoreOffer = app.phoneBackup.offer
-    fun declineRestore() = app.phoneBackup.decline()
-    /** Where the backup copies are (Settings › Backup). */
-    val backupStatus = app.phoneBackup.status
-    fun refreshBackupStatus() = app.phoneBackup.refreshStatus()
-    fun backUpToCloud(uri: android.net.Uri) = viewModelScope.launch { app.phoneBackup.setCloud(uri) }
-    fun stopCloudBackup() = app.phoneBackup.stopCloud()
-    /** The newest backup the PC keeps from another install, shown as the restore offer; false when there's none. */
-    fun offerPcBackup(onResult: (String?) -> Unit) = viewModelScope.launch {
-        runCatching {
-            val conn = app.sync.pcConnection() ?: return@runCatching "Hive on your PC can't be reached right now."
-            if (app.phoneBackup.offerFromPc(conn, app.linkStore.pairing?.deviceId) == null) "Hive on your PC has no other backup of this phone." else null
-        }.onSuccess(onResult).onFailure { onResult(it.message ?: it.javaClass.simpleName) }
-    }
-    /** A backup file picked to restore from: shown as the restore offer once checked. */
-    fun offerBackupFile(uri: android.net.Uri, onError: (String) -> Unit) = viewModelScope.launch {
-        runCatching { app.phoneBackup.offerFile(uri) }.onFailure { onError(it.message ?: it.javaClass.simpleName) }
-    }
-    fun restoreBackup(offer: com.local.hive.mobile.link.PhoneBackup.Offer, onError: (String) -> Unit) = viewModelScope.launch {
-        runCatching { app.phoneBackup.restore(offer, if (offer.pcDevice != null) app.sync.pcConnection() else null) }
-            .onFailure { onError(it.message ?: it.javaClass.simpleName) }
-    }
+    // ---- love ----
 
     fun setLoved(tracks: List<Track>, loved: Boolean) = viewModelScope.launch { app.sync.setLoved(tracks.map { it.id }, loved) }
     /** Album Favorites stay on this phone and never change the songs' Love. */
