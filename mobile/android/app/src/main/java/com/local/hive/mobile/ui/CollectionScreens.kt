@@ -475,7 +475,7 @@ fun SongsScreen(
         AlbumBackdrop(colors)
         Box(Modifier.fillMaxSize().nestedScroll(search.connection)) {
             if (view == SongsView.Tracks) TrackList(vm, if (searching) tracks + restOrdered else tracks, actions, bottomPadding, if (q.isEmpty()) "Nothing here yet" else "Nothing matches", if (q.isEmpty()) "" else "Nothing in $title matches “${query.trim()}”.",
-                header = { Column { hero() } }, list = list, dimFrom = if (searching) tracks.size else null,
+                header = { Column { hero() } }, list = list, dimFrom = if (searching) tracks.size else null, onDimTap = { query = "" },
                 sortHeader = { count, _, _ -> SongsHeader(view, counts, { view = it }, listOf(ownOrder) + sorts.map { it.label }, sortAt, { sortAt = it }, "$count · ${(listOf(ownOrder) + sorts.map { it.label })[sortAt.coerceIn(0, sorts.size)]}") },
                 indexed = sorts.getOrNull(sortAt - 1) == TrackSort.Title)
             else LazyColumn(Modifier.fillMaxSize(), state = list, contentPadding = PaddingValues(bottom = bottomPadding + 16.dp)) {

@@ -418,10 +418,14 @@ fun PlaylistScreen(vm: MainViewModel, id: Long, actions: TrackActions, bottomPad
                 if (searching && restRows.isNotEmpty()) itemsIndexed(restRows, key = { _, r -> "rest:${r.entry.rowId}" }) { _, r ->
                     val full2 = positions[r.entry.rowId.toString()] ?: 0
                     PanelSlice {
-                        Box(Modifier.blur(3.dp).alpha(0.45f)) {
-                            val t = r.track
-                            if (t != null) TrackRow(t, t.id in loved, now.trackId == t.id, now.isPlaying, actions, onClick = { vm.playRows(rows, full2) })
-                            else { val s = r.stream!!; StreamRow(s, now.mediaId == s.key, now.isPlaying, full, onClick = { vm.playRows(rows, full2) }, vm = vm) }
+                        Box {
+                            Box(Modifier.blur(3.dp).alpha(0.45f)) {
+                                val t = r.track
+                                if (t != null) TrackRow(t, t.id in loved, now.trackId == t.id, now.isPlaying, actions, onClick = { vm.playRows(rows, full2) })
+                                else { val s = r.stream!!; StreamRow(s, now.mediaId == s.key, now.isPlaying, full, onClick = { vm.playRows(rows, full2) }, vm = vm) }
+                            }
+                            // The dimmed rest is a dead zone: a tap clears the search first, so the next tap hits a clear row.
+                            Box(Modifier.matchParentSize().clickable { query = "" })
                         }
                     }
                 }

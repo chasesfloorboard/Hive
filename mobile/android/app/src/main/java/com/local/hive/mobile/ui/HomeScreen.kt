@@ -438,6 +438,8 @@ fun TrackList(
     list: androidx.compose.foundation.lazy.LazyListState = rememberLazyListState(),
     /** When searching: rows at this index and after are the non-matching rest, shown dimmed below the matches. */
     dimFrom: Int? = null,
+    /** Tapping a dimmed (non-matching) row clears the search instead of playing — the next tap hits a clear row. */
+    onDimTap: (() -> Unit)? = null,
 ) {
     val loved by vm.lovedIds.collectAsStateWithLifecycle()
     val now by vm.nowPlaying.collectAsStateWithLifecycle()
@@ -471,7 +473,12 @@ fun TrackList(
                 if (rows == null) itemsIndexed(tracks, key = { _, t -> t.id }, contentType = { _, _ -> "track" }) { i, t ->
                     // Rows glide into place when the list changes (a sort, a deletion, a new song).
                     // While searching, the non-matching rest (index >= dimFrom) is dimmed so the matches stand out.
-                    Box(Modifier.animateItem().then(if (dimFrom != null && i >= dimFrom) Modifier.blur(3.dp).alpha(0.45f) else Modifier)) { TrackRow(t, t.id in loved, now.trackId == t.id, now.isPlaying, actions, onClick = { vm.play(tracks, i) }) }
+                    Box(Modifier.animateItem()) {
+                        val dim = dimFrom != null && i >= dimFrom
+                        Box(if (dim) Modifier.blur(3.dp).alpha(0.45f) else Modifier) { TrackRow(t, t.id in loved, now.trackId == t.id, now.isPlaying, actions, onClick = { vm.play(tracks, i) }) }
+                        // Dimmed rest is a dead zone: a tap clears the search first, so the next tap hits a clear row.
+                        if (dim && onDimTap != null) Box(Modifier.matchParentSize().clickable { onDimTap() })
+                    }
                 } else itemsIndexed(rows, key = { _, r -> r.track?.id?.toString() ?: r.stream?.key.orEmpty() }, contentType = { _, _ -> "track" }) { i, r ->
                     Box(Modifier.animateItem()) {
                         val t = r.track
