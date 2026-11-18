@@ -43,6 +43,7 @@ import androidx.compose.material.icons.rounded.LibraryMusic
 import androidx.compose.material.icons.rounded.Search
 import androidx.compose.material.icons.rounded.Shuffle
 import androidx.compose.material.icons.rounded.Share
+import androidx.compose.material.icons.rounded.ContentCopy
 import androidx.compose.runtime.rememberCoroutineScope
 import kotlinx.coroutines.launch
 import androidx.compose.material3.Icon
@@ -349,22 +350,35 @@ fun AppleCollectionScreen(vm: MainViewModel, url: String, bottomPadding: Dp, onB
 const val LIKED_SONGS_URL = "https://open.spotify.com/collection/tracks"
 
 @Composable
-fun SpotifyCollectionScreen(vm: MainViewModel, url: String, bottomPadding: Dp, onBack: () -> Unit, onOpenPlaylist: (Long) -> Unit, onToast: (String) -> Unit) {
+fun SpotifyCollectionScreen(vm: MainViewModel, url: String, bottomPadding: Dp, onBack: () -> Unit, onOpen: (String) -> Unit = {}, onOpenPlaylist: (Long) -> Unit, onToast: (String) -> Unit) {
     val svm = rememberStreamingVm()
-    ServiceCollectionScreen(vm, url, "Spotify", {
+    val cleanUrl = url.removePrefix("spotify:")
+    ServiceCollectionScreen(vm, cleanUrl, "Spotify", {
         val signedIn = svm.spotifyUser.value.signedIn
-        if (url == LIKED_SONGS_URL) {
-            ServicePage("Spotify", "playlist", "Liked Songs", svm.spotifyUser.value.name, "", "", url, svm.spotifyAccount.likedSongs().map { it.toStream() })
+        if (cleanUrl == LIKED_SONGS_URL) {
+            ServicePage("Spotify", "playlist", "Liked Songs", svm.spotifyUser.value.name, "", "", cleanUrl, svm.spotifyAccount.likedSongs().map { it.toStream() })
+        } else if ("music.apple.com" in cleanUrl) {
+            val amPage = svm.appleMusic.collection(cleanUrl).page()
+            amPage.copy(
+                source = "Spotify",
+                songs = amPage.songs.map { s ->
+                    s.copy(
+                        source = "Spotify",
+                        key = if (s.key.startsWith("am:")) "sp:" + s.key.removePrefix("am:") else s.key
+                    )
+                },
+                more = amPage.more.map { it.copy() }
+            )
         } else {
-            val p = runCatching { svm.spotify.collection(url).page() }.getOrElse { failure ->
+            val p = runCatching { svm.spotify.collection(cleanUrl).page() }.getOrElse { failure ->
                 // Private playlists aren't on Spotify's public pages; the signed-in API has them (without previews).
-                val ref = Spotify.parseLink(url)
+                val ref = Spotify.parseLink(cleanUrl)
                 if (signedIn && ref?.first == "playlist") svm.spotifyAccount.playlist(ref.second).page() else throw failure
             }
             // Spotify's public pages carry no release year; borrow the album's from Apple Music's catalogue (same album + artist).
             if (p.kind == "album" && p.year.isBlank()) p.copy(year = runCatching { svm.appleMusic.albumYear(p.songs.firstOrNull()?.artist.orEmpty(), p.name) }.getOrElse { "" }) else p
         }
-    }, bottomPadding, onBack, {}, onOpenPlaylist, onToast)
+    }, bottomPadding, onBack, onOpen, onOpenPlaylist, onToast)
 }
 
 /**
@@ -388,7 +402,7 @@ private fun ServiceCollectionScreen(
     val veil by list.pageVeil()
     var importing by remember { mutableStateOf(false) }
     var showAll by remember { mutableStateOf(false) }
-    var sharing by remember(key) { mutableStateOf(false) }
+    var shareDialogOpen by remember(key) { mutableStateOf(false) }
     var menuOpen by remember { mutableStateOf(false) }
     var signIn by remember { mutableStateOf(false) }
     LaunchedEffect(key, attempt) { page = Load.Loading; page = runCatching { load() }.fold({ Load.Ready(it) }, { Load.Failed(it.friendly(service)) }) }
@@ -461,19 +475,6 @@ private fun ServiceCollectionScreen(
                 val route = (if (collection.source == "Spotify") "spotify/c?url=" else "apple/c?url=") + Uri.encode(collection.url)
                 FavoriteBarActions(vm, favoritePlaylist(collection.source.lowercase().replace(" ", "") + ":" + collection.url, collection.name, route, collection.artwork.ifBlank { null }, collection.source))
                 androidx.compose.foundation.layout.Spacer(Modifier.size(8.dp))
-                // One ⋯ button for the quieter actions — import, download, share, open — so the page
-                // leads with Play and Shuffle instead of a row of five.
-                fun shareLink() {
-                    sharing = true
-                    onToast("Finding “${collection.name}” on Spotify…")
-                    scope.launch {
-                        val link = if (collection.source == "Spotify") collection.url
-                            else com.local.hive.mobile.stream.SpotifyFind.albumLink(collection.curator.ifBlank { collection.songs.firstOrNull()?.artist.orEmpty() }, collection.name)
-                        sharing = false
-                        if (link != null) Share.text(context, link, "Share “${collection.name}”")
-                        else { Share.text(context, collection.url, "Share “${collection.name}”"); onToast("Couldn't place “${collection.name}” on Spotify — shared its ${collection.source} link.") }
-                    }
-                }
                 fun startDownload() {
                     val artist = collection.curator.ifBlank { collection.songs.firstOrNull()?.artist.orEmpty() }
                     com.local.hive.mobile.soulseek.SoulseekWorker.enqueue(context, com.local.hive.mobile.soulseek.SoulseekRequest(artist, collection.name,
@@ -498,16 +499,34 @@ private fun ServiceCollectionScreen(
                             menuOpen = false
                             if (com.local.hive.mobile.soulseek.SoulseekSettings(context).configured) startDownload() else signIn = true
                         }
-                        if (album) HiveMenuItem("Share", Icons.Rounded.Share) { menuOpen = false; if (!sharing) shareLink() }
+                        HiveMenuItem("Share", Icons.Rounded.Share) { menuOpen = false; shareDialogOpen = true }
                         HiveMenuItem("Open in ${collection.source}", Icons.AutoMirrored.Rounded.OpenInNew) {
                             menuOpen = false
-                            runCatching { context.startActivity(Intent(Intent.ACTION_VIEW, Uri.parse(com.local.hive.mobile.stream.AppleAccount.webUrl(collection.url)))) }
+                            scope.launch {
+                                val targetUrl = if (collection.source == "Spotify") {
+                                    if ("open.spotify.com" in collection.url) collection.url
+                                    else {
+                                        val artist = collection.curator.ifBlank { collection.songs.firstOrNull()?.artist.orEmpty() }
+                                        com.local.hive.mobile.stream.SpotifyFind.albumLink(artist, collection.name)
+                                            ?: ("https://open.spotify.com/search/" + java.net.URLEncoder.encode(listOf(artist, collection.name).filter(String::isNotBlank).joinToString(" "), "UTF-8"))
+                                    }
+                                } else com.local.hive.mobile.stream.AppleAccount.webUrl(collection.url)
+                                runCatching { context.startActivity(Intent(Intent.ACTION_VIEW, Uri.parse(targetUrl))) }
+                            }
                         }
                     }
                 }
             }
         }
     })
+    if (shareDialogOpen && collection != null) {
+        ShareCollectionDialog(
+            collection = collection,
+            localTracks = matches.filterNotNull(),
+            onDismiss = { shareDialogOpen = false },
+            onToast = onToast,
+        )
+    }
     if (signIn) SoulseekSignInDialog(onDismiss = { signIn = false }, onSignedIn = {
         signIn = false
         val col = collection ?: return@SoulseekSignInDialog
@@ -518,6 +537,105 @@ private fun ServiceCollectionScreen(
             favoriteItemKey = "playlist:" + col.source.lowercase().replace(" ", "") + ":" + col.url))
         onToast("Downloading ${col.name} to ${com.local.hive.mobile.soulseek.SoulseekSettings(context).where(context)}")
     })
+}
+
+@Composable
+private fun ShareCollectionDialog(
+    collection: ServicePage,
+    localTracks: List<Track>,
+    onDismiss: () -> Unit,
+    onToast: (String) -> Unit,
+) {
+    val context = LocalContext.current
+    val scope = rememberCoroutineScope()
+    val c = Hive.colors
+    var spotifyLink by remember(collection) {
+        mutableStateOf<String?>(if ("open.spotify.com" in collection.url) collection.url else null)
+    }
+    var resolvingSpotify by remember(collection) { mutableStateOf(false) }
+
+    fun copyToClipboard(text: String, label: String, toastMessage: String) {
+        val cm = context.getSystemService(android.content.ClipboardManager::class.java)
+        cm?.setPrimaryClip(android.content.ClipData.newPlainText(label, text))
+        onToast(toastMessage)
+        onDismiss()
+    }
+
+    fun withSpotifyLink(action: (String) -> Unit) {
+        val current = spotifyLink
+        if (current != null) {
+            action(current)
+            return
+        }
+        if (resolvingSpotify) {
+            onToast("Finding Spotify link…")
+            return
+        }
+        resolvingSpotify = true
+        onToast("Finding Spotify link…")
+        scope.launch {
+            val artist = collection.curator.ifBlank { collection.songs.firstOrNull()?.artist.orEmpty() }
+            val resolved = runCatching { com.local.hive.mobile.stream.SpotifyFind.albumLink(artist, collection.name) }.getOrNull()
+            val link = resolved ?: ("https://open.spotify.com/search/" + java.net.URLEncoder.encode(listOf(artist, collection.name).filter(String::isNotBlank).joinToString(" "), "UTF-8"))
+            spotifyLink = link
+            resolvingSpotify = false
+            action(link)
+        }
+    }
+
+    val appleUrl = if ("music.apple.com" in collection.url) collection.url
+        else ("https://music.apple.com/us/search?term=" + java.net.URLEncoder.encode(listOf(collection.curator.ifBlank { collection.songs.firstOrNull()?.artist.orEmpty() }, collection.name).filter(String::isNotBlank).joinToString(" "), "UTF-8"))
+
+    HiveDialog(onDismiss = onDismiss, padding = PaddingValues(14.dp), spacing = 2.dp) {
+        Text(
+            "Share “${collection.name}”",
+            style = HiveText.year,
+            color = c.text,
+            maxLines = 2,
+            overflow = TextOverflow.Ellipsis,
+            modifier = Modifier.padding(start = 12.dp, end = 12.dp, top = 6.dp, bottom = 8.dp)
+        )
+
+        HiveMenuItem("Copy Spotify link", Icons.Rounded.ContentCopy) {
+            withSpotifyLink { link ->
+                copyToClipboard(link, "Spotify Link", "Copied Spotify link")
+            }
+        }
+        HiveMenuItem("Share Spotify link", Icons.Rounded.Share) {
+            withSpotifyLink { link ->
+                Share.text(context, link, "Share “${collection.name}”")
+                onDismiss()
+            }
+        }
+
+        HiveMenuDivider()
+
+        HiveMenuItem("Copy Apple Music link", Icons.Rounded.ContentCopy) {
+            copyToClipboard(appleUrl, "Apple Music Link", "Copied Apple Music link")
+        }
+        HiveMenuItem("Share Apple Music link", Icons.Rounded.Share) {
+            Share.text(context, appleUrl, "Share “${collection.name}”")
+            onDismiss()
+        }
+
+        HiveMenuDivider()
+
+        val hasFiles = localTracks.isNotEmpty()
+        val fileLabel = when {
+            !hasFiles -> "Share audio files (Not downloaded)"
+            localTracks.size == 1 -> "Share audio file (1)"
+            localTracks.size == collection.songs.size -> "Share audio files (${localTracks.size})"
+            else -> "Share audio files (${localTracks.size}/${collection.songs.size} in library)"
+        }
+        HiveMenuItem(fileLabel, Icons.Rounded.LibraryMusic) {
+            if (hasFiles) {
+                Share.tracks(context, localTracks)
+                onDismiss()
+            } else {
+                onToast("Download this album first to share its audio files.")
+            }
+        }
+    }
 }
 
 /**
@@ -650,7 +768,7 @@ fun OnlineSearchResults(vm: MainViewModel, query: String, showAlbums: Boolean, o
             // Apple's subtitles start with what the item is ("Album · Artist"): the artist is what's wanted.
             fun artistOf(curator: String) = curator.replace(Regex("""^(Album|Single|EP|Playlist|Song|Music Video|Compilation)\s*·\s*"""), "")
             val albums = (a?.albums.orEmpty().map { ServiceCard(it.name, listOf(artistOf(it.curator), "Apple Music").filter(String::isNotBlank).joinToString(" · "), it.artwork, it.url.ifBlank { "https://music.apple.com/us/${it.kind}/x/${it.id}" }) to key(artistOf(it.curator), it.name) } +
-                s?.albums.orEmpty().map { ServiceCard(it.name, listOf(it.subtitle, "Spotify").filter(String::isNotBlank).joinToString(" · "), it.artwork, it.url) to key(it.subtitle, it.name) })
+                s?.albums.orEmpty().map { ServiceCard(it.name, listOf(it.subtitle, "Spotify").filter(String::isNotBlank).joinToString(" · "), it.artwork, if ("open.spotify.com" in it.url) it.url else "spotify:" + it.url) to key(it.subtitle, it.name) })
                 .distinctBy { it.second }.map { it.first }
             val songs = (appleSongs.map { it.toStream() } + s?.songs.orEmpty().take(25).map { it.toStream() }).distinctBy { key(it.artist, it.title) }
             Load.Ready(OnlineResults(albums, songs, sp.exceptionOrNull()?.let { it.friendly("Spotify") }))

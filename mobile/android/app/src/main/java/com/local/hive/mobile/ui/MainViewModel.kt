@@ -393,7 +393,7 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
                 val t = app.pcLibrary.tracks.value.firstOrNull { com.local.hive.mobile.link.PcLibrary.MEDIA_PREFIX + it.id == s.key } ?: return null
                 if (t.album.isBlank()) null else "pc/album?key=" + enc((t.albumArtist.ifBlank { t.artist }).lowercase() + "\u0000" + t.album.lowercase())
             }
-            "music.apple.com" in s.url && "/album/" in s.url -> "apple/c?url=" + enc(s.url.substringBefore('?'))
+            "music.apple.com" in s.url && "/album/" in s.url -> (if (s.source == "Spotify") "spotify/c?url=" else "apple/c?url=") + enc(s.url.substringBefore('?'))
             else -> null
         }
     }

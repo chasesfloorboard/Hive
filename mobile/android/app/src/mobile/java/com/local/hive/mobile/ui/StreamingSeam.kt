@@ -38,10 +38,14 @@ internal fun NavGraphBuilder.streamingRoutes(
         )
     }
     page("spotify") {
-        SpotifyScreen(vm, bottomPadding, onBack = { nav.popBackStack() }, onOpenSettings = onOpenSettings) { url -> nav.navigate(if ("open.spotify.com" in url) "spotify/c?url=${enc(url)}" else appleRoute(url)) }
+        SpotifyScreen(vm, bottomPadding, onBack = { nav.popBackStack() }, onOpenSettings = onOpenSettings) { url -> nav.navigate("spotify/c?url=${enc(url)}") }
     }
     page("spotify/c?url={url}") { entry ->
-        SpotifyCollectionScreen(vm, entry.arguments?.getString("url").orEmpty(), bottomPadding, onBack = { nav.popBackStack() }, onOpenPlaylist = onOpenPlaylist, onToast = onToast)
+        SpotifyCollectionScreen(
+            vm, entry.arguments?.getString("url").orEmpty(), bottomPadding, onBack = { nav.popBackStack() },
+            onOpen = { nextUrl -> nav.navigate("spotify/c?url=${enc(nextUrl)}") },
+            onOpenPlaylist = onOpenPlaylist, onToast = onToast,
+        )
     }
 }
 

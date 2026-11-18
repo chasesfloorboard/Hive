@@ -157,7 +157,7 @@ private fun HiveContent(vm: MainViewModel, openPlayerInitially: Boolean) {
     LaunchedEffect(openLink) {
         val url = openLink ?: return@LaunchedEffect
         playerOpen = false; queueOpen = false; lyricsOpen = false
-        nav.navigate(if ("open.spotify.com" in url) "spotify/c?url=${enc(url)}" else appleRoute(url)) { launchSingleTop = true }
+        nav.navigate(if ("open.spotify.com" in url || url.startsWith("spotify:")) "spotify/c?url=${enc(url.removePrefix("spotify:"))}" else appleRoute(url)) { launchSingleTop = true }
         vm.openLink.value = null
     }
     // Every ⋮/⋯ menu ends with Settings (HiveMenu's `settings`); from the player too, so it closes first.
@@ -253,7 +253,7 @@ private fun HiveContent(vm: MainViewModel, openPlayerInitially: Boolean) {
                         page("home") { HomeScreen(vm, homeNav, actions, bottomPadding) }
                         page("search") {
                             SearchScreen(vm, actions, bottomPadding, { nav.popBackStack() }, homeNav.openAlbum, homeNav.openArtist) { url ->
-                                nav.navigate(if ("open.spotify.com" in url) "spotify/c?url=${enc(url)}" else appleRoute(url))
+                                nav.navigate(if ("open.spotify.com" in url || url.startsWith("spotify:")) "spotify/c?url=${enc(url.removePrefix("spotify:"))}" else appleRoute(url))
                             }
                         }
                         page("settings") { SettingsScreen(vm, bottomPadding, onOpenEqualiser = { nav.navigate("equaliser") }) { nav.popBackStack() } }
