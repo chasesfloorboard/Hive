@@ -22,6 +22,7 @@ class PlaybackMemory(
     data class Restored(val items: List<MediaItem>, val index: Int, val positionMs: Long, val shuffle: Boolean, val repeatMode: Int)
 
     fun saveQueue(player: Player) {
+        if (player.mediaItemCount == 0) return
         val ids = (0 until player.mediaItemCount).map { player.getMediaItemAt(it).mediaId }
         // A radio station or podcast never replaces the music kept for resuming: plugging the phone in
         // (the car, headphones) after the radio picks the music back up, not the station.
@@ -44,7 +45,10 @@ class PlaybackMemory(
 
     /** The saved queue as playable items, skipping songs no longer on the phone. */
     suspend fun restore(): Restored? {
-        val ids = prefs.getString(KEY_QUEUE, null)?.split(SEPARATOR)?.filter { it.isNotBlank() }.orEmpty()
+        val ids = prefs.getString(KEY_QUEUE, null)?.split(SEPARATOR)?.filter { it.isNotBlank() }.orEmpty().ifEmpty {
+            val current = prefs.getString(KEY_CURRENT, null)
+            if (!current.isNullOrBlank()) listOf(current) else emptyList()
+        }
         if (ids.isEmpty()) return null
         val local = ids.mapNotNull { it.toLongOrNull() }.distinct().chunked(900).flatMap { dao.tracks(it) }.associate { it.id.toString() to it.toMediaItem() }
         val streamed = ids.filter { it.toLongOrNull() == null }.distinct().chunked(900).flatMap { dao.streamTracks(it) }

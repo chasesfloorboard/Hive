@@ -30,7 +30,11 @@ class CoverBitmapLoader(private val context: Context, private val scope: Corouti
     }
 
     override fun loadBitmap(uri: Uri): ListenableFuture<Bitmap> = future {
-        val request = ImageRequest.Builder(context).data(uri).size(SIZE_PX).allowHardware(false).build()
+        val targetUri = if (uri.authority == "${context.packageName}.covers") {
+            val id = uri.lastPathSegment?.toLongOrNull()
+            if (id != null) Uri.parse("content://media/external/audio/albumart/$id") else uri
+        } else uri
+        val request = ImageRequest.Builder(context).data(targetUri).size(SIZE_PX).allowHardware(false).build()
         val result = SingletonImageLoader.get(context).execute(request)
         (result as? SuccessResult)?.image?.toBitmap() ?: error("No cover for $uri")
     }

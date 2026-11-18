@@ -110,7 +110,13 @@ class LibraryBrowser(private val context: Context, private val dao: LibraryDao) 
         if (items.size == 1 && '|' in items[0].mediaId) {
             val (list, id) = items[0].mediaId.split('|', limit = 2)
             val tracks = songs(list)
-            return tracks.map { it.toMediaItem() } to tracks.indexOfFirst { it.id.toString() == id }.coerceAtLeast(0)
+            if (tracks.isNotEmpty()) {
+                return tracks.map { it.toMediaItem() } to tracks.indexOfFirst { it.id.toString() == id }.coerceAtLeast(0)
+            }
+            id.toLongOrNull()?.let { trackId ->
+                val track = dao.tracks(listOf(trackId)).firstOrNull()
+                if (track != null) return listOf(track.toMediaItem()) to 0
+            }
         }
         // Items without an address (from a browser or the assistant) are looked up by id.
         val ids = items.filter { it.localConfiguration == null }.mapNotNull { it.mediaId.substringAfter('|').toLongOrNull() }

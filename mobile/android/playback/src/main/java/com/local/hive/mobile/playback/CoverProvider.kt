@@ -27,11 +27,13 @@ class CoverProvider : ContentProvider() {
     override fun getType(uri: Uri) = "image/jpeg"
 
     override fun openFile(uri: Uri, mode: String): ParcelFileDescriptor? {
-        val albumId = uri.lastPathSegment?.toLongOrNull() ?: return null
+        val id = uri.lastPathSegment?.toLongOrNull() ?: return null
         val context = context ?: return null
-        val file = File(File(context.cacheDir, "car-art").apply { mkdirs() }, "$albumId.jpg")
+        val isSong = uri.path?.contains("/song/") == true
+        val file = File(File(context.cacheDir, "car-art").apply { mkdirs() }, if (isSong) "s_$id.jpg" else "a_$id.jpg")
         if (file.length() == 0L) {
-            val request = ImageRequest.Builder(context).data("content://media/external/audio/albumart/$albumId").size(SIZE_PX).allowHardware(false).build()
+            val sourceUri = if (isSong) "content://media/external/audio/media/$id/albumart" else "content://media/external/audio/albumart/$id"
+            val request = ImageRequest.Builder(context).data(sourceUri).size(SIZE_PX).allowHardware(false).build()
             val bitmap = runBlocking { (SingletonImageLoader.get(context).execute(request) as? SuccessResult)?.image?.toBitmap() } ?: return null
             file.outputStream().use { bitmap.compress(Bitmap.CompressFormat.JPEG, 90, it) }
         }
@@ -48,6 +50,7 @@ class CoverProvider : ContentProvider() {
         private const val SIZE_PX = 720
 
         fun uriFor(context: Context, albumId: Long): Uri = Uri.parse("content://${context.packageName}.covers/album/$albumId")
+        fun songUriFor(context: Context, songId: Long): Uri = Uri.parse("content://${context.packageName}.covers/song/$songId")
 
         /** Lets [packageName] (the car) read the covers among [items]. */
         fun grant(context: Context, packageName: String, items: List<androidx.media3.common.MediaItem>) {

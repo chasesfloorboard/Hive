@@ -358,6 +358,19 @@ class PlaybackService : MediaLibraryService() {
                 if (saved > 5_000) player.seekTo(saved)
                 // Playing a finished episode again starts it over.
                 else if (id != null && saved == com.local.hive.mobile.data.PodcastStorePort.FINISHED) app.podcastStore.setProgress(id, 0)
+
+                if (mediaItem != null && CarLog.carConnected) {
+                    val artUri = mediaItem.mediaMetadata.artworkUri
+                    val carUri = if (artUri != null && artUri.toString().startsWith("content://media/")) {
+                        val albumId = artUri.lastPathSegment?.toLongOrNull() ?: mediaItem.mediaId.substringAfterLast('|').toLongOrNull()
+                        if (albumId != null) CoverProvider.uriFor(this@PlaybackService, albumId) else artUri
+                    } else artUri
+                    if (carUri != null) {
+                        CoverProvider.grant(this@PlaybackService, CarLog.ANDROID_AUTO, listOf(
+                            mediaItem.buildUpon().setMediaMetadata(mediaItem.mediaMetadata.buildUpon().setArtworkUri(carUri).build()).build()
+                        ))
+                    }
+                }
             }
             override fun onIsPlayingChanged(isPlaying: Boolean) {
                 if (!isPlaying) lastPodcast?.let { savePodcast(player, it) }
@@ -394,14 +407,7 @@ class PlaybackService : MediaLibraryService() {
             }
         }
         // Pick up where the last session left off, paused, unless something was queued meanwhile.
-        scope.launch {
-            val saved = withContext(Dispatchers.IO) { memory.restore() } ?: return@launch
-            if (player.mediaItemCount > 0) return@launch
-            player.setMediaItems(saved.items, saved.index, saved.positionMs)
-            player.shuffleModeEnabled = saved.shuffle
-            player.repeatMode = saved.repeatMode
-            player.prepare()
-        }
+        scope.launch { ensureRestored(player) }
         val open = bridge.sessionActivityIntent(this)
         libraryBrowser = LibraryBrowser(this, app.dao)
         fun <T> future(block: suspend () -> T): ListenableFuture<T> = SettableFuture.create<T>().also { f ->
@@ -415,8 +421,36 @@ class PlaybackService : MediaLibraryService() {
             // prepares again, and when another app (the assistant, a call) took the sound, it asks for it back.
             override fun play() {
                 if (playbackState == Player.STATE_IDLE) super.prepare()
+                if (mediaItemCount == 0) {
+                    scope.launch {
+                        if (ensureRestored(player)) {
+                            super.play()
+                        }
+                    }
+                    return
+                }
                 if (playWhenReady && !isPlaying) super.pause()
                 super.play()
+            }
+
+            override fun getMediaMetadata(): androidx.media3.common.MediaMetadata {
+                val meta = super.getMediaMetadata()
+                val item = currentMediaItem
+                val title = meta.title ?: item?.mediaMetadata?.title
+                val artist = meta.artist ?: item?.mediaMetadata?.artist
+                val album = meta.albumTitle ?: item?.mediaMetadata?.albumTitle
+                val rawArt = meta.artworkUri ?: item?.mediaMetadata?.artworkUri
+                val carArt = if (rawArt != null && (rawArt.toString().startsWith("content://media/") || rawArt.scheme == "file")) {
+                    val albumId = rawArt.lastPathSegment?.toLongOrNull() ?: item?.mediaId?.substringAfterLast('|')?.toLongOrNull()
+                    if (albumId != null) CoverProvider.uriFor(this@PlaybackService, albumId) else rawArt
+                } else rawArt
+
+                return meta.buildUpon()
+                    .setTitle(title)
+                    .setArtist(artist)
+                    .setAlbumTitle(album)
+                    .setArtworkUri(carArt)
+                    .build()
             }
         }
         session = MediaLibrarySession.Builder(this, sessionPlayer, object : MediaLibrarySession.Callback {
@@ -427,6 +461,21 @@ class PlaybackService : MediaLibraryService() {
                         CarLog.note(this@PlaybackService, controller.packageName, "connect (controller version ${controller.controllerVersion}, trusted ${controller.isTrusted})")
                         val wasInCar = CarLog.carConnected
                         CarLog.car(this@PlaybackService, controller.packageName, connected = true)
+                        scope.launch {
+                            ensureRestored(player)
+                            player.currentMediaItem?.let { item ->
+                                val artUri = item.mediaMetadata.artworkUri
+                                val carUri = if (artUri != null && artUri.toString().startsWith("content://media/")) {
+                                    val albumId = artUri.lastPathSegment?.toLongOrNull() ?: item.mediaId.substringAfterLast('|').toLongOrNull()
+                                    if (albumId != null) CoverProvider.uriFor(this@PlaybackService, albumId) else artUri
+                                } else artUri
+                                if (carUri != null) {
+                                    CoverProvider.grant(this@PlaybackService, controller.packageName, listOf(
+                                        item.buildUpon().setMediaMetadata(item.mediaMetadata.buildUpon().setArtworkUri(carUri).build()).build()
+                                    ))
+                                }
+                            }
+                        }
                         if (controller.packageName == CarLog.ANDROID_AUTO && !wasInCar) startForDrive()
                     }
                     .setAvailableSessionCommands(MediaSession.ConnectionResult.DEFAULT_SESSION_AND_LIBRARY_COMMANDS.buildUpon()
@@ -632,6 +681,18 @@ class PlaybackService : MediaLibraryService() {
     private fun onACall() = getSystemService(android.media.AudioManager::class.java)?.mode in
         listOf(android.media.AudioManager.MODE_IN_CALL, android.media.AudioManager.MODE_IN_COMMUNICATION, android.media.AudioManager.MODE_RINGTONE)
 
+    private suspend fun ensureRestored(targetPlayer: Player? = session?.player): Boolean {
+        val p = targetPlayer ?: return false
+        if (p.mediaItemCount > 0) return true
+        val saved = withContext(Dispatchers.IO) { memory.restore() } ?: return false
+        if (p.mediaItemCount > 0) return true
+        p.setMediaItems(saved.items, saved.index, saved.positionMs)
+        p.shuffleModeEnabled = saved.shuffle
+        p.repeatMode = saved.repeatMode
+        p.prepare()
+        return true
+    }
+
     /**
      * The phone joined the car (Android Auto came, after a while away): Hive's music starts, from
      * where it was, unless Hive is already playing or a call is on. Hive takes the sound, so
@@ -643,16 +704,25 @@ class PlaybackService : MediaLibraryService() {
         if (away > 0 && System.currentTimeMillis() - away < DRIVE_GAP_MS) return
         scope.launch {
             val player = session?.player ?: return@launch
-            // Android Auto starts its own things first (it resumes its last app); Hive comes after.
-            delay(2_500)
-            if (player.isPlaying || onACall()) return@launch
             val station = player.currentMediaItem?.mediaId?.let(PlaybackMemory::notMusic) == true
             if (player.mediaItemCount == 0 || station) {
-                val music = withContext(Dispatchers.IO) { memory.restore() } ?: return@launch
-                player.setMediaItems(music.items, music.index, music.positionMs)
-                player.shuffleModeEnabled = music.shuffle
-                player.repeatMode = music.repeatMode
+                ensureRestored(player)
             }
+            player.currentMediaItem?.let { item ->
+                val artUri = item.mediaMetadata.artworkUri
+                val carUri = if (artUri != null && artUri.toString().startsWith("content://media/")) {
+                    val albumId = artUri.lastPathSegment?.toLongOrNull() ?: item.mediaId.substringAfterLast('|').toLongOrNull()
+                    if (albumId != null) CoverProvider.uriFor(this@PlaybackService, albumId) else artUri
+                } else artUri
+                if (carUri != null) {
+                    CoverProvider.grant(this@PlaybackService, CarLog.ANDROID_AUTO, listOf(
+                        item.buildUpon().setMediaMetadata(item.mediaMetadata.buildUpon().setArtworkUri(carUri).build()).build()
+                    ))
+                }
+            }
+            // Android Auto starts its own things first (it resumes its last app); Hive comes after.
+            delay(2_500)
+            if (player.isPlaying || onACall() || !CarLog.carConnected) return@launch
             CarLog.note(this@PlaybackService, CarLog.ANDROID_AUTO, "drive starts: Hive plays")
             driveStartedAt = System.currentTimeMillis(); driveReclaimed = false
             player.prepare(); player.play()
