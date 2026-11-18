@@ -102,11 +102,9 @@ private fun Throwable.friendly(service: String) = when (this) {
  * anything (artists, songs, albums, playlists), or paste a music.apple.com link.
  */
 @Composable
-fun AppleMusicScreen(vm: MainViewModel, bottomPadding: Dp, onBack: () -> Unit, onOpenSettings: () -> Unit, onOpen: (String) -> Unit) {
+fun AppleMusicScreen(vm: MainViewModel, bottomPadding: Dp, onBack: () -> Unit, onOpenSettings: () -> Unit = {}, onOpen: (String) -> Unit) {
     val svm = rememberStreamingVm()
     val c = Hive.colors
-    val user by svm.appleUser.collectAsStateWithLifecycle()
-    var mine by remember { mutableStateOf<Load<List<AmCard>>?>(null) }
     var query by rememberSaveable { mutableStateOf("") }
     var submitted by rememberSaveable { mutableStateOf("") }
     var browse by remember { mutableStateOf<Load<List<AmShelf>>>(Load.Loading) }
@@ -114,9 +112,6 @@ fun AppleMusicScreen(vm: MainViewModel, bottomPadding: Dp, onBack: () -> Unit, o
     var attempt by remember { mutableStateOf(0) }
     vm.tracks.collectAsStateWithLifecycle() // keeps the library index fresh for matching
 
-    LaunchedEffect(user.signedIn, attempt) {
-        mine = if (!user.signedIn) null else { mine = Load.Loading; runCatching { svm.appleAccount.playlists() }.fold({ Load.Ready(it) }, { Load.Failed(it.friendly("Apple Music")) }) }
-    }
     LaunchedEffect(attempt) { browse = runCatching { svm.appleMusic.browse() }.fold({ Load.Ready(it) }, { Load.Failed(it.friendly("Apple Music")) }) }
     LaunchedEffect(submitted, attempt) {
         results = if (submitted.isBlank()) null else {
@@ -145,24 +140,6 @@ fun AppleMusicScreen(vm: MainViewModel, bottomPadding: Dp, onBack: () -> Unit, o
             }
             when (val r = results) {
                 null -> {
-                    if (user.signedIn) {
-                        item(key = "mine-h") { YearHeading("Your library") }
-                        when (val m = mine) {
-                            null, Load.Loading -> item(key = "mine") { Busy("Loading your playlists…") }
-                            is Load.Failed -> item(key = "mine") { Failed(m.message) { attempt++ } }
-                            is Load.Ready -> item(key = "mine") {
-                                CardGrid(listOf(ServiceCard("Songs", "Your library", "", com.local.hive.mobile.stream.AppleAccount.libraryUrl(com.local.hive.mobile.stream.AppleAccount.SONGS_ID))) + m.value.map { it.card() }, onOpen)
-                            }
-                        }
-                    } else item(key = "mine") {
-                        Row(Modifier.padding(horizontal = 14.dp, vertical = 10.dp).fillMaxWidth().hiveGlass(HiveShape.panel).clickable(onClick = onOpenSettings).padding(16.dp), verticalAlignment = Alignment.CenterVertically) {
-                            Column(Modifier.weight(1f)) {
-                                Text("Your Apple Music library", style = HiveText.rowStrong, color = c.text)
-                                Text("Sign in in Settings to see your playlists and songs.", style = HiveText.small, color = c.textDim)
-                            }
-                            Icon(Icons.AutoMirrored.Rounded.OpenInNew, null, tint = c.textDim, modifier = Modifier.size(18.dp))
-                        }
-                    }
                     when (val b = browse) {
                     Load.Loading -> item { Busy("Loading Apple Music…") }
                     is Load.Failed -> item { Failed(b.message) { attempt++ } }
@@ -562,23 +539,18 @@ private fun ServiceEmblem(source: String) {
  * any shared playlist, album or song by its link.
  */
 @Composable
-fun SpotifyScreen(vm: MainViewModel, bottomPadding: Dp, onBack: () -> Unit, onOpenSettings: () -> Unit, onOpen: (String) -> Unit) {
+fun SpotifyScreen(vm: MainViewModel, bottomPadding: Dp, onBack: () -> Unit, onOpenSettings: () -> Unit = {}, onOpen: (String) -> Unit) {
     val svm = rememberStreamingVm()
     val c = Hive.colors
-    val user by svm.spotifyUser.collectAsStateWithLifecycle()
     val now by vm.nowPlaying.collectAsStateWithLifecycle()
     val library by vm.tracks.collectAsStateWithLifecycle()
     var query by rememberSaveable { mutableStateOf("") }
     var submitted by rememberSaveable { mutableStateOf("") }
     var hint by remember { mutableStateOf<String?>(null) }
     var picks by remember { mutableStateOf<Load<List<SpCard>>>(Load.Loading) }
-    var mine by remember { mutableStateOf<Load<List<SpCard>>?>(null) }
     var results by remember { mutableStateOf<Load<com.local.hive.mobile.stream.SpotifyAccount.Results>?>(null) }
     var attempt by remember { mutableStateOf(0) }
     LaunchedEffect(attempt) { picks = runCatching { svm.spotify.picks() }.fold({ if (it.isEmpty()) Load.Failed("Couldn't load Spotify's playlists.") else Load.Ready(it) }, { Load.Failed(it.friendly("Spotify")) }) }
-    LaunchedEffect(user.signedIn, attempt) {
-        mine = if (!user.signedIn) null else { mine = Load.Loading; runCatching { svm.spotifyAccount.playlists() }.fold({ Load.Ready(it) }, { Load.Failed(it.friendly("Spotify")) }) }
-    }
     LaunchedEffect(submitted, attempt) {
         results = if (submitted.isBlank()) null else { results = Load.Loading; runCatching { svm.searchSpotify(submitted) }.fold({ Load.Ready(it) }, { Load.Failed(it.friendly("Spotify")) }) }
     }
@@ -595,7 +567,7 @@ fun SpotifyScreen(vm: MainViewModel, bottomPadding: Dp, onBack: () -> Unit, onOp
         LazyColumn(Modifier.fillMaxSize(), contentPadding = PaddingValues(bottom = bottomPadding + 24.dp)) {
             item {
                 Column(Modifier.padding(start = 20.dp, end = 20.dp, top = 2.dp, bottom = 12.dp)) {
-                    HiveLabel(if (user.signedIn) "Signed in as ${user.name}" else "Browse")
+                    HiveLabel("Browse")
                     Text("Spotify", style = HiveText.viewTitle, color = c.text)
                     Text(if (vm.fullSongs.collectAsStateWithLifecycle().value) "Songs in your library play from your files; the rest play in full." else "Songs in your library play from your files; the rest play Spotify's 30-second previews where Spotify shares them.", style = HiveText.small, color = c.textDim, modifier = Modifier.padding(top = 4.dp))
                 }
@@ -604,22 +576,6 @@ fun SpotifyScreen(vm: MainViewModel, bottomPadding: Dp, onBack: () -> Unit, onOp
             hint?.let { item { Text(it, style = HiveText.small, color = c.textDim, modifier = Modifier.padding(horizontal = 22.dp, vertical = 8.dp)) } }
             when (val r = results) {
                 null -> {
-                    if (user.signedIn) {
-                        item { YearHeading("Your library") }
-                        when (val m = mine) {
-                            null, Load.Loading -> item { Busy("Loading your playlists…") }
-                            is Load.Failed -> item { Failed(m.message) { attempt++ } }
-                            is Load.Ready -> item { CardGrid(listOf(ServiceCard("Liked Songs", user.name, "", LIKED_SONGS_URL)) + m.value.map { it.card() }, onOpen) }
-                        }
-                    } else item {
-                        Row(Modifier.padding(horizontal = 14.dp, vertical = 10.dp).fillMaxWidth().hiveGlass(HiveShape.panel).clickable(onClick = onOpenSettings).padding(16.dp), verticalAlignment = Alignment.CenterVertically) {
-                            Column(Modifier.weight(1f)) {
-                                Text("Your Spotify library", style = HiveText.rowStrong, color = c.text)
-                                Text("Sign in in Settings to see your playlists and Liked Songs.", style = HiveText.small, color = c.textDim)
-                            }
-                            Icon(Icons.AutoMirrored.Rounded.OpenInNew, null, tint = c.textDim, modifier = Modifier.size(18.dp))
-                        }
-                    }
                     item { YearHeading("Spotify playlists") }
                     when (val p = picks) {
                         Load.Loading -> item { Busy("Loading Spotify…") }

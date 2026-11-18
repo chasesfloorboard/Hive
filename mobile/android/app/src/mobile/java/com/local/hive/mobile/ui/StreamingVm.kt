@@ -23,16 +23,13 @@ class StreamingVm(private val app: HiveApp) {
     val appleUser = app.appleAccount.user
     val spotifyUser = app.spotifyAccount.user
 
-    /** Spotify search, with this phone's own sign-in (Hive on the PC no longer starts its Spotify app to search). */
+    /** Spotify search: uses the open streaming catalogue to find playlists, albums and songs. */
     suspend fun searchSpotify(q: String): com.local.hive.mobile.stream.SpotifyAccount.Results {
-        if (spotifyUser.value.signedIn) return app.spotifyAccount.search(q)
-        // No sign-in: the same albums are found on Apple Music's open catalogue, and each one's Spotify
-        // link is resolved on demand when it is shared. (Spotify links still open without a sign-in.)
         val am = app.appleMusic.search(q)
         return com.local.hive.mobile.stream.SpotifyAccount.Results(
-            playlists = emptyList(),
+            playlists = am.playlists.map { com.local.hive.mobile.stream.SpCard("playlist", it.id, it.name, it.curator, it.artwork, sourceUrl = it.url) },
             albums = am.albums.map { com.local.hive.mobile.stream.SpCard("album", it.id, it.name, it.curator, it.artwork, sourceUrl = it.url.ifBlank { "https://music.apple.com/us/album/x/${it.id}" }) },
-            songs = emptyList(),
+            songs = am.songs.map { com.local.hive.mobile.stream.SpSong(it.appleId, it.title, it.artist, it.album, it.durationMs, it.artwork, it.previewUrl) },
         )
     }
 

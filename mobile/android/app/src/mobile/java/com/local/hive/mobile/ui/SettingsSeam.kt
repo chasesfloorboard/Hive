@@ -33,8 +33,6 @@ fun streamingAccountsAvailable(): Boolean = true
 
 /** The Settings → Accounts sections. Empty in Hive Clean. */
 fun LazyListScope.accountsSettings(vm: MainViewModel) {
-    item { Section("Apple Music", "Your playlists and songs, through Apple's web player sign-in. Unofficial: Apple may stop it working at any time.") { AppleRows(vm) } }
-    item { Section("Spotify", "Your playlists and Liked Songs, and Spotify search.") { SpotifyRows(vm) } }
     item { Section("Scrobbling", "Send what you play to ListenBrainz or Last.fm.") { ScrobbleRows(vm) } }
     item { Section("Soulseek", "Download albums from Apple Music and Spotify pages. Hive shares nothing.") { SoulseekRows() } }
 }
@@ -66,48 +64,6 @@ private fun SoulseekRows() {
     var list by remember { mutableStateOf(false) }
     SettingRow("Downloads", "Albums coming in, song by song, and the latest done.") { HiveButton("Open") { list = true } }
     if (list) DownloadsSheet(onDismiss = { list = false })
-}
-
-@Composable
-private fun AppleRows(vm: MainViewModel) {
-    val svm = rememberStreamingVm()
-    val context = androidx.compose.ui.platform.LocalContext.current
-    val user by svm.appleUser.collectAsStateWithLifecycle()
-    if (user.signedIn) {
-        SettingRow("Signed in", "Your playlists and songs appear on the Apple Music page.") { HiveButton("Sign out") { svm.appleAccount.signOut() } }
-    } else {
-        SettingRow("Your Apple Music library", "Sign in on Apple's own page. Hive never sees your password.") {
-            HiveButton("Sign in", primary = true) { context.startActivity(android.content.Intent(context, com.local.hive.mobile.AppleSignInActivity::class.java)) }
-        }
-    }
-    user.error?.let { Text(it, style = HiveText.small, color = Color(0xFFFF8A8A), modifier = Modifier.padding(horizontal = 18.dp, vertical = 4.dp)) }
-}
-
-@Composable
-private fun SpotifyRows(vm: MainViewModel) {
-    val svm = rememberStreamingVm()
-    val c = Hive.colors
-    val context = androidx.compose.ui.platform.LocalContext.current
-    val user by svm.spotifyUser.collectAsStateWithLifecycle()
-    var clientId by remember(user.clientId) { mutableStateOf(user.clientId) }
-    if (user.signedIn) {
-        SettingRow("Signed in as ${user.name.ifBlank { "you" }}", "Your playlists and Liked Songs appear on the Spotify page.") { HiveButton("Sign out") { svm.spotifyAccount.signOut() } }
-    } else {
-        Text(
-            "Once: create an app at developer.spotify.com/dashboard, add the redirect URI ${com.local.hive.mobile.stream.SpotifyAccount.REDIRECT}, add your Spotify account under User Management, then paste the app's Client ID here.",
-            style = HiveText.small, color = c.textDim, modifier = Modifier.padding(horizontal = 18.dp, vertical = 6.dp),
-        )
-        Box(Modifier.padding(horizontal = 14.dp, vertical = 4.dp)) {
-            HiveField(clientId, { clientId = it.trim() }, "Client ID", type = KeyboardType.Ascii, modifier = Modifier.fillMaxWidth())
-        }
-        Row(Modifier.padding(horizontal = 14.dp, vertical = 8.dp)) {
-            HiveButton("Sign in with Spotify", enabled = clientId.length >= 16, primary = true) {
-                svm.spotifyAccount.setClientId(clientId)
-                runCatching { context.startActivity(android.content.Intent(android.content.Intent.ACTION_VIEW, svm.spotifyAccount.authorizeUrl())) }
-            }
-        }
-    }
-    user.error?.let { Text(it, style = HiveText.small, color = Color(0xFFFF8A8A), modifier = Modifier.padding(horizontal = 18.dp, vertical = 4.dp)) }
 }
 
 @Composable
