@@ -100,9 +100,12 @@ object TagWriter {
         val resolver = context.contentResolver
         try {
             resolver.openInputStream(track.uri)?.use { input -> work.outputStream().use { input.copyTo(it) } } ?: throw IOException("Can't read ${track.fileName}")
+            if (ext == "mp3") repairId3FrameIds(work)
             work.copyTo(backup, overwrite = true)
             val file = AudioFileIO.read(work)
             val tag = file.tagOrCreateAndSetDefault
+            val expectedTitle = edit.title ?: tag.getFirst(FieldKey.TITLE)
+            val expectedAlbum = edit.album ?: tag.getFirst(FieldKey.ALBUM)
             apply(tag, edit)
             if (covers != null && !covers.isEmpty) {
                 // Hive's own reader knows MP3, FLAC, M4A and WAV; for the rest, the tag library's.
@@ -113,7 +116,8 @@ object TagWriter {
             // Read back: the copy must still be a song of the same length, with the new tags.
             val check = AudioFileIO.read(work)
             if (kotlin.math.abs(check.audioHeader.trackLength - file.audioHeader.trackLength) > 1) throw IOException("The edited copy of ${track.fileName} didn't read back")
-            edit.title?.let { if (check.tag?.getFirst(FieldKey.TITLE).orEmpty() != it) throw IOException("The new title didn't stick in ${track.fileName}") }
+            if (expectedTitle.isNotBlank() && check.tag?.getFirst(FieldKey.TITLE).orEmpty() != expectedTitle.trim()) throw IOException("The title didn't stick in ${track.fileName}")
+            if (expectedAlbum.isNotBlank() && check.tag?.getFirst(FieldKey.ALBUM).orEmpty() != expectedAlbum.trim()) throw IOException("The album didn't stick in ${track.fileName}")
             edit.loved?.let { if (LoveTag.read(check.tag) != it) throw IOException("Love didn't stick in ${track.fileName}") }
             // With All files access, the edited copy is put next to the song and renamed over it in one
             // step: the song is never half written, even if the app is stopped mid-way (an
@@ -195,5 +199,54 @@ object TagWriter {
     suspend fun cover(context: Context, track: Track): ByteArray? = withContext(Dispatchers.IO) {
         runCatching { context.contentResolver.openInputStream(track.uri)?.use { EmbeddedPictures.readTyped(it) }?.let(EmbeddedPictures::bestBytes) }.getOrNull()
             ?: runCatching { android.media.MediaMetadataRetriever().use { r -> r.setDataSource(context, track.uri); r.embeddedPicture } }.getOrNull()
+    }
+
+    /**
+     * Old iTunes ID3v2.3 tags use 3-character + space frame IDs ("TS2 ", "TSA ", "TSC ", "TSP ", "TST ", "CM1 ")
+     * before TALB/TPE1/TIT2. jaudiotagger rejects the space as an invalid frame identifier and stops reading the
+     * rest of the tag, which would wipe every frame after it on commit. Rewrite those 4-byte IDs in place first.
+     */
+    internal fun repairId3FrameIds(file: File) {
+        java.io.RandomAccessFile(file, "rw").use { raf ->
+            if (raf.length() < 10) return
+            val header = ByteArray(10).also { raf.readFully(it) }
+            if (header[0] != 'I'.code.toByte() || header[1] != 'D'.code.toByte() || header[2] != '3'.code.toByte()) return
+            val version = header[3].toInt()
+            val flags = header[5].toInt()
+            if ((version != 3 && version != 4) || (flags and 0x80) != 0) return
+            val tagSize = ((header[6].toInt() and 0x7f) shl 21) or ((header[7].toInt() and 0x7f) shl 14) or ((header[8].toInt() and 0x7f) shl 7) or (header[9].toInt() and 0x7f)
+            val end = (10L + tagSize).coerceAtMost(raf.length())
+            var pos = 10L
+            if ((flags and 0x40) != 0 && pos + 4 <= end) {
+                raf.seek(pos)
+                val ext = ByteArray(4).also { raf.readFully(it) }
+                val extSize = if (version == 4) ((ext[0].toInt() and 0x7f) shl 21) or ((ext[1].toInt() and 0x7f) shl 14) or ((ext[2].toInt() and 0x7f) shl 7) or (ext[3].toInt() and 0x7f)
+                else ((ext[0].toInt() and 0xff) shl 24) or ((ext[1].toInt() and 0xff) shl 16) or ((ext[2].toInt() and 0xff) shl 8) or (ext[3].toInt() and 0xff) + 4
+                pos += extSize
+            }
+            val fh = ByteArray(10)
+            while (pos + 10 <= end) {
+                raf.seek(pos)
+                raf.readFully(fh)
+                if (fh[0].toInt() == 0) break
+                val id = String(fh, 0, 4, Charsets.ISO_8859_1)
+                val size = if (version == 4) ((fh[4].toInt() and 0x7f) shl 21) or ((fh[5].toInt() and 0x7f) shl 14) or ((fh[6].toInt() and 0x7f) shl 7) or (fh[7].toInt() and 0x7f)
+                else ((fh[4].toInt() and 0xff) shl 24) or ((fh[5].toInt() and 0xff) shl 16) or ((fh[6].toInt() and 0xff) shl 8) or (fh[7].toInt() and 0xff)
+                if (size <= 0 || pos + 10 + size > end) break
+                if (id.length == 4 && id.substring(0, 3).all { it in 'A'..'Z' || it in '0'..'9' } && id[3] == ' ') {
+                    val replacement = when (id) {
+                        "TS2 " -> "TSO2"
+                        "TSA " -> "TSOA"
+                        "TSC " -> "TSOC"
+                        "TSP " -> "TSOP"
+                        "TST " -> "TSOT"
+                        else -> id.substring(0, 3) + "X"
+                    }
+                    raf.seek(pos)
+                    raf.write(replacement.toByteArray(Charsets.ISO_8859_1))
+                }
+                pos += 10L + size
+            }
+        }
     }
 }
