@@ -7,7 +7,7 @@
         <provider
             android:name="com.local.hive.mobile.playback.CoverProvider"
             android:authorities="${applicationId}.covers"
-            android:exported="false"
+            android:exported="true"
             android:grantUriPermissions="true" />
 
         <!-- The car's or headphones' play button reaches Hive even after Android closed it, so it

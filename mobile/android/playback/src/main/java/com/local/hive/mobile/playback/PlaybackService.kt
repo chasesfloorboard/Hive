@@ -298,11 +298,6 @@ class PlaybackService : MediaLibraryService() {
                 // never over an unlocked phone. Music resuming while you are using the unlocked phone must not
                 // pop it up; it belongs on the lock screen.
                 if (isPlaying && awake && locked) {
-                    // In the car the screen stays off, so the usual thing that clears a dismissal -- a screen
-                    // on/off cycle -- never happens, and the player, once sent away by Back/Home or a swiped
-                    // notification, never came back for the rest of the drive. A new song while the lock screen
-                    // is up is the user actively listening: clear the dismissal so it returns.
-                    if (CarLog.inCar(this@PlaybackService)) bridge.lockScreenChanged()
                     bridge.showLockPlayerIfWanted(this@PlaybackService, bridge.wasRecentlyForeground())
                 }
             }

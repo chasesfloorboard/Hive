@@ -33,8 +33,9 @@ class LockPlayerActivity : ComponentActivity() {
         // it, and only Back or Home sends it away. Kept registered (no-op) in case it is wanted again.
         override fun onReceive(context: Context, intent: Intent) {}
     }
-    /** When the keyguard last unlocked (face/fingerprint): the spurious onUserLeaveHint it fires is ignored. */
+    /** When the keyguard last unlocked (face/fingerprint). */
     private var unlockedAt = 0L
+    private var unlockReShowRunnable: Runnable? = null
     // Keep the player up across a face/fingerprint unlock. The keyguard dismiss reveals home and backgrounds
     // this activity, so note the unlock and re-foreground it once the dismiss settles (a re-launch mid-dismiss
     // paints a black window). Only while the user hasn't dismissed it with Back/Home.
@@ -43,12 +44,16 @@ class LockPlayerActivity : ComponentActivity() {
             KeyguardManager.KeyguardLockedStateListener { locked ->
                 if (!locked) {
                     unlockedAt = System.currentTimeMillis()
-                    if (!leaving && !wentHome && !isFinishing) window.decorView.postDelayed({
-                        if (!leaving && !wentHome && !isFinishing) runCatching {
-                            startActivity(launchIntent(this@LockPlayerActivity))
-                            CarLog.lockPlayer(this@LockPlayerActivity, "stays up after unlock")
+                    if (!leaving && !wentHome && !sentAway && !isFinishing) {
+                        val r = Runnable {
+                            if (!leaving && !wentHome && !sentAway && !isFinishing) runCatching {
+                                startActivity(launchIntent(this@LockPlayerActivity))
+                                CarLog.lockPlayer(this@LockPlayerActivity, "stays up after unlock")
+                            }
                         }
-                    }, 450)
+                        unlockReShowRunnable = r
+                        window.decorView.postDelayed(r, 450)
+                    }
                 }
             }
         else null
@@ -145,21 +150,18 @@ class LockPlayerActivity : ComponentActivity() {
     }
 
     /**
-     * Home on the locked phone: the lock screen and its notifications show, and
-     * the player waits behind them until the phone next locks or wakes: music
-     * starting again (a new song, a crossfade) doesn't bring it back. In the
-     * car, Android Auto taking over as the phone wakes looks the same to Hive,
-     * so there only a Home pressed once the player has been up a moment counts.
+     * Home on the lock player: the user explicitly dismisses the player to see notifications
+     * or the home screen. It stays dismissed until the phone next sleeps and wakes.
      */
     override fun onUserLeaveHint() {
         super.onUserLeaveHint()
-        // A face/fingerprint unlock fires a spurious onUserLeaveHint as the keyguard dismisses -- ignore it so
-        // an unlock is never taken as a Home press that sends the player away. A real Home press comes well
-        // after any unlock. (In the car, Android Auto's takeover on wake looks the same, hence the resume
-        // guard too.)
-        if (System.currentTimeMillis() - unlockedAt < HOME_AFTER_MS) return
-        if (CarLog.inCar(this) && System.currentTimeMillis() - resumedAt < HOME_AFTER_MS) return
-        wentHome = true; sentAway = true; CarLog.lockPlayer(this, "home pressed")
+        unlockReShowRunnable?.let { window.decorView.removeCallbacks(it) }
+        window.decorView.removeCallbacks(idleWatch)
+        wentHome = true
+        sentAway = true
+        leaving("home pressed")
+        dismissToPrevious()
+        finish()
     }
 
     override fun onResume() {
@@ -192,7 +194,8 @@ class LockPlayerActivity : ComponentActivity() {
     override fun onStop() {
         super.onStop()
         window.decorView.removeCallbacks(idleWatch)
-        if (leaving || wentHome || isFinishing || isChangingConfigurations) return
+        unlockReShowRunnable?.let { window.decorView.removeCallbacks(it) }
+        if (leaving || wentHome || sentAway || isFinishing || isChangingConfigurations) return
         val awake = (getSystemService(POWER_SERVICE) as android.os.PowerManager).isInteractive
         CarLog.lockPlayer(this, "pushed away")
         // Come back only in the car and only while the screen is on. Don't require the keyguard to report
@@ -216,13 +219,18 @@ class LockPlayerActivity : ComponentActivity() {
      * back. Same effect as Home.
      */
     private fun dismissToBack() {
+        unlockReShowRunnable?.let { window.decorView.removeCallbacks(it) }
+        window.decorView.removeCallbacks(idleWatch)
         wentHome = true
         sentAway = true
-        CarLog.lockPlayer(this, "back: to previous app / lock screen")
-        runCatching { moveTaskToBack(true) }
+        leaving("back: to previous app / lock screen")
+        dismissToPrevious()
+        finish()
     }
 
     private fun unlock() {
+        unlockReShowRunnable?.let { window.decorView.removeCallbacks(it) }
+        window.decorView.removeCallbacks(idleWatch)
         // Already unlocked (face unlock): dismiss straight to whatever was open before, no keyguard request.
         if (!(getSystemService(KEYGUARD_SERVICE) as KeyguardManager).isKeyguardLocked) {
             dismissToPrevious(); leaving("unlock: to previous"); finish()
@@ -234,6 +242,8 @@ class LockPlayerActivity : ComponentActivity() {
     }
 
     override fun onDestroy() {
+        unlockReShowRunnable?.let { window.decorView.removeCallbacks(it) }
+        window.decorView.removeCallbacks(idleWatch)
         runCatching { unregisterReceiver(unlocked) }
         if (android.os.Build.VERSION.SDK_INT >= 34 && keyguardUnlock != null) runCatching {
             (getSystemService(KEYGUARD_SERVICE) as KeyguardManager).removeKeyguardLockedStateListener(keyguardUnlock as KeyguardManager.KeyguardLockedStateListener)

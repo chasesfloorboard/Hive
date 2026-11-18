@@ -121,7 +121,13 @@ class AppleAccount(context: Context, private val http: OkHttpClient = com.local.
                         signOut(); throw IOException("Apple Music sign-in expired. Sign in again in Settings.")
                     }
                     res.code == 404 -> throw NotFound()
-                    !res.isSuccessful -> throw IOException("Apple Music answered ${res.code}")
+                    !res.isSuccessful -> {
+                        val body = runCatching { res.body.string() }.getOrNull().orEmpty()
+                        if (res.code == 400 && body.contains("CloudLibrary")) {
+                            throw IOException("Apple Music requires an active Apple Music subscription to access your library.")
+                        }
+                        throw IOException("Apple Music answered ${res.code}")
+                    }
                     else -> return@withContext Json.parseToJsonElement(res.body.string()) as JsonObject
                 }
             }
