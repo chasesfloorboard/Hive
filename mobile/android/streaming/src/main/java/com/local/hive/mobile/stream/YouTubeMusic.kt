@@ -47,10 +47,15 @@ class YouTubeMusic(context: Context, private val http: OkHttpClient = com.local.
 
     /** The playable address for [song]; blocking, so call it off the main thread. */
     override fun resolve(song: WantedSong): String = synchronized(locks.getOrPut(song.key) { Any() }) {
-        prefs.getString("match:${song.key}", null)?.let { id -> runCatching { return audioUrl(id) } }
-        val id = findMatch(song) ?: throw IOException("Couldn't find “${song.title}” to play in full.")
+        prefs.getString("match:${song.key}", null)?.let { id ->
+            runCatching { return audioUrl(id) }.onFailure {
+                links.remove(id)
+                prefs.edit().remove("link:$id").remove("match:${song.key}").apply()
+            }
+        }
+        val (id, url) = findPlayableMatch(song) ?: throw IOException("Couldn't find “${song.title}” to play in full.")
         prefs.edit().putString("match:${song.key}", id).apply()
-        audioUrl(id)
+        url
     }
 
 
@@ -60,7 +65,7 @@ class YouTubeMusic(context: Context, private val http: OkHttpClient = com.local.
      * Each comes already matched, so it starts without a search. Blocking.
      */
     override fun radio(song: WantedSong, max: Int): List<com.local.hive.mobile.data.StreamTrack> {
-        val seed = prefs.getString("match:${song.key}", null) ?: findMatch(song)?.also { prefs.edit().putString("match:${song.key}", it).apply() } ?: return emptyList()
+        val seed = prefs.getString("match:${song.key}", null) ?: findPlayableMatch(song)?.first?.also { prefs.edit().putString("match:${song.key}", it).apply() } ?: return emptyList()
         val body = buildJsonObject {
             putJsonObject("context") { putJsonObject("client") { put("clientName", "WEB_REMIX"); put("clientVersion", MUSIC_VERSION); put("hl", "en") } }
             put("videoId", seed); put("playlistId", "RDAMVM$seed"); put("isAudioOnly", true)
@@ -72,26 +77,45 @@ class YouTubeMusic(context: Context, private val http: OkHttpClient = com.local.
         return out
     }
 
-    /** Forgets [key]'s audio link (it was refused), so the next resolve fetches a new one. */
+    /** Forgets [key]'s audio link and cached match (it was refused), so the next resolve fetches a fresh one. */
     override fun invalidate(key: String) {
-        prefs.getString("match:$key", null)?.let { links.remove(it); prefs.edit().remove("link:$it").apply() }
+        val id = prefs.getString("match:$key", null)
+        val edit = prefs.edit().remove("match:$key")
+        if (id != null) {
+            links.remove(id)
+            edit.remove("link:$id")
+        }
+        edit.apply()
     }
 
     // ---- matching (Hive's desktop rules) ----
 
     private data class Candidate(val id: String, val title: String, val artists: String, val durationSec: Int)
 
-    private fun findMatch(want: WantedSong): String? {
+    private fun findPlayableMatch(want: WantedSong): Pair<String, String>? {
         val query = "${firstArtist(want.artist)} ${normalise(want.title)}".trim()
         val wantSec = (want.durationMs / 1000).toInt()
-        val songs = search(query, SONGS)
-        songs.map { it to score(want.title, want.artist, wantSec, it.title, it.artists, it.durationSec) }
-            .filter { acceptable(it.second) }.maxByOrNull { it.second.score }?.let { return it.first.id }
+        val songMatches = search(query, SONGS).map { it to score(want.title, want.artist, wantSec, it.title, it.artists, it.durationSec) }
+            .filter { acceptable(it.second) }
+            .sortedByDescending { it.second.score }
+
+        for ((candidate, _) in songMatches) {
+            val url = runCatching { audioUrl(candidate.id) }.getOrNull()
+            if (url != null) return candidate.id to url
+        }
+
         // Some songs are only on YouTube as videos ("Artist - Title (Official Video)"): the length must match.
-        return search(query, VIDEOS).asSequence()
-            .map { it to score(want.title, want.artist, wantSec, videoTitleWithoutArtist(it.title, want.artist), it.artists + " " + it.title, it.durationSec) }
-            .filter { (_, s) -> s.durationOk && s.titleScore >= 0.6 && s.artistScore >= 0.5 }
-            .maxByOrNull { it.second.score }?.first?.id
+        val videoMatches = search(query, VIDEOS).map {
+            it to score(want.title, want.artist, wantSec, videoTitleWithoutArtist(it.title, want.artist), it.artists + " " + it.title, it.durationSec)
+        }.filter { (_, s) -> s.durationOk && s.titleScore >= 0.6 && s.artistScore >= 0.5 }
+         .sortedByDescending { it.second.score }
+
+        for ((candidate, _) in videoMatches) {
+            val url = runCatching { audioUrl(candidate.id) }.getOrNull()
+            if (url != null) return candidate.id to url
+        }
+
+        return null
     }
 
     private fun search(query: String, filter: String): List<Candidate> {
@@ -127,8 +151,10 @@ class YouTubeMusic(context: Context, private val http: OkHttpClient = com.local.
      * in parts as YouTube's servers want. Blocking. Returns the video's id.
      */
     fun saveAudio(song: WantedSong, out: File, progress: (Long, Long) -> Unit = { _, _ -> }): String {
-        val id = prefs.getString("match:${song.key}", null) ?: findMatch(song)?.also { prefs.edit().putString("match:${song.key}", it).apply() }
+        val id = prefs.getString("match:${song.key}", null)?.takeIf { runCatching { playerFormats(it).isNotEmpty() }.getOrDefault(false) }
+            ?: findPlayableMatch(song)?.first
             ?: throw IOException("Couldn't find “${song.title}” on YouTube.")
+        prefs.edit().putString("match:${song.key}", id).apply()
         val aac = playerFormats(id).filter { it.str("mimeType")?.startsWith("audio/mp4") == true }
             .maxByOrNull { it.str("bitrate")?.toIntOrNull() ?: 0 } ?: throw IOException("YouTube has no AAC audio for “${song.title}”.")
         val url = aac.str("url")!!
@@ -168,8 +194,8 @@ class YouTubeMusic(context: Context, private val http: OkHttpClient = com.local.
         val o = post("https://www.youtube.com/youtubei/v1/player?prettyPrint=false", body, VISION_UA, visitor = visitor, clientName = "101", clientVersion = "1.02")
         val status = o["playabilityStatus"] as? JsonObject
         if (status?.str("status") != "OK") {
-            // A refused visitor id is dropped, so the next try gets a new one.
-            if (status?.str("status") == "LOGIN_REQUIRED") prefs.edit().remove("visitor").apply()
+            // A refused or failed visitor id is dropped, so the next try gets a fresh one.
+            prefs.edit().remove("visitor").remove("visitorAt").apply()
             throw IOException(status?.str("reason") ?: "This song can't be played in full right now.")
         }
         return ((o["streamingData"] as? JsonObject)?.get("adaptiveFormats") as? JsonArray).orEmpty().mapNotNull { it as? JsonObject }
@@ -197,10 +223,21 @@ class YouTubeMusic(context: Context, private val http: OkHttpClient = com.local.
         return url
     }
 
-    /** YouTube's visitor id, from a YouTube Music page; kept for a day. */
+    /** YouTube's visitor id, from a YouTube Music page or YouTube homepage; kept for a day. */
     private fun visitor(): String? {
         prefs.getString("visitor", null)?.takeIf { System.currentTimeMillis() - prefs.getLong("visitorAt", 0) < 86_400_000 }?.let { return it }
-        return runCatching { search("music", SONGS) }.let { prefs.getString("visitor", null) }
+        val searchVisitor = runCatching { search("music", SONGS) }.getOrNull()?.let { prefs.getString("visitor", null) }
+        if (!searchVisitor.isNullOrBlank()) return searchVisitor
+        // Fallback: fetch visitor data from YouTube watch/home if search was throttled or had no visitorData
+        return runCatching {
+            val req = Request.Builder().url("https://www.youtube.com/").header("User-Agent", VISION_UA).build()
+            http.newCall(req).execute().use { res ->
+                val html = res.body.string()
+                Regex("""\"VISITOR_DATA\":\"([^\"]+)\"""").find(html)?.groupValues?.get(1)
+            }?.also {
+                prefs.edit().putString("visitor", it).putLong("visitorAt", System.currentTimeMillis()).apply()
+            }
+        }.getOrNull()
     }
 
     private fun post(url: String, body: JsonObject, ua: String, origin: String = "https://www.youtube.com", visitor: String? = null, clientName: String? = null, clientVersion: String? = null): JsonObject {
