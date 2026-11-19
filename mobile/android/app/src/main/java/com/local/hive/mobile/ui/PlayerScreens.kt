@@ -345,7 +345,18 @@ fun PlayerSheet(
         LaunchedEffect(now.nextArtworkUri, now.previousArtworkUri, coverPx) {
             if (coverPx == null || coverPx <= 0) return@LaunchedEffect
             val loader = coil3.SingletonImageLoader.get(context)
-            listOfNotNull(now.nextArtworkUri, now.previousArtworkUri).forEach { loader.enqueue(coil3.request.ImageRequest.Builder(context).data(it).size(coverPx).listener(onSuccess = { r, ok -> noteLoadedCover(r.data, ok.memoryCacheKey, ok.image.width.toLong() * ok.image.height) }).build()) }
+            listOfNotNull(now.nextArtworkUri, now.previousArtworkUri).forEach { uri ->
+                loader.enqueue(
+                    coil3.request.ImageRequest.Builder(context)
+                        .data(uri)
+                        .size(coverPx)
+                        .precision(coil3.size.Precision.INEXACT)
+                        .listener(onSuccess = { r, ok ->
+                            noteLoadedCover(r.data, ok.memoryCacheKey, ok.image.width.toLong() * ok.image.height)
+                        })
+                        .build()
+                )
+            }
         }
         if (to != null && p > 0f) {
             val eased = Motion.SineInOut80.transform(p)

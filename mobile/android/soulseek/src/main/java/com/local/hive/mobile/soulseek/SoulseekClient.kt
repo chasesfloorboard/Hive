@@ -12,6 +12,7 @@ import kotlinx.coroutines.withTimeoutOrNull
 import java.io.Closeable
 import java.io.File
 import java.io.OutputStream
+import java.net.InetAddress
 import java.net.InetSocketAddress
 import java.net.ServerSocket
 import java.net.Socket
@@ -60,11 +61,32 @@ class SoulseekClient(
 
     // ---- server ----
 
+    private fun connectSocket(): Socket {
+        val candidates = mutableListOf<InetAddress>()
+        runCatching { InetAddress.getAllByName(serverHost) }.getOrNull()?.let { candidates.addAll(it) }
+        if (serverHost == "server.slsknet.org") {
+            runCatching { InetAddress.getAllByName("vps.slsknet.org") }.getOrNull()?.let { candidates.addAll(it) }
+            runCatching { InetAddress.getByName("208.76.170.59") }.getOrNull()?.let { candidates.add(it) }
+        }
+        val distinct = candidates.distinctBy { it.hostAddress }
+        var lastErr: Throwable? = null
+        for (addr in distinct) {
+            val s = Socket()
+            s.keepAlive = true
+            try {
+                s.connect(InetSocketAddress(addr, serverPort), 7_000)
+                return s
+            } catch (e: Throwable) {
+                lastErr = e
+                runCatching { s.close() }
+            }
+        }
+        throw (lastErr ?: SoulseekException("Could not connect to Soulseek server"))
+    }
+
     /** Logs in and announces Hive (sharing nothing). Returns the server's greeting. */
     suspend fun login(): String = withContext(Dispatchers.IO) {
-        val s = Socket()
-        s.keepAlive = true
-        s.connect(InetSocketAddress(serverHost, serverPort), 15_000)
+        val s = connectSocket()
         s.soTimeout = 30_000
         server = s
         val out = s.getOutputStream()

@@ -167,10 +167,11 @@ fun Artwork(
         val own = model?.toString()?.let { ShownCovers[it]?.first }
         val standIn = own ?: replacing?.toString()?.let { ShownCovers[it]?.first }
         coil3.request.ImageRequest.Builder(context).data(model).placeholderMemoryCacheKey(standIn)
+            .precision(coil3.size.Precision.INEXACT)
             // After a cover changed, a request that differs, or Coil keeps the picture it has.
             .apply { if (generation > 0) memoryCacheKeyExtra("cover", generation.toString()) }
             // Only a cover that wasn't standing in fades up; a carousel frame fades over the last one.
-            .crossfade(when { own != null -> 0; standIn != null -> 600; else -> 260 }).build()
+            .crossfade(when { own != null -> 0; standIn != null -> 600; else -> 0 }).build()
     }
     // AsyncImage, not SubcomposeAsyncImage: a subcomposition per row made every
     // list row costly to compose while scrolling.

@@ -409,27 +409,30 @@ fun StreamTrack.toMediaItem(uri: String): MediaItem = MediaItem.Builder()
 
 /** A library song as a player item. Its cover is always its own local album art (never a service cover),
  *  so an owned song shows one consistent picture on the player, the bar, and after a restart. */
-fun Track.toMediaItem(): MediaItem = MediaItem.Builder()
-    .setMediaId(id.toString())
-    .setUri(uri)
-    .setMediaMetadata(
-        MediaMetadata.Builder()
-            .setTitle(title)
-            .setArtist(artist)
-            .setAlbumTitle(album)
-            .setAlbumArtist(albumArtist.ifBlank { null })
-            .setTrackNumber(trackNumber.takeIf { it > 0 })
-            .setGenre(genre.ifBlank { null })
-            // Album-less songs (untagged YouTube rips, "<unknown>") must NOT use the shared album-art URI:
-            // MediaStore groups them into one folder-"album", so that path shows one neighbour's cover (a
-            // stray bjork.jpg) on every one of them. Use the per-song URI (its OWN embedded picture only, or
-            // none) — the same cover the song rows already show. Real albums keep the album cover.
-            .setArtworkUri(if (album.isBlank()) songArtUri else artworkUri)
-            .setDurationMs(durationMs.takeIf { it > 0 })
-            .setIsPlayable(true)
-            .setIsBrowsable(false)
-            .build(),
-    )
-    .build()
+fun Track.toMediaItem(): MediaItem {
+    val isLoose = album.isBlank() || album.equals("beautiful sounds pc", ignoreCase = true) || album.equals("<unknown>", ignoreCase = true)
+    return MediaItem.Builder()
+        .setMediaId(id.toString())
+        .setUri(uri)
+        .setMediaMetadata(
+            MediaMetadata.Builder()
+                .setTitle(title)
+                .setArtist(artist)
+                .setAlbumTitle(album)
+                .setAlbumArtist(albumArtist.ifBlank { null })
+                .setTrackNumber(trackNumber.takeIf { it > 0 })
+                .setGenre(genre.ifBlank { null })
+                // Album-less songs (untagged YouTube rips, "<unknown>", or loose collections like "beautiful sounds pc")
+                // must NOT use the shared album-art URI: MediaStore groups them into one folder-"album", so that path
+                // shows one neighbour's cover on every one of them. Use the per-song URI (its OWN embedded picture
+                // only, or none) — the same cover the song rows already show. Real albums keep the album cover.
+                .setArtworkUri(if (isLoose) songArtUri else artworkUri)
+                .setDurationMs(durationMs.takeIf { it > 0 })
+                .setIsPlayable(true)
+                .setIsBrowsable(false)
+                .build(),
+        )
+        .build()
+}
 
 private const val SLEEP_FADE_MS = 10_000L

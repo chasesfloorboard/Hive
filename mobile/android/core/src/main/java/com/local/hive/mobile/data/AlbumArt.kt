@@ -38,11 +38,16 @@ class AlbumArtFetcher(private val context: Context, private val albumId: Long, p
         // An album Hive filed itself (WAV songs, which Android doesn't read tags from): its id is
         // minus its first song's, and the cover is read from that song's own tags.
         if (albumId < 0) return@withContext ownAlbum(-albumId)
+        val hidden = runCatching { AlbumCovers(context).hidden.value }.getOrDefault(emptySet())
+        if (albumId in hidden) throw IllegalStateException("Album cover $albumId is cleared")
+        val song = firstSong()
+        if (song?.album.equals("beautiful sounds pc", ignoreCase = true) || song?.album.isNullOrBlank() || song?.album.equals("<unknown>", ignoreCase = true)) {
+            throw IllegalStateException("Songs in loose collections have no album cover")
+        }
         val kept = File(File(context.cacheDir, "embedded-art-v2").apply { mkdirs() }, "$albumId.img")
         val hq = File(File(context.cacheDir, "hq-art").apply { mkdirs() }, "$albumId.jpg")
         // Hive's own extracted copy of the album's embedded cover, kept once per album.
         if (kept.length() > 0) return@withContext result(kept.readBytes())
-        val song = firstSong()
         // The cover is read from the first song's OWN embedded picture — never a stray image sitting in
         // the song's folder. MediaStore's albumart (content://.../albumart) scrapes a folder image as the
         // cover of a tag-less "album", wearing one picture across unrelated songs; Hive never shows that.
@@ -59,7 +64,7 @@ class AlbumArtFetcher(private val context: Context, private val albumId: Long, p
         if (isThumbnail()) return@withContext when {
             side > 0 -> result(embedded!!)
             hq.length() > 0 -> result(hq.readBytes())
-            else -> null
+            else -> throw IllegalStateException("No thumbnail for album $albumId")
         }
         if (side >= SMALL) return@withContext result(embedded!!)
         // Coverless or low-res: the cover is looked up on Apple Music (same album, same artist) and kept.
@@ -77,14 +82,14 @@ class AlbumArtFetcher(private val context: Context, private val albumId: Long, p
             return@withContext result(online)
         }
         // No embedded cover and none found online → no cover (a placeholder shows), never a folder image.
-        embedded?.let { result(it) }
+        embedded?.let { result(it) } ?: throw IllegalStateException("This album has no cover")
     }
 
     private fun ownAlbum(songId: Long): FetchResult? {
         val kept = File(File(context.cacheDir, "embedded-art-v2").apply { mkdirs() }, "$albumId.img")
         if (kept.length() > 0) return result(kept.readBytes())
         val uri = ContentUris.withAppendedId(MediaStore.Audio.Media.EXTERNAL_CONTENT_URI, songId)
-        val picture = ownPicture(uri) ?: return null
+        val picture = ownPicture(uri) ?: throw IllegalStateException("This song has no picture")
         runCatching { kept.writeBytes(picture) }
         return result(picture)
     }
