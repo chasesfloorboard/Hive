@@ -315,7 +315,15 @@ private fun ServiceSongRow(vm: MainViewModel, s: StreamTrack, local: Track?, now
 fun downloadStreams(context: android.content.Context, songs: List<StreamTrack>, onToast: (String) -> Unit) {
     songs.groupBy { it.artist.substringBefore(",").trim() to it.album }.forEach { (key, group) ->
         val (artist, album) = key
-        val tracks = group.map { com.local.hive.mobile.soulseek.SoulseekRequest.Track(it.title, it.durationMs, artist = it.artist, album = it.album, artworkUrl = it.artworkUrl) }
+        val tracks = group.mapIndexed { i, it ->
+            com.local.hive.mobile.soulseek.SoulseekRequest.Track(
+                it.title, it.durationMs,
+                artist = it.artist,
+                album = it.album,
+                artworkUrl = it.artworkUrl,
+                trackNumber = i + 1,
+            )
+        }
         com.local.hive.mobile.soulseek.SoulseekWorker.enqueue(context,
             com.local.hive.mobile.soulseek.SoulseekRequest(artist, album, tracks, if (group.size == 1 || album.isBlank()) "track" else "album"))
     }
@@ -422,7 +430,8 @@ private fun ServiceCollectionScreen(
                 replaces = local?.id,
                 artist = it.artist,
                 album = it.album.ifBlank { col.name },
-                artworkUrl = it.artworkUrl.ifBlank { col.artwork }
+                artworkUrl = it.artworkUrl.ifBlank { col.artwork },
+                trackNumber = i + 1,
             )
         }
         com.local.hive.mobile.soulseek.SoulseekWorker.enqueue(context, com.local.hive.mobile.soulseek.SoulseekRequest(

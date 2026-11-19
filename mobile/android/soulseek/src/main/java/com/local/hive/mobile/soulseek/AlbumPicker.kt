@@ -41,21 +41,21 @@ object AlbumPicker {
         return t.replace(leadingNumber, "")
     }
 
-    fun candidates(artist: String, wanted: List<WantedTrack>, results: List<SearchResult>, quality: Quality = Quality.Lossless): List<Pick> {
+    fun candidates(artist: String, wanted: List<WantedTrack>, results: List<SearchResult>, quality: Quality = Quality.Lossless, album: String = ""): List<Pick> {
         if (wanted.isEmpty()) return emptyList()
         val single = wanted.size == 1
-        val wantedDerivative = wanted.any { hasDerivativeKeywords(it.title) } || hasDerivativeKeywords(artist)
+        val wantedDerivative = hasDerivativeKeywords(album) || wanted.any { hasDerivativeKeywords(it.title) } || hasDerivativeKeywords(artist)
         val picks = mutableListOf<Pick>()
         for (r in results) {
             val groups = r.files.filter { it.extension in audio }.groupBy { f ->
                 val folder = f.folder
-                val album = if (disc.matches(folder.substringAfterLast('\\'))) folder.substringBeforeLast('\\', folder) else folder
-                album to formatOf(f)
+                val folderAlbum = if (disc.matches(folder.substringAfterLast('\\'))) folder.substringBeforeLast('\\', folder) else folder
+                folderAlbum to formatOf(f)
             }
             for ((key, files) in groups) {
                 val albumLeaf = key.first.substringAfterLast('\\')
                 if (!wantedDerivative && (hasDerivativeKeywords(albumLeaf) || hasDerivativeKeywords(key.first.replace('\\', ' ')))) continue
-                val matched = match(artist, wanted, files)
+                val matched = match(artist, wanted, files, wantedDerivative)
                 val coverage = matched.size.toDouble() / wanted.size
                 if (single && matched.isEmpty()) continue
                 if (!single && (coverage < 0.75 || matched.size < minOf(wanted.size, 2))) continue
@@ -83,7 +83,7 @@ object AlbumPicker {
     }
 
     /** Which file is which wanted track: by title (and length when both are known), else, for a folder of exactly the album, in order by length. */
-    fun match(artist: String, wanted: List<WantedTrack>, files: List<SharedFile>): Map<Int, SharedFile> {
+    fun match(artist: String, wanted: List<WantedTrack>, files: List<SharedFile>, wantedDerivative: Boolean = false): Map<Int, SharedFile> {
         val names = files.map { norm(titleOf(it.name, artist)) }
         val used = BooleanArray(files.size)
         val out = HashMap<Int, SharedFile>()
@@ -93,8 +93,8 @@ object AlbumPicker {
             if (t.isEmpty()) return@forEachIndexed
             val best = files.indices.filter { j ->
                 !used[j] && lengthOk(w, files[j]) &&
-                !isDerivativeMismatch(w.title, files[j].name) &&
-                (!hasDerivativeKeywords(files[j].folder.substringAfterLast('\\')) || hasDerivativeKeywords(w.title)) &&
+                !isDerivativeMismatch(w.title, files[j].name, wantedAllowed = wantedDerivative) &&
+                (wantedDerivative || !hasDerivativeKeywords(files[j].folder.substringAfterLast('\\')) || hasDerivativeKeywords(w.title)) &&
                 names[j].isNotEmpty() &&
                 (names[j] == t || names[j].contains(t) || (t.contains(names[j]) && names[j].length >= 4))
             }.minByOrNull { j -> (if (names[j] == t) 0 else 1000) + abs(names[j].length - t.length) + (if (w.durationMs > 0 && files[j].lengthSec > 0) abs(w.durationMs / 1000 - files[j].lengthSec).toInt() else 0) }
@@ -102,7 +102,11 @@ object AlbumPicker {
         }
         if (out.size < wanted.size && files.size == wanted.size && wanted.all { it.durationMs > 0 }) {
             val ordered = files.sortedBy { it.path.lowercase() }
-            if (ordered.indices.all { i -> ordered[i].lengthSec > 0 && abs(wanted[i].durationMs / 1000.0 - ordered[i].lengthSec) <= 2.0 && !isDerivativeMismatch(wanted[i].title, ordered[i].name) && (!hasDerivativeKeywords(ordered[i].folder.substringAfterLast('\\')) || hasDerivativeKeywords(wanted[i].title)) }) return wanted.indices.associateWith { ordered[it] }
+            if (ordered.indices.all { i ->
+                ordered[i].lengthSec > 0 && abs(wanted[i].durationMs / 1000.0 - ordered[i].lengthSec) <= 2.0 &&
+                !isDerivativeMismatch(wanted[i].title, ordered[i].name, wantedAllowed = wantedDerivative) &&
+                (wantedDerivative || !hasDerivativeKeywords(ordered[i].folder.substringAfterLast('\\')) || hasDerivativeKeywords(wanted[i].title))
+            }) return wanted.indices.associateWith { ordered[it] }
         }
         return out
     }

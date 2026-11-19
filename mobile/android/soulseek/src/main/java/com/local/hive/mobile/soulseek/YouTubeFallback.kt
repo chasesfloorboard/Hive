@@ -40,7 +40,7 @@ object YouTubeFallback {
             app.youTubeMusic.saveAudio(WantedSong(key, track.title, who, from, track.durationMs), raw, progress)
             remux(raw, out)
             val cover = track.artworkUrl.takeIf { it.startsWith("https://") }?.let { runCatching { image(it) }.getOrNull() }
-            tag(out, track.title, who, from, track.year, cover)
+            tag(out, track.title, who, from, track.year, cover, track.trackNumber)
         } catch (e: Exception) {
             out.delete()
             throw e
@@ -83,11 +83,12 @@ object YouTubeFallback {
         }
     }
 
-    private fun tag(file: File, title: String, artist: String, album: String, year: String, cover: ByteArray?) {
+    private fun tag(file: File, title: String, artist: String, album: String, year: String, cover: ByteArray?, trackNumber: Int = 0) {
         val audio = AudioFileIO.read(file)
         val tag = audio.tagOrCreateAndSetDefault
         fun set(key: FieldKey, value: String) { if (value.isNotBlank()) tag.setField(key, value.trim()) }
         set(FieldKey.TITLE, title); set(FieldKey.ARTIST, artist); set(FieldKey.ALBUM, album); set(FieldKey.YEAR, year)
+        if (trackNumber > 0) tag.setField(FieldKey.TRACK, trackNumber.toString())
         if (cover != null) tag.setField(AndroidArtwork().apply {
             binaryData = cover
             mimeType = if (cover.size > 3 && cover[0] == 0x89.toByte()) "image/png" else "image/jpeg"

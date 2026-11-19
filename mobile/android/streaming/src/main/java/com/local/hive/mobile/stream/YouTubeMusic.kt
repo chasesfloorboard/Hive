@@ -3,6 +3,7 @@ import com.local.hive.mobile.data.normalise
 import com.local.hive.mobile.data.similarity
 import com.local.hive.mobile.data.containment
 import com.local.hive.mobile.data.firstArtist
+import com.local.hive.mobile.data.hasDerivativeKeywords
 import com.local.hive.mobile.data.isDerivativeMismatch
 
 import android.content.Context
@@ -96,7 +97,8 @@ class YouTubeMusic(context: Context, private val http: OkHttpClient = com.local.
     private fun findPlayableMatch(want: WantedSong): Pair<String, String>? {
         val query = "${firstArtist(want.artist)} ${normalise(want.title)}".trim()
         val wantSec = (want.durationMs / 1000).toInt()
-        val songMatches = search(query, SONGS).filter { !isDerivativeMismatch(want.title, it.title) }
+        val wantDerivative = hasDerivativeKeywords(want.album) || hasDerivativeKeywords(want.title)
+        val songMatches = search(query, SONGS).filter { !isDerivativeMismatch(want.title, it.title, wantedAllowed = wantDerivative) }
             .map { it to score(want.title, want.artist, wantSec, it.title, it.artists, it.durationSec) }
             .filter { acceptable(it.second) }
             .sortedByDescending { it.second.score }
@@ -107,7 +109,7 @@ class YouTubeMusic(context: Context, private val http: OkHttpClient = com.local.
         }
 
         // Some songs are only on YouTube as videos ("Artist - Title (Official Video)"): the length must match.
-        val videoMatches = search(query, VIDEOS).filter { !isDerivativeMismatch(want.title, it.title) }
+        val videoMatches = search(query, VIDEOS).filter { !isDerivativeMismatch(want.title, it.title, wantedAllowed = wantDerivative) }
             .map {
                 it to score(want.title, want.artist, wantSec, videoTitleWithoutArtist(it.title, want.artist), it.artists + " " + it.title, it.durationSec)
             }.filter { (_, s) -> s.durationOk && s.titleScore >= 0.6 && s.artistScore >= 0.5 }

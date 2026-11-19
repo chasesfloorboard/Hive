@@ -88,23 +88,30 @@ class TrackMatcherTest {
         assertTrue(hasDerivativeKeywords("Song (Acapella)"))
         assertTrue(hasDerivativeKeywords("Song (A Cappella)"))
         assertTrue(hasDerivativeKeywords("Song (Karaoke Version)"))
-        assertTrue(hasDerivativeKeywords("Song (Cover)"))
         assertTrue(hasDerivativeKeywords("Song (Slowed + Reverb)"))
         assertTrue(hasDerivativeKeywords("Song (Sped Up)"))
         assertTrue(hasDerivativeKeywords("Song (Nightcore)"))
 
-        // Standard titles and legitimate words do not trigger
+        // Ambient, regular titles, and musical terms do not trigger
         assertTrue(!hasDerivativeKeywords("All Eyes On Me (feat. Keri Hilson)"))
+        assertTrue(!hasDerivativeKeywords("Ambient 1: Music for Airports"))
+        assertTrue(!hasDerivativeKeywords("Selected Ambient Works 85-92"))
+        assertTrue(!hasDerivativeKeywords("Structures from Silence"))
+        assertTrue(!hasDerivativeKeywords("Digital Reverb"))
+        assertTrue(!hasDerivativeKeywords("Cover Me"))
         assertTrue(!hasDerivativeKeywords("Instant Karma!"))
         assertTrue(!hasDerivativeKeywords("Recovery"))
         assertTrue(!hasDerivativeKeywords("Discovery"))
         assertTrue(!hasDerivativeKeywords("Undercover"))
 
-        // Mismatches
+        // Mismatches for standard vocal tracks
         assertTrue(isDerivativeMismatch("All Eyes On Me", "All Eyes On Me (Instrumental)"))
         assertTrue(isDerivativeMismatch("All Eyes On Me", "Clipse - All Eyes On Me [Inst]"))
         assertTrue(isDerivativeMismatch("All Eyes On Me (Instrumental)", "All Eyes On Me"))
         assertTrue(!isDerivativeMismatch("All Eyes On Me", "All Eyes On Me (feat. Keri Hilson)"))
         assertTrue(!isDerivativeMismatch("All Eyes On Me (Instrumental)", "Clipse - All Eyes On Me (Instrumental)"))
+
+        // When the user specifically requests an instrumental release, instrumental candidates are allowed
+        assertTrue(!isDerivativeMismatch("All Eyes On Me", "All Eyes On Me (Instrumental)", wantedAllowed = true))
     }
 }

@@ -90,4 +90,40 @@ class AlbumPickerTest {
         assertEquals(1, matched.size)
         assertEquals("share\\Clipse\\09 - All Eyes On Me (Instrumental).mp3", matched[0]!!.path)
     }
+
+    @Test fun instrumentalAlbumRequestSelectsInstrumentalFolder() {
+        val wanted = listOf(WantedTrack("Freedom", 226_000), WantedTrack("Popular Demand", 259_000))
+        val results = listOf(
+            SearchResult("instPeer", 1, listOf(
+                SharedFile("share\\Clipse - Til the Casket Drops (Instrumentals)\\01 - Freedom (Instrumental).mp3", 1, 320, 226),
+                SharedFile("share\\Clipse - Til the Casket Drops (Instrumentals)\\02 - Popular Demand (Instrumental).mp3", 1, 320, 259),
+            ), freeSlot = true, speed = 10_000_000, queue = 0),
+            SearchResult("vocalPeer", 1, listOf(
+                SharedFile("share\\Clipse - Til the Casket Drops\\01 - Freedom.mp3", 1, 320, 226),
+                SharedFile("share\\Clipse - Til the Casket Drops\\02 - Popular Demand.mp3", 1, 320, 259),
+            ), freeSlot = true, speed = 1_000_000, queue = 0),
+        )
+        val picks = AlbumPicker.candidates("Clipse", wanted, results, album = "Til the Casket Drops (Instrumentals)")
+        assertEquals("instPeer", picks.first().user)
+        assertEquals(2, picks.first().files.size)
+    }
+
+    @Test fun ambientAlbumsMatchAndDownloadNormally() {
+        val enoTracks = listOf(
+            WantedTrack("1/1", 1005_000),
+            WantedTrack("2/1", 504_000),
+            WantedTrack("1/2", 725_000),
+            WantedTrack("2/2", 360_000),
+        )
+        val files = listOf(
+            SharedFile("Ambient\\Brian Eno - Ambient 1 Music for Airports\\01 - 1-1.flac", 1, 800, 1005),
+            SharedFile("Ambient\\Brian Eno - Ambient 1 Music for Airports\\02 - 2-1.flac", 1, 800, 504),
+            SharedFile("Ambient\\Brian Eno - Ambient 1 Music for Airports\\03 - 1-2.flac", 1, 800, 725),
+            SharedFile("Ambient\\Brian Eno - Ambient 1 Music for Airports\\04 - 2-2.flac", 1, 800, 360),
+        )
+        val results = listOf(SearchResult("ambientSharer", 1, files, freeSlot = true, speed = 5_000_000, queue = 0))
+        val picks = AlbumPicker.candidates("Brian Eno", enoTracks, results, album = "Ambient 1: Music for Airports")
+        assertEquals(1, picks.size)
+        assertEquals(4, picks.first().files.size)
+    }
 }

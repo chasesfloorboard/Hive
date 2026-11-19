@@ -110,6 +110,7 @@ class SoulseekSettings(context: Context) {
         val album: String = "",
         val year: String = "",
         val artworkUrl: String = "",
+        val trackNumber: Int = 0,
     )
     val label get() = if (kind == "track") "${tracks.firstOrNull()?.title.orEmpty()} by $artist" else "$album by $artist"
 }
@@ -212,12 +213,12 @@ class SoulseekWorker(context: Context, params: WorkerParameters) : CoroutineWork
                 for (i in 0 until 20) {
                     delay(1_000)
                     if (i >= 6) {
-                        picks = synchronized(results) { AlbumPicker.candidates(request.artist, wanted, results.toList(), settings.quality) }
+                        picks = synchronized(results) { AlbumPicker.candidates(request.artist, wanted, results.toList(), settings.quality, request.album) }
                         if (picks.count { it.freeSlot && it.files.size == wanted.size } >= 2) break
                     }
                 }
                 client.stopSearch(token)
-                picks = synchronized(results) { AlbumPicker.candidates(request.artist, wanted, results.toList(), settings.quality) }
+                picks = synchronized(results) { AlbumPicker.candidates(request.artist, wanted, results.toList(), settings.quality, request.album) }
                 if (request.losslessOnly) picks = picks.filter { it.format.startsWith("lossless") }
                 log("\"$query\": ${results.size} peers answered, ${picks.size} folders fit; best: " + picks.take(3).joinToString { "${it.user} ${it.format} ${it.files.size}/${wanted.size} free=${it.freeSlot}" })
                 if (picks.isNotEmpty()) break
@@ -394,7 +395,8 @@ class SoulseekWorker(context: Context, params: WorkerParameters) : CoroutineWork
                 continue
             }
             if (downloads.isCancelled(request.id)) { file.delete(); break }
-            val saved = runCatching { save(file, request, "${t.artist.ifBlank { request.artist }} - ${t.title}.m4a", "m4a", settings) }
+            val trackPrefix = if (request.kind == "album" && t.trackNumber > 0) "%02d ".format(t.trackNumber) else ""
+            val saved = runCatching { save(file, request, "$trackPrefix${t.artist.ifBlank { request.artist }} - ${t.title}.m4a", "m4a", settings) }
             file.delete()
             if (saved.isFailure) {
                 log("Couldn't save ${t.title}: ${saved.exceptionOrNull()?.message}")
