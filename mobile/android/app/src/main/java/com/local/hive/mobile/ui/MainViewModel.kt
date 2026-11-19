@@ -158,7 +158,8 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
                             coil3.request.ImageRequest.Builder(app)
                                 .data(uri)
                                 .size(px, px)
-                                .precision(coil3.size.Precision.INEXACT)
+                                .precision(coil3.size.Precision.EXACT)
+                                .memoryCacheKeyExtra("quality", "hq")
                                 .listener(onSuccess = { r, ok ->
                                     noteLoadedCover(r.data, ok.memoryCacheKey, ok.image.width.toLong() * ok.image.height)
                                 })

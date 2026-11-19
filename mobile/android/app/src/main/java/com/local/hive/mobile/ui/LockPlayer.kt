@@ -85,7 +85,7 @@ fun LockPlayer(vm: MainViewModel, onUnlock: () -> Unit) {
     ) {
         HiveAmbient(aura?.primary?.copy(alpha = 0.7f) ?: c.ambientA, aura?.secondary?.copy(alpha = 0.6f) ?: c.ambientB, Modifier.fillMaxSize(), intensity = 1.25f)
         // Blur a fifth-size copy and scale it up: 1/25 the pixels to blur, same soft wash (22dp × 5 ≈ 110dp).
-        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.S) Artwork(now.artworkUri, Modifier.fillMaxSize(0.2f).align(Alignment.Center).graphicsLayer { scaleX = 5f; scaleY = 5f; alpha = 0.3f }.blur(22.dp), RectangleShape)
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.S) BlurredBackdropArt(now.artworkUri, Modifier.fillMaxSize(0.2f).align(Alignment.Center).graphicsLayer { scaleX = 5f; scaleY = 5f; alpha = 0.3f }.blur(22.dp))
         Box(Modifier.fillMaxSize().background(Brush.verticalGradient(0f to c.bg.copy(alpha = 0.35f), 0.5f to Color.Transparent, 1f to c.bg.copy(alpha = 0.8f))))
 
         Column(
@@ -115,6 +115,7 @@ fun LockPlayer(vm: MainViewModel, onUnlock: () -> Unit) {
                             .graphicsLayer { translationX = swipe.value; alpha = 1f - (abs(swipe.value) / size.width).coerceIn(0f, 0.9f) },
                         HiveShape.art, Icons.Rounded.MusicNote, glow = aura?.primary ?: c.accentGlow, elevation = 34.dp * (coverShown * coverShown * coverShown),
                         replacing = frame.previous,
+                        highQuality = true,
                     )
                 }
             }

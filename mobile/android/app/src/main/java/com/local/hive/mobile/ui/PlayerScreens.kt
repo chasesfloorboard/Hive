@@ -350,7 +350,7 @@ fun PlayerSheet(
                     coil3.request.ImageRequest.Builder(context)
                         .data(uri)
                         .size(coverPx)
-                        .precision(coil3.size.Precision.INEXACT)
+                        .precision(coil3.size.Precision.EXACT)
                         .listener(onSuccess = { r, ok ->
                             noteLoadedCover(r.data, ok.memoryCacheKey, ok.image.width.toLong() * ok.image.height)
                         })
@@ -373,6 +373,7 @@ fun PlayerSheet(
                 glow = aura?.primary ?: c.accentGlow,
                 elevation = lerpDp(0.dp, 36.dp, eased),
                 replacing = frame.previous,
+                highQuality = true,
             )
             card?.let { inc -> CrossfadeCard(inc, cardPos.value, r, eased, p, fullW.toFloat()) }
         }
@@ -567,7 +568,7 @@ private fun FullPlayerContent(
         HiveAmbient(aura?.primary?.copy(alpha = 0.7f) ?: c.ambientA, aura?.secondary?.copy(alpha = 0.6f) ?: c.ambientB, Modifier.fillMaxSize(), intensity = 1.25f)
         if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.S) {
             // Blur a fifth-size copy and scale it up: 1/25 the pixels to blur, same soft wash (22dp × 5 ≈ 110dp).
-            Artwork(now.artworkUri, Modifier.fillMaxSize(0.2f).align(Alignment.Center).graphicsLayer { scaleX = 5f; scaleY = 5f; alpha = 0.22f }.blur(22.dp), RectangleShape)
+            BlurredBackdropArt(now.artworkUri, Modifier.fillMaxSize(0.2f).align(Alignment.Center).graphicsLayer { scaleX = 5f; scaleY = 5f; alpha = 0.22f }.blur(22.dp))
         }
         Box(Modifier.fillMaxSize().background(Brush.verticalGradient(0f to Color.Transparent, 0.6f to c.bg.copy(alpha = 0.2f), 1f to c.bg.copy(alpha = 0.75f))))
     }, overlay = {

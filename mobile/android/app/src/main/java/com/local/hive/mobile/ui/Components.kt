@@ -154,22 +154,29 @@ fun Artwork(
     replacing: Any? = null,
     /** Shown instead when [model] has no picture (a mosaic's tile takes another of its covers). */
     orElse: Any? = null,
+    /** When true (e.g. now playing cover), always decodes full-resolution art with exact precision and isolated cache key. */
+    highQuality: Boolean = false,
 ) {
     val generation = CoverGeneration.intValue
     var failed by remember(model, generation) { mutableStateOf(false) }
-    if (failed && orElse != null) return Artwork(orElse, modifier, shape, fallback, glow, elevation)
+    if (failed && orElse != null) return Artwork(orElse, modifier, shape, fallback, glow, elevation, highQuality = highQuality)
     val c = Hive.colors
     val shadowed = if (elevation > 0.dp) modifier.softShadow(elevation, shape, glow ?: Color.Black) else modifier
     val context = androidx.compose.ui.platform.LocalContext.current
     // A cover already on screen at another size stands in while this size loads, so it never blinks;
     // the sharpest copy drawn so far, never a list row's thumbnail once a bigger one was shown.
-    val request = remember(model, generation) {
+    val request = remember(model, generation, highQuality) {
         val own = model?.toString()?.let { ShownCovers[it]?.first }
         val standIn = own ?: replacing?.toString()?.let { ShownCovers[it]?.first }
         coil3.request.ImageRequest.Builder(context).data(model).placeholderMemoryCacheKey(standIn)
-            .precision(coil3.size.Precision.INEXACT)
-            // After a cover changed, a request that differs, or Coil keeps the picture it has.
-            .apply { if (generation > 0) memoryCacheKeyExtra("cover", generation.toString()) }
+            .precision(if (highQuality) coil3.size.Precision.EXACT else coil3.size.Precision.INEXACT)
+            .apply {
+                if (highQuality) {
+                    memoryCacheKeyExtra("quality", "hq")
+                    size(coil3.size.Size.ORIGINAL)
+                }
+                if (generation > 0) memoryCacheKeyExtra("cover", generation.toString())
+            }
             // Only a cover that wasn't standing in fades up; a carousel frame fades over the last one.
             .crossfade(when { own != null -> 0; standIn != null -> 600; else -> 0 }).build()
     }
@@ -200,6 +207,32 @@ fun Artwork(
             onError = { if (orElse != null) failed = true else { shown = false; covered = false } },
         )
     }
+}
+
+/**
+ * A fast, downsampled backdrop cover for background blur effects.
+ * Reads existing memory cache if present, but uses CachePolicy.READ_ONLY so it never
+ * writes or pollutes the memory cache with a downsampled copy that could degrade Now Playing.
+ */
+@Composable
+fun BlurredBackdropArt(
+    model: Any?,
+    modifier: Modifier = Modifier,
+) {
+    val context = androidx.compose.ui.platform.LocalContext.current
+    val request = remember(model) {
+        coil3.request.ImageRequest.Builder(context)
+            .data(model)
+            .memoryCachePolicy(coil3.request.CachePolicy.READ_ONLY)
+            .precision(coil3.size.Precision.INEXACT)
+            .build()
+    }
+    AsyncImage(
+        model = request,
+        contentDescription = null,
+        contentScale = ContentScale.Crop,
+        modifier = modifier,
+    )
 }
 
 /**

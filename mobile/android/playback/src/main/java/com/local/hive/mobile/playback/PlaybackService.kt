@@ -269,25 +269,32 @@ class PlaybackService : MediaLibraryService() {
         // phone's own lock-screen controls). Paused, it stays for a while, as Samsung Music's does.
         screenOff = object : android.content.BroadcastReceiver() {
             override fun onReceive(context: Context, intent: Intent) {
-                val locked = (getSystemService(KEYGUARD_SERVICE) as android.app.KeyguardManager).isKeyguardLocked
-                bridge.lockScreenChanged()
-                // Diagnostic (only while Android Auto is connected, so it never touches normal use): record
-                // every screen on/off with the full keyguard/screen/car state. A drive where the player never
-                // appears then shows whether SCREEN_ON even arrives in the car and how the phone reports its
-                // lock state — the two unknowns behind "it doesn't pop up in the car". Cleared each drive.
-                if (CarLog.carConnected) CarLog.lockPlayer(this@PlaybackService, "screen ${if (intent.action == Intent.ACTION_SCREEN_ON) "ON" else "OFF"} received; wants=${wantsLockPlayer(player)}")
-                // Only raise the player when the screen actually comes on while locked (a real wake). Launching
-                // on SCREEN_OFF used to turn the screen straight back on (the launch / full-screen-intent wakes
-                // it), which re-fired this receiver and looped every ~10s, re-posting the lock-player
-                // notification. The player now appears on the next wake instead of pre-staging while off.
-                // Only when the lock screen is actually up (keyguard locked). The player belongs ON the lock
-                // screen and must never pop up over an unlocked phone -- in the car as everywhere. A car phone
-                // held unlocked by trust simply shows no player on wake, which is correct.
-                if (intent.action != Intent.ACTION_SCREEN_ON || !locked) return
-                if (wantsLockPlayer(player)) bridge.showLockPlayerIfWanted(this@PlaybackService, bridge.wasRecentlyForeground())
+                when (intent.action) {
+                    Intent.ACTION_SCREEN_OFF -> {
+                        bridge.lockScreenChanged()
+                        if (CarLog.carConnected) CarLog.lockPlayer(this@PlaybackService, "screen OFF received; wants=${wantsLockPlayer(player)}")
+                    }
+                    Intent.ACTION_SCREEN_ON -> {
+                        bridge.lockScreenChanged()
+                        if (CarLog.carConnected) CarLog.lockPlayer(this@PlaybackService, "screen ON received; wants=${wantsLockPlayer(player)}")
+                        if (wantsLockPlayer(player)) bridge.showLockPlayerIfWanted(this@PlaybackService, bridge.wasRecentlyForeground())
+                    }
+                    Intent.ACTION_USER_PRESENT -> {
+                        if (CarLog.carConnected) CarLog.lockPlayer(this@PlaybackService, "user PRESENT received; wants=${wantsLockPlayer(player)}")
+                        if (wantsLockPlayer(player)) bridge.showLockPlayerIfWanted(this@PlaybackService, bridge.wasRecentlyForeground())
+                    }
+                }
             }
         }
-        androidx.core.content.ContextCompat.registerReceiver(this, screenOff, android.content.IntentFilter(Intent.ACTION_SCREEN_OFF).apply { addAction(Intent.ACTION_SCREEN_ON) }, androidx.core.content.ContextCompat.RECEIVER_NOT_EXPORTED)
+        androidx.core.content.ContextCompat.registerReceiver(
+            this,
+            screenOff,
+            android.content.IntentFilter(Intent.ACTION_SCREEN_OFF).apply {
+                addAction(Intent.ACTION_SCREEN_ON)
+                addAction(Intent.ACTION_USER_PRESENT)
+            },
+            androidx.core.content.ContextCompat.RECEIVER_NOT_EXPORTED,
+        )
         player.addListener(object : Player.Listener {
             override fun onIsPlayingChanged(isPlaying: Boolean) {
                 lastPlayingAt = System.currentTimeMillis()

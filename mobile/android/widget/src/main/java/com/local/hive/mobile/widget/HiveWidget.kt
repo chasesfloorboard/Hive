@@ -80,7 +80,14 @@ class HiveWidget : GlanceAppWidget() {
     }
 
     private suspend fun loadArt(context: Context, model: String): Bitmap? = runCatching {
-        val result = SingletonImageLoader.get(context).execute(ImageRequest.Builder(context).data(model).size(256).allowHardware(false).build())
+        val result = SingletonImageLoader.get(context).execute(
+            ImageRequest.Builder(context)
+                .data(model)
+                .size(256)
+                .allowHardware(false)
+                .memoryCachePolicy(coil3.request.CachePolicy.READ_ONLY)
+                .build()
+        )
         result.image?.toBitmap()
     }.getOrNull()
 

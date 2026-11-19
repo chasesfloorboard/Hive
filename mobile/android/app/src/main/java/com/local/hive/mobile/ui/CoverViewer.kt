@@ -166,7 +166,7 @@ fun CoverViewer(vm: MainViewModel, tracks: List<Track>, fallback: Any?, name: St
             ) {
                 val bitmap = full
                 if (bitmap != null) Image(bitmap, "Album cover", Modifier.fillMaxSize().softShadow(28.dp, HiveShape.art, aura?.primary ?: Color.Black), contentScale = ContentScale.Fit)
-                else Artwork(fallback, Modifier.fillMaxSize(), HiveShape.art, Icons.Rounded.LibraryMusic, glow = aura?.primary, elevation = 28.dp)
+                else Artwork(fallback, Modifier.fillMaxSize(), HiveShape.art, Icons.Rounded.LibraryMusic, glow = aura?.primary, elevation = 28.dp, highQuality = true)
             }
             Row(Modifier.align(Alignment.TopEnd).statusBarsPadding().padding(12.dp)) {
                 ControlButton(Icons.Rounded.Close, "Close", onDismiss, size = 44.dp)
