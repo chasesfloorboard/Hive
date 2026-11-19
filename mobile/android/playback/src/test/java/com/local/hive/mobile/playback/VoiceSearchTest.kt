@@ -25,6 +25,44 @@ class VoiceSearchTest {
         assertEquals(4, got.size); assertTrue(got.all { it.artist == "OutKast" })
     }
 
+    @Test fun carAndConversationalPhrasesAreCleaned() {
+        val carQueries = listOf(
+            "play outkast while I'm driving",
+            "can you play sade",
+            "could you please play outkast in the car",
+            "i want to hear outkast while driving",
+            "play some outkast in my car",
+            "put on some outkast for my drive",
+            "play outkast on the road",
+            "start outkast right now",
+        )
+        for (q in carQueries) {
+            val got = VoiceSearch.pick(lib, q, random = Random(1))
+            if ("sade" in q) {
+                assertTrue(got.isEmpty()) // Sade is not in this mini lib
+            } else {
+                assertEquals(q, 4, got.size)
+                assertTrue(q, got.all { it.artist == "OutKast" })
+            }
+        }
+    }
+
+    @Test fun songAndAlbumWithCarPhrases() {
+        assertEquals(listOf("B.O.B.", "Ms. Jackson"), VoiceSearch.pick(lib, "play stankonia while I am driving").map { it.title })
+        assertEquals(listOf("Hey Ya!", "Roses"), VoiceSearch.pick(lib, "play hey ya while driving").map { it.title })
+    }
+
+    @Test fun favoritesAndLikedSongs() {
+        val favIds = setOf(lib[0].id, lib[2].id) // Hey Ya! and Ms. Jackson
+        val gotFavs = VoiceSearch.pick(lib, "play my favorites in the car", favorites = favIds, random = Random(1))
+        assertEquals(2, gotFavs.size)
+        assertTrue(gotFavs.all { it.id in favIds })
+
+        val gotLiked = VoiceSearch.pick(lib, "play liked songs while driving", favorites = favIds, random = Random(1))
+        assertEquals(2, gotLiked.size)
+        assertTrue(gotLiked.all { it.id in favIds })
+    }
+
     @Test fun anAlbumPlaysInOrder() {
         assertEquals(listOf("B.O.B.", "Ms. Jackson"), VoiceSearch.pick(lib, "Stankonia").map { it.title })
     }

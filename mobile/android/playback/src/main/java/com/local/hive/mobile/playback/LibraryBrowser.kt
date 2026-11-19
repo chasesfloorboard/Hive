@@ -103,9 +103,24 @@ class LibraryBrowser(private val context: Context, private val dao: LibraryDao) 
 
     /** What a browser asked to play, as a queue and where to start. */
     suspend fun resolve(items: List<MediaItem>): Pair<List<MediaItem>, Int> {
-        // "Hey Google, play …": a search, not an item.
-        items.singleOrNull()?.requestMetadata?.searchQuery?.takeIf { items[0].mediaId.isEmpty() }?.let { query ->
-            return voice(query, items[0].requestMetadata.extras).map { it.toMediaItem() } to 0
+        // "Hey Google, play …" / Android Auto: a search, not an item.
+        val single = items.singleOrNull()
+        if (single != null) {
+            val reqMeta = single.requestMetadata
+            val extras = reqMeta?.extras
+            val isVoice = single.mediaId.isEmpty() || single.mediaId == "voice" || single.mediaId == "search" || single.mediaId.startsWith("voice:") || single.mediaId.startsWith("search:")
+            val query = reqMeta?.searchQuery?.takeIf { it.isNotBlank() }
+                ?: extras?.getString(android.app.SearchManager.QUERY)?.takeIf { it.isNotBlank() }
+                ?: extras?.getString("query")?.takeIf { it.isNotBlank() }
+                ?: extras?.getString(android.provider.MediaStore.EXTRA_MEDIA_TITLE)?.takeIf { it.isNotBlank() }
+                ?: extras?.getString(android.provider.MediaStore.EXTRA_MEDIA_ARTIST)?.takeIf { it.isNotBlank() }
+                ?: extras?.getString(android.provider.MediaStore.EXTRA_MEDIA_ALBUM)?.takeIf { it.isNotBlank() }
+            if (isVoice || reqMeta?.searchQuery != null) {
+                val results = voice(query.orEmpty(), extras)
+                if (results.isNotEmpty()) {
+                    return results.map { it.toMediaItem() } to 0
+                }
+            }
         }
         if (items.size == 1 && '|' in items[0].mediaId) {
             val (list, id) = items[0].mediaId.split('|', limit = 2)
@@ -125,18 +140,31 @@ class LibraryBrowser(private val context: Context, private val dao: LibraryDao) 
     }
 
     /** What to play for a spoken request (see [VoiceSearch]); [extras] may name the artist, album, song or genre. */
-    suspend fun voice(query: String, extras: Bundle?): List<Track> = VoiceSearch.pick(
-        dao.allTracks(), query,
-        VoiceSearch.Hint(
-            artist = extras?.getString(android.provider.MediaStore.EXTRA_MEDIA_ARTIST).orEmpty(),
-            album = extras?.getString(android.provider.MediaStore.EXTRA_MEDIA_ALBUM).orEmpty(),
-            title = extras?.getString(android.provider.MediaStore.EXTRA_MEDIA_TITLE).orEmpty(),
-            genre = extras?.getString("android.intent.extra.genre").orEmpty(),
-        ),
-    )
+    suspend fun voice(query: String, extras: Bundle?): List<Track> {
+        val loved = runCatching { dao.loveStates().first().filter { it.loved }.mapTo(HashSet()) { it.trackId } }.getOrDefault(emptySet())
+        return VoiceSearch.pick(
+            tracks = dao.allTracks(),
+            query = query,
+            hint = VoiceSearch.Hint(
+                artist = extras?.getString(android.provider.MediaStore.EXTRA_MEDIA_ARTIST) ?: extras?.getString("artist").orEmpty(),
+                album = extras?.getString(android.provider.MediaStore.EXTRA_MEDIA_ALBUM) ?: extras?.getString("album").orEmpty(),
+                title = extras?.getString(android.provider.MediaStore.EXTRA_MEDIA_TITLE) ?: extras?.getString("title").orEmpty(),
+                genre = extras?.getString("android.intent.extra.genre") ?: extras?.getString("genre").orEmpty(),
+            ),
+            favorites = loved,
+        )
+    }
 
     /** Songs matching a voice or typed search. */
-    suspend fun search(query: String): List<MediaItem> = if (query.isBlank()) emptyList() else dao.search("%${query.trim()}%").take(50).map { song(SEARCH, it) }
+    suspend fun search(query: String): List<MediaItem> {
+        val cleaned = VoiceSearch.clean(query)
+        if (cleaned.isBlank()) return emptyList()
+        val voiceMatches = voice(cleaned, null)
+        if (voiceMatches.isNotEmpty()) {
+            return voiceMatches.take(50).map { song(SEARCH, it) }
+        }
+        return dao.search("%${cleaned}%").take(50).map { song(SEARCH, it) }
+    }
 
     private fun song(list: String, t: Track): MediaItem {
         val item = t.toMediaItem()

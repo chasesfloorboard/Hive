@@ -86,14 +86,28 @@ class MainActivity : ComponentActivity() {
 
     /** "Hey Google, play Outkast": the assistant opens Hive with the words; play what they name. */
     private fun handleVoice(intent: Intent?) {
-        if (intent?.action != android.provider.MediaStore.INTENT_ACTION_MEDIA_PLAY_FROM_SEARCH) return
+        if (intent == null) return
+        val action = intent.action
+        if (action != android.provider.MediaStore.INTENT_ACTION_MEDIA_PLAY_FROM_SEARCH &&
+            action != "android.media.action.MEDIA_PLAY_FROM_SEARCH" &&
+            action != Intent.ACTION_SEARCH &&
+            action != "android.intent.action.MEDIA_SEARCH") return
         val app = application as HiveApp
-        val query = intent.getStringExtra(android.app.SearchManager.QUERY).orEmpty()
+        val extras = intent.extras
+        val query = intent.getStringExtra(android.app.SearchManager.QUERY)?.takeIf { it.isNotBlank() }
+            ?: extras?.getString("query")?.takeIf { it.isNotBlank() }
+            ?: extras?.getString(android.provider.MediaStore.EXTRA_MEDIA_TITLE)?.takeIf { it.isNotBlank() }
+            ?: extras?.getString(android.provider.MediaStore.EXTRA_MEDIA_ARTIST)?.takeIf { it.isNotBlank() }
+            ?: extras?.getString(android.provider.MediaStore.EXTRA_MEDIA_ALBUM)?.takeIf { it.isNotBlank() }
+            .orEmpty()
         app.scope.launch {
             val tracks = com.local.hive.mobile.playback.LibraryBrowser(app, app.database.dao()).voice(query, intent.extras)
             kotlinx.coroutines.withContext(kotlinx.coroutines.Dispatchers.Main) {
                 if (tracks.isNotEmpty()) app.player.play(tracks)
-                else android.widget.Toast.makeText(app, "Nothing on this phone matches “$query”", android.widget.Toast.LENGTH_LONG).show()
+                else {
+                    val cleanQuery = com.local.hive.mobile.playback.VoiceSearch.clean(query).ifBlank { query }
+                    android.widget.Toast.makeText(app, "Nothing on this phone matches “$cleanQuery”", android.widget.Toast.LENGTH_LONG).show()
+                }
             }
         }
     }

@@ -15,10 +15,33 @@ object VoiceSearch {
     /** What the assistant says the words name, when it knows. */
     data class Hint(val artist: String = "", val album: String = "", val title: String = "", val genre: String = "")
 
-    private val polite = Regex("""^(please\s+)?(play|listen to|put on)\s+|\s+(on|in|from|using|with)\s+hive(\s+mobile)?$|\s+please$""", RegexOption.IGNORE_CASE)
+    private val PREFIX = Regex(
+        """^(?:(?:can|could|would)\s+you\s+)?(?:please\s+)?(?:i\s+(?:want|would like|'d like|id like)\s+to\s+)?(?:play|listen to|put on|shuffle|start|hear)\s+(?:(?:some|any)\s+)?(?:music\s+by\s+|songs\s+by\s+|tracks\s+by\s+|the\s+album\s+|the\s+song\s+)?""",
+        RegexOption.IGNORE_CASE
+    )
+    private val SUFFIX = Regex(
+        """(?:\s+(?:while\s+i(?:'m|\s+am)?\s+driving|in\s+(?:the|my)\s+car|for\s+(?:the|my)\s+drive|during\s+(?:the|my)\s+drive|while\s+driving|on\s+the\s+road|on\s+(?:the|my)\s+drive))*(?:\s+(?:on|in|from|using|with)\s+hive(?:\s+mobile)?)*(?:\s+(?:right\s+now|now|please|for\s+me|already))*(?:\s+(?:while\s+i(?:'m|\s+am)?\s+driving|in\s+(?:the|my)\s+car|for\s+(?:the|my)\s+drive|during\s+(?:the|my)\s+drive|while\s+driving|on\s+the\s+road|on\s+(?:the|my)\s+drive))*$""",
+        RegexOption.IGNORE_CASE
+    )
+    private val LEADING_SOME = Regex("""^(?:some|any)\s+""", RegexOption.IGNORE_CASE)
     private val bySplit = Regex("""\s+by\s+""", RegexOption.IGNORE_CASE)
 
-    fun pick(tracks: List<Track>, query: String, hint: Hint = Hint(), random: Random = Random.Default): List<Track> {
+    /** Strips conversational prefixes ("play", "can you play some") and car/driving suffixes ("while I'm driving"). */
+    fun clean(query: String): String {
+        var w = query.trim()
+        w = PREFIX.replace(w, "").trim()
+        w = SUFFIX.replace(w, "").trim()
+        w = LEADING_SOME.replace(w, "").trim()
+        return w
+    }
+
+    fun pick(
+        tracks: List<Track>,
+        query: String,
+        hint: Hint = Hint(),
+        random: Random = Random.Default,
+        favorites: Set<Long> = emptySet(),
+    ): List<Track> {
         if (tracks.isEmpty()) return emptyList()
         val n = TrackMatcher::normalize
         fun artistIs(t: Track, a: String) = TrackMatcher.artistParts(t.displayAlbumArtist).contains(a) || TrackMatcher.artistParts(t.artist).contains(a)
@@ -38,9 +61,12 @@ object VoiceSearch {
         if (hg.isNotEmpty()) byGenre(hg).takeIf { it.isNotEmpty() }?.let { return it.shuffled(random) }
 
         // The words alone: "play music" shuffles everything.
-        val words = query.trim().replace(polite, "").trim()
+        val words = clean(query)
         val q = n(words)
-        if (q.isEmpty() || q in setOf("music", "somemusic", "mymusic", "hive", "songs", "anything")) return tracks.shuffled(random)
+        if (q.isEmpty() || q in setOf("music", "somemusic", "mymusic", "hive", "songs", "anything", "allmusic", "something")) return tracks.shuffled(random)
+        if (favorites.isNotEmpty() && q in setOf("favorites", "myfavorites", "likedsongs", "mylikedsongs", "lovedsongs", "mylovedsongs")) {
+            tracks.filter { it.id in favorites }.takeIf { it.isNotEmpty() }?.let { return it.shuffled(random) }
+        }
         // "<song> by <artist>" / "<album> by <artist>".
         bySplit.split(words, 2).takeIf { it.size == 2 }?.let { (what, who) ->
             val w = n(what); val a = n(who)

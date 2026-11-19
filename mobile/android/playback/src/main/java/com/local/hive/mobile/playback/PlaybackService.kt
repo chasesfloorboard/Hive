@@ -556,6 +556,7 @@ class PlaybackService : MediaLibraryService() {
                 }
 
             override fun onSearch(session: MediaLibrarySession, browser: MediaSession.ControllerInfo, query: String, params: LibraryParams?): ListenableFuture<LibraryResult<Void>> {
+                CarLog.note(this@PlaybackService, browser.packageName, "search: \"$query\"")
                 scope.launch {
                     val found = withContext(Dispatchers.IO) { this@PlaybackService.libraryBrowser.search(query) }
                     lastSearch = found
@@ -578,6 +579,12 @@ class PlaybackService : MediaLibraryService() {
 
             override fun onSetMediaItems(mediaSession: MediaSession, controller: MediaSession.ControllerInfo, mediaItems: MutableList<MediaItem>, startIndex: Int, startPositionMs: Long): ListenableFuture<MediaItemsWithStartPosition> {
                 newQueue = true
+                val single = mediaItems.singleOrNull()
+                val reqMeta = single?.requestMetadata
+                if (single != null && (single.mediaId.isEmpty() || reqMeta?.searchQuery != null || reqMeta?.extras != null)) {
+                    val q = reqMeta?.searchQuery ?: reqMeta?.extras?.getString(android.app.SearchManager.QUERY) ?: reqMeta?.extras?.getString(android.provider.MediaStore.EXTRA_MEDIA_TITLE) ?: reqMeta?.extras?.getString(android.provider.MediaStore.EXTRA_MEDIA_ARTIST)
+                    CarLog.note(this@PlaybackService, controller.packageName, "voice/search play: \"$q\" (id='${single.mediaId}')")
+                }
                 // Clamp the controller-supplied start index (the session is exported, so an out-of-range
                 // index from any controller / Android Auto would otherwise throw out of ExoPlayer and crash
                 // the playback service). C.INDEX_UNSET passes through as media3's "default start". The resolve

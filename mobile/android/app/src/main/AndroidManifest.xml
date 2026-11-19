@@ -54,6 +54,10 @@
                 <action android:name="android.media.action.MEDIA_PLAY_FROM_SEARCH" />
                 <category android:name="android.intent.category.DEFAULT" />
             </intent-filter>
+            <intent-filter>
+                <action android:name="android.intent.action.MEDIA_SEARCH" />
+                <category android:name="android.intent.category.DEFAULT" />
+            </intent-filter>
             <!-- Spotify/Apple Music link + sign-in + share intent-filters are the full ("Hive Mobile")
                  edition's: they live in app/src/mobile/AndroidManifest.xml so Hive Clean neither
                  advertises handling streaming links nor navigates to streaming routes it doesn't build. -->
