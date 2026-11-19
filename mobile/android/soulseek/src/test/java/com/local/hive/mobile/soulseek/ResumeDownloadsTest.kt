@@ -66,6 +66,14 @@ class ResumeDownloadsTest {
         assertTrue(SoulseekWorker.resumable(listOf(job)).isEmpty())
     }
 
+    @Test fun `a job marked done is never resumed even if songs are not all done`() {
+        val req = SoulseekRequest("Armand Hammer", "Mercy", listOf(SoulseekRequest.Track("Laraaji")))
+        val job = DownloadJob(req.id, req.artist, req.album, req.label, listOf(song("Laraaji", "waiting")),
+            state = "done", message = "Mercy by Armand Hammer is already in your library", request = Json.encodeToString(SoulseekRequest.serializer(), req))
+
+        assertTrue(SoulseekWorker.resumable(listOf(job)).isEmpty())
+    }
+
     @Test fun `a cancelled download is not resumed`() {
         val job = DownloadJob("rnd", "x", "y", "z", listOf(song("a", "missing")),
             state = "failed", cancelled = true, request = "")

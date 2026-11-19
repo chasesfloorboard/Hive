@@ -44,6 +44,7 @@ import androidx.compose.material.icons.rounded.Search
 import androidx.compose.material.icons.rounded.Shuffle
 import androidx.compose.material.icons.rounded.Share
 import androidx.compose.material.icons.rounded.ContentCopy
+import androidx.compose.material.icons.rounded.Close
 import androidx.compose.runtime.rememberCoroutineScope
 import kotlinx.coroutines.launch
 import androidx.compose.material3.Icon
@@ -405,9 +406,49 @@ private fun ServiceCollectionScreen(
     var shareDialogOpen by remember(key) { mutableStateOf(false) }
     var menuOpen by remember { mutableStateOf(false) }
     var signIn by remember { mutableStateOf(false) }
+    var alreadyDownloadedDialogOpen by remember { mutableStateOf(false) }
     LaunchedEffect(key, attempt) { page = Load.Loading; page = runCatching { load() }.fold({ Load.Ready(it) }, { Load.Failed(it.friendly(service)) }) }
     val collection = (page as? Load.Ready)?.value
     val matches = remember(collection, library) { collection?.songs?.map { vm.localMatch(it) }.orEmpty() }
+    val inLibrary = matches.count { it != null }
+
+    fun startDownload(replaces: Boolean = false, keepBoth: Boolean = false) {
+        val col = collection ?: return
+        val artist = col.curator.ifBlank { col.songs.firstOrNull()?.artist.orEmpty() }
+        val tracks = col.songs.mapIndexed { i, it ->
+            val local = if (replaces) matches.getOrNull(i) else null
+            com.local.hive.mobile.soulseek.SoulseekRequest.Track(
+                it.title, it.durationMs,
+                replaces = local?.id,
+                artist = it.artist,
+                album = it.album.ifBlank { col.name },
+                artworkUrl = it.artworkUrl.ifBlank { col.artwork }
+            )
+        }
+        com.local.hive.mobile.soulseek.SoulseekWorker.enqueue(context, com.local.hive.mobile.soulseek.SoulseekRequest(
+            artist, col.name, tracks,
+            if (col.kind == "track") "track" else "album",
+            favoriteItemKey = "playlist:" + col.source.lowercase().replace(" ", "") + ":" + col.url,
+            keepBoth = keepBoth
+        ))
+        val suffix = when {
+            replaces -> " (replacing existing copy)"
+            keepBoth -> " (keeping both copies)"
+            else -> ""
+        }
+        onToast("Downloading ${col.name}$suffix to ${com.local.hive.mobile.soulseek.SoulseekSettings(context).where(context)}")
+    }
+
+    fun requestDownload() {
+        if (!com.local.hive.mobile.soulseek.SoulseekSettings(context).configured) {
+            signIn = true
+        } else if (inLibrary > 0) {
+            alreadyDownloadedDialogOpen = true
+        } else {
+            startDownload()
+        }
+    }
+
     PickableList(streams = collection?.songs.orEmpty())
 
     // Lit by its own cover, as a library album's page is.
@@ -475,14 +516,6 @@ private fun ServiceCollectionScreen(
                 val route = (if (collection.source == "Spotify") "spotify/c?url=" else "apple/c?url=") + Uri.encode(collection.url)
                 FavoriteBarActions(vm, favoritePlaylist(collection.source.lowercase().replace(" ", "") + ":" + collection.url, collection.name, route, collection.artwork.ifBlank { null }, collection.source))
                 androidx.compose.foundation.layout.Spacer(Modifier.size(8.dp))
-                fun startDownload() {
-                    val artist = collection.curator.ifBlank { collection.songs.firstOrNull()?.artist.orEmpty() }
-                    com.local.hive.mobile.soulseek.SoulseekWorker.enqueue(context, com.local.hive.mobile.soulseek.SoulseekRequest(artist, collection.name,
-                        collection.songs.map { com.local.hive.mobile.soulseek.SoulseekRequest.Track(it.title, it.durationMs, artist = it.artist, album = it.album.ifBlank { collection.name }, artworkUrl = it.artworkUrl.ifBlank { collection.artwork }) },
-                        if (collection.kind == "track") "track" else "album",
-                        favoriteItemKey = "playlist:" + collection.source.lowercase().replace(" ", "") + ":" + collection.url))
-                    onToast("Downloading ${collection.name} to ${com.local.hive.mobile.soulseek.SoulseekSettings(context).where(context)}")
-                }
                 Box {
                     Box(Modifier.size(42.dp).hiveGlass(CircleShape).clickable { menuOpen = true }, contentAlignment = Alignment.Center) {
                         Icon(Icons.Rounded.MoreVert, "More", tint = c.text, modifier = Modifier.size(20.dp))
@@ -497,7 +530,7 @@ private fun ServiceCollectionScreen(
                         }
                         if (album) HiveMenuItem("Download", Icons.Rounded.Download) {
                             menuOpen = false
-                            if (com.local.hive.mobile.soulseek.SoulseekSettings(context).configured) startDownload() else signIn = true
+                            requestDownload()
                         }
                         HiveMenuItem("Share", Icons.Rounded.Share) { menuOpen = false; shareDialogOpen = true }
                         HiveMenuItem("Open in ${collection.source}", Icons.AutoMirrored.Rounded.OpenInNew) {
@@ -527,16 +560,79 @@ private fun ServiceCollectionScreen(
             onToast = onToast,
         )
     }
+    if (alreadyDownloadedDialogOpen && collection != null) {
+        val artist = collection.curator.ifBlank { collection.songs.firstOrNull()?.artist.orEmpty() }
+        AlreadyDownloadedDialog(
+            albumName = collection.name,
+            artistName = artist,
+            inLibraryCount = inLibrary,
+            totalCount = collection.songs.size,
+            onDismiss = { alreadyDownloadedDialogOpen = false },
+            onReplace = {
+                alreadyDownloadedDialogOpen = false
+                startDownload(replaces = true)
+            },
+            onKeepBoth = {
+                alreadyDownloadedDialogOpen = false
+                startDownload(keepBoth = true)
+            },
+        )
+    }
     if (signIn) SoulseekSignInDialog(onDismiss = { signIn = false }, onSignedIn = {
         signIn = false
-        val col = collection ?: return@SoulseekSignInDialog
-        val artist = col.curator.ifBlank { col.songs.firstOrNull()?.artist.orEmpty() }
-        com.local.hive.mobile.soulseek.SoulseekWorker.enqueue(context, com.local.hive.mobile.soulseek.SoulseekRequest(artist, col.name,
-            col.songs.map { com.local.hive.mobile.soulseek.SoulseekRequest.Track(it.title, it.durationMs, artist = it.artist, album = it.album.ifBlank { col.name }, artworkUrl = it.artworkUrl.ifBlank { col.artwork }) },
-            if (col.kind == "track") "track" else "album",
-            favoriteItemKey = "playlist:" + col.source.lowercase().replace(" ", "") + ":" + col.url))
-        onToast("Downloading ${col.name} to ${com.local.hive.mobile.soulseek.SoulseekSettings(context).where(context)}")
+        requestDownload()
     })
+}
+
+@Composable
+private fun AlreadyDownloadedDialog(
+    albumName: String,
+    artistName: String,
+    inLibraryCount: Int,
+    totalCount: Int,
+    onDismiss: () -> Unit,
+    onReplace: () -> Unit,
+    onKeepBoth: () -> Unit,
+) {
+    val c = Hive.colors
+    HiveDialog(onDismiss = onDismiss, padding = PaddingValues(16.dp), spacing = 8.dp) {
+        Text(
+            "This album is already downloaded",
+            style = HiveText.year,
+            color = c.text,
+            maxLines = 2,
+            overflow = TextOverflow.Ellipsis,
+            modifier = Modifier.padding(horizontal = 8.dp, vertical = 4.dp)
+        )
+        Text(
+            if (inLibraryCount >= totalCount) {
+                "“$albumName” by $artistName is already in your library ($inLibraryCount tracks)."
+            } else {
+                "“$albumName” by $artistName is partially in your library ($inLibraryCount of $totalCount tracks already downloaded)."
+            },
+            style = HiveText.small,
+            color = c.textDim,
+            modifier = Modifier.padding(horizontal = 8.dp, vertical = 2.dp)
+        )
+        Text(
+            "What would you like to do?",
+            style = HiveText.small,
+            color = c.textDimmer,
+            modifier = Modifier.padding(horizontal = 8.dp, vertical = 2.dp)
+        )
+        HiveMenuDivider()
+        HiveMenuItem("Replace", Icons.Rounded.Download) {
+            onDismiss()
+            onReplace()
+        }
+        HiveMenuItem("Keep both", Icons.Rounded.ContentCopy) {
+            onDismiss()
+            onKeepBoth()
+        }
+        HiveMenuItem("Cancel", Icons.Rounded.Close) {
+            onDismiss()
+        }
+    }
 }
 
 @Composable

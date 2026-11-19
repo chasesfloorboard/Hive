@@ -83,12 +83,15 @@ class SoulseekSettings(context: Context) {
     val tracks: List<Track>,
     /** "album" or "track". */
     val kind: String = "album",
+    /** Keep both copies: downloads and saves without skipping existing tracks in the library. */
+    val keepBoth: Boolean = false,
     /** Stable per album (or per track for a single-track request), NOT a fresh UUID: re-requesting the same
      *  album after a dropped Soulseek connection (or a second tap) reuses the existing download job instead
      *  of adding a duplicate entry to the Downloads list. A track request also keys on the track title so
      *  two different tracks from one album don't collapse into each other. */
     val id: String = "slsk:$kind:${artist.trim().lowercase()}:${album.trim().lowercase()}" +
-        (if (kind == "track") ":${tracks.firstOrNull()?.title?.trim()?.lowercase().orEmpty()}" else ""),
+        (if (kind == "track") ":${tracks.firstOrNull()?.title?.trim()?.lowercase().orEmpty()}" else "") +
+        (if (keepBoth) ":keepboth" else ""),
     /** Only a lossless copy will do: the song being replaced is already Hive's best lossy one. */
     val losslessOnly: Boolean = false,
     /** When downloaded from a liked Apple Music/Spotify album, that favorite's key — so the liked
@@ -337,6 +340,7 @@ class SoulseekWorker(context: Context, params: WorkerParameters) : CoroutineWork
      * download always pulls that album's own copy of every track, even one you already have elsewhere.
      */
     private suspend fun alreadyHave(request: SoulseekRequest): Set<Int> {
+        if (request.keepBoth) return emptySet()
         val library = runCatching { (applicationContext as SoulseekHost).dao.allTracks() }.getOrDefault(emptyList())
         val artists = com.local.hive.mobile.data.TrackMatcher.artistParts(request.artist)
         val byTitle = library.filter { it.durationMs > 0 && it.sizeBytes > 0 }.groupBy { com.local.hive.mobile.data.TrackMatcher.normalize(it.title) }
@@ -630,7 +634,7 @@ class SoulseekWorker(context: Context, params: WorkerParameters) : CoroutineWork
          * and skips songs already on disk.) Pure, so it is unit-tested without WorkManager/Context.
          */
         fun resumable(jobs: List<DownloadJob>): List<Pair<String?, SoulseekRequest>> = jobs.mapNotNull { job ->
-            if (job.cancelled) return@mapNotNull null
+            if (job.cancelled || job.state == "done") return@mapNotNull null
             if (job.songs.isNotEmpty() && job.songs.all { it.state == "done" }) return@mapNotNull null
             val request = job.request.takeIf { it.isNotBlank() }
                 ?.let { runCatching { Json.decodeFromString(SoulseekRequest.serializer(), it) }.getOrNull() }
