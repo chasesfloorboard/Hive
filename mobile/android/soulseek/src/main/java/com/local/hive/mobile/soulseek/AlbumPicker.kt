@@ -1,6 +1,8 @@
 package com.local.hive.mobile.soulseek
 
+import com.local.hive.mobile.data.hasCleanKeywords
 import com.local.hive.mobile.data.hasDerivativeKeywords
+import com.local.hive.mobile.data.isCleanMismatch
 import com.local.hive.mobile.data.isDerivativeMismatch
 import java.text.Normalizer
 import kotlin.math.abs
@@ -45,6 +47,7 @@ object AlbumPicker {
         if (wanted.isEmpty()) return emptyList()
         val single = wanted.size == 1
         val wantedDerivative = hasDerivativeKeywords(album) || wanted.any { hasDerivativeKeywords(it.title) } || hasDerivativeKeywords(artist)
+        val wantedClean = hasCleanKeywords(album) || wanted.any { hasCleanKeywords(it.title) } || hasCleanKeywords(artist)
         val picks = mutableListOf<Pick>()
         for (r in results) {
             val groups = r.files.filter { it.extension in audio }.groupBy { f ->
@@ -55,7 +58,8 @@ object AlbumPicker {
             for ((key, files) in groups) {
                 val albumLeaf = key.first.substringAfterLast('\\')
                 if (!wantedDerivative && (hasDerivativeKeywords(albumLeaf) || hasDerivativeKeywords(key.first.replace('\\', ' ')))) continue
-                val matched = match(artist, wanted, files, wantedDerivative)
+                if (!wantedClean && (hasCleanKeywords(albumLeaf) || hasCleanKeywords(key.first.replace('\\', ' ')))) continue
+                val matched = match(artist, wanted, files, wantedDerivative, wantedClean)
                 val coverage = matched.size.toDouble() / wanted.size
                 if (single && matched.isEmpty()) continue
                 if (!single && (coverage < 0.75 || matched.size < minOf(wanted.size, 2))) continue
@@ -83,7 +87,7 @@ object AlbumPicker {
     }
 
     /** Which file is which wanted track: by title (and length when both are known), else, for a folder of exactly the album, in order by length. */
-    fun match(artist: String, wanted: List<WantedTrack>, files: List<SharedFile>, wantedDerivative: Boolean = false): Map<Int, SharedFile> {
+    fun match(artist: String, wanted: List<WantedTrack>, files: List<SharedFile>, wantedDerivative: Boolean = false, wantedClean: Boolean = false): Map<Int, SharedFile> {
         val names = files.map { norm(titleOf(it.name, artist)) }
         val used = BooleanArray(files.size)
         val out = HashMap<Int, SharedFile>()
@@ -95,6 +99,7 @@ object AlbumPicker {
                 !used[j] && lengthOk(w, files[j]) &&
                 !isDerivativeMismatch(w.title, files[j].name, wantedAllowed = wantedDerivative) &&
                 (wantedDerivative || !hasDerivativeKeywords(files[j].folder.substringAfterLast('\\')) || hasDerivativeKeywords(w.title)) &&
+                (wantedClean || !hasCleanKeywords(files[j].name)) &&
                 names[j].isNotEmpty() &&
                 (names[j] == t || names[j].contains(t) || (t.contains(names[j]) && names[j].length >= 4))
             }.minByOrNull { j -> (if (names[j] == t) 0 else 1000) + abs(names[j].length - t.length) + (if (w.durationMs > 0 && files[j].lengthSec > 0) abs(w.durationMs / 1000 - files[j].lengthSec).toInt() else 0) }

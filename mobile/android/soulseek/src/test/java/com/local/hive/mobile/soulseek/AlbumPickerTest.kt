@@ -126,4 +126,21 @@ class AlbumPickerTest {
         assertEquals(1, picks.size)
         assertEquals(4, picks.first().files.size)
     }
+
+    @Test fun cleanAlbumsDisqualifiedWhenExplicitWanted() {
+        val wanted = listOf(WantedTrack("All Eyes on Me", 231_000), WantedTrack("Freedom", 226_000))
+        val results = listOf(
+            SearchResult("cleanPeer", 1, listOf(
+                SharedFile("share\\Clipse - Til the Casket Drops (Clean)\\01 - Freedom.mp3", 1, 320, 226),
+                SharedFile("share\\Clipse - Til the Casket Drops (Clean)\\02 - All Eyes on Me (Clean).mp3", 1, 320, 231),
+            ), freeSlot = true, speed = 10_000_000, queue = 0),
+            SearchResult("explicitPeer", 1, listOf(
+                SharedFile("share\\Clipse - Til the Casket Drops\\01 - Freedom.mp3", 1, 320, 226),
+                SharedFile("share\\Clipse - Til the Casket Drops\\02 - All Eyes on Me.mp3", 1, 320, 231),
+            ), freeSlot = true, speed = 1_000_000, queue = 0),
+        )
+        val picks = AlbumPicker.candidates("Clipse", wanted, results, album = "Til the Casket Drops")
+        assertEquals(1, picks.size)
+        assertEquals("explicitPeer", picks.first().user)
+    }
 }

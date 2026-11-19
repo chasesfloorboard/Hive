@@ -30,7 +30,14 @@ fun firstArtist(artist: String) = artist.split(Regex(",|&| x | and | feat\\.? | 
 
 val DERIVATIVE_REGEX = Regex("""\b(?:instrumentals?|inst|acapellas?|a\s+cappellas?|acappellas?|karaoke|slowed(?:\s*(?:\+|and)\s*reverb)?|sped\s+up|speed\s+up|nightcore|chopped\s+and\s+screwed|screwed\s+and\s+chopped)\b""", RegexOption.IGNORE_CASE)
 
+val CLEAN_REGEX = Regex(
+    """(?:[(\[](?:clean(?:\s*(?:version|edit))?|radio\s*edit|censored)[)\]]|-\s*(?:clean(?:\s*(?:version|edit))?|radio\s*edit|censored)\b|\b(?:clean\s+(?:version|edit)|radio\s+edit|censored\s+(?:version|edit))\b)""",
+    RegexOption.IGNORE_CASE
+)
+
 fun hasDerivativeKeywords(text: String): Boolean = DERIVATIVE_REGEX.containsMatchIn(text)
+
+fun hasCleanKeywords(text: String): Boolean = CLEAN_REGEX.containsMatchIn(text)
 
 /** True when one side is an instrumental/acapella/derivative and the other is not. */
 fun isDerivativeMismatch(wanted: String, candidate: String, wantedAllowed: Boolean = false): Boolean {
@@ -38,5 +45,12 @@ fun isDerivativeMismatch(wanted: String, candidate: String, wantedAllowed: Boole
     val wantHas = hasDerivativeKeywords(wanted)
     val candHas = hasDerivativeKeywords(candidate)
     return wantHas != candHas
+}
+
+/** True when the candidate is a clean/censored/radio edit version but the wanted query did not ask for clean. */
+fun isCleanMismatch(wanted: String, candidate: String): Boolean {
+    val wantClean = hasCleanKeywords(wanted)
+    val candClean = hasCleanKeywords(candidate)
+    return !wantClean && candClean
 }
 

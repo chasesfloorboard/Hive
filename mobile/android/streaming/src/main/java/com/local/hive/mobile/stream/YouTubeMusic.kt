@@ -4,6 +4,7 @@ import com.local.hive.mobile.data.similarity
 import com.local.hive.mobile.data.containment
 import com.local.hive.mobile.data.firstArtist
 import com.local.hive.mobile.data.hasDerivativeKeywords
+import com.local.hive.mobile.data.isCleanMismatch
 import com.local.hive.mobile.data.isDerivativeMismatch
 
 import android.content.Context
@@ -92,16 +93,21 @@ class YouTubeMusic(context: Context, private val http: OkHttpClient = com.local.
 
     // ---- matching (Hive's desktop rules) ----
 
-    private data class Candidate(val id: String, val title: String, val artists: String, val durationSec: Int)
+    private data class Candidate(val id: String, val title: String, val artists: String, val durationSec: Int, val isExplicit: Boolean = false)
 
     private fun findPlayableMatch(want: WantedSong): Pair<String, String>? {
         val query = "${firstArtist(want.artist)} ${normalise(want.title)}".trim()
         val wantSec = (want.durationMs / 1000).toInt()
         val wantDerivative = hasDerivativeKeywords(want.album) || hasDerivativeKeywords(want.title)
-        val songMatches = search(query, SONGS).filter { !isDerivativeMismatch(want.title, it.title, wantedAllowed = wantDerivative) }
+        val songMatches = search(query, SONGS)
+            .filter { !isDerivativeMismatch(want.title, it.title, wantedAllowed = wantDerivative) }
+            .filter { !isCleanMismatch(want.title, it.title) }
             .map { it to score(want.title, want.artist, wantSec, it.title, it.artists, it.durationSec) }
             .filter { acceptable(it.second) }
-            .sortedByDescending { it.second.score }
+            .sortedWith(
+                compareByDescending<Pair<Candidate, Score>> { it.first.isExplicit }
+                    .thenByDescending { it.second.score }
+            )
 
         for ((candidate, _) in songMatches) {
             val url = runCatching { audioUrl(candidate.id) }.getOrNull()
@@ -109,11 +115,16 @@ class YouTubeMusic(context: Context, private val http: OkHttpClient = com.local.
         }
 
         // Some songs are only on YouTube as videos ("Artist - Title (Official Video)"): the length must match.
-        val videoMatches = search(query, VIDEOS).filter { !isDerivativeMismatch(want.title, it.title, wantedAllowed = wantDerivative) }
+        val videoMatches = search(query, VIDEOS)
+            .filter { !isDerivativeMismatch(want.title, it.title, wantedAllowed = wantDerivative) }
+            .filter { !isCleanMismatch(want.title, it.title) }
             .map {
                 it to score(want.title, want.artist, wantSec, videoTitleWithoutArtist(it.title, want.artist), it.artists + " " + it.title, it.durationSec)
             }.filter { (_, s) -> s.durationOk && s.titleScore >= 0.6 && s.artistScore >= 0.5 }
-             .sortedByDescending { it.second.score }
+            .sortedWith(
+                compareByDescending<Pair<Candidate, Score>> { it.first.isExplicit }
+                    .thenByDescending { it.second.score }
+            )
 
         for ((candidate, _) in videoMatches) {
             val url = runCatching { audioUrl(candidate.id) }.getOrNull()
@@ -132,6 +143,12 @@ class YouTubeMusic(context: Context, private val http: OkHttpClient = com.local.
         (o["responseContext"] as? JsonObject)?.str("visitorData")?.let { prefs.edit().putString("visitor", it).putLong("visitorAt", System.currentTimeMillis()).apply() }
         return listItems(o).mapNotNull { r ->
             val id = ((r["playlistItemData"] as? JsonObject)?.str("videoId")) ?: return@mapNotNull null
+            val badges = (r["badges"] as? JsonArray).orEmpty().mapNotNull {
+                ((it as? JsonObject)?.get("musicInlineBadgeRenderer") as? JsonObject)?.get("icon")?.let { icon ->
+                    (icon as? JsonObject)?.str("iconType")
+                }
+            }
+            val isExplicit = "MUSIC_EXPLICIT_BADGE" in badges
             val cols = (r["flexColumns"] as? JsonArray).orEmpty().map { col ->
                 (((col as? JsonObject)?.get("musicResponsiveListItemFlexColumnRenderer") as? JsonObject)?.get("text") as? JsonObject)
                     ?.let { t -> (t["runs"] as? JsonArray).orEmpty().joinToString("") { (it as? JsonObject)?.str("text").orEmpty() } }.orEmpty()
@@ -149,7 +166,7 @@ class YouTubeMusic(context: Context, private val http: OkHttpClient = com.local.
             val durationSec = parts.mapNotNull(::seconds).lastOrNull()
                 ?: cols.drop(1).mapNotNull(::seconds).firstOrNull()
                 ?: 0
-            Candidate(id, cols.firstOrNull().orEmpty(), parts.firstOrNull().orEmpty(), durationSec)
+            Candidate(id, cols.firstOrNull().orEmpty(), parts.firstOrNull().orEmpty(), durationSec, isExplicit)
         }.take(6)
     }
 

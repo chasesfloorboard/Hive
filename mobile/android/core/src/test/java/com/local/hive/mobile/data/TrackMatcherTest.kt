@@ -113,5 +113,18 @@ class TrackMatcherTest {
 
         // When the user specifically requests an instrumental release, instrumental candidates are allowed
         assertTrue(!isDerivativeMismatch("All Eyes On Me", "All Eyes On Me (Instrumental)", wantedAllowed = true))
+
+        // Clean vs explicit version detection
+        assertTrue(hasCleanKeywords("All Eyes on Me (Clean Version)"))
+        assertTrue(hasCleanKeywords("All Eyes on Me (Radio Edit)"))
+        assertTrue(hasCleanKeywords("All Eyes on Me [Censored]"))
+        assertTrue(!hasCleanKeywords("All Eyes on Me"))
+        assertTrue(!hasCleanKeywords("Clean Bandit"))
+
+        // When standard/explicit is wanted, clean candidate is a mismatch
+        assertTrue(isCleanMismatch("All Eyes on Me", "All Eyes on Me (Clean)"))
+        assertTrue(isCleanMismatch("All Eyes on Me", "All Eyes on Me (Radio Edit)"))
+        // If clean was explicitly wanted, clean candidate is allowed
+        assertTrue(!isCleanMismatch("All Eyes on Me (Clean)", "All Eyes on Me (Clean)"))
     }
 }
