@@ -81,4 +81,30 @@ class TrackMatcherTest {
             assertEquals(case["name"]!!.jsonPrimitive.content, expected, got)
         }
     }
+
+    @Test fun derivativeMismatchDetectsInstrumentalsCoversAndVariations() {
+        assertTrue(hasDerivativeKeywords("All Eyes On Me (Instrumental)"))
+        assertTrue(hasDerivativeKeywords("Clipse - All Eyes On Me [Inst]"))
+        assertTrue(hasDerivativeKeywords("Song (Acapella)"))
+        assertTrue(hasDerivativeKeywords("Song (A Cappella)"))
+        assertTrue(hasDerivativeKeywords("Song (Karaoke Version)"))
+        assertTrue(hasDerivativeKeywords("Song (Cover)"))
+        assertTrue(hasDerivativeKeywords("Song (Slowed + Reverb)"))
+        assertTrue(hasDerivativeKeywords("Song (Sped Up)"))
+        assertTrue(hasDerivativeKeywords("Song (Nightcore)"))
+
+        // Standard titles and legitimate words do not trigger
+        assertTrue(!hasDerivativeKeywords("All Eyes On Me (feat. Keri Hilson)"))
+        assertTrue(!hasDerivativeKeywords("Instant Karma!"))
+        assertTrue(!hasDerivativeKeywords("Recovery"))
+        assertTrue(!hasDerivativeKeywords("Discovery"))
+        assertTrue(!hasDerivativeKeywords("Undercover"))
+
+        // Mismatches
+        assertTrue(isDerivativeMismatch("All Eyes On Me", "All Eyes On Me (Instrumental)"))
+        assertTrue(isDerivativeMismatch("All Eyes On Me", "Clipse - All Eyes On Me [Inst]"))
+        assertTrue(isDerivativeMismatch("All Eyes On Me (Instrumental)", "All Eyes On Me"))
+        assertTrue(!isDerivativeMismatch("All Eyes On Me", "All Eyes On Me (feat. Keri Hilson)"))
+        assertTrue(!isDerivativeMismatch("All Eyes On Me (Instrumental)", "Clipse - All Eyes On Me (Instrumental)"))
+    }
 }

@@ -1,5 +1,7 @@
 package com.local.hive.mobile.soulseek
 
+import com.local.hive.mobile.data.hasDerivativeKeywords
+import com.local.hive.mobile.data.isDerivativeMismatch
 import java.text.Normalizer
 import kotlin.math.abs
 import kotlin.math.ln
@@ -42,6 +44,7 @@ object AlbumPicker {
     fun candidates(artist: String, wanted: List<WantedTrack>, results: List<SearchResult>, quality: Quality = Quality.Lossless): List<Pick> {
         if (wanted.isEmpty()) return emptyList()
         val single = wanted.size == 1
+        val wantedDerivative = wanted.any { hasDerivativeKeywords(it.title) } || hasDerivativeKeywords(artist)
         val picks = mutableListOf<Pick>()
         for (r in results) {
             val groups = r.files.filter { it.extension in audio }.groupBy { f ->
@@ -50,6 +53,8 @@ object AlbumPicker {
                 album to formatOf(f)
             }
             for ((key, files) in groups) {
+                val albumLeaf = key.first.substringAfterLast('\\')
+                if (!wantedDerivative && (hasDerivativeKeywords(albumLeaf) || hasDerivativeKeywords(key.first.replace('\\', ' ')))) continue
                 val matched = match(artist, wanted, files)
                 val coverage = matched.size.toDouble() / wanted.size
                 if (single && matched.isEmpty()) continue
@@ -86,13 +91,18 @@ object AlbumPicker {
         wanted.forEachIndexed { i, w ->
             val t = norm(w.title)
             if (t.isEmpty()) return@forEachIndexed
-            val best = files.indices.filter { j -> !used[j] && lengthOk(w, files[j]) && names[j].isNotEmpty() && (names[j] == t || names[j].contains(t) || (t.contains(names[j]) && names[j].length >= 4)) }
-                .minByOrNull { j -> (if (names[j] == t) 0 else 1000) + abs(names[j].length - t.length) + (if (w.durationMs > 0 && files[j].lengthSec > 0) abs(w.durationMs / 1000 - files[j].lengthSec).toInt() else 0) }
+            val best = files.indices.filter { j ->
+                !used[j] && lengthOk(w, files[j]) &&
+                !isDerivativeMismatch(w.title, files[j].name) &&
+                (!hasDerivativeKeywords(files[j].folder.substringAfterLast('\\')) || hasDerivativeKeywords(w.title)) &&
+                names[j].isNotEmpty() &&
+                (names[j] == t || names[j].contains(t) || (t.contains(names[j]) && names[j].length >= 4))
+            }.minByOrNull { j -> (if (names[j] == t) 0 else 1000) + abs(names[j].length - t.length) + (if (w.durationMs > 0 && files[j].lengthSec > 0) abs(w.durationMs / 1000 - files[j].lengthSec).toInt() else 0) }
             if (best != null) { used[best] = true; out[i] = files[best] }
         }
         if (out.size < wanted.size && files.size == wanted.size && wanted.all { it.durationMs > 0 }) {
             val ordered = files.sortedBy { it.path.lowercase() }
-            if (ordered.indices.all { i -> ordered[i].lengthSec > 0 && abs(wanted[i].durationMs / 1000.0 - ordered[i].lengthSec) <= 2.0 }) return wanted.indices.associateWith { ordered[it] }
+            if (ordered.indices.all { i -> ordered[i].lengthSec > 0 && abs(wanted[i].durationMs / 1000.0 - ordered[i].lengthSec) <= 2.0 && !isDerivativeMismatch(wanted[i].title, ordered[i].name) && (!hasDerivativeKeywords(ordered[i].folder.substringAfterLast('\\')) || hasDerivativeKeywords(wanted[i].title)) }) return wanted.indices.associateWith { ordered[it] }
         }
         return out
     }

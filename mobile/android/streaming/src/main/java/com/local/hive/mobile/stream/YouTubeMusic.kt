@@ -3,6 +3,7 @@ import com.local.hive.mobile.data.normalise
 import com.local.hive.mobile.data.similarity
 import com.local.hive.mobile.data.containment
 import com.local.hive.mobile.data.firstArtist
+import com.local.hive.mobile.data.isDerivativeMismatch
 
 import android.content.Context
 import android.net.Uri
@@ -95,7 +96,8 @@ class YouTubeMusic(context: Context, private val http: OkHttpClient = com.local.
     private fun findPlayableMatch(want: WantedSong): Pair<String, String>? {
         val query = "${firstArtist(want.artist)} ${normalise(want.title)}".trim()
         val wantSec = (want.durationMs / 1000).toInt()
-        val songMatches = search(query, SONGS).map { it to score(want.title, want.artist, wantSec, it.title, it.artists, it.durationSec) }
+        val songMatches = search(query, SONGS).filter { !isDerivativeMismatch(want.title, it.title) }
+            .map { it to score(want.title, want.artist, wantSec, it.title, it.artists, it.durationSec) }
             .filter { acceptable(it.second) }
             .sortedByDescending { it.second.score }
 
@@ -105,10 +107,11 @@ class YouTubeMusic(context: Context, private val http: OkHttpClient = com.local.
         }
 
         // Some songs are only on YouTube as videos ("Artist - Title (Official Video)"): the length must match.
-        val videoMatches = search(query, VIDEOS).map {
-            it to score(want.title, want.artist, wantSec, videoTitleWithoutArtist(it.title, want.artist), it.artists + " " + it.title, it.durationSec)
-        }.filter { (_, s) -> s.durationOk && s.titleScore >= 0.6 && s.artistScore >= 0.5 }
-         .sortedByDescending { it.second.score }
+        val videoMatches = search(query, VIDEOS).filter { !isDerivativeMismatch(want.title, it.title) }
+            .map {
+                it to score(want.title, want.artist, wantSec, videoTitleWithoutArtist(it.title, want.artist), it.artists + " " + it.title, it.durationSec)
+            }.filter { (_, s) -> s.durationOk && s.titleScore >= 0.6 && s.artistScore >= 0.5 }
+             .sortedByDescending { it.second.score }
 
         for ((candidate, _) in videoMatches) {
             val url = runCatching { audioUrl(candidate.id) }.getOrNull()
@@ -132,8 +135,19 @@ class YouTubeMusic(context: Context, private val http: OkHttpClient = com.local.
                     ?.let { t -> (t["runs"] as? JsonArray).orEmpty().joinToString("") { (it as? JsonObject)?.str("text").orEmpty() } }.orEmpty()
             }
             // "Artist, Artist • Album • 3:45" (songs) or "Artist • 1.2M views • 3:45" (videos).
-            val parts = cols.getOrNull(1).orEmpty().split(" • ")
-            Candidate(id, cols.firstOrNull().orEmpty(), parts.firstOrNull().orEmpty(), parts.lastOrNull()?.let(::seconds) ?: 0)
+            // YouTube Music sometimes has "Song" or "Video" as col 1, or starts with "Song • "
+            val rawCol1 = cols.getOrNull(1).orEmpty()
+            val bylineCol = if (rawCol1.trim().equals("Song", ignoreCase = true) || rawCol1.trim().equals("Video", ignoreCase = true)) {
+                cols.getOrNull(2).orEmpty()
+            } else {
+                rawCol1
+            }
+            val cleanByline = bylineCol.replace(Regex("""^(?:Song|Video|Single|Album|EP)\s*•\s*""", RegexOption.IGNORE_CASE), "")
+            val parts = cleanByline.split(" • ")
+            val durationSec = parts.mapNotNull(::seconds).lastOrNull()
+                ?: cols.drop(1).mapNotNull(::seconds).firstOrNull()
+                ?: 0
+            Candidate(id, cols.firstOrNull().orEmpty(), parts.firstOrNull().orEmpty(), durationSec)
         }.take(6)
     }
 

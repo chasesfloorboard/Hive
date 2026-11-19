@@ -65,6 +65,18 @@ class VoiceSearchTest {
 
     @Test fun anAlbumPlaysInOrder() {
         assertEquals(listOf("B.O.B.", "Ms. Jackson"), VoiceSearch.pick(lib, "Stankonia").map { it.title })
+        assertEquals(listOf("B.O.B.", "Ms. Jackson"), VoiceSearch.pick(lib, "play the album Stankonia").map { it.title })
+        assertEquals(listOf("B.O.B.", "Ms. Jackson"), VoiceSearch.pick(lib, "play Outkast Stankonia").map { it.title })
+    }
+
+    @Test fun artistNotAlbumShufflesArtist() {
+        val notAlbum1 = VoiceSearch.pick(lib, "play outkast not an album", random = Random(1))
+        assertEquals(4, notAlbum1.size)
+        assertTrue(notAlbum1.all { it.artist == "OutKast" })
+
+        val notAlbum2 = VoiceSearch.pick(lib, "play outkast and not an album while driving", random = Random(1))
+        assertEquals(4, notAlbum2.size)
+        assertTrue(notAlbum2.all { it.artist == "OutKast" })
     }
 
     @Test fun aSongPlaysFirstThenItsAlbum() {

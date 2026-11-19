@@ -20,7 +20,7 @@ object VoiceSearch {
         RegexOption.IGNORE_CASE
     )
     private val SUFFIX = Regex(
-        """(?:\s+(?:while\s+i(?:'m|\s+am)?\s+driving|in\s+(?:the|my)\s+car|for\s+(?:the|my)\s+drive|during\s+(?:the|my)\s+drive|while\s+driving|on\s+the\s+road|on\s+(?:the|my)\s+drive))*(?:\s+(?:on|in|from|using|with)\s+hive(?:\s+mobile)?)*(?:\s+(?:right\s+now|now|please|for\s+me|already))*(?:\s+(?:while\s+i(?:'m|\s+am)?\s+driving|in\s+(?:the|my)\s+car|for\s+(?:the|my)\s+drive|during\s+(?:the|my)\s+drive|while\s+driving|on\s+the\s+road|on\s+(?:the|my)\s+drive))*$""",
+        """(?:\s+(?:while\s+i(?:'m|\s+am)?\s+driving|in\s+(?:the|my)\s+car|for\s+(?:the|my)\s+drive|during\s+(?:the|my)\s+drive|while\s+driving|on\s+the\s+road|on\s+(?:the|my)\s+drive))*(?:\s+(?:on|in|from|using|with)\s+hive(?:\s+mobile)?)*(?:\s+(?:and\s+)?not\s+(?:an?\s+)?album)*(?:\s+(?:right\s+now|now|please|for\s+me|already))*(?:\s+(?:while\s+i(?:'m|\s+am)?\s+driving|in\s+(?:the|my)\s+car|for\s+(?:the|my)\s+drive|during\s+(?:the|my)\s+drive|while\s+driving|on\s+the\s+road|on\s+(?:the|my)\s+drive))*$""",
         RegexOption.IGNORE_CASE
     )
     private val LEADING_SOME = Regex("""^(?:some|any)\s+""", RegexOption.IGNORE_CASE)
@@ -76,9 +76,21 @@ object VoiceSearch {
             tracks.filter { n(it.title) == w }.takeIf { songs -> songs.isNotEmpty() && songs.distinctBy { n(it.displayAlbumArtist) }.size == 1 }?.let { return withAlbum(it) }
             byAlbum(w).takeIf { album -> album.isNotEmpty() && album.distinctBy { it.albumId }.size == 1 }?.let { return it }
         }
+        // If the user explicitly asked for "the album ...", check albums before artists.
+        val explicitlyAlbum = Regex("""\b(?:the\s+album|album)\b""", RegexOption.IGNORE_CASE).containsMatchIn(query)
+        if (explicitlyAlbum) {
+            byAlbum(q).takeIf { it.isNotEmpty() }?.let { return it }
+        }
         // Exact names first, then names that contain the words.
         byArtist(q).takeIf { it.isNotEmpty() }?.let { return it.shuffled(random) }
         byAlbum(q).takeIf { it.isNotEmpty() }?.let { return it }
+        // "<artist> <album>" or "<album> <artist>" without "by" (e.g. "play Outkast Stankonia", "play Sade Love Deluxe").
+        tracks.groupBy { it.albumId }.values.firstOrNull { albumTracks ->
+            val first = albumTracks.first()
+            val a = n(first.displayAlbumArtist)
+            val al = n(first.album)
+            (a.isNotEmpty() && al.isNotEmpty()) && (a + al == q || al + a == q)
+        }?.let { return it.inAlbumOrder() }
         tracks.filter { n(it.title) == q }.takeIf { it.isNotEmpty() }?.let { return withAlbum(it) }
         byGenre(q).takeIf { it.isNotEmpty() }?.let { return it.shuffled(random) }
         tracks.filter { t -> TrackMatcher.artistParts(t.displayAlbumArtist).any { q in it } }.takeIf { it.isNotEmpty() }?.let { return it.shuffled(random) }

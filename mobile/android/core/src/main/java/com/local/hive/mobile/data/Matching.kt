@@ -27,3 +27,15 @@ fun containment(wanted: String, text: String): Double {
 }
 
 fun firstArtist(artist: String) = artist.split(Regex(",|&| x | and | feat\\.? | ft\\.? ", RegexOption.IGNORE_CASE)).first().trim()
+
+val DERIVATIVE_REGEX = Regex("""\b(?:instrumentals?|inst|acapellas?|a\s+cappellas?|acappellas?|karaoke|tributes?|covers?|slowed|reverb|sped\s+up|speed\s+up|nightcore|screwed|chopped)\b""", RegexOption.IGNORE_CASE)
+
+fun hasDerivativeKeywords(text: String): Boolean = DERIVATIVE_REGEX.containsMatchIn(text)
+
+/** True when one side is an instrumental/acapella/cover/derivative and the other is not. */
+fun isDerivativeMismatch(wanted: String, candidate: String): Boolean {
+    val wantHas = hasDerivativeKeywords(wanted)
+    val candHas = hasDerivativeKeywords(candidate)
+    return wantHas != candHas
+}
+

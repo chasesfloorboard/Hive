@@ -58,4 +58,36 @@ class AlbumPickerTest {
         assertEquals("Work Work", AlbumPicker.titleOf("1-03 Work Work.mp3", "clipping."))
         assertEquals("Inside Out", AlbumPicker.titleOf("05. Inside Out.mp3", "clipping."))
     }
+
+    @Test fun instrumentalFolderIsDisqualifiedForStandardAlbum() {
+        val results = listOf(
+            SearchResult("instPeer", 1, folder("share\\clipping. - CLPPNG (Instrumentals)", "flac", 900, 16), freeSlot = true, speed = 10_000_000, queue = 0),
+            SearchResult("vocalPeer", 1, folder("share\\clipping. - CLPPNG", "flac", 900, 16), freeSlot = true, speed = 1_000_000, queue = 0),
+        )
+        val picks = AlbumPicker.candidates("clipping.", clppng, results)
+        assertEquals(1, picks.size)
+        assertEquals("vocalPeer", picks.first().user)
+    }
+
+    @Test fun instrumentalFileDoesNotMatchVocalTrack() {
+        val wanted = listOf(WantedTrack("All Eyes On Me", 231_000))
+        val files = listOf(
+            SharedFile("share\\Clipse\\09 - All Eyes On Me (Instrumental).mp3", 1, 320, 231),
+            SharedFile("share\\Clipse\\09 - All Eyes On Me (feat. Keri Hilson).mp3", 1, 320, 231),
+        )
+        val matched = AlbumPicker.match("Clipse", wanted, files)
+        assertEquals(1, matched.size)
+        assertEquals("share\\Clipse\\09 - All Eyes On Me (feat. Keri Hilson).mp3", matched[0]!!.path)
+    }
+
+    @Test fun instrumentalTrackMatchesWhenExplicitlyWanted() {
+        val wanted = listOf(WantedTrack("All Eyes On Me (Instrumental)", 231_000))
+        val files = listOf(
+            SharedFile("share\\Clipse\\09 - All Eyes On Me (Instrumental).mp3", 1, 320, 231),
+            SharedFile("share\\Clipse\\09 - All Eyes On Me (feat. Keri Hilson).mp3", 1, 320, 231),
+        )
+        val matched = AlbumPicker.match("Clipse", wanted, files)
+        assertEquals(1, matched.size)
+        assertEquals("share\\Clipse\\09 - All Eyes On Me (Instrumental).mp3", matched[0]!!.path)
+    }
 }
