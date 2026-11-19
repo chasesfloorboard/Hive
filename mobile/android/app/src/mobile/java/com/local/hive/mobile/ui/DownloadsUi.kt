@@ -27,11 +27,13 @@ import androidx.compose.material.icons.rounded.Check
 import androidx.compose.material.icons.rounded.Close
 import androidx.compose.material.icons.rounded.Download
 import androidx.compose.material.icons.rounded.RadioButtonUnchecked
+import androidx.compose.material.icons.rounded.Refresh
 import androidx.compose.material3.CircularProgressIndicator
 import androidx.compose.material3.Icon
 import androidx.compose.material3.LinearProgressIndicator
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
@@ -131,8 +133,15 @@ fun SoulseekSignInDialog(onDismiss: () -> Unit, onSignedIn: () -> Unit, confirm:
 @Composable
 fun DownloadsSheet(onDismiss: () -> Unit) {
     val c = Hive.colors
-    val app = LocalContext.current.applicationContext as HiveApp
+    val context = LocalContext.current
+    val app = context.applicationContext as HiveApp
     val jobs by app.downloads.jobs.collectAsStateWithLifecycle()
+    // When the user opens the Downloads sheet, if any unfinished download was stalled with a connection drop, wake it up immediately:
+    LaunchedEffect(Unit) {
+        jobs.firstOrNull { !it.finished && it.state == "queued" && it.message.contains("Lost the connection") }?.let {
+            SoulseekWorker.retry(context, it.id)
+        }
+    }
     HiveDialog(onDismiss, Modifier.heightIn(max = 620.dp), padding = PaddingValues(vertical = 16.dp), spacing = 0.dp) {
             Row(Modifier.fillMaxWidth().padding(horizontal = 18.dp), verticalAlignment = Alignment.CenterVertically) {
                 Text("Downloads", style = HiveText.year, color = c.text, modifier = Modifier.weight(1f))
@@ -159,12 +168,33 @@ private fun DownloadCard(job: DownloadJob) {
                 Text(job.message.ifBlank { job.state }, style = HiveText.small, color = if (job.state == "failed") Failed else c.textDim, maxLines = 2, overflow = TextOverflow.Ellipsis)
             }
             Text("${job.doneCount}/${job.songs.size}", style = HiveText.numbers, color = c.textDim)
-            if (!job.finished) Box(Modifier.padding(start = 6.dp).size(40.dp).clip(CircleShape).clickable(onClickLabel = "Cancel") { app.downloads.cancel(job.id); toast("Cancelled ${job.label}") }, contentAlignment = Alignment.Center) {
-                Icon(Icons.Rounded.Close, "Cancel downloading ${job.label}", tint = c.textDim, modifier = Modifier.size(20.dp))
+            if (!job.finished) {
+                if (job.state != "downloading") {
+                    Box(Modifier.padding(start = 6.dp).size(40.dp).clip(CircleShape).clickable(onClickLabel = "Retry") {
+                        SoulseekWorker.retry(context, job.id)
+                        toast("Retrying ${job.label}…")
+                    }, contentAlignment = Alignment.Center) {
+                        Icon(Icons.Rounded.Refresh, "Retry downloading ${job.label}", tint = c.accent, modifier = Modifier.size(20.dp))
+                    }
+                }
+                Box(Modifier.padding(start = 2.dp).size(40.dp).clip(CircleShape).clickable(onClickLabel = "Cancel") {
+                    app.downloads.cancel(job.id)
+                    toast("Cancelled ${job.label}")
+                }, contentAlignment = Alignment.Center) {
+                    Icon(Icons.Rounded.Close, "Cancel downloading ${job.label}", tint = c.textDim, modifier = Modifier.size(20.dp))
+                }
+            } else if (job.state == "failed" || job.state == "partial") {
+                Box(Modifier.padding(start = 6.dp).size(40.dp).clip(CircleShape).clickable(onClickLabel = "Retry") {
+                    SoulseekWorker.retry(context, job.id)
+                    toast("Retrying ${job.label}…")
+                }, contentAlignment = Alignment.Center) {
+                    Icon(Icons.Rounded.Refresh, "Retry downloading ${job.label}", tint = c.accent, modifier = Modifier.size(20.dp))
+                }
             }
         }
         if (!job.finished) {
             if (job.state == "downloading") LinearProgressIndicator(progress = { job.progress }, Modifier.fillMaxWidth().padding(top = 4.dp), color = c.accent, trackColor = c.border)
+            else if (job.progress > 0f) LinearProgressIndicator(progress = { job.progress }, Modifier.fillMaxWidth().padding(top = 4.dp), color = c.accent.copy(alpha = 0.5f), trackColor = c.border)
             else LinearProgressIndicator(Modifier.fillMaxWidth().padding(top = 4.dp), color = c.accent, trackColor = c.border)
         }
         if (open) job.songs.forEachIndexed { i, s ->

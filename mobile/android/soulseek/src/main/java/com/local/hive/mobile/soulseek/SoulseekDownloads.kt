@@ -10,6 +10,7 @@ import android.content.pm.ServiceInfo
 import android.os.Build
 import android.provider.MediaStore
 import androidx.core.app.NotificationCompat
+import androidx.work.BackoffPolicy
 import androidx.work.Constraints
 import androidx.work.CoroutineWorker
 import androidx.work.Data
@@ -25,6 +26,7 @@ import kotlinx.coroutines.launch
 import kotlinx.serialization.Serializable
 import kotlinx.serialization.json.Json
 import java.io.File
+import java.util.concurrent.TimeUnit
 
 /** The Soulseek account Hive downloads with, and the format it prefers. Kept on this phone only. */
 class SoulseekSettings(context: Context) {
@@ -594,16 +596,47 @@ class SoulseekWorker(context: Context, params: WorkerParameters) : CoroutineWork
         /** Once a peer is sending the album, its later songs may wait in its queue longer. */
         private const val NEXT_START_MS = 300_000L
 
-        /** Queues [request] behind any download already running. */
-        fun enqueue(context: Context, request: SoulseekRequest) {
-            (context.applicationContext as SoulseekHost).downloads.add(
-                DownloadJob(request.id, request.artist, request.album, request.label, request.tracks.map { DownloadSong(it.title) }, message = "Waiting",
-                    request = Json.encodeToString(SoulseekRequest.serializer(), request)))
+        /** Queues [request] behind any download already running (or replaces any stalled work if [replace] is true). */
+        fun enqueue(context: Context, request: SoulseekRequest, replace: Boolean = false) {
+            val downloads = (context.applicationContext as SoulseekHost).downloads
+            if (downloads.jobs.value.none { it.id == request.id }) {
+                downloads.add(
+                    DownloadJob(request.id, request.artist, request.album, request.label, request.tracks.map { DownloadSong(it.title) }, message = "Waiting",
+                        request = Json.encodeToString(SoulseekRequest.serializer(), request)))
+            } else {
+                downloads.update(request.id) { j ->
+                    j.copy(
+                        state = "queued",
+                        message = "Waiting",
+                        cancelled = false,
+                        songs = j.songs.map { if (it.state == "done") it else it.copy(state = "waiting", percent = 0) }
+                    )
+                }
+            }
             val work = OneTimeWorkRequestBuilder<SoulseekWorker>()
                 .setInputData(Data.Builder().putString(KEY, Json.encodeToString(SoulseekRequest.serializer(), request)).build())
                 .setConstraints(Constraints.Builder().setRequiredNetworkType(NetworkType.CONNECTED).build())
+                .setBackoffCriteria(BackoffPolicy.LINEAR, 10, TimeUnit.SECONDS)
                 .build()
-            WorkManager.getInstance(context).enqueueUniqueWork("soulseek", ExistingWorkPolicy.APPEND_OR_REPLACE, work)
+            val policy = if (replace) ExistingWorkPolicy.REPLACE else ExistingWorkPolicy.APPEND_OR_REPLACE
+            WorkManager.getInstance(context).enqueueUniqueWork("soulseek", policy, work)
+        }
+
+        /**
+         * Re-runs [id] immediately, replacing any pending retry backoff or stalled work.
+         */
+        fun retry(context: Context, id: String) {
+            val downloads = (context.applicationContext as SoulseekHost).downloads
+            val job = downloads.jobs.value.firstOrNull { it.id == id } ?: return
+            val request = job.request.takeIf { it.isNotBlank() }
+                ?.let { runCatching { Json.decodeFromString(SoulseekRequest.serializer(), it) }.getOrNull() }
+                ?: SoulseekRequest(
+                    artist = job.artist,
+                    album = job.album,
+                    tracks = job.songs.map { SoulseekRequest.Track(it.title) },
+                    kind = if (job.songs.size <= 1) "track" else "album",
+                )
+            enqueue(context, request, replace = true)
         }
 
         /**
@@ -615,13 +648,14 @@ class SoulseekWorker(context: Context, params: WorkerParameters) : CoroutineWork
          */
         fun resumeUnfinished(context: Context) {
             val downloads = (context.applicationContext as SoulseekHost).downloads
-            for ((staleId, request) in resumable(downloads.jobs.value)) {
+            val items = resumable(downloads.jobs.value)
+            items.forEachIndexed { index, (staleId, request) ->
                 // A reconstructed legacy job has a stable id that won't match its old random one, so enqueue
                 // adds a fresh entry rather than updating it. Retire the stale entry so it doesn't keep
                 // respawning the download on every launch; the fresh entry now carries the request and
                 // resumes itself in place.
                 if (staleId != null) downloads.cancel(staleId)
-                enqueue(context, request)
+                enqueue(context, request, replace = (index == 0))
             }
         }
 
