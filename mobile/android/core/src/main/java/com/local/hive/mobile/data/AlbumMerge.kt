@@ -28,10 +28,36 @@ object AlbumMerge {
     private fun merge(parts: List<Pair<Long, List<Track>>>, canonical: MutableMap<Long, Long>) {
         val keys = parts.map { (_, songs) -> artistKeys(songs) }
         val parent = IntArray(parts.size) { it }
-        fun find(i: Int): Int { var x = i; while (parent[x] != x) x = parent[x]; return x }
-        for (i in parts.indices) for (j in i + 1 until parts.size) {
-            if (keys[i].any { it in keys[j] }) parent[find(j)] = find(i)
+        val clusterPositions = parts.map { (_, songs) ->
+            songs.mapNotNull { if (it.trackNumber > 0) it.discNumber to it.trackNumber else null }.toMutableSet()
         }
+        fun find(i: Int): Int { var x = i; while (parent[x] != x) x = parent[x]; return x }
+
+        val pairs = ArrayList<Pair<Int, Int>>()
+        for (i in parts.indices) {
+            for (j in i + 1 until parts.size) {
+                if (keys[i].any { it in keys[j] }) {
+                    pairs += i to j
+                }
+            }
+        }
+        // Prioritize pairs in the same folder, then larger parts
+        pairs.sortWith(compareByDescending<Pair<Int, Int>> { (i, j) ->
+            parts[i].second.firstOrNull()?.folder == parts[j].second.firstOrNull()?.folder
+        }.thenByDescending { (i, j) ->
+            parts[i].second.size + parts[j].second.size
+        })
+
+        for ((i, j) in pairs) {
+            val rootI = find(i)
+            val rootJ = find(j)
+            // Never merge parts if doing so introduces duplicate track numbers on the same disc (1 1 2 2 3 3)
+            if (rootI != rootJ && clusterPositions[rootI].none { it in clusterPositions[rootJ] }) {
+                parent[rootJ] = rootI
+                clusterPositions[rootI].addAll(clusterPositions[rootJ])
+            }
+        }
+
         parts.indices.groupBy(::find).values.filter { it.size > 1 }.forEach { members ->
             val main = members.maxWith(compareBy<Int> { parts[it].second.size }.thenBy { -parts[it].first }).let { parts[it].first }
             members.forEach { if (parts[it].first != main) canonical[parts[it].first] = main }
