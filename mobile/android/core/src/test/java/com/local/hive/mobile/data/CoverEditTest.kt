@@ -30,6 +30,16 @@ class CoverEditTest {
         assertEquals(listOf("new (front)"), shown(CoverEdit(front = "new".toByteArray()).applyTo(emptyList())))
     }
 
+    @Test fun aFrontCoverCanBeTakenOff() {
+        assertEquals(listOf("mono (back)"), shown(CoverEdit(removeFront = true).applyTo(album)))
+        assertEquals(listOf("mono (back)", "single (back)", "booklet (0)"), shown(CoverEdit(removeFront = true).applyTo(single)))
+    }
+
+    @Test fun clearAllRemovesAllPictures() {
+        assertEquals(emptyList<String>(), shown(CoverEdit(clearAll = true).applyTo(album)))
+        assertEquals(emptyList<String>(), shown(CoverEdit(clearAll = true).applyTo(single)))
+    }
+
     @Test fun itunesSpacePaddedSortFramesDoNotDropFollowingId3Frames() {
         val f = java.io.File.createTempFile("hive-id3-", ".mp3")
         try {

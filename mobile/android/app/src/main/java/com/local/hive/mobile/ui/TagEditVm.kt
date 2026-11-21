@@ -40,15 +40,26 @@ class TagEditVm(private val app: HiveApp, private val scope: CoroutineScope) {
         if (cover != null) {
             // Now Playing's turning covers are read from the files again.
             saved.forEach { java.io.File(app.cacheDir, "pictures/${it.id}").deleteRecursively() }
+            val albums = saved.map { it.albumId }.distinct()
+            albums.forEach { albumId ->
+                java.io.File(app.cacheDir, "embedded-art-v2/$albumId.img").delete()
+                java.io.File(app.cacheDir, "hq-art/$albumId.jpg").delete()
+                java.io.File(app.cacheDir, "hq-art/$albumId.differs").delete()
+            }
             cover.backs.forEach { (place, picture) -> app.pcEdits.addBackCover(saved.map { it.id }, place, picture) }
             cover.front?.let { front ->
                 app.pcEdits.addCover(saved.map { it.id }, front)
                 // The old cover is cached (Hive's own copy, Coil's, Android's thumbnails); the new one is
                 // read afresh now, and again once Android has re-read the files and remade its thumbnails.
-                val albums = saved.map { it.albumId }.distinct()
                 refreshCovers(albums, front)
                 scope.launch { kotlinx.coroutines.delay(4_000); refreshCovers(albums, front) }
-            } ?: run { coil3.SingletonImageLoader.get(app).memoryCache?.clear(); forgetShownCovers() }
+            } ?: run {
+                if (cover.clearAll || cover.removeFront) {
+                    app.pcEdits.addCover(saved.map { it.id }, ByteArray(0))
+                }
+                coil3.SingletonImageLoader.get(app).memoryCache?.clear()
+                forgetShownCovers()
+            }
         }
         // Show the change at once: write the edited rows into the library DB now so the open album and lists
         // repopulate immediately. Without this they only updated after the full MediaStore rescan below, which

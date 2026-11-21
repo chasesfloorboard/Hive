@@ -53,13 +53,22 @@ data class TagEdit(
  * covers (0 its first): a new picture, or null to take that one off. A place
  * past the last back cover adds one. Every other picture stays as it was.
  */
-class CoverEdit(val front: ByteArray? = null, val backs: Map<Int, ByteArray?> = emptyMap()) {
-    val isEmpty get() = front == null && backs.isEmpty()
+class CoverEdit(
+    val front: ByteArray? = null,
+    val removeFront: Boolean = false,
+    val clearAll: Boolean = false,
+    val backs: Map<Int, ByteArray?> = emptyMap(),
+) {
+    val isEmpty get() = front == null && !removeFront && !clearAll && backs.isEmpty()
 
     /** The song's pictures after this change, as (data, ID3 type), in file order. */
     fun applyTo(pictures: List<EmbeddedPictures.Picture>): List<Pair<ByteArray, Int>> {
+        if (clearAll) return emptyList()
         val list = pictures.map { it.data to it.type }.toMutableList<Pair<ByteArray, Int>?>()
-        front?.let { f ->
+        if (removeFront) {
+            val i = list.indexOfFirst { it?.second == EmbeddedPictures.FRONT }.takeIf { it >= 0 } ?: if (list.isEmpty()) -1 else 0
+            if (i >= 0) list[i] = null
+        } else front?.let { f ->
             // As on the PC: the front cover, or else the first picture, is replaced; a song with none gets one first.
             val i = list.indexOfFirst { it?.second == EmbeddedPictures.FRONT }.takeIf { it >= 0 } ?: if (list.isEmpty()) -1 else 0
             if (i < 0) list.add(0, f to EmbeddedPictures.FRONT) else list[i] = f to EmbeddedPictures.FRONT
@@ -122,6 +131,7 @@ object TagWriter {
             // With All files access, the edited copy is put next to the song and renamed over it in one
             // step: the song is never half written, even if the app is stopped mid-way (an
             // unfinished write went to the PC with song sync, over its good copy).
+            if (covers != null && !covers.isEmpty) invalidateCoverCache(context, track)
             if (replaceAtomically(context, track, work)) { rescan(context, track); return@withContext }
             try {
                 resolver.openOutputStream(track.uri, "wt")?.use { out -> work.inputStream().use { it.copyTo(out) } } ?: throw IOException("Can't write ${track.fileName}")
@@ -134,6 +144,13 @@ object TagWriter {
         } finally {
             work.delete(); backup.delete()
         }
+    }
+
+    private fun invalidateCoverCache(context: Context, track: Track) {
+        File(context.cacheDir, "embedded-art-v2/${track.albumId}.img").delete()
+        File(context.cacheDir, "hq-art/${track.albumId}.jpg").delete()
+        File(context.cacheDir, "hq-art/${track.albumId}.differs").delete()
+        File(context.cacheDir, "pictures/${track.id}").deleteRecursively()
     }
 
     /** Puts [work] in place of the song's file by a rename in its own folder. False when that can't be done here. */

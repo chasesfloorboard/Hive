@@ -304,8 +304,10 @@ fun CoverSheet(vm: MainViewModel, tracks: List<Track>, onDismiss: () -> Unit, on
             }
             val pictures = changes.filterValues { it !== Removed }.mapValues { (_, v) -> jpeg(v) }
             if (pictures.values.any { it == null }) { busy = false; onToast("Couldn't read that picture"); return@launch }
+            val removeFront = changes[-1] === Removed
             val edit = com.local.hive.mobile.data.CoverEdit(
                 front = pictures[-1],
+                removeFront = removeFront,
                 // A back cover added and taken off again before saving changes nothing.
                 backs = changes.keys.filter { it >= 0 && (changes[it] !== Removed || slots.any { s -> s.back == it && s.now != null }) }.associateWith { pictures[it] },
             )
@@ -384,10 +386,10 @@ fun CoverSheet(vm: MainViewModel, tracks: List<Track>, onDismiss: () -> Unit, on
         )
         Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
             HiveButton("Choose a photo") { photo.launch(PickVisualMediaRequest(ActivityResultContracts.PickVisualMedia.ImageOnly)) }
-            if (selected >= 0 && slot != null) when {
+            if (slot != null) when {
                 changes[selected] === Removed -> HiveButton("Keep it") { changes.remove(selected) }
                 slot.now != null -> HiveButton("Remove") { changes[selected] = Removed }
-                changes[selected] != null -> HiveButton("Remove") { changes.remove(selected); if (oneSong) { slots = slots - slot; selected = -1 } }
+                changes[selected] != null -> HiveButton("Remove") { changes.remove(selected); if (selected >= 0 && oneSong) { slots = slots - slot; selected = -1 } }
             }
         }
         Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(8.dp)) {

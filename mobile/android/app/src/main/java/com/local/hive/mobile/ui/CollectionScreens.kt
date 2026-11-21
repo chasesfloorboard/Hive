@@ -266,8 +266,21 @@ private fun CollectionMenu(tracks: List<Track>, vm: MainViewModel, actions: Trac
                 HiveMenuItem("Edit covers", Icons.Rounded.Image) { open = false; editor.changeCover(tracks) }
                 val albumId = tracks.first().albumId
                 val coverCleared = albumId in vm.hiddenAlbumCovers.collectAsStateWithLifecycle().value
+                val toast = LocalToast.current
+                val write = rememberWriteAccess(toast)
                 if (coverCleared) HiveMenuItem("Show cover", Icons.Rounded.Image) { open = false; vm.showAlbumCover(albumId) }
-                else HiveMenuItem("Remove cover", Icons.Rounded.HideImage) { open = false; vm.hideAlbumCover(albumId) }
+                else HiveMenuItem("Remove cover", Icons.Rounded.HideImage) {
+                    open = false
+                    vm.hideAlbumCover(albumId)
+                    write(tracks) { allowed ->
+                        vm.saveEdits(
+                            allowed.associateWith { com.local.hive.mobile.data.TagEdit() },
+                            com.local.hive.mobile.data.CoverEdit(clearAll = true),
+                        ) { msg ->
+                            toast(if (msg.startsWith("Saved")) "Cover removed from files" else msg)
+                        }
+                    }
+                }
                 HiveMenuItem("Auto-tag album", Icons.Rounded.AutoFixHigh) { open = false; editor.autoTag(tracks) }
             }
             extra?.let { HiveMenuDivider(); it { open = false } }
