@@ -95,9 +95,12 @@ abstract class HiveAppBase : Application(), coil3.SingletonImageLoader.Factory, 
     override fun wasRecentlyForeground() = MainActivity.wasRecentlyForeground()
     override fun showLockPlayerIfWanted(context: android.content.Context, hiveForeground: Boolean) = LockPlayerActivity.showIfWanted(context, hiveForeground)
     override fun lockScreenChanged() = LockPlayerActivity.screenChanged()
-    /** Coil, with album art read at full quality (see [com.local.hive.mobile.data.AlbumArtFetcher]). */
+    /** Coil, with album art read at full quality (see [com.local.hive.mobile.data.AlbumArtFetcher]) and network fetching. */
     override fun newImageLoader(context: coil3.PlatformContext): coil3.ImageLoader = coil3.ImageLoader.Builder(context)
-        .components { add(com.local.hive.mobile.data.AlbumArtFetcher.Factory(this@HiveAppBase)) }
+        .components {
+            add(com.local.hive.mobile.data.AlbumArtFetcher.Factory(this@HiveAppBase))
+            add(coil3.network.okhttp.OkHttpNetworkFetcherFactory())
+        }
         // Room for many full-size covers, so ones already seen come back sharp instead of reloading.
         .memoryCache { coil3.memory.MemoryCache.Builder().maxSizePercent(context, 0.35).build() }
         .build()

@@ -100,7 +100,10 @@ fun Artwork(
                 val pixels = state.result.image.width.toLong() * state.result.image.height
                 if (key != null && model != null) ShownCovers.merge(model.toString(), key to pixels) { old, new -> if (new.second >= old.second) new else old }
             },
-            onError = { if (orElse != null) failed = true else { shown = false; covered = false } },
+            onError = { state ->
+                android.util.Log.d("HiveArtwork", "Cover failed for $model: ${state.result.throwable.message}")
+                if (orElse != null) failed = true else { shown = false; covered = false }
+            },
         )
     }
 }
