@@ -90,4 +90,17 @@ class ResumeDownloadsTest {
         assertNull("request wasn't blank, so no legacy retire", staleId)
         assertEquals(listOf("One", "Two"), out.tracks.map { it.title })
     }
+
+    @Test fun `a large album request serializes cleanly and preserves album-level artwork`() {
+        val tracks = (1..30).map {
+            SoulseekRequest.Track("Track Number $it With Long Subtitle (Remastered 2026)", 240_000L, trackNumber = it)
+        }
+        val req = SoulseekRequest("Artist With A Long Name", "Album With A Long Name (Deluxe Expanded Edition)",
+            tracks, artworkUrl = "https://is1-ssl.mzstatic.com/image/thumb/Music126/v4/18/05/fe/1805fea9-58d8-502a-573b-5711473bd5e4/13UABIM74015.rgb.jpg/1200x1200bb.jpg")
+        val json = Json.encodeToString(SoulseekRequest.serializer(), req)
+        val decoded = Json.decodeFromString(SoulseekRequest.serializer(), json)
+
+        assertEquals(30, decoded.tracks.size)
+        assertEquals(req.artworkUrl, decoded.artworkUrl)
+    }
 }

@@ -315,17 +315,22 @@ private fun ServiceSongRow(vm: MainViewModel, s: StreamTrack, local: Track?, now
 fun downloadStreams(context: android.content.Context, songs: List<StreamTrack>, onToast: (String) -> Unit) {
     songs.groupBy { it.artist.substringBefore(",").trim() to it.album }.forEach { (key, group) ->
         val (artist, album) = key
+        val albumArt = group.firstOrNull()?.artworkUrl.orEmpty()
         val tracks = group.mapIndexed { i, it ->
             com.local.hive.mobile.soulseek.SoulseekRequest.Track(
                 it.title, it.durationMs,
                 artist = it.artist,
                 album = it.album,
-                artworkUrl = it.artworkUrl,
+                artworkUrl = if (it.artworkUrl == albumArt) "" else it.artworkUrl,
                 trackNumber = i + 1,
             )
         }
         com.local.hive.mobile.soulseek.SoulseekWorker.enqueue(context,
-            com.local.hive.mobile.soulseek.SoulseekRequest(artist, album, tracks, if (group.size == 1 || album.isBlank()) "track" else "album"))
+            com.local.hive.mobile.soulseek.SoulseekRequest(
+                artist, album, tracks,
+                if (group.size == 1 || album.isBlank()) "track" else "album",
+                artworkUrl = albumArt
+            ))
     }
     val where = com.local.hive.mobile.soulseek.SoulseekSettings(context).where(context)
     onToast(if (songs.size == 1) "Downloading ${songs.first().title} to $where" else "Downloading ${songs.size} songs to $where")
@@ -423,6 +428,7 @@ private fun ServiceCollectionScreen(
     fun startDownload(replaces: Boolean = false, keepBoth: Boolean = false) {
         val col = collection ?: return
         val artist = col.curator.ifBlank { col.songs.firstOrNull()?.artist.orEmpty() }
+        val albumArt = col.artwork.ifBlank { col.songs.firstOrNull()?.artworkUrl.orEmpty() }
         val tracks = col.songs.mapIndexed { i, it ->
             val local = if (replaces) matches.getOrNull(i) else null
             com.local.hive.mobile.soulseek.SoulseekRequest.Track(
@@ -430,7 +436,7 @@ private fun ServiceCollectionScreen(
                 replaces = local?.id,
                 artist = it.artist,
                 album = it.album.ifBlank { col.name },
-                artworkUrl = it.artworkUrl.ifBlank { col.artwork },
+                artworkUrl = if (it.artworkUrl == albumArt || it.artworkUrl.isBlank()) "" else it.artworkUrl,
                 trackNumber = i + 1,
             )
         }
@@ -438,7 +444,8 @@ private fun ServiceCollectionScreen(
             artist, col.name, tracks,
             if (col.kind == "track") "track" else "album",
             favoriteItemKey = "playlist:" + col.source.lowercase().replace(" ", "") + ":" + col.url,
-            keepBoth = keepBoth
+            keepBoth = keepBoth,
+            artworkUrl = albumArt,
         ))
         val suffix = when {
             replaces -> " (replacing existing copy)"

@@ -20,6 +20,7 @@ import androidx.work.NetworkType
 import androidx.work.OneTimeWorkRequestBuilder
 import androidx.work.WorkManager
 import androidx.work.WorkerParameters
+import com.local.hive.mobile.data.writeTextAtomic
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.flow.first
 import kotlinx.coroutines.launch
@@ -99,6 +100,8 @@ class SoulseekSettings(context: Context) {
     /** When downloaded from a liked Apple Music/Spotify album, that favorite's key — so the liked
      *  streaming album turns into the local album in Favorites once the download lands. */
     val favoriteItemKey: String = "",
+    /** Album-level artwork URL, so album downloads do not redundantly duplicate the artwork string across every track. */
+    val artworkUrl: String = "",
 ) {
     /** [replaces]: the library song (a lossy download of Hive's) this download takes the place of. */
     @Serializable data class Track(
@@ -148,7 +151,25 @@ class SoulseekWorker(context: Context, params: WorkerParameters) : CoroutineWork
     private val downloads get() = (applicationContext as SoulseekHost).downloads
 
     override suspend fun doWork(): Result {
-        val request = runCatching { json.decodeFromString(SoulseekRequest.serializer(), inputData.getString(KEY).orEmpty()) }.getOrNull() ?: return Result.success()
+        val id = inputData.getString(KEY_ID).orEmpty()
+        val raw = inputData.getString(KEY).orEmpty()
+        val request = runCatching {
+            if (raw.isNotBlank()) json.decodeFromString(SoulseekRequest.serializer(), raw) else null
+        }.getOrNull()
+            ?: runCatching {
+                if (id.isNotBlank()) {
+                    val file = requestFile(applicationContext, id)
+                    if (file.exists()) json.decodeFromString(SoulseekRequest.serializer(), file.readText()) else null
+                } else null
+            }.getOrNull()
+            ?: runCatching {
+                if (id.isNotBlank()) {
+                    downloads.jobs.value.firstOrNull { it.id == id }?.request?.takeIf { it.isNotBlank() }?.let {
+                        json.decodeFromString(SoulseekRequest.serializer(), it)
+                    }
+                } else null
+            }.getOrNull()
+            ?: return Result.success()
         // Cancelled while it waited its turn.
         if (downloads.isCancelled(request.id)) return Result.success()
         val settings = SoulseekSettings(applicationContext)
@@ -382,8 +403,9 @@ class SoulseekWorker(context: Context, params: WorkerParameters) : CoroutineWork
             line = "${t.title} · from YouTube"
             runCatching { setForeground(foreground()) }
             val result = runCatching {
+                val trackToFetch = if (t.artworkUrl.isBlank() && request.artworkUrl.isNotBlank()) t.copy(artworkUrl = request.artworkUrl) else t
                 kotlinx.coroutines.withContext(kotlinx.coroutines.Dispatchers.IO) {
-                    YouTubeFallback.fetch(applicationContext, request.artist, request.album, t, temp) { bytes, size ->
+                    YouTubeFallback.fetch(applicationContext, request.artist, request.album, trackToFetch, temp) { bytes, size ->
                         if (size > 0) downloads.song(request.id, i) { it.copy(percent = (bytes * 100 / size).toInt()) }
                     }
                 }
@@ -564,6 +586,7 @@ class SoulseekWorker(context: Context, params: WorkerParameters) : CoroutineWork
 
     /** The outcome, as its own notification; when songs are missing, a tap opens Seeker's search to pick them by hand. */
     private fun finish(message: String, request: SoulseekRequest, state: String, offerSeeker: Boolean = false, seekerQuery: String? = null) {
+        runCatching { requestFile(applicationContext, request.id).delete() }
         if (downloads.isCancelled(request.id)) return
         downloads.update(request.id) { it.copy(state = state, message = message) }
         val nm = channel()
@@ -590,6 +613,7 @@ class SoulseekWorker(context: Context, params: WorkerParameters) : CoroutineWork
 
     companion object {
         private const val KEY = "request"
+        private const val KEY_ID = "request_id"
         private const val CHANNEL = "hive-downloads-2"
         // Not 4712-4713: song sync's.
         private const val PROGRESS_ID = 4720
@@ -598,25 +622,42 @@ class SoulseekWorker(context: Context, params: WorkerParameters) : CoroutineWork
         /** Once a peer is sending the album, its later songs may wait in its queue longer. */
         private const val NEXT_START_MS = 300_000L
 
+        fun requestFile(context: Context, id: String): File {
+            val dir = File(context.filesDir, "soulseek_requests").apply { if (!exists()) mkdirs() }
+            val safe = id.replace(Regex("[^a-zA-Z0-9_-]"), "_")
+            return File(dir, "$safe.json")
+        }
+
         /** Queues [request] behind any download already running (or replaces any stalled work if [replace] is true). */
         fun enqueue(context: Context, request: SoulseekRequest, replace: Boolean = false) {
             val downloads = (context.applicationContext as SoulseekHost).downloads
+            val serialized = Json.encodeToString(SoulseekRequest.serializer(), request)
             if (downloads.jobs.value.none { it.id == request.id }) {
                 downloads.add(
                     DownloadJob(request.id, request.artist, request.album, request.label, request.tracks.map { DownloadSong(it.title) }, message = "Waiting",
-                        request = Json.encodeToString(SoulseekRequest.serializer(), request)))
+                        request = serialized))
             } else {
                 downloads.update(request.id) { j ->
                     j.copy(
                         state = "queued",
                         message = "Waiting",
                         cancelled = false,
+                        request = serialized,
                         songs = j.songs.map { if (it.state == "done") it else it.copy(state = "waiting", percent = 0) }
                     )
                 }
             }
+            // Persist the full request to a dedicated file so arbitrary-length album tracklists never exceed
+            // WorkManager's strict 10KB (10240 bytes) inputData serialization limit.
+            runCatching { requestFile(context, request.id).writeTextAtomic(serialized) }
+
+            val dataBuilder = Data.Builder().putString(KEY_ID, request.id)
+            // Only embed directly in inputData if safely within WorkManager's 10KB ceiling (<= 8KB)
+            if (serialized.length <= 8000) {
+                dataBuilder.putString(KEY, serialized)
+            }
             val work = OneTimeWorkRequestBuilder<SoulseekWorker>()
-                .setInputData(Data.Builder().putString(KEY, Json.encodeToString(SoulseekRequest.serializer(), request)).build())
+                .setInputData(dataBuilder.build())
                 .setConstraints(Constraints.Builder().setRequiredNetworkType(NetworkType.CONNECTED).build())
                 .setBackoffCriteria(BackoffPolicy.LINEAR, 10, TimeUnit.SECONDS)
                 .build()

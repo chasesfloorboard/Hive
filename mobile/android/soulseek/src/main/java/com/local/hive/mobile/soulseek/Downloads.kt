@@ -40,7 +40,7 @@ import java.io.File
  * the last downloads finished. Kept in a file so it survives Hive closing;
  * SoulseekWorker updates it as it goes.
  */
-class Downloads(context: Context) {
+class Downloads(private val context: Context) {
     private val file = File(context.filesDir, "downloads.json")
     private val json = Json { ignoreUnknownKeys = true; encodeDefaults = true }
     private val _jobs = MutableStateFlow(runCatching { json.decodeFromString<List<DownloadJob>>(file.readText()) }.getOrDefault(emptyList()))
@@ -54,8 +54,11 @@ class Downloads(context: Context) {
     /** Stops a download that isn't finished: the songs already in stay, the rest are left. */
     fun cancel(id: String) = change { list -> list.map { j ->
         if (j.id != id || j.finished) j
-        else j.copy(state = if (j.doneCount > 0) "partial" else "failed", message = "Cancelled", cancelled = true,
-            songs = j.songs.map { if (it.state == "done") it else it.copy(state = "missing", percent = 0) })
+        else {
+            runCatching { SoulseekWorker.requestFile(context, id).delete() }
+            j.copy(state = if (j.doneCount > 0) "partial" else "failed", message = "Cancelled", cancelled = true,
+                songs = j.songs.map { if (it.state == "done") it else it.copy(state = "missing", percent = 0) })
+        }
     } }
 
     fun isCancelled(id: String) = _jobs.value.firstOrNull { it.id == id }?.cancelled == true
