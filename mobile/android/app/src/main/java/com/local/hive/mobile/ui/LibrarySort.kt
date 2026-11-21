@@ -34,24 +34,48 @@ object LibrarySort {
         return withoutArticle.ifBlank { trimmed.ifBlank { value } }
     }
 
-    /** Text as search compares it: no case, accents or ligatures, so "aenima" finds "Ænima" and "bjork" finds "Björk". */
-    fun fold(value: String): String = java.text.Normalizer.normalize(
-        value.lowercase().replace("æ", "ae").replace("œ", "oe").replace("ø", "o").replace("ß", "ss").replace("ł", "l").replace("đ", "d"),
-        java.text.Normalizer.Form.NFKD,
-    ).replace(marks, "")
-
     private val marks = Regex("\\p{M}+")
     private val notWord = Regex("[^\\p{L}\\p{N}]+")
+    private val acronymDots = Regex("""(?<=\p{L})\.(?=\p{L}|\.|\s|$)""")
+    private val currencyS = Regex("""(?<=\p{L})\$(?=\p{L}|\$)|\$(?=\p{L})|(?<=\p{L})\$(?=\s|$)""")
+
+    /** Text as search compares it: no case, accents, ligatures, acronym dots or stylized symbols. */
+    fun fold(value: String): String {
+        val noAcronymDots = value.replace(acronymDots, "").replace(currencyS, "s")
+        val decomposed = java.text.Normalizer.normalize(
+            noAcronymDots.lowercase()
+                .replace("æ", "ae").replace("œ", "oe").replace("ø", "o")
+                .replace("ß", "ss").replace("ł", "l").replace("đ", "d"),
+            java.text.Normalizer.Form.NFKD,
+        )
+        return decomposed.replace(marks, "")
+    }
 
     /**
      * A search's words, folded as [fold] does and without punctuation: a song matches when each
      * word is somewhere in its title, artist or album, in any order ("nanana edit" finds
-     * "(It Goes Like) Nanana (Edit)"). Empty: nothing typed.
+     * "(It Goes Like) Nanana (Edit)"). Acronyms like "n.e.r.d" fold to "nerd".
      */
     fun words(query: String): List<String> = fold(query).split(notWord).filter { it.isNotEmpty() }
 
+    /**
+     * Checks if [w] matches within [text] (which should already be folded).
+     * Short words (< 4 chars) match at word boundaries (e.g. "red" matches "Red Alert", not "Filtered").
+     * Longer words (>= 4 chars) match at word boundaries or within compound words ("head" in "Radiohead").
+     */
+    fun matchesWord(text: String, w: String): Boolean {
+        if (w.isEmpty()) return true
+        if (w.length >= 4) return text.contains(w)
+        var idx = text.indexOf(w)
+        while (idx >= 0) {
+            if (idx == 0 || !text[idx - 1].isLetterOrDigit()) return true
+            idx = text.indexOf(w, idx + 1)
+        }
+        return false
+    }
+
     /** [text] (already folded) holds every one of [words]. */
-    fun has(text: String, words: List<String>) = words.all { it in text }
+    fun has(text: String, words: List<String>) = words.all { matchesWord(text, it) }
 
     /** [text] (not folded yet) holds every one of [words]. */
     fun matches(text: String, words: List<String>) = words.isEmpty() || has(fold(text), words)

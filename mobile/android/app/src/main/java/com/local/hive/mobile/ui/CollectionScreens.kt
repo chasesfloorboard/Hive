@@ -75,7 +75,9 @@ import androidx.compose.ui.unit.Dp
 import androidx.compose.ui.unit.dp
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import com.local.hive.mobile.data.AlbumSummary
+import com.local.hive.mobile.data.ArtistSummary
 import com.local.hive.mobile.data.FavoriteAlbum
+import com.local.hive.mobile.data.StreamTrack
 import com.local.hive.mobile.data.Track
 import com.local.hive.mobile.ui.theme.Hive
 import com.local.hive.mobile.ui.theme.HiveGlassLayers
@@ -536,12 +538,74 @@ fun SearchScreen(vm: MainViewModel, actions: TrackActions, bottomPadding: Dp, on
     val q = query.trim()
     val fq = remember(q) { LibrarySort.words(q) }
     val longEnough = fq.sumOf { it.length } >= 2
-    val albumHits by remember(fq, albums) { derivedStateOf { if (!longEnough) emptyList() else albums.filter { LibrarySort.matches("${it.album} ${it.artist}", fq) }.take(8) } }
+    val fqStr = remember(q) { LibrarySort.fold(q) }
+    val albumHits by remember(fqStr, fq, albums) {
+        derivedStateOf<List<AlbumSummary>> {
+            if (!longEnough) emptyList()
+            else {
+                albums.filter { LibrarySort.matches("${it.album} ${it.artist}", fq) }
+                    .sortedWith(
+                        compareByDescending<AlbumSummary> {
+                            val falbum = LibrarySort.fold(it.album)
+                            val fartist = LibrarySort.fold(it.artist)
+                            when {
+                                falbum == fqStr -> 5
+                                falbum.startsWith(fqStr) -> 4
+                                fartist == fqStr -> 3
+                                fartist.startsWith(fqStr) -> 2
+                                else -> 1
+                            }
+                        }.thenByDescending { it.trackCount }
+                    )
+                    .take(8)
+            }
+        }
+    }
     val liked by vm.streamFavorites.collectAsStateWithLifecycle()
     val full by vm.fullSongs.collectAsStateWithLifecycle()
-    val likedHits by remember(fq, liked) { derivedStateOf { if (!longEnough) emptyList() else liked.map { it.first }.filter { LibrarySort.matches("${it.title} ${it.artist} ${it.album}", fq) }.take(30) } }
+    val likedHits by remember(fqStr, fq, liked) {
+        derivedStateOf<List<StreamTrack>> {
+            if (!longEnough) emptyList()
+            else {
+                liked.map { it.first }.filter { LibrarySort.matches("${it.title} ${it.artist} ${it.album}", fq) }
+                    .sortedWith(
+                        compareByDescending<StreamTrack> {
+                            val ftitle = LibrarySort.fold(it.title)
+                            val fartist = LibrarySort.fold(it.artist)
+                            when {
+                                ftitle == fqStr -> 5
+                                ftitle.startsWith(fqStr) -> 4
+                                fartist == fqStr -> 3
+                                fartist.startsWith(fqStr) -> 2
+                                else -> 1
+                            }
+                        }
+                    )
+                    .take(30)
+            }
+        }
+    }
     if (!online) PickableList(tracks = results, streams = likedHits)
-    val artistHits by remember(fq, artists) { derivedStateOf { if (!longEnough) emptyList() else artists.filter { LibrarySort.matches(it.artist, fq) }.take(6) } }
+    val artistHits by remember(fqStr, fq, artists) {
+        derivedStateOf<List<ArtistSummary>> {
+            if (!longEnough) emptyList()
+            else {
+                artists.filter { LibrarySort.matches(it.artist, fq) }
+                    .sortedWith(
+                        compareByDescending<ArtistSummary> {
+                            val fa = LibrarySort.fold(it.artist)
+                            when {
+                                fa == fqStr -> 4
+                                fa.startsWith(fqStr) -> 3
+                                it.artist.split(Regex("[^\\p{L}\\p{N}]+")).any { w -> LibrarySort.fold(w).startsWith(fqStr) } -> 2
+                                else -> 1
+                            }
+                        }.thenByDescending { it.trackCount }
+                    )
+                    .take(6)
+            }
+        }
+    }
 
     Column(Modifier.fillMaxSize()) {
         Row(Modifier.fillMaxWidth().statusBarsPadding().padding(horizontal = 10.dp, vertical = 6.dp), verticalAlignment = Alignment.CenterVertically) {

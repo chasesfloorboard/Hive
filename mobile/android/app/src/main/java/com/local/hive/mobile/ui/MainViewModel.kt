@@ -188,11 +188,28 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
     suspend fun search(query: String): List<Track> {
         val q = LibrarySort.words(query)
         if (q.isEmpty()) return emptyList()
+        val fqStr = LibrarySort.fold(query)
         return kotlinx.coroutines.withContext(kotlinx.coroutines.Dispatchers.Default) {
             val library = tracks.value
             val index = searchIndex?.takeIf { it.first === library }?.second
                 ?: library.map { LibrarySort.fold("${it.title}\u0000${it.artist}\u0000${it.album}") }.also { searchIndex = library to it }
-            library.indices.filter { LibrarySort.has(index[it], q) }.take(300).map { library[it] }
+            val matching = library.indices.filter { LibrarySort.has(index[it], q) }
+            matching.map { library[it] }
+                .sortedWith(
+                    compareByDescending<Track> { t ->
+                        val ftitle = LibrarySort.fold(t.title)
+                        val fartist = LibrarySort.fold(t.artist)
+                        when {
+                            ftitle == fqStr -> 6
+                            ftitle.startsWith(fqStr) -> 5
+                            fartist == fqStr -> 4
+                            fartist.startsWith(fqStr) -> 3
+                            t.title.split(Regex("[^\\p{L}\\p{N}]+")).any { w -> LibrarySort.fold(w).startsWith(fqStr) } -> 2
+                            else -> 1
+                        }
+                    }
+                )
+                .take(300)
         }
     }
     private var searchIndex: Pair<List<Track>, List<String>>? = null
