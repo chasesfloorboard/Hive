@@ -650,6 +650,7 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
     suspend fun searchAlbums(artist: String, album: String) = discovery.searchAlbums(artist, album)
     suspend fun albumDetails(id: String) = discovery.albumDetails(id)
     suspend fun searchCovers(query: String) = discovery.searchCovers(query)
+    suspend fun searchCovers(artist: String, album: String, title: String = "") = discovery.searchCovers(artist, album, title)
     suspend fun lyrics(now: com.local.hive.mobile.playback.NowPlaying) = discovery.lyrics(now)
     suspend fun saveOwnLyrics(artist: String, title: String, text: String) = discovery.saveOwnLyrics(artist, title, text)
     val radio get() = discovery.radio

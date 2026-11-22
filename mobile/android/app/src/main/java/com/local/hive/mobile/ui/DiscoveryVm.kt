@@ -26,6 +26,8 @@ class DiscoveryVm(private val app: HiveApp) {
     private val coverSearch = com.local.hive.mobile.discovery.ITunesCoverSearch()
     suspend fun searchCovers(query: String): List<com.local.hive.mobile.discovery.CoverChoice> =
         com.local.hive.mobile.data.runCatchingNotCancelled { coverSearch.search(query) }.getOrDefault(emptyList())
+    suspend fun searchCovers(artist: String, album: String, title: String = ""): List<com.local.hive.mobile.discovery.CoverChoice> =
+        com.local.hive.mobile.data.runCatchingNotCancelled { coverSearch.search(artist, album, title) }.getOrDefault(emptyList())
 
     // ---- lyrics (LRCLIB default, in :core; Genius is a Mobile-only fallback) ----
     suspend fun lyrics(now: com.local.hive.mobile.playback.NowPlaying) = app.lyricsStore.find(now.artist, now.title, now.album, now.durationMs)

@@ -108,6 +108,32 @@ class MetadataTest {
         assertEquals(0, server.requestCount)
     }
 
+    @Test fun itunes_cover_search_deciphers_queries_and_filters_karaoke() = runTest {
+        val (a1, al1) = ITunesCoverSearch.decipher("Usher's Hopes and Dreams")
+        assertEquals("Usher", a1)
+        assertEquals("Hopes and Dreams", al1)
+
+        val (a2, al2) = ITunesCoverSearch.decipher("Hopes and Fears by Usher")
+        assertEquals("Usher", a2)
+        assertEquals("Hopes and Fears", al2)
+
+        val (a3, al3) = ITunesCoverSearch.decipher("Usher - Confessions [Deluxe Edition]")
+        assertEquals("Usher", a3)
+        assertEquals("Confessions", al3)
+
+        server.enqueue(MockResponse().setBody(
+            """{"results":[
+                 {"collectionId":1,"collectionName":"Confessions (Karaoke Version)","artistName":"Ameritz Karaoke",
+                  "artworkUrl100":"https://is1.mzstatic.com/image/k/100x100bb.jpg"},
+                 {"collectionId":2,"collectionName":"Confessions (Expanded Edition)","artistName":"USHER",
+                  "artworkUrl100":"https://is1.mzstatic.com/image/u/100x100bb.jpg"}
+               ]}"""))
+        val hits = ITunesCoverSearch(server.url("/").toString().trimEnd('/')).search("Usher's Confessions")
+        assertEquals(1, hits.size)
+        assertEquals("Confessions (Expanded Edition)", hits[0].title)
+        assertEquals("USHER", hits[0].artist)
+    }
+
     @Test fun search_offers_a_cover_when_cover_art_archive_is_absent() = runTest {
         // The real search endpoint omits cover-art-archive, so a cover must still be offered; only an
         // explicit front=false denies one. (Gating on front=="true" blanked every search result's cover.)

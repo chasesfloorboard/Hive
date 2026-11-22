@@ -274,13 +274,20 @@ fun CoverSheet(vm: MainViewModel, tracks: List<Track>, onDismiss: () -> Unit, on
     val write = rememberWriteAccess(onToast)
     val first = tracks.first()
     val oneSong = tracks.size == 1
-    var query by remember { mutableStateOf("${first.displayAlbumArtist} ${first.album}".trim()) }
+    val defaultQuery = remember(first) {
+        val a = first.displayAlbumArtist.ifBlank { first.artist }
+        val al = com.local.hive.mobile.discovery.ITunesCoverSearch.cleanBrackets(first.album).ifBlank { first.title }
+        listOf(a, al).filter { it.isNotBlank() }.joinToString(" - ")
+    }
+    var query by remember { mutableStateOf(defaultQuery) }
     var results by remember { mutableStateOf<List<com.local.hive.mobile.discovery.CoverChoice>?>(null) }
     var slots by remember { mutableStateOf(listOf(CoverSlot(-1, first.artworkUri))) }
     val changes = remember { androidx.compose.runtime.mutableStateMapOf<Int, Any>() }
     var selected by remember { mutableStateOf(-1) }
     var busy by remember { mutableStateOf(false) }
-    LaunchedEffect(Unit) { results = vm.searchCovers(query) }
+    LaunchedEffect(Unit) {
+        results = vm.searchCovers(first.displayAlbumArtist.ifBlank { first.artist }, first.album, first.title)
+    }
     LaunchedEffect(Unit) {
         // The back covers now: a song's own, or for an album, the first back cover its songs have.
         val backs = if (oneSong) vm.pictures(first).filter { it.back }.map { it.data }
