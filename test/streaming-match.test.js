@@ -79,3 +79,26 @@ test('appleLocalMatch matches on albumArtist too, and uses only the first of sev
   // Primary artist is the first before a comma/&/" x "; here 'Daft Punk' matches albumArtist.
   assert.equal(sm.appleLocalMatch(index, { title: 'Song', artist: 'Daft Punk & Pharrell' })?.path, '/m/x.mp3');
 });
+
+test('appleLocalMatchSameAlbum ignores a copy from another release but keeps the same-album one', () => {
+  const lib = [{ path: '/m/jackboys.mp3', title: 'HAD ENOUGH', artist: 'Don Toliver', albumArtist: 'Don Toliver', album: 'JACKBOYS' }];
+  const sm = make(lib);
+  const index = sm.appleLibraryIndex();
+  // Downloading Heaven or Hell: the only owned copy is on JACKBOYS -> NOT a match, so the album's own copy downloads.
+  assert.equal(sm.appleLocalMatchSameAlbum(index, { title: 'HAD ENOUGH', artist: 'Don Toliver', album: 'Heaven or Hell' }), null);
+  // The album-blind matcher still finds it (for the "in your library" label and playback).
+  assert.equal(sm.appleLocalMatch(index, { title: 'HAD ENOUGH', artist: 'Don Toliver', album: 'Heaven or Hell' })?.path, '/m/jackboys.mp3');
+  // Downloading JACKBOYS itself: the owned copy IS on that album -> a match, so it is skipped.
+  assert.equal(sm.appleLocalMatchSameAlbum(index, { title: 'HAD ENOUGH', artist: 'Don Toliver', album: 'JACKBOYS' })?.path, '/m/jackboys.mp3');
+});
+
+test('appleLocalMatchSameAlbum checks every candidate and ignores album case/spacing', () => {
+  const lib = [
+    { path: '/m/jackboys.mp3', title: 'HAD ENOUGH', artist: 'Don Toliver', albumArtist: 'Don Toliver', album: 'JACKBOYS' },
+    { path: '/m/heaven.mp3', title: 'HAD ENOUGH', artist: 'Don Toliver', albumArtist: 'Don Toliver', album: 'Heaven or Hell' },
+  ];
+  const sm = make(lib);
+  const index = sm.appleLibraryIndex();
+  // Owns both releases: the Heaven or Hell copy is found even though JACKBOYS is indexed first.
+  assert.equal(sm.appleLocalMatchSameAlbum(index, { title: 'HAD ENOUGH', artist: 'Don Toliver', album: 'Heaven Or Hell' })?.path, '/m/heaven.mp3', 'case/spacing ignored, every candidate checked');
+});

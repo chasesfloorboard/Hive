@@ -45,7 +45,22 @@
       return candidates.find(t => { const a = appleMatchKey(`${t.artist} ${t.albumArtist || ''}`); return firstArtist && a.includes(firstArtist); }) || null;
     }
 
-    return { appleMatchKey, appleLibraryIndex, appleLocalMatch };
+    // Like appleLocalMatch, but only a copy from the SAME release counts. A DOWNLOAD must fetch an album's
+    // OWN copy of every track, so a same-titled copy on another album (e.g. HAD ENOUGH on JACKBOYS while
+    // downloading Heaven or Hell) must NOT suppress this album's copy. Checks EVERY candidate (not just the
+    // first artist match), so owning this exact release still counts when another release's copy is indexed
+    // first. Album-blind appleLocalMatch stays for the "in your library" label and playback, which it suits.
+    function appleLocalMatchSameAlbum(index, at) {
+      const candidates = index.get(appleMatchKey(at.title)) || [];
+      const firstArtist = appleMatchKey(String(at.artist || '').split(/,|&| x /i)[0]);
+      const album = appleMatchKey(at.album);
+      return candidates.find(t => {
+        const a = appleMatchKey(`${t.artist} ${t.albumArtist || ''}`);
+        return firstArtist && a.includes(firstArtist) && appleMatchKey(t.album) === album;
+      }) || null;
+    }
+
+    return { appleMatchKey, appleLibraryIndex, appleLocalMatch, appleLocalMatchSameAlbum };
   }
 
   const exported = { createStreamingMatch };

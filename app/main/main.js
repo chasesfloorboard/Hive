@@ -31,7 +31,7 @@ const { analyzeLoveValues, isLoveFieldName, normalizeLoveValue, CANONICAL_LOVE_T
 const { createClient: createMusicBrainzClient } = require('./musicbrainz');
 const { canonicalize } = require('./canonical-metadata');
 const { rendererTrackPayload } = require('./scan-payload');
-const { normalizeText: normalizeArtworkText, scoreResult: scoreArtworkResult, createArtworkCache, providers: artworkProviders } = require('./artwork-providers');
+const { normalizeText: normalizeArtworkText, scoreResult: scoreArtworkResult, createArtworkCache, providers: artworkProviders, cleanCoverBrackets, decipherCoverQuery } = require('./artwork-providers');
 const { TaskManager } = require('./task-manager');
 const { BeehiveMPRIS } = require('./mpris');
 const { ArtworkProxy } = require('./artwork-proxy');
@@ -6518,7 +6518,7 @@ async function fetchJson(url, headers = {}) {
 function normalizeCoverSearchText(value) {
   return normalizeArtworkText(value);
 }
-function scoreCoverResult(item, album, artist) { return scoreArtworkResult(item, album, artist); }
+function scoreCoverResult(item, album, artist, title = '') { return scoreArtworkResult(item, album, artist, title); }
 
 async function fetchTemporaryArtwork(url) {
   const imageHeaders = {
@@ -6609,10 +6609,25 @@ ipcMain.handle('cover:searchInternet', async (_evt, query = {}) => {
   const album = String(query.album || '').trim();
   const artist = String(query.artist || '').trim();
   const manualQuery = String(query.manualQuery || '').trim();
-  if (!album && !manualQuery) return [];
+  if (!album && !artist && !manualQuery) return [];
 
-  const targetAlbum = album || manualQuery;
-  const targetArtist = artist;
+  let targetAlbum = album;
+  let targetArtist = artist;
+  let targetTitle = '';
+
+  if (manualQuery) {
+    const dec = decipherCoverQuery(manualQuery);
+    if (dec.artist && dec.album) {
+      targetArtist = dec.artist;
+      targetAlbum = dec.album;
+    } else if (dec.artist) {
+      if (!targetArtist) targetArtist = dec.artist;
+      targetAlbum = cleanCoverBrackets(manualQuery);
+    } else {
+      targetAlbum = cleanCoverBrackets(manualQuery);
+    }
+  }
+
   const results = [];
   const seen = new Set();
   const addResult = (item, scoreBoost = 0) => {
@@ -6622,71 +6637,72 @@ ipcMain.handle('cover:searchInternet', async (_evt, query = {}) => {
     const key = String(item.artworkUrl || item.releaseId || item.collectionId || `${normalizeCoverSearchText(albumName)}|${normalizeCoverSearchText(artistName)}|${item.source}`);
     if (seen.has(key)) return;
     seen.add(key);
-    item.score = scoreCoverResult(item, targetAlbum, targetArtist) + scoreBoost;
-    results.push(item);
+    item.score = scoreCoverResult(item, targetAlbum, targetArtist, targetTitle) + scoreBoost;
+    if (item.score > -500) {
+      results.push(item);
+    }
   };
-  // Search actual releases first. Cover Art Archive artwork is attached to
-  // releases (not merely release-groups), so this gives us a reliable artwork
-  // URL and also lets us match the credited artist correctly.
+
+  // 1. MusicBrainz release search
   try {
     const mbClient = await getMusicBrainzClient();
-    let mbResults = await mbClient.searchReleases({ album: targetAlbum, artist: targetArtist, limit: 20 });
-    if (!mbResults.length) mbResults = await mbClient.searchReleases({ album: targetAlbum, artist: '', limit: 20 });
+    let mbResults = [];
+    if (targetAlbum && targetArtist) {
+      mbResults = await mbClient.searchReleases({ album: targetAlbum, artist: targetArtist, limit: 20 });
+    }
+    if (!mbResults.length && targetAlbum) {
+      mbResults = await mbClient.searchReleases({ album: targetAlbum, artist: '', limit: 20 });
+    }
     for (const item of mbResults) addResult(item, 40);
   } catch (err) {
     console.warn('[HiveMusicBrainz] MusicBrainz release artwork search failed:', err.message);
   }
 
-  const automatic = !manualQuery;
-  const appleSearch = async (term, exactArtistOnly = false) => {
-    const params = new URLSearchParams({ term, entity: 'album', media: 'music', country: 'US', limit: '25' });
+  // 2. iTunes search API
+  const appleSearch = async (term, entity = 'album', attribute = null) => {
+    if (!term || !term.trim()) return;
+    const params = new URLSearchParams({ term: term.trim(), entity, media: 'music', country: 'US', limit: '25' });
+    if (attribute) params.set('attribute', attribute);
     const data = await fetchJson(`https://itunes.apple.com/search?${params.toString()}`);
     const items = Array.isArray(data?.results) ? data.results : [];
     for (const item of items) {
-      const itemAlbum = normalizeCoverSearchText(item.collectionName || '');
-      const itemArtist = normalizeCoverSearchText(item.artistName || '');
-      const wantedAlbum = normalizeCoverSearchText(targetAlbum);
-      const wantedArtist = normalizeCoverSearchText(targetArtist);
-      const albumExact = itemAlbum === wantedAlbum;
-      const artistExact = !wantedArtist || itemArtist === wantedArtist;
-      if (!albumExact) continue;
-      if (exactArtistOnly && !artistExact) continue;
       if (!item.artworkUrl100) continue;
       const url = String(item.artworkUrl100)
-        .replace(/100x100bb\.(jpg|jpeg|png)/i, '1000x1000bb.$1')
-        .replace(/100x100[-.]?/i, '1000x1000');
+        .replace(/100x100bb\.(jpg|jpeg|png)/i, '1200x1200bb.$1')
+        .replace(/100x100[-.]?/i, '1200x1200');
       addResult({
         source: 'iTunes',
-        collectionName: item.collectionName || '',
+        collectionName: item.collectionName || item.trackName || '',
         artistName: item.artistName || '',
         releaseYear: item.releaseDate ? String(item.releaseDate).slice(0,4) : '',
         artworkUrl: url,
-        width: 1000,
-        height: 1000,
+        width: 1200,
+        height: 1200,
         collectionId: item.collectionId || null,
         collectionViewUrl: item.collectionViewUrl || ''
-      }, exactArtistOnly ? 12 : 0);
+      });
     }
   };
 
   try {
-    // Always consult Apple as a second artwork catalog. A successful MusicBrainz
-    // search must not suppress alternate Apple covers, editions, or artwork.
-    const beforeApple = results.length;
-    if (targetArtist) await appleSearch(`${targetAlbum} ${targetArtist}`, true);
-    const appleAdded = results.length - beforeApple;
-    if (!appleAdded) await appleSearch(targetAlbum, false);
-    if (!automatic && manualQuery && results.length === beforeApple) await appleSearch(manualQuery, false);
+    const cleanAlb = cleanCoverBrackets(targetAlbum);
+    const queries = [];
+    if (targetArtist && cleanAlb) queries.push({ term: `${cleanAlb} ${targetArtist}`, entity: 'album' });
+    if (cleanAlb) queries.push({ term: cleanAlb, entity: 'album' });
+    if (manualQuery && manualQuery !== cleanAlb) queries.push({ term: cleanCoverBrackets(manualQuery), entity: 'album' });
+    if (targetArtist) queries.push({ term: targetArtist, entity: 'album', attribute: 'artistTerm' });
+
+    for (const q of queries) {
+      await appleSearch(q.term, q.entity, q.attribute);
+      if (results.some(r => Number(r.score || 0) >= 200)) break;
+    }
   } catch (err) {
     console.warn('[Hive] iTunes cover search failed:', err.message);
   }
 
-  // Keep exact album matches, but retain multiple releases/editions and both
-  // artwork catalogs. The UI lets the user inspect the full-size image before applying it.
   return results
-    .filter(item => normalizeCoverSearchText(item.collectionName) === normalizeCoverSearchText(targetAlbum))
     .sort((a,b) => Number(b.score||0) - Number(a.score||0))
-    .slice(0, 12);
+    .slice(0, 20);
 });
 
 function assertSafeArtworkUrl(value) {

@@ -55,3 +55,30 @@ test('spotifyCachedArtworkSrc resolves the cache file via the resolver, else emp
   assert.equal(spotifyCachedArtworkSrc({ source: 'spotify', spotifyUri: 'x' }, coverUrl), '', 'no cache file');
   assert.equal(spotifyCachedArtworkSrc({ source: 'local', spotifyArtworkCacheFile: '/c/z.jpg' }, coverUrl), '', 'non-spotify');
 });
+
+test('artwork providers deciphers queries, cleans brackets, and scores releases', () => {
+  const { decipherCoverQuery, cleanCoverBrackets, scoreResult } = require('../app/main/artwork-providers');
+  
+  const d1 = decipherCoverQuery("Usher's Hopes and Dreams");
+  assert.equal(d1.artist, 'Usher');
+  assert.equal(d1.album, 'Hopes and Dreams');
+
+  const d2 = decipherCoverQuery("Hopes and Fears by Usher");
+  assert.equal(d2.artist, 'Usher');
+  assert.equal(d2.album, 'Hopes and Fears');
+
+  const d3 = decipherCoverQuery("Usher - Confessions [Deluxe Edition]");
+  assert.equal(d3.artist, 'Usher');
+  assert.equal(d3.album, 'Confessions');
+
+  assert.equal(cleanCoverBrackets('5 (Remastered)'), '5');
+  assert.equal(cleanCoverBrackets('Confessions [Deluxe Edition]'), 'Confessions');
+
+  // Karaoke filtered out with large negative score
+  const karaokeScore = scoreResult({ collectionName: 'Confessions (Karaoke Version)', artistName: 'Ameritz' }, 'Confessions', 'Usher');
+  assert.ok(karaokeScore < -500);
+
+  // Exact artist + album scores high
+  const realScore = scoreResult({ collectionName: 'Confessions (Expanded Edition)', artistName: 'Usher', width: 1200, height: 1200 }, 'Confessions', 'Usher');
+  assert.ok(realScore >= 200);
+});

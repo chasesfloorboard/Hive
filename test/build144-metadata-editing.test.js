@@ -7,9 +7,13 @@ const root = path.resolve(__dirname, '..');
 const renderer = fs.readFileSync(path.join(root, 'app', 'renderer', 'renderer.js'), 'utf8');
 const html = fs.readFileSync(path.join(root, 'app', 'renderer', 'index.html'), 'utf8');
 
-test('empty editable tag fields use Empty ghost text while trim fields show millisecond format', () => {
-  assert.match(renderer, /function applyEmptyEditGhosts\(/);
-  assert.match(renderer, /placeholder\s*=\s*['"]Empty['"]/);
+test('empty tag fields are left blank (no "Empty" ghost); bulk shows a multi-value hint; trim uses hidden inputs', () => {
+  // Empty single fields read as blank — the label above each field already says what belongs there.
+  // The literal word "Empty" (unprofessional) is gone, as is the ghost-filling helper.
+  assert.doesNotMatch(renderer, /placeholder\s*=\s*['"]Empty['"]/);
+  assert.doesNotMatch(renderer, /function applyEmptyEditGhosts\(/);
+  // A multi-selection whose files disagree still shows which fields differ.
+  assert.match(renderer, /node\.placeholder\s*=\s*multiLabel/);
   // Trim times are edited as hour / minute / second boxes backed by hidden
   // #tag-start-time / #tag-end-time inputs (see build195 test).
   assert.match(html, /<input type="hidden" id="tag-start-time">/);

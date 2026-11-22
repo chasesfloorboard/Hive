@@ -3,11 +3,30 @@
 // docs/ai/ARCHITECTURE.md). On the hottest path (every keystroke over a ~20k-track library), so it stays
 // dependency-free. Loaded as a plain script (window.HiveSearchText) and by the tests via require().
 (function (root) {
+  const acronymDots = /(?<=\p{L})\.(?=\p{L}|\.|\s|$)/gu;
+  const currencyS = /(?<=\p{L})\$(?=\p{L}|\$)|\$(?=\p{L})|(?<=\p{L})\$(?=\s|$)/gu;
+
   // Case/accent/punctuation-folded text, space-padded so word-boundary includes() matches work.
+  // Acronyms like "N.E.R.D." fold to "nerd", and stylized symbols like "A$AP" fold to "asap".
   function foldSearchText(value) {
-    return ` ${String(value || '').toLowerCase().normalize('NFKD').replace(/[̀-ͯ]/g, '')
+    const raw = String(value || '').replace(acronymDots, '').replace(currencyS, 's');
+    return ` ${raw.toLowerCase().normalize('NFKD').replace(/[̀-ͯ]/g, '')
       .replace(/æ/g, 'ae').replace(/œ/g, 'oe').replace(/ø/g, 'o').replace(/ß/g, 'ss')
       .replace(/[^\p{L}\p{N}]+/gu, ' ').trim()} `;
+  }
+
+  // Checks if word w matches within folded text.
+  // Short words (< 4 chars) match at word boundaries (e.g. "red" matches "Red Alert", not "Filtered").
+  // Longer words (>= 4 chars) match anywhere (sub-word / compound).
+  function matchesWord(text, w) {
+    if (!w) return true;
+    if (w.length >= 4) return text.includes(w);
+    let idx = text.indexOf(w);
+    while (idx >= 0) {
+      if (idx === 0 || !/[\p{L}\p{N}]/u.test(text[idx - 1])) return true;
+      idx = text.indexOf(w, idx + 1);
+    }
+    return false;
   }
 
   // Lower-cased, accent-stripped, collapsed to [a-z0-9]+-separated words. Used for ASCII-only matching.
@@ -47,7 +66,7 @@
     return foldSearchText(values.join(' '));
   }
 
-  const api = { foldSearchText, normalizeForSearch, normalizeMusicText, normalizeArtistSearchValue, normalizeTypeaheadText, buildTrackSearchIndex };
+  const api = { foldSearchText, normalizeForSearch, normalizeMusicText, normalizeArtistSearchValue, normalizeTypeaheadText, buildTrackSearchIndex, matchesWord };
   if (typeof module === 'object' && module.exports) module.exports = api;
   else root.HiveSearchText = api;
 })(typeof window !== 'undefined' ? window : globalThis);

@@ -88,3 +88,51 @@ test('refreshLibraryFolderSnapshot ignores paths outside any known root', async 
     assert.deepEqual(Object.keys(loaded.directories), [root], 'no foreign dirs added');
   } finally { await fsp.rm(dir, { recursive: true, force: true }); }
 });
+
+// Build a snapshot store whose stat() can be made to fail for one specific folder, to exercise the
+// transient-error vs genuinely-deleted branches of refreshLibraryFolderSnapshot.
+async function snapshotWithStat(statFor) {
+  const base = await fsp.mkdtemp(path.join(os.tmpdir(), 'hive-snap-'));
+  const dataDir = path.join(base, 'data');
+  await fsp.mkdir(dataDir, { recursive: true });
+  const files = new Map();
+  const wrappedFsp = { stat: (p) => statFor(path.resolve(p)) };
+  const snap = createLibraryFolderSnapshot({
+    fsp: wrappedFsp, path, isPathInsideFolder, userDataDir: () => dataDir,
+    readJsonSafe: async (p, fb) => (files.has(p) ? JSON.parse(files.get(p)) : fb),
+    writeJsonSafe: async (p, data) => { files.set(p, JSON.stringify(data)); },
+  });
+  return { base, snap };
+}
+
+test('refreshLibraryFolderSnapshot keeps a folder on a transient stat error, so it is not forgotten', async () => {
+  const root = path.resolve('/lib'); const artist = path.resolve('/lib/artist'); const sub = path.resolve('/lib/artist/album');
+  // `sub` is "busy" (EBUSY); the others stat fine.
+  const { base, snap } = await snapshotWithStat(async (p) => {
+    if (p === sub) { const e = new Error('busy'); e.code = 'EBUSY'; throw e; }
+    return { isDirectory: () => true, mtimeMs: 100 };
+  });
+  try {
+    await snap.saveLibraryFolderSnapshot([root], { [root]: 1, [artist]: 2, [sub]: 3 });
+    await snap.refreshLibraryFolderSnapshot([path.join(sub, 'song.flac')]);
+    const loaded = await snap.loadLibraryFolderSnapshot();
+    assert.ok(Object.prototype.hasOwnProperty.call(loaded.directories, sub), 'the busy folder stays in the baseline');
+    assert.equal(loaded.directories[sub], 3, 'its previous mtime is preserved, so a real change still triggers a scan');
+    assert.equal(loaded.directories[artist], 100, 'reachable parents are still refreshed');
+  } finally { await fsp.rm(base, { recursive: true, force: true }); }
+});
+
+test('refreshLibraryFolderSnapshot forgets a folder that is genuinely gone (ENOENT)', async () => {
+  const root = path.resolve('/lib'); const sub = path.resolve('/lib/gone');
+  const { base, snap } = await snapshotWithStat(async (p) => {
+    if (p === sub) { const e = new Error('missing'); e.code = 'ENOENT'; throw e; }
+    return { isDirectory: () => true, mtimeMs: 100 };
+  });
+  try {
+    await snap.saveLibraryFolderSnapshot([root], { [root]: 1, [sub]: 9 });
+    await snap.refreshLibraryFolderSnapshot([path.join(sub, 'song.flac')]);
+    const loaded = await snap.loadLibraryFolderSnapshot();
+    assert.ok(!Object.prototype.hasOwnProperty.call(loaded.directories, sub), 'a deleted folder is removed from the baseline');
+    assert.equal(loaded.directories[root], 100, 'the surviving root is refreshed');
+  } finally { await fsp.rm(base, { recursive: true, force: true }); }
+});

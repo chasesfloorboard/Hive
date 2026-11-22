@@ -26,6 +26,18 @@ test('playlist pages give the header and tracks', () => {
   ]));
   assert.equal(c.name, 'Head Trip 2026');
   assert.equal(c.curator, 'Goldenvoice');
+  // A playlist curator is not an artist, so there is no artist page to link to.
+  assert.equal(c.artistUrl, '');
   assert.deepEqual([c.tracks[0].appleId, c.tracks[0].artist, c.tracks[0].album, c.tracks[0].duration], ['1282781095', 'Four Tet', 'Pink', 509.539]);
   assert.equal(parseCollection('<html></html>'), null);
+});
+
+test('an album header carries its artist Apple Music page url (the subtitle link segue)', () => {
+  const artistLink = { title: 'Four Tet', segue: { destination: { contentDescriptor: { kind: 'artist', url: 'https://music.apple.com/us/artist/four-tet/696435' } } } };
+  const c = parseCollection(page([
+    { id: 'playlist-detail-header-section - 9', items: [{ title: 'Pink', subtitleLinks: [artistLink], artwork: art }] },
+    { id: 'track-list', itemKind: 'trackLockup', items: [{ title: 'Locked', duration: 1000, subtitleLinks: [{ title: 'Four Tet' }], artwork: art, contentDescriptor: { kind: 'song', identifiers: { storeAdamID: '1' }, url: 'u' } }] }
+  ]));
+  assert.equal(c.curator, 'Four Tet');
+  assert.equal(c.artistUrl, 'https://music.apple.com/us/artist/four-tet/696435');
 });

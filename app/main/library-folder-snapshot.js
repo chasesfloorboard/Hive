@@ -76,7 +76,14 @@ function createLibraryFolderSnapshot({ fsp, path, readJsonSafe, writeJsonSafe, i
       try {
         const st = await fsp.stat(dir);
         if (st.isDirectory()) snapshot.directories[dir] = Number(st.mtimeMs || 0);
-      } catch { delete snapshot.directories[dir]; }
+      } catch (err) {
+        // Only forget a folder that is genuinely gone. A transient stat error (EBUSY/EACCES/EMFILE/
+        // EIO on a busy or network drive) must NOT drop the folder from the baseline: the startup
+        // change-check only stats folders that are IN the snapshot, so a dropped folder means new
+        // files added to it while Hive is closed go unnoticed until some unrelated change forces a
+        // scan. Keeping the old mtime is safe — at worst it looks "changed" and triggers one scan.
+        if (err && err.code === 'ENOENT') delete snapshot.directories[dir];
+      }
     }
     saveLibraryFolderSnapshotSoon();
   }

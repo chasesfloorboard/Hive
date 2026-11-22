@@ -27,6 +27,11 @@ function artworkUrl(artwork, size = 600) {
 }
 
 const linkTitles = links => (Array.isArray(links) ? links.map(l => String(l?.title || '').trim()).filter(Boolean) : []);
+// The artist page a subtitle link points at (each subtitle link carries the artist's own Apple Music page in
+// its segue), so the artist name on an album can open their page the way the artist cards already do.
+const artistLinkUrl = links => (Array.isArray(links) ? links : [])
+  .map(l => l?.segue?.destination?.contentDescriptor)
+  .find(cd => cd?.kind === 'artist' && /^https:\/\/music\.apple\.com\//i.test(String(cd?.url || '')))?.url || '';
 
 function lockupToCollection(item) {
   const cd = item?.contentDescriptor || {};
@@ -112,6 +117,7 @@ function parseCollection(html) {
   return {
     name: String(header?.title || ''),
     curator: linkTitles(header?.subtitleLinks).join(', '),
+    artistUrl: artistLinkUrl(header?.subtitleLinks),
     description: String(header?.description?.standard || header?.description?.short || header?.description || '').replace(/<[^>]+>/g, ' ').replace(/\s+/g, ' ').trim(),
     artwork: artworkUrl(header?.artwork, 1000),
     tracks,

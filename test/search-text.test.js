@@ -4,6 +4,7 @@ const assert = require('node:assert/strict');
 const {
   foldSearchText, normalizeForSearch, normalizeMusicText,
   normalizeArtistSearchValue, normalizeTypeaheadText, buildTrackSearchIndex,
+  matchesWord,
 } = require('../app/renderer/search-text');
 
 test('foldSearchText lowercases, strips accents/ligatures/punctuation, and space-pads', () => {
@@ -14,8 +15,18 @@ test('foldSearchText lowercases, strips accents/ligatures/punctuation, and space
   assert.equal(foldSearchText('Mø'), ' mo ', 'ø -> o');
   assert.equal(foldSearchText('Straße'), ' strasse ', 'ß -> ss');
   assert.equal(foldSearchText('(It Goes Like) Nanana [Edit]'), ' it goes like nanana edit ');
+  assert.equal(foldSearchText('N.E.R.D.'), ' nerd ', 'acronym dots fold to a single word');
+  assert.equal(foldSearchText('A$AP Rocky'), ' asap rocky ', 'stylized currency folds to s');
   assert.equal(foldSearchText(''), '  ');
   assert.equal(foldSearchText(null), '  ');
+});
+
+test('matchesWord matches short words at word boundaries and longer words anywhere', () => {
+  assert.ok(matchesWord(' red alert ', 'red'), 'short word matches at word start');
+  assert.ok(matchesWord(' simply red ', 'red'), 'short word matches at word start');
+  assert.ok(!matchesWord(' filtered ', 'red'), 'short word rejects mid-word match');
+  assert.ok(matchesWord(' radiohead ', 'head'), 'longer word (>=4 chars) matches compound');
+  assert.ok(matchesWord(' nerd ', 'nerd'));
 });
 
 test('normalizeForSearch folds to single-spaced [a-z0-9] words', () => {

@@ -191,7 +191,11 @@
   function buildAlbums(tracks) { return window.HiveAlbumModel.buildAlbums(tracks, visualCoverForTrack); }
   // YouTube Music tracks (Hive 2.0) play through the same media element as
   // podcasts; their stream URL is resolved when they're loaded.
-  function isYoutubeMusicTrack(t) { return String(t?.source || '').toLowerCase() === 'youtube' && String(t?.path || '').startsWith('ytm:'); }
+  // A "ytm:" path is only ever a streamed YouTube-Music/Apple track, never a local file. Recognise it by
+  // the path alone: a streaming *love* is persisted with just {path,title,artist,album,...} and drops the
+  // `source` field, so requiring source==='youtube' too mis-classified those loves as LOCAL — which showed
+  // Edit tags / Delete from disk / ratings on a track with no file, and sent "Find album" to an empty view.
+  function isYoutubeMusicTrack(t) { return String(t?.path || '').startsWith('ytm:') || String(t?.source || '').toLowerCase() === 'youtube'; }
   function isPodcastTrack(t) { return (String(t?.source || '').toLowerCase() === 'podcast' && !!t?.streamUrl) || isYoutubeMusicTrack(t); }
   function isLocalPlaybackTrack(t) { return !!t?.path && !isPodcastTrack(t) && !isSpotifyTrack(t); }
   function spotifyPositionNow() {
@@ -1764,7 +1768,7 @@
   // Streamed-track <-> local-library fuzzy matching lives in streaming-match.js (loaded
   // before renderer.js; docs/ai/ARCHITECTURE.md). Inject the local-track predicate and a
   // lazy library-tracks getter so appleLibraryIndex() still reads the live library.
-  const { appleLibraryIndex, appleLocalMatch } = window.HiveStreamingMatch.createStreamingMatch({
+  const { appleLibraryIndex, appleLocalMatch, appleLocalMatchSameAlbum } = window.HiveStreamingMatch.createStreamingMatch({
     isLocalPlaybackTrack, getLibraryTracks: () => library.tracks || [],
   });
   function applePreviewTrack(at, collection) {
@@ -1789,6 +1793,14 @@
   function appleTracksForPlayback(collection) {
     const index = appleLibraryIndex();
     return collection.tracks.map(at => appleLocalMatch(index, at)
+      || (youtubeMusicReady ? youtubeTrackFromApple(at) : (at.previewUrl ? applePreviewTrack(at, collection) : null))).filter(Boolean);
+  }
+  // The DOWNLOAD set: like appleTracksForPlayback, but a locally-owned copy stands in for a streamed track
+  // only when it is the SAME release. A same-titled copy on another album no longer suppresses this album's
+  // own copy (that track downloads instead) -- every album keeps its own copy of every track.
+  function appleTracksForDownload(collection) {
+    const index = appleLibraryIndex();
+    return collection.tracks.map(at => appleLocalMatchSameAlbum(index, at)
       || (youtubeMusicReady ? youtubeTrackFromApple(at) : (at.previewUrl ? applePreviewTrack(at, collection) : null))).filter(Boolean);
   }
   // Download streamed tracks' covers into Hive's covers cache so they show
@@ -1947,7 +1959,7 @@
         }).join('');
         const localCount = current.tracks.filter(at => appleLocalMatch(index, at)).length;
         const ytNote = youtubeMusicReady ? '' : `<div class="apple-yt-note">Songs you don't own play as 30-second previews. <button type="button" class="sidebar-add" id="apple-install-ytdlp">Play full songs</button></div>`;
-        view.innerHTML = `<div class="apple-head">${current.artwork ? `<img src="${escapeHtml(current.artwork)}" alt="">` : ''}<div><div class="apple-kicker">${current.kind === 'album' ? 'ALBUM' : 'PLAYLIST'}</div><h3>${escapeHtml(current.name)}</h3><div class="dim">${escapeHtml(current.curator)} · ${current.tracks.length} songs · ${localCount} in your library</div>
+        view.innerHTML = `<div class="apple-head">${current.artwork ? `<img src="${escapeHtml(current.artwork)}" alt="">` : ''}<div><div class="apple-kicker">${current.kind === 'album' ? 'ALBUM' : 'PLAYLIST'}</div><h3>${escapeHtml(current.name)}</h3><div class="dim">${current.artistUrl ? `<button type="button" class="apple-artist-link" data-apple-artist="${escapeHtml(current.artistUrl)}">${escapeHtml(current.curator)}</button>` : escapeHtml(current.curator)} · ${current.tracks.length} songs · ${localCount} in your library</div>
             ${current.description ? `<p class="apple-desc">${escapeHtml(current.description)}</p>` : ''}
             <div class="apple-actions"><button type="button" class="sidebar-add" id="apple-play-all">Play</button><button type="button" class="sidebar-add" id="apple-import">Import as playlist</button><button type="button" class="sidebar-add icon-only-btn" id="apple-download" title="Download playlist" aria-label="Download playlist">${theaterIcon('download')}</button><a class="sidebar-add" href="${escapeHtml(current.url)}" target="_blank" rel="noopener">Open in Apple Music</a></div></div></div>
           ${ytNote}<div class="apple-tracks">${rows}</div>
@@ -2001,7 +2013,7 @@
         if (e.target.closest('#apple-play-all')) { const all = appleTracksForPlayback(current); if (all.length) playQueue(all, 0, false); return; }
         if (e.target.closest('#apple-download')) {
           if (!youtubeMusicReady && !soulseekReady()) { status.textContent = 'Sign in to Soulseek in Settings › Connections to download, or turn on “Play full songs” above.'; return; }
-          const tracks = appleTracksForPlayback(current).map((t, i) => (isYoutubeMusicTrack(t) || (soulseekReady() && /^applemusic:/.test(String(t.path || '')))) ? { ...t, playlistFolder: current.name || 'Apple Music playlist', playlistPosition: i + 1 } : null).filter(Boolean);
+          const tracks = appleTracksForDownload(current).map((t, i) => (isYoutubeMusicTrack(t) || (soulseekReady() && /^applemusic:/.test(String(t.path || '')))) ? { ...t, playlistFolder: current.name || 'Apple Music playlist', playlistPosition: i + 1 } : null).filter(Boolean);
           if (!tracks.length) { status.textContent = 'Every song here is already in your library.'; return; }
           status.textContent = soulseekReady() ? `Looking for ${tracks.length === 1 ? tracks[0].title : `${tracks.length} songs`} on Soulseek…` : `Downloading ${tracks.length} songs to Playlists/${current.name}…`;
           downloadStreamedTracks(tracks);
@@ -2267,7 +2279,7 @@
       }
       if (e.target.closest('#spotify-download')) {
         if (!current) return;
-        const tracks = current.records.map((st, i) => { const t = youtubeTrackForSpotifyAnyway(st); return isYoutubeMusicTrack(t) ? { ...t, playlistFolder: current.name || 'Spotify playlist', playlistPosition: i + 1 } : null; }).filter(Boolean);
+        const tracks = current.records.map((st, i) => { const t = spotifyTrackForDownload(st); return t && isYoutubeMusicTrack(t) ? { ...t, playlistFolder: current.name || 'Spotify playlist', playlistPosition: i + 1 } : null; }).filter(Boolean);
         if (!tracks.length) { status.textContent = 'Every song here is already in your library.'; return; }
         status.textContent = soulseekReady() ? `Looking for ${tracks.length === 1 ? tracks[0].title : `${tracks.length} songs`} on Soulseek…` : `Downloading ${tracks.length} songs to Playlists/${current.name}…`;
         downloadStreamedTracks(tracks);
@@ -4193,7 +4205,7 @@
   // Build one lowercase search index per track so searching a 20k-song library
   // does not repeatedly stringify every metadata field on every keystroke.
   // Pure search / typeahead / matching text normalisation lives in search-text.js (docs/ai/ARCHITECTURE.md).
-  const { foldSearchText, normalizeForSearch, normalizeMusicText, normalizeArtistSearchValue, normalizeTypeaheadText, buildTrackSearchIndex } = window.HiveSearchText;
+  const { foldSearchText, normalizeForSearch, normalizeMusicText, normalizeArtistSearchValue, normalizeTypeaheadText, buildTrackSearchIndex, matchesWord } = window.HiveSearchText;
 
   // Search ignores case, accents and punctuation: "(It Goes Like) Nanana (Edit)" is
   // "it goes like nanana edit", and Björk is bjork, as on the phone.
@@ -4225,7 +4237,7 @@
     if (artistSearchTerm) return trackMatchesArtistSearch(t);
     if (!searchTerm) return true;
     if (!t._searchText) t._searchText = buildTrackSearchIndex(t);
-    return searchWords().every(w => t._searchText.includes(w));
+    return searchWords().every(w => matchesWord(t._searchText, w));
   }
 
   function tracksForCurrentContext() {
@@ -7646,15 +7658,26 @@
     if (!isSpotifyTrack(st) || !spotifyPlaysViaYoutube()) return st;
     return spotifyAsYoutubeTrack(st);
   }
-  function spotifyAsYoutubeTrack(st) {
+  function spotifyLibraryIndex() {
     if (spotifyLibraryIndexFor !== library.tracks || spotifyLibraryIndexCache?.__size !== library.tracks.length) { spotifyLibraryIndexCache = appleLibraryIndex(); spotifyLibraryIndexCache.__size = library.tracks.length; spotifyLibraryIndexFor = library.tracks; }
-    const local = appleLocalMatch(spotifyLibraryIndexCache, st);
-    if (local) return local;
+    return spotifyLibraryIndexCache;
+  }
+  // The streamed (YouTube Music) stand-in for a Spotify track, with NO local substitution.
+  function spotifyYoutubeTrack(st) {
     const art = normalizeSpotifyArtworkSource(st.artworkUrl || st.cover || '');
     return { path: `ytm:spotify:${st.spotifyId || String(st.spotifyUri || '').split(':').pop()}`, source: 'youtube', streamUrl: '',
       title: st.title, artist: st.artist, album: st.album || '', albumArtist: st.albumArtist && st.albumArtist !== st.artist ? st.albumArtist : '',
       year: st.year || '', duration: Number(st.duration) || 0, track: st.track || 0,
       cover: st.spotifyArtworkCacheFile || '', artworkUrl: /^https?:\/\//i.test(art) ? art : '', spotifyUri: st.spotifyUri, albumUri: st.albumUri || '' };
+  }
+  function spotifyAsYoutubeTrack(st) {
+    return appleLocalMatch(spotifyLibraryIndex(), st) || spotifyYoutubeTrack(st);
+  }
+  // For DOWNLOAD: null only when a copy of this track's OWN release is already owned; otherwise the streamed
+  // stand-in to fetch. A same-titled copy on another album no longer suppresses this album's own copy.
+  function spotifyTrackForDownload(st) {
+    if (!isSpotifyTrack(st)) return null;
+    return appleLocalMatchSameAlbum(spotifyLibraryIndex(), st) ? null : spotifyYoutubeTrack(st);
   }
   void youtubeMusicAvailable();
 
@@ -9734,16 +9757,6 @@
     window.HiveTagEditorFields.createTagEditorFields({ nativeTagValue, normalizeMetadataText, normalizeLyricsText });
 
 
-  function applyEmptyEditGhosts(root = document) {
-    // Empty editable fields should never look accidentally broken. Keep fields
-    // that already have a format/example placeholder, but give truly blank
-    // text inputs and textareas the universal Empty ghost.
-    root.querySelectorAll('input:not([type]), input[type="text"], input[type="number"], input[type="password"], textarea').forEach(node => {
-      if (node.readOnly || node.disabled) return;
-      if (!String(node.placeholder || '').trim()) node.placeholder = 'Empty';
-    });
-  }
-
   // editorComparable + mergeEditorValues now come from tag-editor-fields.js (destructured above).
 
   // Tag editor checkboxes over a selection: checked/unchecked when every file
@@ -10661,21 +10674,16 @@
     if (openGeneration !== tagEditorOpenGeneration) return;
     editingTagSnapshots = loaded;
 
-    const set=(id,v)=>{ const node=document.getElementById(id); if(node) { node.value=v??''; if (!String(node.value || '').trim() && !String(node.placeholder || '').trim()) node.placeholder='Empty'; } };
+    const set=(id,v)=>{ const node=document.getElementById(id); if(node) node.value=v??''; };
     const setMerged=(id, values, bulk, multiLabel)=>{
       const node=document.getElementById(id);
       if(!node) return;
       const merged = bulk ? mergeEditorValues(values) : (values[0] ?? '');
       node.value = merged ?? '';
       const differs = values.some(v => editorComparable(v) !== editorComparable(values[0] ?? ''));
-      if (bulk && merged === '' && differs) {
-        node.placeholder = multiLabel;
-      } else if (!String(node.value || '').trim() && !String(node.placeholder || '').trim()) {
-        node.placeholder = 'Empty';
-      }
-      // Preserve useful field-specific examples when a real value is absent.
-      // The old editor removed those placeholders on every open, leaving blank
-      // boxes with no clue what belonged there.
+      // A multi-selection whose files disagree shows a "Multiple Values" hint; an empty single
+      // field is left blank — the label above each field already says what belongs there.
+      if (bulk && merged === '' && differs) node.placeholder = multiLabel;
     };
     const multiValueGhost = 'Multiple Values';
     const firstData = loaded[0]?.data || {};
@@ -10696,7 +10704,6 @@
       if (merged !== '') mergedCustom[key] = merged;
     }
     set('tag-advanced', JSON.stringify(mergedCustom,null,2));
-    applyEmptyEditGhosts(el.tagEditorModal || document);
 
     const starts = loaded.map(item => item.track.startTime || nativeTagValue(item.data?.native,'START_TIME'));
     const ends = loaded.map(item => item.track.endTime || nativeTagValue(item.data?.native,'END_TIME'));
@@ -10958,6 +10965,19 @@
 
   function showAlbumFromTrack(t) {
     if (!t || !t.album) return;
+    // A streaming favourite (an Apple Music / Spotify love, whose path is a scheme like "ytm:apple:.."
+    // rather than a file) has no local album to open. Rather than drop the user on an empty "Nothing
+    // here yet" library view, send them to that album on the service it came from.
+    const wantedAlbum = String(t.album || '').trim();
+    const isStreamingPath = /^(ytm|sp|spotify|am|apple|https?):/i.test(String(t.path || ''));
+    const haveLocalAlbum = (library.tracks || []).some(track => String(track?.album || '').trim() === wantedAlbum);
+    if (isStreamingPath && !haveLocalAlbum) {
+      const artist = String(t.albumArtist || t.artist || '').trim();
+      const term = encodeURIComponent([wantedAlbum, artist].filter(Boolean).join(' '));
+      const toSpotify = isSpotifyTrack(t) || /^(sp|spotify):/i.test(String(t.path || ''));
+      window.open(toSpotify ? `https://open.spotify.com/search/${term}` : `https://music.apple.com/us/search?term=${term}`, '_blank');
+      return;
+    }
     const tab = getActiveTab();
     // Album search is an isolated browser context. A sidebar/playlist
     // `shuffle on enter` permutation belongs only to that collection and must
@@ -18575,7 +18595,7 @@
   // belong to one search and are removed by the next. They used to pile up, so after a second search
   // Apply also ran the first search's handler and could write that album's cover onto this one.
   let coverPickerListeners = new AbortController();
-  async function searchEditorArtwork(manual=false, targetSlot=null) {
+  async function searchEditorArtwork(manual=false, targetSlot=null, customQuery='') {
     coverPickerListeners.abort();
     coverPickerListeners = new AbortController();
     const listenerSignal = coverPickerListeners.signal;
@@ -18588,6 +18608,8 @@
     const scope = document.getElementById('cover-picker-scope');
     const selection = document.getElementById('cover-picker-selection');
     const searchBtn = document.getElementById('cover-picker-search');
+    const searchInput = document.getElementById('cover-picker-input');
+    const searchSubmitBtn = document.getElementById('cover-picker-search-btn');
     const previewImage = document.getElementById('cover-picker-preview-image');
     const previewTitle = document.getElementById('cover-picker-preview-title');
     const previewArtist = document.getElementById('cover-picker-preview-artist');
@@ -18611,17 +18633,36 @@
     if (previewArtist) previewArtist.textContent = '';
     if (previewMeta) previewMeta.textContent = 'No artwork selected';
     if (applyBtn) { applyBtn.disabled = true; applyBtn.textContent = 'Apply selected cover'; }
+
+    if (searchInput) {
+      if (customQuery) searchInput.value = customQuery;
+      else if (!searchInput.value) searchInput.value = [artist, album].filter(Boolean).join(' ');
+      searchInput.addEventListener('keydown', (e) => {
+        if (e.key === 'Enter') {
+          e.preventDefault();
+          searchEditorArtwork(true, targetSlot, searchInput.value.trim());
+        }
+      }, { signal: listenerSignal });
+    }
+    if (searchSubmitBtn) {
+      searchSubmitBtn.addEventListener('click', (e) => {
+        e.preventDefault();
+        searchEditorArtwork(true, targetSlot, searchInput ? searchInput.value.trim() : '');
+      }, { signal: listenerSignal });
+    }
+
     status.textContent = 'Searching MusicBrainz and iTunes…';
     results.innerHTML = '<div class="cover-picker-loading"><span class="cover-picker-spinner"></span><strong>Finding artwork</strong><small>Checking multiple releases and high-resolution artwork sources.</small></div>';
     openModal(modal);
     if (searchBtn) searchBtn.disabled = true;
 
     try {
-      const found = await window.beehive.searchInternetCover({ album, artist, manualQuery: manual ? album : '' });
+      const searchQuery = customQuery || (manual ? album : '');
+      const found = await window.beehive.searchInternetCover({ album, artist, manualQuery: searchQuery });
       if (!Array.isArray(found) || !found.length) {
         status.textContent = 'No matching artwork found.';
         results.innerHTML = `<div class="cover-picker-empty"><div class="cover-picker-empty-icon">⌁</div><strong>No artwork found</strong><span>Hive could not find artwork for this album and artist.</span><button type="button" class="cover-picker-empty-retry" id="cover-picker-empty-retry">Search again</button></div>`;
-        document.getElementById('cover-picker-empty-retry')?.addEventListener('click', () => searchEditorArtwork(true, targetSlot));
+        document.getElementById('cover-picker-empty-retry')?.addEventListener('click', () => searchEditorArtwork(true, targetSlot, searchInput?.value.trim() || ''));
         return;
       }
 
@@ -18711,7 +18752,7 @@
         status.textContent = remaining ? `${remaining} artwork option${remaining === 1 ? '' : 's'} found` : 'No usable artwork found.';
         if (!remaining) {
           results.innerHTML = '<div class="cover-picker-empty"><div class="cover-picker-empty-icon">⌁</div><strong>No usable artwork found</strong><span>The artwork sources returned images that could not be loaded.</span><button type="button" class="cover-picker-empty-retry" id="cover-picker-broken-retry">Search again</button></div>';
-          document.getElementById('cover-picker-broken-retry')?.addEventListener('click', () => searchEditorArtwork(true, targetSlot));
+          document.getElementById('cover-picker-broken-retry')?.addEventListener('click', () => searchEditorArtwork(true, targetSlot, searchInput?.value.trim() || ''));
         }
       }, { once: true }));
 
@@ -18751,6 +18792,32 @@
             await setPendingArtwork(chosen, `${selectedItem.source || 'Internet'} artwork selected. Save tags to embed it in the file.`);
             const type = document.getElementById('tag-picture-type'); if (type) type.value = 'Cover (Front)';
           }
+
+          // Check if selected release has different tags and ask if user wants to replace them
+          const newAlbum = selectedItem.collectionName;
+          const newArtist = selectedItem.artistName;
+          const newYear = selectedItem.releaseYear;
+          const curAlbum = document.getElementById('tag-album')?.value || editingTrack?.album || '';
+          const curArtist = document.getElementById('tag-artist')?.value || editingTrack?.artist || '';
+
+          if (newAlbum && (normalizeForSearch(newAlbum) !== normalizeForSearch(curAlbum) || (newArtist && normalizeForSearch(newArtist) !== normalizeForSearch(curArtist)))) {
+            const replaceTags = await themedConfirm(
+              `This cover is for:\n"${newAlbum}" by ${newArtist || 'Unknown'}\n\nDo you want to update the album and artist tags to match this release?`,
+              'Update tags to match cover?'
+            );
+            if (replaceTags) {
+              const elAlbum = document.getElementById('tag-album');
+              const elArtist = document.getElementById('tag-artist');
+              const elAlbumArtist = document.getElementById('tag-albumArtist');
+              const elYear = document.getElementById('tag-year');
+              if (elAlbum) elAlbum.value = newAlbum;
+              if (elArtist && (!elArtist.value || normalizeForSearch(elArtist.value) !== normalizeForSearch(newArtist))) elArtist.value = newArtist;
+              if (elAlbumArtist && (!elAlbumArtist.value || normalizeForSearch(elAlbumArtist.value) !== normalizeForSearch(newArtist))) elAlbumArtist.value = newArtist;
+              if (elYear && newYear && !elYear.value) elYear.value = newYear;
+              el.tagStatus.textContent = 'Updated album tags to match selected cover. Save tags to apply.';
+            }
+          }
+
           closeModal(modal);
         } catch (err) {
           results.querySelectorAll('.cover-picker-result').forEach(b => b.disabled = false);
@@ -18763,7 +18830,7 @@
     } catch (err) {
       status.textContent = err.message || 'Artwork search failed.';
       results.innerHTML = `<div class="cover-picker-empty"><div class="cover-picker-empty-icon">!</div><strong>Search failed</strong><span>${escapeHtml(err.message || 'The artwork services could not be reached.')}</span><button type="button" class="cover-picker-empty-retry" id="cover-picker-error-retry">Try again</button></div>`;
-      document.getElementById('cover-picker-error-retry')?.addEventListener('click', () => searchEditorArtwork(true, targetSlot));
+      document.getElementById('cover-picker-error-retry')?.addEventListener('click', () => searchEditorArtwork(true, targetSlot, searchInput?.value.trim() || ''));
     } finally {
       if (searchBtn) searchBtn.disabled = false;
     }
