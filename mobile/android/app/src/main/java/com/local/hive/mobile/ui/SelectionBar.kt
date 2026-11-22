@@ -24,6 +24,7 @@ import androidx.compose.material.icons.automirrored.rounded.PlaylistAdd
 import androidx.compose.material.icons.automirrored.rounded.PlaylistPlay
 import androidx.compose.material.icons.automirrored.rounded.QueueMusic
 import androidx.compose.material.icons.rounded.Close
+import androidx.compose.material.icons.rounded.AutoFixHigh
 import androidx.compose.material.icons.rounded.Delete
 import androidx.compose.material.icons.rounded.Favorite
 import androidx.compose.material.icons.rounded.Download
@@ -106,6 +107,7 @@ fun SelectionBar(vm: MainViewModel, selection: Selection, modifier: Modifier, on
                         item("Add to Favorites", Icons.Rounded.Favorite) { vm.setLoved(picked, true); done("Added ${countOf(picked.size, "song")} to Favorites") }()
                         item("Share", Icons.Rounded.Share) { Share.tracks(context, picked); selection.clear() }()
                         HiveMenuDivider()
+                        item("Auto-tag", Icons.Rounded.AutoFixHigh) { editor.autoTag(picked); selection.clear() }()
                         item("Edit tags", Icons.Rounded.Edit) { editor.editTags(picked); selection.clear() }()
                         item("Delete from phone", Icons.Rounded.Delete, destructive = true) { onDelete(picked); selection.clear() }()
                     }

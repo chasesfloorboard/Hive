@@ -33,6 +33,7 @@ import androidx.compose.foundation.horizontalScroll
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.rounded.Add
 import androidx.compose.material.icons.rounded.Album
+import androidx.compose.material.icons.rounded.Close
 import androidx.compose.material.icons.rounded.HideImage
 import androidx.compose.material.icons.rounded.Image
 import androidx.compose.material.icons.rounded.LibraryMusic
@@ -285,6 +286,8 @@ fun CoverSheet(vm: MainViewModel, tracks: List<Track>, onDismiss: () -> Unit, on
     val changes = remember { androidx.compose.runtime.mutableStateMapOf<Int, Any>() }
     var selected by remember { mutableStateOf(-1) }
     var busy by remember { mutableStateOf(false) }
+    var tagUpdates by remember { mutableStateOf<TagEdit?>(null) }
+    var pendingTagOffer by remember { mutableStateOf<com.local.hive.mobile.discovery.CoverChoice?>(null) }
     LaunchedEffect(Unit) {
         results = vm.searchCovers(first.displayAlbumArtist.ifBlank { first.artist }, first.album, first.title)
     }
@@ -298,7 +301,7 @@ fun CoverSheet(vm: MainViewModel, tracks: List<Track>, onDismiss: () -> Unit, on
     val photo = rememberLauncherForActivityResult(ActivityResultContracts.PickVisualMedia()) { uri -> if (uri != null) pick(uri) }
 
     fun save() {
-        if (changes.isEmpty()) return
+        if (changes.isEmpty() && tagUpdates == null) return
         busy = true
         scope.launch {
             suspend fun jpeg(choice: Any): ByteArray? {
@@ -312,13 +315,19 @@ fun CoverSheet(vm: MainViewModel, tracks: List<Track>, onDismiss: () -> Unit, on
             val pictures = changes.filterValues { it !== Removed }.mapValues { (_, v) -> jpeg(v) }
             if (pictures.values.any { it == null }) { busy = false; onToast("Couldn't read that picture"); return@launch }
             val removeFront = changes[-1] === Removed
-            val edit = com.local.hive.mobile.data.CoverEdit(
+            val edit = if (changes.isNotEmpty()) com.local.hive.mobile.data.CoverEdit(
                 front = pictures[-1],
                 removeFront = removeFront,
                 // A back cover added and taken off again before saving changes nothing.
                 backs = changes.keys.filter { it >= 0 && (changes[it] !== Removed || slots.any { s -> s.back == it && s.now != null }) }.associateWith { pictures[it] },
-            )
-            write(tracks) { allowed -> vm.saveEdits(allowed.associateWith { TagEdit() }, edit) { onToast(if (it.startsWith("Saved")) "Covers changed" else it); onDismiss() } }
+            ) else null
+            val tags = tagUpdates ?: TagEdit()
+            write(tracks) { allowed ->
+                vm.saveEdits(allowed.associateWith { tags }, edit) {
+                    onToast(if (tagUpdates != null) "Saved cover and updated tags" else if (it.startsWith("Saved")) "Covers changed" else it)
+                    onDismiss()
+                }
+            }
         }
     }
 
@@ -411,7 +420,23 @@ fun CoverSheet(vm: MainViewModel, tracks: List<Track>, onDismiss: () -> Unit, on
                 items(found.filter { it.thumbUrl.isNotBlank() }, key = { it.id }) { a ->
                     // The grid shows the ~300px thumb; the saved copy is the ~1200px cover.
                     val big = a.fullUrl
-                    Column(Modifier.clip(RoundedCornerShape(10.dp)).clickable { pick(big) }) {
+                    Column(Modifier.clip(RoundedCornerShape(10.dp)).clickable {
+                        pick(big)
+                        if (selected < 0) {
+                            fun norm(s: String) = s.lowercase().replace(Regex("""\s*[(\[].*?[)\]]"""), "").replace(Regex("[^a-z0-9]+"), " ").trim()
+                            val curAlbum = norm(first.album)
+                            val newAlbum = norm(a.title)
+                            val curArtist = norm(first.displayAlbumArtist.ifBlank { first.artist })
+                            val newArtist = norm(a.artist)
+                            val albumDiffers = newAlbum.isNotEmpty() && newAlbum != curAlbum
+                            val artistDiffers = newArtist.isNotEmpty() && curArtist.isNotEmpty() && newArtist != curArtist
+                            if (albumDiffers || artistDiffers) {
+                                pendingTagOffer = a
+                            } else {
+                                tagUpdates = null
+                            }
+                        }
+                    }) {
                         Box(Modifier.fillMaxWidth().aspectRatio(1f).then(if (changes[selected] == big) Modifier.border(2.dp, c.accent, HiveShape.art) else Modifier)) {
                             Artwork(a.thumbUrl, Modifier.fillMaxWidth().aspectRatio(1f), HiveShape.art, Icons.Rounded.Image)
                         }
@@ -421,9 +446,69 @@ fun CoverSheet(vm: MainViewModel, tracks: List<Track>, onDismiss: () -> Unit, on
                 }
             }
         }
+        pendingTagOffer?.let { offer ->
+            val curAlbumDisplay = first.album.ifBlank { "None" }
+            val curArtistDisplay = first.displayAlbumArtist.ifBlank { first.artist }.ifBlank { "None" }
+            ConfirmDialog(
+                title = "Replace tags to match cover?",
+                body = buildString {
+                    append("This cover is for “${offer.title}”")
+                    if (offer.artist.isNotBlank()) append(" by ${offer.artist}")
+                    append(".\n\n")
+                    append("Current album: $curAlbumDisplay\n")
+                    if (offer.artist.isNotBlank() && offer.artist != curArtistDisplay) {
+                        append("Current artist: $curArtistDisplay\n")
+                    }
+                    append("\nDo you want to update the album tags to match?")
+                },
+                confirm = "Replace tags",
+                onDismiss = { pendingTagOffer = null },
+                onConfirm = {
+                    tagUpdates = TagEdit(
+                        album = offer.title,
+                        albumArtist = offer.artist.ifBlank { null },
+                        artist = if (oneSong && offer.artist.isNotBlank()) offer.artist else null,
+                        year = offer.year,
+                    )
+                    pendingTagOffer = null
+                    onToast("Tags will update to “${offer.title}” on Save")
+                }
+            )
+        }
+        tagUpdates?.let { tags ->
+            Row(
+                Modifier
+                    .fillMaxWidth()
+                    .clip(RoundedCornerShape(12.dp))
+                    .background(c.accent.copy(alpha = 0.12f))
+                    .padding(horizontal = 12.dp, vertical = 8.dp),
+                verticalAlignment = Alignment.CenterVertically,
+                horizontalArrangement = Arrangement.SpaceBetween,
+            ) {
+                Column(Modifier.weight(1f)) {
+                    Text("Tags will update to match cover:", style = HiveText.small, color = c.accent)
+                    Text(
+                        listOfNotNull(tags.album, tags.albumArtist ?: tags.artist).joinToString(" · "),
+                        style = HiveText.rowStrong,
+                        color = c.text,
+                        maxLines = 1,
+                        overflow = TextOverflow.Ellipsis
+                    )
+                }
+                Icon(
+                    Icons.Rounded.Close,
+                    contentDescription = "Cancel tag update",
+                    tint = c.textDim,
+                    modifier = Modifier.size(20.dp).clickable {
+                        tagUpdates = null
+                        onToast("Tag replacement cancelled")
+                    }
+                )
+            }
+        }
         Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(10.dp, Alignment.End)) {
             HiveButton("Cancel") { onDismiss() }
-            HiveButton(if (busy) "Saving…" else "Save", primary = true, enabled = changes.isNotEmpty() && !busy) { save() }
+            HiveButton(if (busy) "Saving…" else "Save", primary = true, enabled = (changes.isNotEmpty() || tagUpdates != null) && !busy) { save() }
         }
     }
 }
@@ -436,6 +521,19 @@ fun CoverSheet(vm: MainViewModel, tracks: List<Track>, onDismiss: () -> Unit, on
  */
 internal fun <T> matchRelease(tracks: List<Track>, release: List<T>, title: (T) -> String): List<Pair<Track, Int>> {
     fun norm(s: String) = s.lowercase().replace(Regex("""\s*[(\[].*?[)\]]"""), "").replace(Regex("[^a-z0-9]+"), "")
+    if (tracks.size == 1) {
+        val t = tracks.first()
+        val exact = release.indices.firstOrNull { norm(title(release[it])) == norm(t.title) }
+        val partial = release.indices.firstOrNull {
+            val rNorm = norm(title(release[it]))
+            val tNorm = norm(t.title)
+            rNorm.isNotBlank() && tNorm.isNotBlank() && (rNorm.contains(tNorm) || tNorm.contains(rNorm))
+        }
+        val idx = exact ?: partial
+        if (idx != null) return listOf(t to idx)
+        if (t.trackNumber in 1..release.size) return listOf(t to t.trackNumber - 1)
+        return listOf(t to 0)
+    }
     val numbered = tracks.all { it.trackNumber in 1..release.size } && tracks.map { it.discNumber to it.trackNumber }.distinct().size == tracks.size && tracks.map { it.discNumber }.distinct().size == 1
     if (numbered) return tracks.map { it to it.trackNumber - 1 }
     val left = release.indices.toMutableList()
@@ -451,7 +549,13 @@ fun AutoTagSheet(vm: MainViewModel, tracks: List<Track>, onDismiss: () -> Unit, 
     val scope = rememberCoroutineScope()
     val write = rememberWriteAccess(onToast)
     val first = tracks.first()
-    var query by remember { mutableStateOf("${first.displayAlbumArtist} ${first.album}".trim()) }
+    val oneSong = tracks.size == 1
+    val defaultQuery = remember(first) {
+        val a = first.displayAlbumArtist.ifBlank { first.artist }
+        val al = com.local.hive.mobile.discovery.ITunesCoverSearch.cleanBrackets(first.album).ifBlank { if (oneSong) first.title else "" }
+        listOf(a, al).filter { it.isNotBlank() }.joinToString(" ")
+    }
+    var query by remember { mutableStateOf(defaultQuery) }
     var results by remember { mutableStateOf<List<com.local.hive.mobile.discovery.AlbumHit>?>(null) }
     var release by remember { mutableStateOf<com.local.hive.mobile.discovery.AlbumMeta?>(null) }
     var loading by remember { mutableStateOf(false) }
@@ -460,7 +564,15 @@ fun AutoTagSheet(vm: MainViewModel, tracks: List<Track>, onDismiss: () -> Unit, 
     // The first look-up is a precise fielded search from the songs' own artist + album tags, so a common
     // album (e.g. "OCTANE" by Don Toliver) is found directly instead of being buried under unrelated
     // same-titled releases. Typing in the box below still does a plain free-text search.
-    LaunchedEffect(Unit) { results = vm.searchAlbums(first.displayAlbumArtist, first.album) }
+    LaunchedEffect(Unit) {
+        val a = first.displayAlbumArtist.ifBlank { first.artist }
+        val cleanAl = com.local.hive.mobile.discovery.ITunesCoverSearch.cleanBrackets(first.album)
+        var hits = vm.searchAlbums(a, cleanAl)
+        if (hits.isEmpty() && oneSong && first.title.isNotBlank()) {
+            hits = vm.searchAlbums("$a ${first.title}".trim())
+        }
+        results = hits
+    }
 
     EditSheet(onDismiss) {
         EditHeader("Auto-tag", tracks)

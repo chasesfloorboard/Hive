@@ -14,6 +14,7 @@ data class CoverChoice(
     val artist: String,
     val thumbUrl: String,
     val fullUrl: String,
+    val year: String? = null,
 )
 
 /**
@@ -120,6 +121,7 @@ class ITunesCoverSearch(private val base: String = "https://itunes.apple.com") {
                 val cName = r.string("collectionName")?.takeIf { it.isNotBlank() } ?: continue
                 val aName = r.string("artistName").orEmpty()
                 val cid = r.string("collectionId") ?: art
+                val year = r.string("releaseDate")?.take(4)?.takeIf { it.all(Char::isDigit) }
                 if (!seen.add(cid)) continue
 
                 raw += CoverChoice(
@@ -128,6 +130,7 @@ class ITunesCoverSearch(private val base: String = "https://itunes.apple.com") {
                     artist = aName,
                     thumbUrl = art.replace(Regex("""/\d+x\d+bb\."""), "/300x300bb."),
                     fullUrl = art.replace(Regex("""/\d+x\d+bb\."""), "/1200x1200bb."),
+                    year = year,
                 )
             }
 

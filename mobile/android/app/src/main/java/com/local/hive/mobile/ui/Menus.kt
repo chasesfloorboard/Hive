@@ -35,6 +35,7 @@ import androidx.compose.material.icons.automirrored.rounded.PlaylistAdd
 import androidx.compose.material.icons.automirrored.rounded.PlaylistPlay
 import androidx.compose.material.icons.automirrored.rounded.QueueMusic
 import androidx.compose.material.icons.rounded.Album
+import androidx.compose.material.icons.rounded.AutoFixHigh
 import androidx.compose.material.icons.rounded.Delete
 import androidx.compose.material.icons.rounded.Download
 import androidx.compose.material.icons.rounded.Edit
@@ -110,6 +111,7 @@ fun TrackMenu(expanded: Boolean, loved: Boolean, onDismiss: () -> Unit, track: T
                 HiveSubmenuBack("More") { more = false }
                 HiveMenuItem("Track details", Icons.Rounded.Info) { onDismiss(); actions.onInfo(track) }
                 HiveMenuItem("Auto DJ from this song", Icons.Rounded.Radio) { onDismiss(); actions.onAutoDj(listOf(track)) }
+                HiveMenuItem("Auto-tag", Icons.Rounded.AutoFixHigh) { onDismiss(); editor.autoTag(listOf(track)) }
                 HiveMenuItem("Edit tags", Icons.Rounded.Edit) { onDismiss(); editor.editTags(listOf(track)) }
                 HiveMenuItem("Edit cover", Icons.Rounded.Image) { onDismiss(); editor.changeCover(listOf(track)) }
                 if (track.replaceableFromSoulseek(context)) HiveMenuItem("Replace with Soulseek copy", Icons.Rounded.Download) { onDismiss(); replaceFromSoulseek(context, track, toast) }

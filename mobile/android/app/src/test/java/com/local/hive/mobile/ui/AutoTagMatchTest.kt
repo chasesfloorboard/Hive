@@ -18,6 +18,16 @@ class AutoTagMatchTest {
         assertEquals(setOf(1L to 2, 2L to 1), got.map { it.first.id to it.second }.toSet())
     }
 
+    @Test fun singleTrackMatchesByTitleEvenWhenNumbered() {
+        val got = matchRelease(listOf(t(1, "Jeremy", 1)), release) { it }
+        assertEquals(listOf(1L to 2), got.map { it.first.id to it.second })
+    }
+
+    @Test fun singleTrackMatchesByTrackNumberWhenTitleUnknown() {
+        val got = matchRelease(listOf(t(1, "Unknown Song", 2)), release) { it }
+        assertEquals(listOf(1L to 1), got.map { it.first.id to it.second })
+    }
+
     @Test fun inOrderAsALastResort() {
         val got = matchRelease(listOf(t(1, "Track 02", 0, "b.mp3"), t(2, "Track 01", 0, "a.mp3")), release) { it }
         assertEquals(listOf(2L to 0, 1L to 1), got.map { it.first.id to it.second })

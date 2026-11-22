@@ -24,6 +24,7 @@ import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.foundation.verticalScroll
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.rounded.Album
+import androidx.compose.material.icons.rounded.AutoFixHigh
 import androidx.compose.material.icons.rounded.Download
 import androidx.compose.material.icons.rounded.Edit
 import androidx.compose.material.icons.rounded.Image
@@ -130,6 +131,7 @@ fun TrackInfoSheet(vm: MainViewModel, track: Track, onDismiss: () -> Unit, onOpe
             Row(Modifier.horizontalScroll(rememberScrollState()).padding(horizontal = 16.dp, vertical = 10.dp), horizontalArrangement = Arrangement.spacedBy(8.dp)) {
                 InfoAction("Go to album", Icons.Rounded.Album) { onDismiss(); onOpenAlbum(track) }
                 val editor = LocalEditor.current
+                InfoAction("Auto-tag", Icons.Rounded.AutoFixHigh) { onDismiss(); editor.autoTag(listOf(track)) }
                 InfoAction("Edit tags", Icons.Rounded.Edit) { onDismiss(); editor.editTags(listOf(track)) }
                 InfoAction("Share", Icons.Rounded.Share) {
                     val send = Intent(Intent.ACTION_SEND).setType("audio/*").putExtra(Intent.EXTRA_STREAM, track.uri).addFlags(Intent.FLAG_GRANT_READ_URI_PERMISSION)
