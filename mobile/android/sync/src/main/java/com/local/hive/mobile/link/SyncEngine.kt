@@ -9,6 +9,7 @@ import com.local.hive.mobile.data.LoveState
 import com.local.hive.mobile.data.Play
 import com.local.hive.mobile.data.Rating
 import com.local.hive.mobile.data.PcMatch
+import com.local.hive.mobile.data.StreamLove
 import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Job
@@ -232,7 +233,10 @@ class SyncEngine(
     override fun setStreamLoved(title: String, artist: String, album: String, durationMs: Long, artworkUrl: String, mediaId: String, loved: Boolean) {
         val likes = streamLoves ?: return
         likes.set(title, artist, album, durationMs, artworkUrl, mediaId, loved)
-        if (store.pairing != null) scope.launch { syncNow() } else scope.launch { applyStreamLovesToFiles() }
+        scope.launch {
+            applyStreamLovesToFiles()
+            if (store.pairing != null) syncNow()
+        }
     }
 
     /** Streamed-song likes both ways (newest wins), then onto this phone's own copies. Older Hives don't share them. */
@@ -241,6 +245,8 @@ class SyncEngine(
         runCatchingNotCancelled { client.streamLoves(conn, likes.pendingChanges()) }.onSuccess { likes.mergeFromPc(it.loves) }
         applyStreamLovesToFiles()
     }
+
+    override suspend fun applyStreamLoves() = applyStreamLovesToFiles()
 
     /**
      * A liked streamed song this phone has (or later gets) as a file takes
@@ -253,10 +259,33 @@ class SyncEngine(
         val now = System.currentTimeMillis()
         val changes = mutableListOf<LoveState>()
         val done = mutableMapOf<String, Long>()
+
+        fun cleanTitle(v: String) = v
+            .replace(Regex("""\s*[(\[](feat\.?|ft\.?|with|remastered|deluxe|version|edition|bonus|explicit|clean)[^)\]]*[)\]]""", RegexOption.IGNORE_CASE), "")
+            .replace(Regex("""\s*-\s*(?:remastered|live|bonus track|single version|album version).*$""", RegexOption.IGNORE_CASE), "")
+            .trim()
+
+        val waitingCleaned = mutableMapOf<String, Pair<String, StreamLove>>()
+        for ((k, e) in waiting) {
+            val cKey = StreamLoves.key(e.artist, cleanTitle(e.title))
+            waitingCleaned.putIfAbsent(cKey, k to e)
+        }
+
         for (t in dao.allTracks()) {
             val k = StreamLoves.key(t.artist, t.title)
-            val e = waiting[k] ?: continue
-            done[k] = e.at
+            val exact = waiting[k]
+            val matchedKey: String
+            val e: StreamLove
+            if (exact != null) {
+                matchedKey = k
+                e = exact
+            } else {
+                val cKey = StreamLoves.key(t.artist, cleanTitle(t.title))
+                val fallback = waitingCleaned[cKey] ?: continue
+                matchedKey = fallback.first
+                e = fallback.second
+            }
+            done[matchedKey] = e.at
             if ((loved[t.id]?.loved == true) != e.loved) changes += LoveState(t.id, e.loved, now, pending = store.pairing != null)
         }
         if (changes.isNotEmpty()) dao.upsertLove(changes)

@@ -458,6 +458,20 @@ class SoulseekWorker(context: Context, params: WorkerParameters) : CoroutineWork
     private suspend fun newSongs(request: SoulseekRequest) {
         val app = applicationContext as SoulseekHost
         runCatching { app.rescan.rescanLibrary() }
+        val reqYear = request.tracks.firstNotNullOfOrNull { it.year.trim().toIntOrNull()?.takeIf { y -> y > 0 } }
+        if (reqYear != null) {
+            runCatching {
+                val library = app.dao.allTracks()
+                val artists = com.local.hive.mobile.data.TrackMatcher.artistParts(request.artist)
+                val titles = request.tracks.mapTo(HashSet()) { com.local.hive.mobile.data.TrackMatcher.normalize(it.title) }
+                val landed = library.filter { t ->
+                    com.local.hive.mobile.data.TrackMatcher.normalize(t.title) in titles &&
+                        com.local.hive.mobile.data.TrackMatcher.artistParts(t.artist.ifBlank { t.albumArtist }).any { it in artists }
+                }
+                val albumId = landed.groupingBy { it.albumId }.eachCount().maxByOrNull { it.value }?.key
+                if (albumId != null) app.dao.setAlbumYear(albumId, reqYear)
+            }
+        }
         if (app.linkStore.songSync) com.local.hive.mobile.link.SongSync.schedule(applicationContext, now = true)
         runCatching { convertLikedAlbumToLocal(request, app) }
     }
@@ -508,11 +522,13 @@ class SoulseekWorker(context: Context, params: WorkerParameters) : CoroutineWork
         val folder = listOf("Music", base, safe(request.artist), safe(if (request.kind == "track") "Singles" else request.album)).filter { it.isNotBlank() }.joinToString("/", postfix = "/")
         val mime = when (extension) { "flac" -> "audio/flac"; "mp3" -> "audio/mpeg"; "m4a", "aac", "alac" -> "audio/mp4"; "ogg" -> "audio/ogg"; "opus" -> "audio/opus"; "wav" -> "audio/wav"; else -> "audio/*" }
         val resolver = applicationContext.contentResolver
+        val reqYear = request.tracks.firstNotNullOfOrNull { it.year.trim().toIntOrNull()?.takeIf { y -> y > 0 } }
         val values = ContentValues().apply {
             put(MediaStore.Audio.Media.DISPLAY_NAME, safe(name.substringBeforeLast('.')).take(120) + "." + extension)
             put(MediaStore.Audio.Media.MIME_TYPE, mime)
             put(MediaStore.Audio.Media.RELATIVE_PATH, folder)
             put(MediaStore.Audio.Media.IS_PENDING, 1)
+            if (reqYear != null) put(MediaStore.Audio.Media.YEAR, reqYear)
         }
         val uri = resolver.insert(MediaStore.Audio.Media.getContentUri(settings.volumeNow(applicationContext)), values) ?: throw SoulseekException("Couldn't save $name")
         try {

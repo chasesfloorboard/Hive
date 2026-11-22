@@ -241,6 +241,7 @@ abstract class HiveAppBase : Application(), coil3.SingletonImageLoader.Factory, 
             },
         )
         requestRescan(delayMs = 0)
+        scope.launch(Dispatchers.IO) { runCatching { sync.applyStreamLoves() } }
         likedAlbums.start(scope)
         // Loves go into the song files, and everything into the backup, as they change.
         scope.launch {
@@ -321,6 +322,7 @@ abstract class HiveAppBase : Application(), coil3.SingletonImageLoader.Factory, 
                 }
                 changed = database.dao().replaceLibrary(tracks)
                 Log.i(TAG, "Library scan: ${tracks.size} tracks, $changed changed, in ${System.currentTimeMillis() - started} ms")
+                runCatching { sync.applyStreamLoves() }
                 // Years Android didn't read, from the songs' own tags, without holding the scan up.
                 yearJob?.cancel()
                 yearJob = scope.launch(Dispatchers.IO) {

@@ -145,6 +145,23 @@ fun AlbumScreen(
 ) {
     val c = Hive.colors
     val tracks by tracksFlow.collectAsStateWithLifecycle(emptyList())
+    val resolvedYear by produceState(
+        initialValue = year.takeIf { it > 0 } ?: tracks.firstNotNullOfOrNull { it.year.takeIf { y -> y > 0 } } ?: 0,
+        albumId,
+        year,
+        tracks.size,
+    ) {
+        val existing = year.takeIf { it > 0 } ?: tracks.firstNotNullOfOrNull { it.year.takeIf { y -> y > 0 } } ?: 0
+        if (existing > 0) {
+            value = existing
+        } else if (title.isNotBlank() && artist.isNotBlank()) {
+            val online = vm.albumYear(artist, title)
+            if (online != null && online > 0) {
+                value = online
+                vm.setAlbumYear(albumId, online)
+            }
+        }
+    }
     val loved by vm.lovedIds.collectAsStateWithLifecycle()
     val now by vm.nowPlaying.collectAsStateWithLifecycle()
     val colors by produceState<AuraColors?>(null, albumId) { value = vm.albumColors(albumId) }
@@ -173,7 +190,7 @@ fun AlbumScreen(
                     if (viewing) CoverViewer(vm, if (cleared) emptyList() else tracks, cover, title) { viewing = false }
                     Text(title, style = HiveText.heroTitle, color = c.text, textAlign = TextAlign.Center, maxLines = 2, overflow = TextOverflow.Ellipsis, modifier = Modifier.padding(top = 22.dp))
                     if (artist.isNotBlank()) Text(artist, style = HiveText.rowStrong, color = c.accent, modifier = Modifier.padding(top = 6.dp).clip(HiveShape.pill).clickable { onOpenArtist(artist) }.padding(horizontal = 8.dp, vertical = 2.dp))
-                    Text(listOfNotNull(year.takeIf { it > 0 }?.toString(), countOf(tracks.size, "track"), formatLength(tracks.sumOf { it.durationMs })).joinToString(" · "), style = HiveText.small, color = c.textDim, modifier = Modifier.padding(top = 4.dp))
+                    Text(listOfNotNull(resolvedYear.takeIf { it > 0 }?.toString(), countOf(tracks.size, "track"), formatLength(tracks.sumOf { it.durationMs })).joinToString(" · "), style = HiveText.small, color = c.textDim, modifier = Modifier.padding(top = 4.dp))
                     Row(Modifier.fillMaxWidth().padding(top = 20.dp), horizontalArrangement = Arrangement.spacedBy(10.dp), verticalAlignment = Alignment.CenterVertically) {
                         PillButton("Play", HiveIcons.Play, accent = true, modifier = Modifier.weight(1f)) { vm.play(tracks) }
                         PillButton("Shuffle", HiveIcons.Shuffle, accent = false, modifier = Modifier.weight(1f)) { vm.shuffle(tracks) }

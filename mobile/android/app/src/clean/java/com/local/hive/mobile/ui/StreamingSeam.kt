@@ -36,7 +36,7 @@ fun DownloadBubble(modifier: Modifier = Modifier, hidden: Boolean = false) {}
 /** Soulseek is absent in Clean. */
 fun soulseekConfigured(context: android.content.Context): Boolean = false
 
-fun downloadStreams(context: android.content.Context, songs: List<StreamTrack>, onToast: (String) -> Unit) {}
+fun downloadStreams(context: android.content.Context, songs: List<StreamTrack>, onToast: (String) -> Unit, year: String = "") {}
 
 @Composable
 fun SoulseekSignInDialog(onDismiss: () -> Unit, onSignedIn: () -> Unit, confirm: String = "Sign in and download") {}

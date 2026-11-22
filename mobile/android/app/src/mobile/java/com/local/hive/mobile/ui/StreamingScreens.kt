@@ -312,7 +312,7 @@ private fun ServiceSongRow(vm: MainViewModel, s: StreamTrack, local: Track?, now
  * album as one download (one folder to find them in), a song on its own as a
  * song.
  */
-fun downloadStreams(context: android.content.Context, songs: List<StreamTrack>, onToast: (String) -> Unit) {
+fun downloadStreams(context: android.content.Context, songs: List<StreamTrack>, onToast: (String) -> Unit, year: String = "") {
     songs.groupBy { it.artist.substringBefore(",").trim() to it.album }.forEach { (key, group) ->
         val (artist, album) = key
         val albumArt = group.firstOrNull()?.artworkUrl.orEmpty()
@@ -321,6 +321,7 @@ fun downloadStreams(context: android.content.Context, songs: List<StreamTrack>, 
                 it.title, it.durationMs,
                 artist = it.artist,
                 album = it.album,
+                year = year,
                 artworkUrl = if (it.artworkUrl == albumArt) "" else it.artworkUrl,
                 trackNumber = i + 1,
             )
@@ -436,6 +437,7 @@ private fun ServiceCollectionScreen(
                 replaces = local?.id,
                 artist = it.artist,
                 album = it.album.ifBlank { col.name },
+                year = col.year,
                 artworkUrl = if (it.artworkUrl == albumArt || it.artworkUrl.isBlank()) "" else it.artworkUrl,
                 trackNumber = i + 1,
             )

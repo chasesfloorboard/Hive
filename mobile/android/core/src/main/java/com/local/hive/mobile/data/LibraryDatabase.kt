@@ -458,6 +458,8 @@ interface LibraryDao {
 
     @Query("UPDATE tracks SET year = :year WHERE id = :id")
     suspend fun setYear(id: Long, year: Int)
+    @Query("UPDATE tracks SET year = :year WHERE albumId = :albumId AND (year IS NULL OR year <= 0)")
+    suspend fun setAlbumYear(albumId: Long, year: Int)
     @Transaction
     suspend fun setYears(years: Map<Long, Int>) { for ((id, y) in years) setYear(id, y) }
 

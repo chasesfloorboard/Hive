@@ -27,6 +27,7 @@ interface RemoteMediaSource {
 interface SyncBridge {
     suspend fun setLoved(trackIds: Collection<Long>, loved: Boolean)
     fun setStreamLoved(title: String, artist: String, album: String, durationMs: Long, artworkUrl: String, mediaId: String, loved: Boolean)
+    suspend fun applyStreamLoves()
     /** Whether [uri] is a stream served by the currently-paired PC. */
     fun isPcStream(uri: Uri): Boolean
 }
