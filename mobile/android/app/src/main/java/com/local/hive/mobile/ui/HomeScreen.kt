@@ -1,5 +1,8 @@
 package com.local.hive.mobile.ui
 
+import androidx.compose.animation.core.animateDpAsState
+import androidx.compose.animation.core.animateFloatAsState
+import androidx.compose.animation.core.tween
 import androidx.compose.foundation.gestures.detectDragGesturesAfterLongPress
 import androidx.compose.foundation.border
 import androidx.compose.ui.input.pointer.pointerInput
@@ -451,6 +454,9 @@ fun TrackList(
         if (!indexed) emptyMap() else buildMap { titles.forEachIndexed { i, t -> putIfAbsent(indexLetter(LibrarySort.key(t)), i) } }
     }
     val showIndex = indexed && titles.size > 30
+    var restRevealed by remember(dimFrom, tracks) { mutableStateOf(false) }
+    val dimBlur by animateDpAsState(if (!restRevealed && dimFrom != null) 3.dp else 0.dp, tween(260), label = "dimBlur")
+    val dimAlpha by animateFloatAsState(if (!restRevealed && dimFrom != null) 0.45f else 1f, tween(260), label = "dimAlpha")
     if (rows == null) PickableList(tracks = tracks) else PickableList(tracks = rows.mapNotNull { it.track }, streams = rows.filter { it.track == null }.mapNotNull { it.stream })
     val play = { if (rows == null) vm.play(tracks) else vm.playRows(rows) }
     val shuffle = { if (rows == null) vm.shuffle(tracks) else vm.playRows(rows, shuffle = true) }
@@ -474,16 +480,36 @@ fun TrackList(
                     // Rows glide into place when the list changes (a sort, a deletion, a new song).
                     // While searching, the non-matching rest (index >= dimFrom) is dimmed so the matches stand out.
                     Box(Modifier.animateItem()) {
-                        val dim = dimFrom != null && i >= dimFrom
-                        Box(if (dim) Modifier.blur(3.dp).alpha(0.45f) else Modifier) { TrackRow(t, t.id in loved, now.trackId == t.id, now.isPlaying, actions, onClick = { vm.play(tracks, i) }) }
-                        // Dimmed rest is a dead zone: a tap clears the search first, so the next tap hits a clear row.
-                        if (dim && onDimTap != null) Box(Modifier.matchParentSize().clickable { onDimTap() })
+                        val isRest = dimFrom != null && i >= dimFrom
+                        val rowModifier = if (isRest) {
+                            if (dimBlur > 0.dp) Modifier.blur(dimBlur).alpha(dimAlpha) else Modifier.alpha(dimAlpha)
+                        } else Modifier
+                        Box(rowModifier) { TrackRow(t, t.id in loved, now.trackId == t.id, now.isPlaying, actions, onClick = { vm.play(tracks, i) }) }
+                        // Tapping the blurred rest fades away the blur and reveals the tracks underneath without jumping or clearing search
+                        if (isRest && !restRevealed) {
+                            Box(Modifier.matchParentSize().clickable {
+                                restRevealed = true
+                                onDimTap?.invoke()
+                            })
+                        }
                     }
                 } else itemsIndexed(rows, key = { _, r -> r.track?.id?.toString() ?: r.stream?.key.orEmpty() }, contentType = { _, _ -> "track" }) { i, r ->
                     Box(Modifier.animateItem()) {
-                        val t = r.track
-                        if (t != null) TrackRow(t, t.id in loved, now.trackId == t.id, now.isPlaying, actions, onClick = { vm.playRows(rows, i) })
-                        else r.stream?.let { st -> StreamRow(st, now.mediaId == st.key, now.isPlaying, full, onClick = { vm.playRows(rows, i) }, vm = vm) }
+                        val isRest = dimFrom != null && i >= dimFrom
+                        val rowModifier = if (isRest) {
+                            if (dimBlur > 0.dp) Modifier.blur(dimBlur).alpha(dimAlpha) else Modifier.alpha(dimAlpha)
+                        } else Modifier
+                        Box(rowModifier) {
+                            val t = r.track
+                            if (t != null) TrackRow(t, t.id in loved, now.trackId == t.id, now.isPlaying, actions, onClick = { vm.playRows(rows, i) })
+                            else r.stream?.let { st -> StreamRow(st, now.mediaId == st.key, now.isPlaying, full, onClick = { vm.playRows(rows, i) }, vm = vm) }
+                        }
+                        if (isRest && !restRevealed) {
+                            Box(Modifier.matchParentSize().clickable {
+                                restRevealed = true
+                                onDimTap?.invoke()
+                            })
+                        }
                     }
                 }
             }

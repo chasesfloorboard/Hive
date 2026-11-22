@@ -4,6 +4,7 @@ import androidx.compose.material.icons.rounded.Album
 import androidx.compose.material.icons.rounded.Person
 import com.local.hive.mobile.ui.theme.HiveIcons
 import android.net.Uri
+import androidx.compose.animation.core.animateDpAsState
 import androidx.compose.animation.core.animateFloatAsState
 import androidx.compose.animation.core.tween
 import androidx.compose.foundation.background
@@ -308,6 +309,9 @@ fun PlaylistScreen(vm: MainViewModel, id: Long, actions: TrackActions, bottomPad
     // Playing a matched song shouldn't dead-end at the matches: the queue is [matches] then [the rest],
     // and the rest is shown below, dimmed. Shuffle keeps the rest shuffled when shuffle is on.
     val searching = !editing && q.isNotEmpty()
+    var restRevealed by remember(query) { mutableStateOf(false) }
+    val restBlur by animateDpAsState(if (!restRevealed && searching) 3.dp else 0.dp, tween(260), label = "playlistRestBlur")
+    val restAlpha by animateFloatAsState(if (!restRevealed && searching) 0.45f else 1f, tween(260), label = "playlistRestAlpha")
     val restRows = remember(searching, rows, listed) { if (!searching) emptyList() else listed.toHashSet().let { m -> shownKeys.filterNot { it in m }.mapNotNull { byKey[it] } } }
     fun playFromSearch(searchPos: Int, fullIndex: Int) { if (searching) vm.playRows(listedRows + (if (now.shuffle) restRows.shuffled() else restRows), searchPos) else vm.playRows(rows, fullIndex) }
     PickableList(tracks = listedRows.mapNotNull { it.track }, streams = listedRows.filter { it.track == null }.mapNotNull { it.stream })
@@ -419,13 +423,16 @@ fun PlaylistScreen(vm: MainViewModel, id: Long, actions: TrackActions, bottomPad
                     val full2 = positions[r.entry.rowId.toString()] ?: 0
                     PanelSlice {
                         Box {
-                            Box(Modifier.blur(3.dp).alpha(0.45f)) {
+                            val rowModifier = if (restBlur > 0.dp) Modifier.blur(restBlur).alpha(restAlpha) else Modifier.alpha(restAlpha)
+                            Box(rowModifier) {
                                 val t = r.track
                                 if (t != null) TrackRow(t, t.id in loved, now.trackId == t.id, now.isPlaying, actions, onClick = { vm.playRows(rows, full2) })
                                 else { val s = r.stream!!; StreamRow(s, now.mediaId == s.key, now.isPlaying, full, onClick = { vm.playRows(rows, full2) }, vm = vm) }
                             }
-                            // The dimmed rest is a dead zone: a tap clears the search first, so the next tap hits a clear row.
-                            Box(Modifier.matchParentSize().clickable { query = "" })
+                            // Tapping the blurred rest fades away the blur and reveals the tracks underneath without jumping or clearing search
+                            if (!restRevealed) {
+                                Box(Modifier.matchParentSize().clickable { restRevealed = true })
+                            }
                         }
                     }
                 }
