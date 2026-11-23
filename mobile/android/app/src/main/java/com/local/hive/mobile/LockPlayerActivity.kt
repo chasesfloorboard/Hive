@@ -30,11 +30,11 @@ class LockPlayerActivity : ComponentActivity() {
 
     private val unlocked = object : BroadcastReceiver() {
         // A face/fingerprint/PIN unlock no longer dismisses the player: it stays up so you can see and use
-        // it, and only Back or Home sends it away. Kept registered (no-op) in case it is wanted again.
-        override fun onReceive(context: Context, intent: Intent) {}
+        // it, and only Back or Home sends it away.
+        override fun onReceive(context: Context, intent: Intent) {
+            lastUnlockedAt = System.currentTimeMillis()
+        }
     }
-    /** When the keyguard last unlocked (face/fingerprint). */
-    private var unlockedAt = 0L
     private val mainHandler = android.os.Handler(android.os.Looper.getMainLooper())
     private var unlockReShowRunnable: Runnable? = null
     // Keep the player up across a face/fingerprint unlock. The keyguard dismiss reveals home and backgrounds
@@ -44,7 +44,7 @@ class LockPlayerActivity : ComponentActivity() {
         if (android.os.Build.VERSION.SDK_INT >= 34)
             KeyguardManager.KeyguardLockedStateListener { locked ->
                 if (!locked) {
-                    unlockedAt = System.currentTimeMillis()
+                    lastUnlockedAt = System.currentTimeMillis()
                     if (!leaving && !sentAway && !isFinishing) {
                         val r = Runnable {
                             if (!leaving && !sentAway && !isFinishing) runCatching {
@@ -114,6 +114,7 @@ class LockPlayerActivity : ComponentActivity() {
 
     override fun onCreate(savedInstanceState: Bundle?) {
         setShowWhenLocked(true)
+        if (android.os.Build.VERSION.SDK_INT >= 27) setTurnScreenOn(true)
         super.onCreate(savedInstanceState)
         enableEdgeToEdge(
             statusBarStyle = androidx.activity.SystemBarStyle.dark(android.graphics.Color.TRANSPARENT),
@@ -153,6 +154,20 @@ class LockPlayerActivity : ComponentActivity() {
      */
     override fun onUserLeaveHint() {
         super.onUserLeaveHint()
+        if (!resumed) {
+            CarLog.lockPlayer(this, "ignore spurious onUserLeaveHint: not resumed")
+            return
+        }
+        val now = System.currentTimeMillis()
+        if (now - resumedAt < HOME_AFTER_MS) {
+            CarLog.lockPlayer(this, "ignore spurious onUserLeaveHint: resumed only ${now - resumedAt}ms ago")
+            return
+        }
+        if (now - lastUnlockedAt < HOME_AFTER_MS) {
+            CarLog.lockPlayer(this, "ignore spurious onUserLeaveHint: unlocked only ${now - lastUnlockedAt}ms ago")
+            return
+        }
+        unlockReShowRunnable?.let { mainHandler.removeCallbacks(it) }
         mainHandler.removeCallbacksAndMessages(null)
         sentAway = true
         leaving("home pressed")
@@ -211,6 +226,7 @@ class LockPlayerActivity : ComponentActivity() {
      * back. Same effect as Home.
      */
     private fun dismissToBack() {
+        unlockReShowRunnable?.let { mainHandler.removeCallbacks(it) }
         mainHandler.removeCallbacksAndMessages(null)
         sentAway = true
         leaving("back: to previous app / lock screen")
@@ -219,6 +235,7 @@ class LockPlayerActivity : ComponentActivity() {
     }
 
     private fun unlock() {
+        unlockReShowRunnable?.let { mainHandler.removeCallbacks(it) }
         mainHandler.removeCallbacksAndMessages(null)
         sentAway = true
         // Already unlocked (face unlock): dismiss straight to whatever was open before, no keyguard request.
@@ -233,6 +250,7 @@ class LockPlayerActivity : ComponentActivity() {
 
     override fun onDestroy() {
         if (activeInstance === this) activeInstance = null
+        unlockReShowRunnable?.let { mainHandler.removeCallbacks(it) }
         mainHandler.removeCallbacksAndMessages(null)
         runCatching { unregisterReceiver(unlocked) }
         if (android.os.Build.VERSION.SDK_INT >= 34 && keyguardUnlock != null) runCatching {
@@ -246,6 +264,8 @@ class LockPlayerActivity : ComponentActivity() {
 
     companion object {
         @Volatile private var activeInstance: LockPlayerActivity? = null
+        /** When the keyguard last unlocked (face/fingerprint). Kept in companion so it survives activity recreation. */
+        @Volatile var lastUnlockedAt = 0L
         /** When the player was last brought back after being pushed away (see onStop). */
         private val broughtBack = mutableListOf<Long>()
         /** Home or Back pressed on the player: it stays away until the phone next goes to sleep (see [screenChanged]). */
@@ -263,7 +283,7 @@ class LockPlayerActivity : ComponentActivity() {
             lastShowAttemptAt = 0L
             screenChangedAt = System.currentTimeMillis()
             activeInstance?.let {
-                if (!resumed && !it.isFinishing) {
+                if (!resumed && !it.isFinishing && System.currentTimeMillis() - screenChangedAt > 1_000L) {
                     it.finish()
                 }
             }
@@ -277,7 +297,7 @@ class LockPlayerActivity : ComponentActivity() {
         @Volatile private var lastShowAttemptAt = 0L
         /** Ignore a fresh show this soon after the last: prevents intent looping on rapid wake events. */
         private const val SHOW_COOLDOWN_MS = 1_000L
-        private const val HOME_AFTER_MS = 2_000L
+        private const val HOME_AFTER_MS = 1_500L
         /** The lock screen's own screen timeout. */
         private const val SLEEP_AFTER_MS = 10_000L
         /** How long past [SLEEP_AFTER_MS] the screen may stay on before the player steps aside for the lock screen. */

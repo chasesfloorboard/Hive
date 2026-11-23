@@ -272,15 +272,15 @@ class PlaybackService : MediaLibraryService() {
                 when (intent.action) {
                     Intent.ACTION_SCREEN_OFF -> {
                         bridge.lockScreenChanged()
-                        if (CarLog.carConnected) CarLog.lockPlayer(this@PlaybackService, "screen OFF received; wants=${wantsLockPlayer(player)}")
+                        CarLog.lockPlayer(this@PlaybackService, "screen OFF received; wants=${wantsLockPlayer(player)}")
                     }
                     Intent.ACTION_SCREEN_ON -> {
                         bridge.lockScreenChanged()
-                        if (CarLog.carConnected) CarLog.lockPlayer(this@PlaybackService, "screen ON received; wants=${wantsLockPlayer(player)}")
+                        CarLog.lockPlayer(this@PlaybackService, "screen ON received; wants=${wantsLockPlayer(player)}")
                         if (wantsLockPlayer(player)) bridge.showLockPlayerIfWanted(this@PlaybackService, bridge.wasRecentlyForeground())
                     }
                     Intent.ACTION_USER_PRESENT -> {
-                        if (CarLog.carConnected) CarLog.lockPlayer(this@PlaybackService, "user PRESENT received; wants=${wantsLockPlayer(player)}")
+                        CarLog.lockPlayer(this@PlaybackService, "user PRESENT received; wants=${wantsLockPlayer(player)}")
                         if (wantsLockPlayer(player)) bridge.showLockPlayerIfWanted(this@PlaybackService, bridge.wasRecentlyForeground())
                     }
                 }
@@ -298,10 +298,11 @@ class PlaybackService : MediaLibraryService() {
         player.addListener(object : Player.Listener {
             override fun onIsPlayingChanged(isPlaying: Boolean) {
                 lastPlayingAt = System.currentTimeMillis()
-                val locked = (getSystemService(KEYGUARD_SERVICE) as android.app.KeyguardManager).isKeyguardLocked
+                val km = getSystemService(KEYGUARD_SERVICE) as android.app.KeyguardManager
+                val locked = km.isKeyguardLocked || km.inKeyguardRestrictedInputMode()
                 val awake = (getSystemService(POWER_SERVICE) as android.os.PowerManager).isInteractive
-                if (CarLog.carConnected && isPlaying) CarLog.lockPlayer(this@PlaybackService, "play started; showing=${awake && locked}")
-                // Raise the player ONLY when the lock screen is up (keyguard locked) and the screen is on --
+                if (isPlaying) CarLog.lockPlayer(this@PlaybackService, "play started; showing=${awake && locked}")
+                // Raise the player ONLY when the lock screen is up (keyguard locked or restricted) and the screen is on --
                 // never over an unlocked phone. Music resuming while you are using the unlocked phone must not
                 // pop it up; it belongs on the lock screen.
                 if (isPlaying && awake && locked) {
