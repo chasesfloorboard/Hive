@@ -8,7 +8,6 @@ import androidx.compose.foundation.background
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.gestures.detectTapGestures
 import androidx.compose.foundation.gestures.detectTransformGestures
-import androidx.compose.foundation.horizontalScroll
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
@@ -24,8 +23,9 @@ import androidx.compose.foundation.layout.statusBarsPadding
 import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.pager.HorizontalPager
 import androidx.compose.foundation.pager.rememberPagerState
-import androidx.compose.foundation.rememberScrollState
 import androidx.compose.material.icons.Icons
+import androidx.compose.material.icons.automirrored.rounded.KeyboardArrowLeft
+import androidx.compose.material.icons.automirrored.rounded.KeyboardArrowRight
 import androidx.compose.material.icons.rounded.Check
 import androidx.compose.material.icons.rounded.CheckCircle
 import androidx.compose.material.icons.rounded.Close
@@ -67,7 +67,6 @@ import com.local.hive.mobile.ui.theme.HiveShape
 import com.local.hive.mobile.ui.theme.HiveText
 import com.local.hive.mobile.ui.theme.hiveGlass
 import kotlinx.coroutines.Dispatchers
-import kotlinx.coroutines.flow.first
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
 import java.security.MessageDigest
@@ -76,43 +75,35 @@ import java.security.MessageDigest
 data class ViewerCover(
     val bytes: ByteArray,
     val title: String,
-    val subtitle: String? = null
+    val caption: String? = null
 ) {
     override fun equals(other: Any?): Boolean {
         if (this === other) return true
         if (other !is ViewerCover) return false
-        return bytes.contentEquals(other.bytes) && title == other.title && subtitle == other.subtitle
+        return bytes.contentEquals(other.bytes) && title == other.title && caption == other.caption
     }
 
     override fun hashCode(): Int {
         var result = bytes.contentHashCode()
         result = 31 * result + title.hashCode()
-        result = 31 * result + (subtitle?.hashCode() ?: 0)
+        result = 31 * result + (caption?.hashCode() ?: 0)
         return result
     }
 }
 
 /**
- * Discovers all distinct covers for an album or track:
- * - Multiple embedded pictures in a song's file (front cover, back cover, alternates)
- * - Distinct covers across different songs of the same album (e.g. Von dutch on BRAT)
- * - Album online alternate cover if available
- * - Fallback / streaming artwork if distinct
+ * Discovers distinct covers:
+ * - When viewing a single song (tracks.size == 1): discovers ONLY that song's covers (e.g. Von dutch's 3 covers),
+ *   never pulling in covers from other songs on the album.
+ * - When viewing the full album (tracks.size > 1): discovers all distinct covers across the album.
  */
 suspend fun discoverCovers(
     context: android.content.Context,
     vm: MainViewModel,
     tracks: List<Track>,
-    fallback: Any?
+    fallback: Any?,
+    defaultName: String
 ): List<ViewerCover> = withContext(Dispatchers.IO) {
-    val allTracks = if (tracks.size == 1) {
-        val single = tracks.first()
-        val albumTracks = runCatching { vm.albumTracks(single.albumId).first() }.getOrNull().orEmpty()
-        if (albumTracks.isNotEmpty()) {
-            listOf(single) + albumTracks.filter { it.id != single.id }
-        } else tracks
-    } else tracks
-
     val results = mutableListOf<ViewerCover>()
     val seenSha1 = mutableSetOf<String>()
     val seenByteArrays = mutableListOf<ByteArray>()
@@ -129,28 +120,49 @@ suspend fun discoverCovers(
         return false
     }
 
-    fun add(bytes: ByteArray, type: Int? = null, trackTitle: String? = null, subtitle: String? = null) {
+    fun add(bytes: ByteArray, caption: String?) {
         if (bytes.isEmpty() || isDuplicate(bytes)) return
         seenSha1 += sha1Hex(bytes)
         seenByteArrays += bytes
         val index = results.size + 1
-        val isFirstTrack = trackTitle == allTracks.firstOrNull()?.title
-        val sub = subtitle ?: when {
-            trackTitle != null && allTracks.size > 1 && !isFirstTrack -> trackTitle
-            type == EmbeddedPictures.FRONT -> "Front cover"
-            type == EmbeddedPictures.BACK -> "Back cover"
-            else -> null
-        }
-        results += ViewerCover(bytes, "Cover $index", sub)
+        results += ViewerCover(bytes, "Cover $index", caption)
     }
 
-    if (allTracks.isNotEmpty()) {
-        val firstTrack = allTracks.first()
+    // 1. Single track view (e.g. Now Playing player or track info):
+    //    Inspect ONLY this song's file. Do NOT merge covers from other songs in the album!
+    if (tracks.size == 1) {
+        val track = tracks.first()
+        val songName = track.title.ifBlank { defaultName }
+        val pics = runCatching {
+            context.contentResolver.openInputStream(track.uri)?.use { EmbeddedPictures.readTyped(it) }
+        }.getOrNull().orEmpty()
+
+        val frontIdx = pics.indexOfFirst { it.type == EmbeddedPictures.FRONT }
+        val sortedPics = if (frontIdx > 0) {
+            val list = pics.toMutableList()
+            val front = list.removeAt(frontIdx)
+            list.add(0, front)
+            list
+        } else pics
+
+        for (pic in sortedPics) {
+            add(pic.data, songName)
+        }
+
+        if (results.isEmpty()) {
+            val fb = runCatching { vm.fullCover(track) }.getOrNull()
+            if (fb != null) add(fb, songName)
+        }
+    } else if (tracks.size > 1) {
+        // 2. Full album view: inspect all tracks across the album
+        val albumName = defaultName.ifBlank { tracks.firstOrNull()?.album.orEmpty() }
+
+        // Start with the first track
+        val firstTrack = tracks.first()
         val firstPics = runCatching {
             context.contentResolver.openInputStream(firstTrack.uri)?.use { EmbeddedPictures.readTyped(it) }
         }.getOrNull().orEmpty()
 
-        // Place FRONT cover first if marked
         val frontIdx = firstPics.indexOfFirst { it.type == EmbeddedPictures.FRONT }
         val sortedFirstPics = if (frontIdx > 0) {
             val list = firstPics.toMutableList()
@@ -160,40 +172,33 @@ suspend fun discoverCovers(
         } else firstPics
 
         for (pic in sortedFirstPics) {
-            add(pic.data, type = pic.type, trackTitle = firstTrack.title)
+            add(pic.data, albumName)
         }
 
-        // Remaining tracks (if any)
-        for (i in 1 until allTracks.size) {
-            val t = allTracks[i]
+        // Scan remaining tracks for any songs with distinct single art (e.g. Von dutch on BRAT)
+        for (i in 1 until tracks.size) {
+            val t = tracks[i]
             val pics = runCatching {
                 context.contentResolver.openInputStream(t.uri)?.use { EmbeddedPictures.readTyped(it) }
             }.getOrNull().orEmpty()
             for (pic in pics) {
-                add(pic.data, type = pic.type, trackTitle = t.title)
+                add(pic.data, t.title.ifBlank { albumName })
             }
         }
 
-        // Check online alternate
+        // Online alternate for the album
         firstTrack.albumId.let { albId ->
             val alt = EmbeddedPictures.onlineAlternate(context, albId)
             if (alt != null && alt.exists() && alt.length() > 0) {
                 runCatching { alt.readBytes() }.getOrNull()?.let { altBytes ->
-                    add(altBytes, subtitle = "Alternate cover")
+                    add(altBytes, albumName)
                 }
-            }
-        }
-
-        if (results.isEmpty()) {
-            val fallbackTrackCover = runCatching { vm.fullCover(firstTrack) }.getOrNull()
-            if (fallbackTrackCover != null) {
-                add(fallbackTrackCover, subtitle = "Cover 1")
             }
         }
     }
 
-    // Fallback cover (e.g. coil load from URL or content URI)
-    if (fallback != null) {
+    // 3. Fallback (e.g. streaming track/album where no local files exist)
+    if (results.isEmpty() && fallback != null) {
         val fbBytes = runCatching {
             val r = coil3.SingletonImageLoader.get(context).execute(
                 coil3.request.ImageRequest.Builder(context)
@@ -210,7 +215,7 @@ suspend fun discoverCovers(
             }
         }.getOrNull()
         if (fbBytes != null) {
-            add(fbBytes, subtitle = if (results.isEmpty()) null else "Album cover")
+            add(fbBytes, defaultName)
         }
     }
 
@@ -221,11 +226,10 @@ suspend fun discoverCovers(
  * An album or song cover over the whole screen, at the size it is in the song file:
  * pinch or double tap to zoom, drag to look around.
  *
- * When an album or song has multiple covers (e.g. The Life of Pablo's 3 covers, or Von dutch
- * carrying distinct single art from the rest of the album), Cover 1, Cover 2, Cover 3 chips
- * and a swipeable pager allow viewing each cover in full resolution.
- *
- * Save puts the active picture in Pictures/Hive; Edit cover opens the cover editor.
+ * When an album or song has multiple covers:
+ * - Desktop-style navigation arrows on the sides and discrete indicator dots allow moving between covers.
+ * - Captions show the song title (e.g. "Von dutch") or album title.
+ * - Save puts the active picture in Pictures/Hive; Edit cover opens the cover editor.
  */
 @Composable
 fun CoverViewer(vm: MainViewModel, tracks: List<Track>, fallback: Any?, name: String, onDismiss: () -> Unit) {
@@ -234,14 +238,15 @@ fun CoverViewer(vm: MainViewModel, tracks: List<Track>, fallback: Any?, name: St
     val first = tracks.firstOrNull()
     val context = androidx.compose.ui.platform.LocalContext.current
 
-    val covers by produceState<List<ViewerCover>>(emptyList(), tracks, fallback) {
+    val covers by produceState<List<ViewerCover>>(emptyList(), tracks, fallback, name) {
         val quick = withContext(Dispatchers.IO) {
             tracks.firstOrNull()?.let { vm.fullCover(it) }
         }
         if (quick != null) {
-            value = listOf(ViewerCover(quick, "Cover 1", if (tracks.size > 1) "Front cover" else null))
+            val initialCaption = if (tracks.size == 1) first?.title?.ifBlank { name } else name
+            value = listOf(ViewerCover(quick, "Cover 1", initialCaption))
         }
-        val all = discoverCovers(context, vm, tracks, fallback)
+        val all = discoverCovers(context, vm, tracks, fallback, name)
         if (all.isNotEmpty()) {
             value = all
         }
@@ -350,7 +355,7 @@ fun CoverViewer(vm: MainViewModel, tracks: List<Track>, fallback: Any?, name: St
                         Modifier
                             .fillMaxWidth()
                             .aspectRatio(1f)
-                            .padding(12.dp)
+                            .padding(horizontal = 48.dp, vertical = 12.dp)
                             .onSizeChanged { if (isCurrent) frame = it }
                             .graphicsLayer {
                                 if (isCurrent) {
@@ -376,7 +381,7 @@ fun CoverViewer(vm: MainViewModel, tracks: List<Track>, fallback: Any?, name: St
                         if (bmp != null) {
                             Image(
                                 bmp,
-                                contentDescription = covers.getOrNull(page)?.title ?: "Album cover",
+                                contentDescription = covers.getOrNull(page)?.caption ?: covers.getOrNull(page)?.title ?: "Cover",
                                 modifier = Modifier.fillMaxSize().softShadow(28.dp, HiveShape.art, aura?.primary ?: Color.Black),
                                 contentScale = ContentScale.Fit
                             )
@@ -392,6 +397,47 @@ fun CoverViewer(vm: MainViewModel, tracks: List<Track>, fallback: Any?, name: St
                             )
                         }
                     }
+                }
+            }
+
+            // Desktop-style side navigation arrows (Chevron left and right)
+            if (covers.size > 1) {
+                Box(
+                    Modifier
+                        .align(Alignment.CenterStart)
+                        .padding(start = 12.dp)
+                ) {
+                    ControlButton(
+                        Icons.AutoMirrored.Rounded.KeyboardArrowLeft,
+                        "Previous cover",
+                        {
+                            haptics.performHapticFeedback(androidx.compose.ui.hapticfeedback.HapticFeedbackType.TextHandleMove)
+                            scope.launch {
+                                val prev = (pagerState.currentPage - 1 + pageCount) % pageCount
+                                pagerState.animateScrollToPage(prev)
+                            }
+                        },
+                        size = 44.dp
+                    )
+                }
+
+                Box(
+                    Modifier
+                        .align(Alignment.CenterEnd)
+                        .padding(end = 12.dp)
+                ) {
+                    ControlButton(
+                        Icons.AutoMirrored.Rounded.KeyboardArrowRight,
+                        "Next cover",
+                        {
+                            haptics.performHapticFeedback(androidx.compose.ui.hapticfeedback.HapticFeedbackType.TextHandleMove)
+                            scope.launch {
+                                val next = (pagerState.currentPage + 1) % pageCount
+                                pagerState.animateScrollToPage(next)
+                            }
+                        },
+                        size = 44.dp
+                    )
                 }
             }
 
@@ -446,47 +492,36 @@ fun CoverViewer(vm: MainViewModel, tracks: List<Track>, fallback: Any?, name: St
                     }
                 }
 
-                // Multi-cover selector chips (Cover 1, Cover 2, Cover 3...)
+                // Caption (e.g. "Von dutch" or "The Life of Pablo"):
+                currentCover?.caption?.takeIf { it.isNotBlank() }?.let { cap ->
+                    Text(
+                        text = cap,
+                        style = HiveText.rowStrong,
+                        color = Hive.colors.text,
+                        textAlign = androidx.compose.ui.text.style.TextAlign.Center,
+                        modifier = Modifier.padding(bottom = 8.dp)
+                    )
+                }
+
+                // Desktop-style discrete dots for multiple covers
                 if (covers.size > 1) {
-                    currentCover?.subtitle?.let { sub ->
-                        Text(
-                            sub,
-                            style = HiveText.small,
-                            color = Hive.colors.textDim,
-                            modifier = Modifier.padding(bottom = 6.dp)
-                        )
-                    }
                     Row(
-                        Modifier
-                            .padding(bottom = 12.dp)
-                            .hiveGlass(HiveShape.pill, strength = 0.28f)
-                            .then(
-                                if (covers.size > 4) Modifier.horizontalScroll(rememberScrollState())
-                                else Modifier
-                            )
-                            .padding(horizontal = 6.dp, vertical = 5.dp),
                         horizontalArrangement = Arrangement.spacedBy(6.dp),
-                        verticalAlignment = Alignment.CenterVertically
+                        verticalAlignment = Alignment.CenterVertically,
+                        modifier = Modifier.padding(bottom = 14.dp)
                     ) {
-                        covers.forEachIndexed { i, c ->
+                        covers.forEachIndexed { i, _ ->
                             val active = pagerState.currentPage == i
                             Box(
                                 Modifier
-                                    .clip(HiveShape.pill)
-                                    .background(if (active) Hive.colors.accent else Color.Transparent)
+                                    .size(if (active) 8.dp else 6.dp)
+                                    .clip(androidx.compose.foundation.shape.CircleShape)
+                                    .background(if (active) Hive.colors.accent else Hive.colors.textDimmer.copy(alpha = 0.45f))
                                     .clickable {
                                         haptics.performHapticFeedback(androidx.compose.ui.hapticfeedback.HapticFeedbackType.TextHandleMove)
                                         scope.launch { pagerState.animateScrollToPage(i) }
                                     }
-                                    .padding(horizontal = 14.dp, vertical = 7.dp),
-                                contentAlignment = Alignment.Center
-                            ) {
-                                Text(
-                                    text = c.title,
-                                    style = HiveText.rowStrong.copy(fontWeight = if (active) androidx.compose.ui.text.font.FontWeight.Bold else androidx.compose.ui.text.font.FontWeight.Normal),
-                                    color = if (active) readableOn(Hive.colors.accent) else Hive.colors.text
-                                )
-                            }
+                            )
                         }
                     }
                 }
@@ -498,7 +533,7 @@ fun CoverViewer(vm: MainViewModel, tracks: List<Track>, fallback: Any?, name: St
                             savedOk = false
                             saved = "This cover isn't available to save"
                         } else {
-                            val suffix = if (covers.size > 1) " - ${currentCover.title}" else ""
+                            val suffix = if (covers.size > 1) " - ${pagerState.currentPage + 1}" else ""
                             vm.savePicture(b, "${first?.displayAlbumArtist.orEmpty()} - $name$suffix".trim(' ', '-')) { msg ->
                                 savedOk = msg.startsWith("Cover saved")
                                 saved = if (savedOk) "Saved to Pictures › Hive" else msg
