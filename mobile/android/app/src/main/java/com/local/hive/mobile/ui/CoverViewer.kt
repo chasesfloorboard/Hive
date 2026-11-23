@@ -57,6 +57,14 @@ import androidx.compose.ui.graphics.graphicsLayer
 import androidx.compose.ui.input.pointer.pointerInput
 import androidx.compose.ui.layout.ContentScale
 import androidx.compose.ui.layout.onSizeChanged
+import androidx.compose.foundation.layout.BoxWithConstraints
+import androidx.compose.ui.draw.drawBehind
+import androidx.compose.ui.graphics.Shape
+import androidx.compose.ui.graphics.addOutline
+import androidx.compose.ui.graphics.asAndroidPath
+import androidx.compose.ui.graphics.nativeCanvas
+import androidx.compose.ui.graphics.toArgb
+import androidx.compose.ui.unit.Dp
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.window.Dialog
 import androidx.compose.ui.window.DialogProperties
@@ -175,10 +183,15 @@ suspend fun discoverCovers(
 
         val maxTrackCount = picTracks.values.maxOfOrNull { it.size } ?: 0
 
-        // A picture is an album-wide cover if it appears on multiple tracks (sharing across the album)
+        // A picture is an album-wide cover if it appears on the maximum number of tracks across the album,
+        // or is shared across multiple different song titles on the album.
         fun isAlbumCover(hash: String): Boolean {
-            val count = picTracks[hash]?.size ?: 0
-            return count > 1 && (count == maxTrackCount || count > tracks.size / 2)
+            val containing = picTracks[hash].orEmpty()
+            if (containing.isEmpty()) return true
+            if (containing.size == maxTrackCount && containing.size > 1) return true
+            val distinctTitles = containing.map { it.title.trim().lowercase() }.distinct().size
+            if (distinctTitles > 1) return true
+            return false
         }
 
         // 1) First, add the primary album covers (front cover first)
@@ -237,6 +250,29 @@ suspend fun discoverCovers(
     }
 
     results
+}
+
+/**
+ * A true 360-degree ambient aura glow radiating evenly outward on all 4 sides (top, bottom, left, right).
+ */
+fun Modifier.auraGlow(radius: Dp, shape: Shape, color: Color): Modifier = drawBehind {
+    val r = radius.toPx()
+    if (r <= 0f || color.alpha <= 0f) return@drawBehind
+    val outline = shape.createOutline(size, layoutDirection, this)
+    val path = androidx.compose.ui.graphics.Path().apply { addOutline(outline) }.asAndroidPath()
+
+    // Outer soft ambient bloom
+    val outerPaint = android.graphics.Paint(android.graphics.Paint.ANTI_ALIAS_FLAG).apply {
+        this.color = color.copy(alpha = 0.50f).toArgb()
+        maskFilter = android.graphics.BlurMaskFilter(r, android.graphics.BlurMaskFilter.Blur.NORMAL)
+    }
+    // Inner vibrant halo
+    val innerPaint = android.graphics.Paint(android.graphics.Paint.ANTI_ALIAS_FLAG).apply {
+        this.color = color.copy(alpha = 0.75f).toArgb()
+        maskFilter = android.graphics.BlurMaskFilter(r * 0.45f, android.graphics.BlurMaskFilter.Blur.NORMAL)
+    }
+    drawContext.canvas.nativeCanvas.drawPath(path, outerPaint)
+    drawContext.canvas.nativeCanvas.drawPath(path, innerPaint)
 }
 
 /**
@@ -385,53 +421,71 @@ fun CoverViewer(vm: MainViewModel, tracks: List<Track>, fallback: Any?, name: St
                 val pageAura = coverAuras[page]
                 val shadowColor = pageAura?.primary ?: activePrimary
                 Box(
-                    Modifier.fillMaxSize(),
+                    Modifier
+                        .fillMaxSize()
+                        .padding(horizontal = 48.dp)
+                        .padding(top = 76.dp, bottom = 140.dp),
                     contentAlignment = Alignment.Center
                 ) {
-                    Box(
-                        Modifier
-                            .fillMaxWidth()
-                            .aspectRatio(1f)
-                            .padding(horizontal = 48.dp, vertical = 12.dp)
-                            .onSizeChanged { if (isCurrent) frame = it }
-                            .graphicsLayer {
-                                if (isCurrent) {
-                                    val s = (0.92f + 0.08f * appear) * scale
-                                    scaleX = s; scaleY = s; translationX = offset.x; translationY = offset.y
-                                }
-                                alpha = appear
-                            }
-                            .then(
-                                if (isCurrent) {
-                                    Modifier.pointerInput(Unit) {
-                                        detectTransformGestures { centroid, pan, zoomChange, _ -> onGesture(centroid, pan, zoomChange) }
-                                    }
-                                } else Modifier
-                            )
-                            .pointerInput(Unit) {
-                                detectTapGestures(onDoubleTap = { tap ->
-                                    if (scale > 1f) animateTo(1f, Offset.Zero)
-                                    else { val c = Offset(frame.width / 2f, frame.height / 2f); animateTo(2.5f, clamp(2.5f, (tap - c) * (1f - 2.5f))) }
-                                })
-                            }
+                    val aspect = if (bmp != null && bmp.height > 0) bmp.width.toFloat() / bmp.height.toFloat() else 1f
+                    BoxWithConstraints(
+                        Modifier.fillMaxSize(),
+                        contentAlignment = Alignment.Center
                     ) {
-                        if (bmp != null) {
-                            Image(
-                                bmp,
-                                contentDescription = covers.getOrNull(page)?.caption ?: covers.getOrNull(page)?.title ?: "Cover",
-                                modifier = Modifier.fillMaxSize().softShadow(28.dp, HiveShape.art, shadowColor),
-                                contentScale = ContentScale.Fit
-                            )
-                        } else {
-                            Artwork(
-                                covers.getOrNull(page)?.bytes ?: fallback,
-                                Modifier.fillMaxSize(),
-                                HiveShape.art,
-                                Icons.Rounded.LibraryMusic,
-                                glow = shadowColor,
-                                elevation = 28.dp,
-                                highQuality = true
-                            )
+                        val maxW = maxWidth
+                        val maxH = maxHeight
+                        val (boxW, boxH) = remember(maxW, maxH, aspect) {
+                            val hFromW = maxW / aspect
+                            if (hFromW <= maxH) {
+                                maxW to hFromW
+                            } else {
+                                (maxH * aspect) to maxH
+                            }
+                        }
+                        Box(
+                            Modifier
+                                .size(boxW, boxH)
+                                .onSizeChanged { if (isCurrent) frame = it }
+                                .graphicsLayer {
+                                    if (isCurrent) {
+                                        val s = (0.92f + 0.08f * appear) * scale
+                                        scaleX = s; scaleY = s; translationX = offset.x; translationY = offset.y
+                                    }
+                                    alpha = appear
+                                }
+                                .then(
+                                    if (isCurrent) {
+                                        Modifier.pointerInput(Unit) {
+                                            detectTransformGestures { centroid, pan, zoomChange, _ -> onGesture(centroid, pan, zoomChange) }
+                                        }
+                                    } else Modifier
+                                )
+                                .pointerInput(Unit) {
+                                    detectTapGestures(onDoubleTap = { tap ->
+                                        if (scale > 1f) animateTo(1f, Offset.Zero)
+                                        else { val c = Offset(frame.width / 2f, frame.height / 2f); animateTo(2.5f, clamp(2.5f, (tap - c) * (1f - 2.5f))) }
+                                    })
+                                }
+                                .auraGlow(32.dp, HiveShape.art, shadowColor)
+                        ) {
+                            if (bmp != null) {
+                                Image(
+                                    bmp,
+                                    contentDescription = covers.getOrNull(page)?.caption ?: covers.getOrNull(page)?.title ?: "Cover",
+                                    modifier = Modifier.fillMaxSize().clip(HiveShape.art),
+                                    contentScale = ContentScale.Crop
+                                )
+                            } else {
+                                Artwork(
+                                    covers.getOrNull(page)?.bytes ?: fallback,
+                                    Modifier.fillMaxSize().clip(HiveShape.art),
+                                    HiveShape.art,
+                                    Icons.Rounded.LibraryMusic,
+                                    glow = shadowColor,
+                                    elevation = 0.dp,
+                                    highQuality = true
+                                )
+                            }
                         }
                     }
                 }
