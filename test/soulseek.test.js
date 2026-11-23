@@ -162,7 +162,7 @@ test('the download queue files an album under Artist/Album and keeps the list', 
     login: async () => {},
     search(q, on) { on({ user: 'alice', files, freeSlot: true, speed: 100000, queue: 0 }); return 1; },
     stopSearch() {},
-    async download(user, file, target, _ms, progress) { fs.writeFileSync(target, 'song'); progress(4, 4); },
+    async download(user, file, target, _ms, progress) { fs.writeFileSync(target, Buffer.concat([Buffer.from([0x66, 0x4C, 0x61, 0x43]), Buffer.alloc(16)])); progress(20, 20); },
     close() {},
   });
   let added = null;
@@ -232,7 +232,7 @@ test('the queue keeps extensions on long names and fails (not hangs) without a m
   const long = `01 - Kendrick Lamar - Sing About Me, I'm Dying of Thirst (feat. Someone Else) [2012 Remaster].flac`;
   const files = [sharedFile(`M\\K\\GKMC\\${long}`, 4)];
   const client = () => ({ ended: null, login: async () => {}, search(q, on) { on({ user: 'a', files, freeSlot: true, speed: 1, queue: 0 }); return 1; }, stopSearch() {},
-    async download(u, f, target) { fs.writeFileSync(target, 'song'); }, close() {} });
+    async download(u, f, target) { fs.writeFileSync(target, Buffer.concat([Buffer.from([0x66, 0x4C, 0x61, 0x43]), Buffer.alloc(16)])); }, close() {} });
   try {
     let got = null;
     const d = createSoulseekDownloads({ dataDir, settings: async () => ({ username: 'u', password: 'p' }), musicFolder: async () => music, createClient: client, onSongs: async g => { got = g; }, wait: async () => {} });

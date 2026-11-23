@@ -9,6 +9,7 @@
 const fs = require('node:fs');
 const path = require('node:path');
 const { candidates } = require('./soulseek');
+const { isAuthenticAudioFile } = require('./media-security');
 
 const EDITION = /\s*[(\[][^)\]]*(deluxe|remaster|edition|expanded|explicit|anniversary|bonus|version)[^)\]]*[)\]]/gi;
 const RELEASE = /\s+-\s+(single|ep)$/i;
@@ -155,6 +156,9 @@ function createSoulseekDownloads({ dataDir, settings, musicFolder, createClient,
               if (client.ended || j.cancelled || !(have > 0 && have < f.size)) throw err;
               log(`${f.name} from ${pick.user} stopped at ${have} of ${f.size} bytes; resuming`);
               await attempt();
+            }
+            if (!isAuthenticAudioFile(part)) {
+              throw new Error(`Downloaded file from ${pick.user} is not a valid audio container.`);
             }
             fs.renameSync(part, target);
           } catch (err) {

@@ -178,6 +178,10 @@ class DriveImportWorker(context: Context, params: WorkerParameters) : CoroutineW
         val base = settings.folder.split('/').filter { it.isNotBlank() }.joinToString("/") { DriveLinks.safe(it) }
         val folder = (listOf("Music", base, DriveLinks.safe(title)) + dir.split('/').filter { it.isNotBlank() }).filter { it.isNotBlank() }.joinToString("/", postfix = "/")
         val ext = name.substringAfterLast('.').lowercase()
+        if (!AudioSecurity.isAuthenticAudio(part, ext)) {
+            runCatching { part.delete() }
+            throw IOException("Downloaded file $name is not a valid audio container ($ext)")
+        }
         val mime = when (ext) { "flac" -> "audio/flac"; "mp3" -> "audio/mpeg"; "m4a", "aac", "alac" -> "audio/mp4"; "ogg", "oga" -> "audio/ogg"; "opus" -> "audio/opus"; "wav" -> "audio/wav"; else -> "audio/*" }
         val resolver = applicationContext.contentResolver
         val values = ContentValues().apply {

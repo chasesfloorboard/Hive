@@ -32,6 +32,7 @@ const { createClient: createMusicBrainzClient } = require('./musicbrainz');
 const { canonicalize } = require('./canonical-metadata');
 const { rendererTrackPayload } = require('./scan-payload');
 const { normalizeText: normalizeArtworkText, scoreResult: scoreArtworkResult, createArtworkCache, providers: artworkProviders, cleanCoverBrackets, decipherCoverQuery } = require('./artwork-providers');
+const { isAuthenticImageBuffer, assertSafeFilePath } = require('./media-security');
 const { TaskManager } = require('./task-manager');
 const { BeehiveMPRIS } = require('./mpris');
 const { ArtworkProxy } = require('./artwork-proxy');
@@ -6602,6 +6603,7 @@ ipcMain.handle('cover:loadTemporary', async (_evt, rawUrl = '') => {
   if (!contentType.startsWith('image/')) throw new Error('Temporary artwork response was not an image.');
   const data = Buffer.from(await response.arrayBuffer());
   if (!data.length || data.length > 12 * 1024 * 1024) throw new Error('Temporary artwork image is empty or too large.');
+  if (!isAuthenticImageBuffer(data)) throw new Error('Temporary artwork response was not a recognized image format.');
   return { mimeType: contentType, base64: data.toString('base64') };
 });
 
@@ -6719,7 +6721,8 @@ ipcMain.handle('cover:downloadSearchResult', async (_evt, artworkUrl) => {
   const response = await fetch(parsed.toString(), { headers: { 'User-Agent': 'Hive/0.9.0-beta.2 (HiveMusicBrainz) (cover download)' } });
   if (!response.ok) throw new Error(`Could not download artwork (${response.status}).`);
   const buffer = Buffer.from(await response.arrayBuffer());
-  if (!buffer.length) throw new Error('Downloaded artwork was empty.');
+  if (!buffer.length || buffer.length > 25 * 1024 * 1024) throw new Error('Downloaded artwork was empty or too large.');
+  if (!isAuthenticImageBuffer(buffer)) throw new Error('Downloaded artwork was not a recognized image format.');
   const tempDir = path.join(app.getPath('temp'), 'beehive-artwork');
   await fsp.mkdir(tempDir, { recursive: true });
   const inputExt = path.extname(new URL(response.url || parsed.toString()).pathname).toLowerCase() === '.png' ? '.png' : '.jpg';
@@ -6746,7 +6749,8 @@ ipcMain.handle('cover:downloadItunes', async (_evt, artworkUrl) => {
     const response = await fetch(parsed.toString(), { headers: { 'User-Agent': 'Hive/0.9.0-beta.2 (HiveMusicBrainz)' } });
     if (!response.ok) throw new Error(`Could not download artwork (${response.status}).`);
     const buffer = Buffer.from(await response.arrayBuffer());
-    if (!buffer.length) throw new Error('Downloaded artwork was empty.');
+    if (!buffer.length || buffer.length > 25 * 1024 * 1024) throw new Error('Downloaded artwork was empty or too large.');
+    if (!isAuthenticImageBuffer(buffer)) throw new Error('Downloaded artwork was not a recognized image format.');
     const tempDir = path.join(app.getPath('temp'), 'beehive-artwork');
     await fsp.mkdir(tempDir, { recursive: true });
     const tempPath = path.join(tempDir, `itunes-${crypto.randomBytes(10).toString('hex')}.jpg`);

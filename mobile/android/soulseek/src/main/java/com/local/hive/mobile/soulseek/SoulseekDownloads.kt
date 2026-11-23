@@ -523,6 +523,10 @@ class SoulseekWorker(context: Context, params: WorkerParameters) : CoroutineWork
         val mime = when (extension) { "flac" -> "audio/flac"; "mp3" -> "audio/mpeg"; "m4a", "aac", "alac" -> "audio/mp4"; "ogg" -> "audio/ogg"; "opus" -> "audio/opus"; "wav" -> "audio/wav"; else -> "audio/*" }
         val resolver = applicationContext.contentResolver
         val reqYear = request.tracks.firstNotNullOfOrNull { it.year.trim().toIntOrNull()?.takeIf { y -> y > 0 } }
+        if (!AudioSecurity.isAuthenticAudio(part, extension)) {
+            runCatching { part.delete() }
+            throw SoulseekException("Downloaded file $name is not a valid audio container ($extension)")
+        }
         val values = ContentValues().apply {
             put(MediaStore.Audio.Media.DISPLAY_NAME, safe(name.substringBeforeLast('.')).take(120) + "." + extension)
             put(MediaStore.Audio.Media.MIME_TYPE, mime)
