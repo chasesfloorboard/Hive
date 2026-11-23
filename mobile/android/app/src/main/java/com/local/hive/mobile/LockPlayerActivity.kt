@@ -148,8 +148,16 @@ class LockPlayerActivity : ComponentActivity() {
         CarLog.lockPlayer(this, "opens")
     }
 
+    override fun onAttachedToWindow() {
+        super.onAttachedToWindow()
+        setShowWhenLocked(true)
+        if (android.os.Build.VERSION.SDK_INT >= 27) setTurnScreenOn(true)
+    }
+
     override fun onNewIntent(intent: Intent) {
         super.onNewIntent(intent)
+        setShowWhenLocked(true)
+        if (android.os.Build.VERSION.SDK_INT >= 27) setTurnScreenOn(true)
         leaving = false
     }
 
@@ -182,6 +190,8 @@ class LockPlayerActivity : ComponentActivity() {
 
     override fun onResume() {
         super.onResume()
+        setShowWhenLocked(true)
+        if (android.os.Build.VERSION.SDK_INT >= 27) setTurnScreenOn(true)
         resumed = true
         resumedAt = System.currentTimeMillis()
         touchedAt = resumedAt
@@ -200,9 +210,9 @@ class LockPlayerActivity : ComponentActivity() {
     /**
      * Pushed off the lock screen while the phone is still locked and on: in the
      * car, Android Auto (or the phone's car mode) brings its own screen up as the
-     * phone wakes, and Samsung's lock screen falls back to its Now Bar. Hive's
-     * player comes straight back, a few times a minute at most so it never
-     * fights a screen the user opened (the camera, an alarm).
+     * phone wakes, or a notification appears. Hive's player re-asserts itself
+     * while the phone is locked, but NEVER terminates itself so that when the
+     * notification is swiped away or finished, it remains visible.
      */
     override fun onStop() {
         super.onStop()
@@ -210,30 +220,33 @@ class LockPlayerActivity : ComponentActivity() {
         if (leaving || sentAway || isFinishing || isChangingConfigurations) return
         val awake = (getSystemService(POWER_SERVICE) as android.os.PowerManager).isInteractive
         if (!awake) {
-            // Screen went to sleep: finish so next wake starts completely fresh
+            // Screen went to sleep: finish cleanly so next wake starts completely fresh
             finish()
             return
         }
         val km = getSystemService(KEYGUARD_SERVICE) as KeyguardManager
         val isLocked = km.isKeyguardLocked || km.inKeyguardRestrictedInputMode() || km.isDeviceLocked
-        val inCar = CarLog.inCar(this)
-        CarLog.lockPlayer(this, "pushed away; isLocked=$isLocked, inCar=$inCar")
-        if (isLocked || inCar) {
+        CarLog.lockPlayer(this, "stopped; isLocked=$isLocked")
+        // If the phone is locked and screen is still awake, a notification or SystemUI briefly covered us.
+        // DO NOT call finish()! We stay alive so when the user swipes away the notification, we resume.
+        // Also re-foreground ourselves over the lockscreen if still locked:
+        if (isLocked) {
             val now = System.currentTimeMillis()
             broughtBack.removeAll { now - it > 60_000 }
             if (broughtBack.size < 5) {
                 broughtBack += now
                 mainHandler.postDelayed({
                     if (!leaving && !sentAway && !isFinishing) {
-                        CarLog.lockPlayer(this, "comes back over lockscreen")
-                        finish()
-                        showIfWanted(this)
+                        CarLog.lockPlayer(this, "re-asserts over lockscreen")
+                        val options = android.app.ActivityOptions.makeBasic()
+                        if (android.os.Build.VERSION.SDK_INT >= 34) {
+                            options.setPendingIntentBackgroundActivityStartMode(android.app.ActivityOptions.MODE_BACKGROUND_ACTIVITY_START_ALLOWED)
+                        }
+                        runCatching { startActivity(launchIntent(this@LockPlayerActivity), options.toBundle()) }
                     }
                 }, 300)
-                return
             }
         }
-        finish()
     }
 
     /**
@@ -349,26 +362,33 @@ class LockPlayerActivity : ComponentActivity() {
         private fun launchIntent(context: Context): Intent =
             Intent(context, LockPlayerActivity::class.java)
                 .addFlags(Intent.FLAG_ACTIVITY_NEW_TASK or Intent.FLAG_ACTIVITY_NO_ANIMATION or Intent.FLAG_ACTIVITY_EXCLUDE_FROM_RECENTS)
-                .apply { if (!resumed) addFlags(Intent.FLAG_ACTIVITY_CLEAR_TASK) }
+                .apply { if (!resumed && activeInstance == null) addFlags(Intent.FLAG_ACTIVITY_CLEAR_TASK) }
 
         fun showIfWanted(context: Context, hiveForeground: Boolean = hiveWasForeground) {
             if (resumed) {
                 CarLog.lockPlayer(context, "already on screen")
                 return
             }
+            val km = context.getSystemService(Context.KEYGUARD_SERVICE) as? KeyguardManager
+            val isLocked = km?.isKeyguardLocked == true || km?.inKeyguardRestrictedInputMode() == true || km?.isDeviceLocked == true
             val blocked = when {
                 !enabled(context) -> "disabled in settings"
                 !permitted(context) -> "no draw-over-other-apps permission"
                 inCall(context) -> "a call is in progress"
                 sentAway -> "the user sent it away"
-                !CarLog.inCar(context) && System.currentTimeMillis() - lastShowAttemptAt < SHOW_COOLDOWN_MS -> "shown a moment ago"
+                !isLocked -> "phone is unlocked"
+                System.currentTimeMillis() - lastShowAttemptAt < SHOW_COOLDOWN_MS -> "shown a moment ago"
                 else -> null
             }
             if (blocked != null) { CarLog.lockPlayer(context, "not shown: $blocked"); return }
             lastShowAttemptAt = System.currentTimeMillis()
             hiveWasForeground = hiveForeground
             val open = launchIntent(context)
-            val direct = runCatching { context.startActivity(open) }
+            val options = android.app.ActivityOptions.makeBasic()
+            if (android.os.Build.VERSION.SDK_INT >= 34) {
+                options.setPendingIntentBackgroundActivityStartMode(android.app.ActivityOptions.MODE_BACKGROUND_ACTIVITY_START_ALLOWED)
+            }
+            val direct = runCatching { context.startActivity(open, options.toBundle()) }
             CarLog.lockPlayer(context, "startActivity ${if (direct.isSuccess) "sent" else "refused: ${direct.exceptionOrNull()?.message}"}")
         }
 
