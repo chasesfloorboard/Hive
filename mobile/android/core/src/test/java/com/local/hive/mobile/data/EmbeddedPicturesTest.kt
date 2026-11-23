@@ -103,6 +103,22 @@ class EmbeddedPicturesTest {
         assertEquals(null, EmbeddedPictures.bestBytes(emptyList()))
     }
 
+    @Test fun readsThreeCoversInId3v23AndOrdersFrontFirst() {
+        val cover1 = byteArrayOf(1, 2, 3, 4)
+        val cover2 = byteArrayOf(5, 6, 7, 8)
+        val cover3 = byteArrayOf(9, 10, 11, 12)
+        val mp3 = id3(3, listOf(
+            "TIT2" to byteArrayOf(0, 'U'.code.toByte()),
+            "APIC" to apic(cover1, type = 0),
+            "APIC" to apic(cover2, type = 3),
+            "APIC" to apic(cover3, type = 0)
+        ))
+        val typed = EmbeddedPictures.readTyped(mp3.inputStream())
+        assertEquals(3, typed.size)
+        assertEquals(listOf(0, 3, 0), typed.map { it.type })
+        assertArrayEquals(cover2, EmbeddedPictures.bestBytes(typed))
+    }
+
     @Test fun aFileWithoutTagsHasNone() = assertEquals(0, EmbeddedPictures.read(ByteArray(64).inputStream()).size)
 
     @Test fun readsCoverFromAFlacThatHasALeadingId3Tag() {
