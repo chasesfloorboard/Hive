@@ -157,37 +157,54 @@ suspend fun discoverCovers(
         // 2. Full album view: inspect all tracks across the album
         val albumName = defaultName.ifBlank { tracks.firstOrNull()?.album.orEmpty() }
 
-        // Start with the first track
-        val firstTrack = tracks.first()
-        val firstPics = runCatching {
-            context.contentResolver.openInputStream(firstTrack.uri)?.use { EmbeddedPictures.readTyped(it) }
-        }.getOrNull().orEmpty()
-
-        val frontIdx = firstPics.indexOfFirst { it.type == EmbeddedPictures.FRONT }
-        val sortedFirstPics = if (frontIdx > 0) {
-            val list = firstPics.toMutableList()
-            val front = list.removeAt(frontIdx)
-            list.add(0, front)
-            list
-        } else firstPics
-
-        for (pic in sortedFirstPics) {
-            add(pic.data, albumName)
-        }
-
-        // Scan remaining tracks for any songs with distinct single art (e.g. Von dutch on BRAT)
-        for (i in 1 until tracks.size) {
-            val t = tracks[i]
+        // Read all pictures across all tracks
+        val allTrackPics = tracks.map { t ->
             val pics = runCatching {
                 context.contentResolver.openInputStream(t.uri)?.use { EmbeddedPictures.readTyped(it) }
             }.getOrNull().orEmpty()
-            for (pic in pics) {
-                add(pic.data, t.title.ifBlank { albumName })
+            t to pics
+        }
+
+        // Count how many tracks contain each picture (using content hash)
+        val picTracks = mutableMapOf<String, MutableList<Track>>()
+        for ((t, pics) in allTrackPics) {
+            for (p in pics) {
+                picTracks.getOrPut(sha1Hex(p.data)) { mutableListOf() }.add(t)
             }
         }
 
-        // Online alternate for the album
-        firstTrack.albumId.let { albId ->
+        val maxTrackCount = picTracks.values.maxOfOrNull { it.size } ?: 0
+
+        // A picture is an album-wide cover if it appears on multiple tracks (sharing across the album)
+        fun isAlbumCover(hash: String): Boolean {
+            val count = picTracks[hash]?.size ?: 0
+            return count > 1 && (count == maxTrackCount || count > tracks.size / 2)
+        }
+
+        // 1) First, add the primary album covers (front cover first)
+        for ((_, pics) in allTrackPics) {
+            val frontPics = pics.filter { it.type == EmbeddedPictures.FRONT && isAlbumCover(sha1Hex(it.data)) }
+            for (p in frontPics) {
+                add(p.data, albumName)
+            }
+        }
+        for ((_, pics) in allTrackPics) {
+            val otherAlbumPics = pics.filter { isAlbumCover(sha1Hex(it.data)) }
+            for (p in otherAlbumPics) {
+                add(p.data, albumName)
+            }
+        }
+
+        // 2) Then, add track-specific covers in track order, with their individual song title
+        for ((t, pics) in allTrackPics) {
+            val songSpecificPics = pics.filter { !isAlbumCover(sha1Hex(it.data)) }
+            for (p in songSpecificPics) {
+                add(p.data, t.title.ifBlank { albumName })
+            }
+        }
+
+        // 3) Online alternate for the album
+        tracks.firstOrNull()?.albumId?.let { albId ->
             val alt = EmbeddedPictures.onlineAlternate(context, albId)
             if (alt != null && alt.exists() && alt.length() > 0) {
                 runCatching { alt.readBytes() }.getOrNull()?.let { altBytes ->
