@@ -1,6 +1,9 @@
 package com.local.hive.mobile.ui
 
 import com.local.hive.mobile.ui.theme.HiveIcons
+import com.local.hive.mobile.ui.theme.LocalHiveColors
+import com.local.hive.mobile.ui.theme.withAccent
+import androidx.compose.runtime.CompositionLocalProvider
 import android.os.Build
 import androidx.compose.animation.Crossfade
 import androidx.compose.animation.togetherWith
@@ -172,6 +175,8 @@ fun PlayerSheet(
     val swipe = remember { Animatable(0f) }
     val now by vm.nowPlaying.collectAsStateWithLifecycle()
     val aura by vm.aura.collectAsStateWithLifecycle()
+    val frame = rotatingCover(now.artworkUri, now.trackId)
+    val activeAura = frame.aura ?: aura
     val density = LocalDensity.current
     val progress = remember { Animatable(if (open) 1f else 0f) }
     var dragging by remember { mutableStateOf(false) }
@@ -304,7 +309,7 @@ fun PlayerSheet(
             ) {
                 Box(Modifier.fillMaxSize().graphicsLayer { alpha = Motion.SineInOut60.transform(((p - 0.15f) / 0.85f).coerceIn(0f, 1f)) }) {
                     FullPlayerContent(
-                        vm, now, aura,
+                        vm, now, aura, frame,
                         onClose = { onOpenChange(false) },
                         queueOpen = queueOpen,
                         onQueueChange = onQueueChange,
@@ -361,7 +366,11 @@ fun PlayerSheet(
         if (to != null && p > 0f) {
             val eased = Motion.SineInOut80.transform(p)
             val r = androidx.compose.ui.geometry.lerp(from, to, eased)
-            val frame = rotatingCover(now.artworkUri, now.trackId)
+            val animatedGlow by androidx.compose.animation.animateColorAsState(
+                activeAura?.primary ?: c.accentGlow,
+                animationSpec = tween(600),
+                label = "coverGlow"
+            )
             Artwork(
                 frame.current,
                 Modifier
@@ -370,7 +379,7 @@ fun PlayerSheet(
                     .graphicsLayer { val f = (abs(swipe.value) / r.width).coerceIn(0f, 1f); alpha = 1f - f * 0.9f; rotationZ = swipe.value / r.width * 4f },
                 RoundedCornerShape(lerpDp(8.dp, 18.dp, eased)),
                 if (now.isLive) Icons.Rounded.Radio else Icons.Rounded.MusicNote,
-                glow = aura?.primary ?: c.accentGlow,
+                glow = animatedGlow,
                 elevation = lerpDp(0.dp, 36.dp, eased),
                 replacing = frame.previous,
                 highQuality = true,
@@ -526,6 +535,7 @@ private fun FullPlayerContent(
     vm: MainViewModel,
     now: NowPlaying,
     aura: AuraColors?,
+    frame: CoverFrame,
     onClose: () -> Unit,
     queueOpen: Boolean,
     onQueueChange: (Boolean) -> Unit,
@@ -541,37 +551,58 @@ private fun FullPlayerContent(
     onArtPlaced: (Rect) -> Unit,
 ) {
     val c = Hive.colors
-    var current by remember { mutableStateOf<Track?>(null) }
-    // What plays next, as the player will play it: with shuffle on, not the next song down the queue.
-    val upNext = now.queue.getOrNull(now.nextIndex)
-    var menu by remember { mutableStateOf(false) }
-    var sleepMenu by remember { mutableStateOf(false) }
-    var speedMenu by remember { mutableStateOf(false) }
-    var signIn by remember { mutableStateOf(false) }
-    val sleep by vm.sleep.collectAsStateWithLifecycle()
-    val context = androidx.compose.ui.platform.LocalContext.current
-    if (signIn) SoulseekSignInDialog(onDismiss = { signIn = false }, onSignedIn = { signIn = false; downloadStreams(context, listOf(nowStream(now)), onToast) })
-    val scope = rememberCoroutineScope()
-    val queueShown by androidx.compose.animation.core.animateFloatAsState(if (queueOpen) 1f else 0f, if (queueOpen) Motion.open() else Motion.close(), label = "queue")
-    LaunchedEffect(now.trackId, now.queueIndex, now.queue.size) {
-        current = now.trackId?.let { vm.tracksById(listOf(it)).firstOrNull() }
-    }
-    val nowLoved by vm.nowLoved.collectAsStateWithLifecycle()
-    val isLoved = nowLoved == true
+    val activeAura = frame.aura ?: aura
+    val animatedPrimary by androidx.compose.animation.animateColorAsState(
+        activeAura?.primary?.copy(alpha = 0.7f) ?: c.ambientA,
+        animationSpec = tween(600),
+        label = "playerAmbientA"
+    )
+    val animatedSecondary by androidx.compose.animation.animateColorAsState(
+        activeAura?.secondary?.copy(alpha = 0.6f) ?: c.ambientB,
+        animationSpec = tween(600),
+        label = "playerAmbientB"
+    )
+    val animatedAccent by androidx.compose.animation.animateColorAsState(
+        activeAura?.accent ?: c.accent,
+        animationSpec = tween(600),
+        label = "playerAccent"
+    )
+    val playerColors = remember(c, animatedAccent) { c.withAccent(animatedAccent) }
 
-    // Hold the cover to see it full size and save it; a tap shows the lyrics (below).
-    val haptics = androidx.compose.ui.platform.LocalHapticFeedback.current
-    var viewingCover by remember { mutableStateOf(false) }
-    if (viewingCover) CoverViewer(vm, listOfNotNull(current), now.artworkUri, now.title.ifBlank { now.artist }) { viewingCover = false }
-
-    HiveGlassLayers(Modifier.fillMaxSize(), content = {
-        HiveAmbient(aura?.primary?.copy(alpha = 0.7f) ?: c.ambientA, aura?.secondary?.copy(alpha = 0.6f) ?: c.ambientB, Modifier.fillMaxSize(), intensity = 1.25f)
-        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.S) {
-            // Blur a fifth-size copy and scale it up: 1/25 the pixels to blur, same soft wash (22dp × 5 ≈ 110dp).
-            BlurredBackdropArt(now.artworkUri, Modifier.fillMaxSize(0.2f).align(Alignment.Center).graphicsLayer { scaleX = 5f; scaleY = 5f; alpha = 0.22f }.blur(22.dp))
+    CompositionLocalProvider(LocalHiveColors provides playerColors) {
+        var current by remember { mutableStateOf<Track?>(null) }
+        // What plays next, as the player will play it: with shuffle on, not the next song down the queue.
+        val upNext = now.queue.getOrNull(now.nextIndex)
+        var menu by remember { mutableStateOf(false) }
+        var sleepMenu by remember { mutableStateOf(false) }
+        var speedMenu by remember { mutableStateOf(false) }
+        var signIn by remember { mutableStateOf(false) }
+        val sleep by vm.sleep.collectAsStateWithLifecycle()
+        val context = androidx.compose.ui.platform.LocalContext.current
+        if (signIn) SoulseekSignInDialog(onDismiss = { signIn = false }, onSignedIn = { signIn = false; downloadStreams(context, listOf(nowStream(now)), onToast) })
+        val scope = rememberCoroutineScope()
+        val queueShown by androidx.compose.animation.core.animateFloatAsState(if (queueOpen) 1f else 0f, if (queueOpen) Motion.open() else Motion.close(), label = "queue")
+        LaunchedEffect(now.trackId, now.queueIndex, now.queue.size) {
+            current = now.trackId?.let { vm.tracksById(listOf(it)).firstOrNull() }
         }
-        Box(Modifier.fillMaxSize().background(Brush.verticalGradient(0f to Color.Transparent, 0.6f to c.bg.copy(alpha = 0.2f), 1f to c.bg.copy(alpha = 0.75f))))
-    }, overlay = {
+        val nowLoved by vm.nowLoved.collectAsStateWithLifecycle()
+        val isLoved = nowLoved == true
+
+        // Hold the cover to see it full size and save it; a tap shows the lyrics (below).
+        val haptics = androidx.compose.ui.platform.LocalHapticFeedback.current
+        var viewingCover by remember { mutableStateOf(false) }
+        if (viewingCover) CoverViewer(vm, listOfNotNull(current), now.artworkUri, now.title.ifBlank { now.artist }) { viewingCover = false }
+
+        HiveGlassLayers(Modifier.fillMaxSize(), content = {
+            HiveAmbient(animatedPrimary, animatedSecondary, Modifier.fillMaxSize(), intensity = 1.25f)
+            if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.S) {
+                // Blur a fifth-size copy of the active rotating cover and scale it up: crossfading smoothly!
+                Crossfade(frame.current ?: now.artworkUri, animationSpec = tween(600), label = "blurredBackdrop") { artModel ->
+                    BlurredBackdropArt(artModel, Modifier.fillMaxSize(0.2f).align(Alignment.Center).graphicsLayer { scaleX = 5f; scaleY = 5f; alpha = 0.22f }.blur(22.dp))
+                }
+            }
+            Box(Modifier.fillMaxSize().background(Brush.verticalGradient(0f to Color.Transparent, 0.6f to c.bg.copy(alpha = 0.2f), 1f to c.bg.copy(alpha = 0.75f))))
+        }, overlay = {
         BoxWithConstraints(Modifier.fillMaxSize().statusBarsPadding().navigationBarsPadding()) {
             val compact = maxHeight < 700.dp
             Column(Modifier.fillMaxSize()) {
@@ -742,6 +773,7 @@ private fun FullPlayerContent(
             }
         }
     })
+    }
 }
 
 /**

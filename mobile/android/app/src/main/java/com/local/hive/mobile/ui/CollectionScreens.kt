@@ -4,6 +4,8 @@ import androidx.compose.material.icons.automirrored.rounded.KeyboardArrowRight
 import androidx.compose.material.icons.rounded.Album
 import androidx.compose.material.icons.rounded.Radio
 import com.local.hive.mobile.ui.theme.HiveIcons
+import com.local.hive.mobile.ui.theme.HiveAmbient
+import androidx.compose.animation.animateColorAsState
 import android.net.Uri
 import androidx.compose.animation.core.animateFloatAsState
 import androidx.compose.animation.core.tween
@@ -172,21 +174,25 @@ fun AlbumScreen(
     val hidden by vm.hiddenAlbumCovers.collectAsStateWithLifecycle()
     val cleared = albumId in hidden
     val cover = com.local.hive.mobile.data.AlbumCovers.model(albumId, hidden)?.let { Uri.parse(it) }
+    // An album whose first song carries several pictures turns through them, as its card does on the PC.
+    val frame = if (cleared) CoverFrame(null, null) else rotatingCover(cover, tracks.firstOrNull()?.id)
+    val activeColors = frame.aura ?: colors
+    val animatedPrimary by animateColorAsState(activeColors?.primary?.copy(alpha = 0.55f) ?: c.ambientA, tween(600), label = "albumAmbientA")
+    val animatedSecondary by animateColorAsState(activeColors?.secondary?.copy(alpha = 0.45f) ?: c.ambientB, tween(600), label = "albumAmbientB")
+    val animatedGlow by animateColorAsState(activeColors?.primary ?: c.accentGlow, tween(600), label = "albumGlow")
     PickableList(tracks = tracks)
 
     HiveGlassLayers(Modifier.fillMaxSize(), content = {
-        AlbumBackdrop(colors)
+        HiveAmbient(animatedPrimary, animatedSecondary, Modifier.fillMaxSize())
         LazyColumn(Modifier.fillMaxSize().songDragSelect(list, remember(tracks) { tracks.associateBy<Track, Any> { it.id } }, tracks), state = list, contentPadding = PaddingValues(bottom = bottomPadding + 16.dp)) {
             item {
                 Column(Modifier.fillMaxWidth().statusBarsPadding().padding(top = 60.dp, start = 24.dp, end = 24.dp, bottom = 8.dp), horizontalAlignment = Alignment.CenterHorizontally) {
-                    // An album whose first song carries several pictures turns through them, as its card does on the PC.
-                    val frame = if (cleared) CoverFrame(null, null) else rotatingCover(cover, tracks.firstOrNull()?.id)
                     // Hold the cover: see it full size, save it, or change it.
                     val haptics = androidx.compose.ui.platform.LocalHapticFeedback.current
                     var viewing by remember { mutableStateOf(false) }
                     Artwork(frame.current, Modifier.sharedCover("album-$albumId").fillMaxWidth(0.72f).aspectRatio(1f)
                         .pressable(onClick = {}, pressedScale = 0.98f, onLongClick = { haptics.performHapticFeedback(androidx.compose.ui.hapticfeedback.HapticFeedbackType.LongPress); viewing = true }),
-                        HiveShape.art, Icons.Rounded.LibraryMusic, glow = colors?.primary, elevation = 30.dp, replacing = frame.previous)
+                        HiveShape.art, Icons.Rounded.LibraryMusic, glow = animatedGlow, elevation = 30.dp, replacing = frame.previous)
                     if (viewing) CoverViewer(vm, if (cleared) emptyList() else tracks, cover, title) { viewing = false }
                     Text(title, style = HiveText.heroTitle, color = c.text, textAlign = TextAlign.Center, maxLines = 2, overflow = TextOverflow.Ellipsis, modifier = Modifier.padding(top = 22.dp))
                     if (artist.isNotBlank()) Text(artist, style = HiveText.rowStrong, color = c.accent, modifier = Modifier.padding(top = 6.dp).clip(HiveShape.pill).clickable { onOpenArtist(artist) }.padding(horizontal = 8.dp, vertical = 2.dp))

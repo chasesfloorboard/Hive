@@ -28,32 +28,23 @@ object ArtColors {
         override fun removeEldestEntry(eldest: MutableMap.MutableEntry<String, AuraColors?>) = size > 200
     }
 
-    suspend fun extract(context: Context, artwork: Uri?): AuraColors? {
-        if (artwork == null) return null
-        val key = artwork.toString()
+    suspend fun extract(context: Context, model: Any?): AuraColors? {
+        if (model == null) return null
+        val key = when (model) {
+            is java.io.File -> model.absolutePath
+            is ByteArray -> "bytes:${model.size}:${model.hashCode()}"
+            else -> model.toString()
+        }
         synchronized(cache) { if (cache.containsKey(key)) return cache[key] }
         val colors = withContext(Dispatchers.IO) {
             val result = SingletonImageLoader.get(context).execute(
                 // Reads a sharp cover already in memory, but never puts this 96-pixel copy there in its
                 // place: the player would draw it stretched (blurry) until the full size decoded again.
-                ImageRequest.Builder(context).data(artwork).size(Size(96, 96)).allowHardware(false)
+                ImageRequest.Builder(context).data(model).size(Size(96, 96)).allowHardware(false)
                     .memoryCachePolicy(coil3.request.CachePolicy.READ_ONLY).build(),
             )
             val bitmap = (result.image as? BitmapImage)?.bitmap ?: return@withContext null
-            val palette = Palette.from(bitmap).maximumColorCount(16).generate()
-            val swatches = listOfNotNull(
-                palette.vibrantSwatch, palette.darkVibrantSwatch, palette.mutedSwatch,
-                palette.darkMutedSwatch, palette.lightVibrantSwatch, palette.dominantSwatch,
-            )
-            if (swatches.isEmpty()) return@withContext null
-            val primary = swatches.first().rgb
-            val secondary = (listOfNotNull(palette.darkVibrantSwatch, palette.mutedSwatch, palette.darkMutedSwatch, palette.dominantSwatch)
-                .firstOrNull { it.rgb != primary } ?: swatches.last()).rgb
-            AuraColors(
-                primary = Color(glow(primary)),
-                secondary = Color(glow(secondary)),
-                accent = Color(readableAccent(palette.lightVibrantSwatch?.rgb ?: palette.vibrantSwatch?.rgb ?: primary)),
-            )
+            fromBitmap(bitmap)
         }
         synchronized(cache) { cache[key] = colors }
         return colors
@@ -64,11 +55,11 @@ object ArtColors {
         val palette = Palette.from(bitmap).maximumColorCount(16).generate()
         val swatches = listOfNotNull(
             palette.vibrantSwatch, palette.darkVibrantSwatch, palette.mutedSwatch,
-            palette.darkMutedSwatch, palette.lightVibrantSwatch, palette.dominantSwatch,
+            palette.darkMutedSwatch, palette.lightVibrantSwatch, palette.lightMutedSwatch, palette.dominantSwatch,
         )
         if (swatches.isEmpty()) return null
         val primary = swatches.first().rgb
-        val secondary = (listOfNotNull(palette.darkVibrantSwatch, palette.mutedSwatch, palette.darkMutedSwatch, palette.dominantSwatch)
+        val secondary = (listOfNotNull(palette.darkVibrantSwatch, palette.mutedSwatch, palette.darkMutedSwatch, palette.lightMutedSwatch, palette.dominantSwatch)
             .firstOrNull { it.rgb != primary } ?: swatches.last()).rgb
         return AuraColors(
             primary = Color(glow(primary)),
@@ -87,6 +78,11 @@ object ArtColors {
     private fun glow(rgb: Int): Int {
         val hsl = FloatArray(3)
         ColorUtils.colorToHSL(rgb, hsl)
+        if (hsl[1] < 0.08f) {
+            hsl[1] = 0f
+            hsl[2] = hsl[2].coerceIn(0.28f, 0.6f)
+            return ColorUtils.HSLToColor(hsl)
+        }
         hsl[1] = (hsl[1] * 1.1f).coerceIn(0.25f, 0.9f)
         hsl[2] = hsl[2].coerceIn(0.28f, 0.5f)
         return ColorUtils.HSLToColor(hsl)
@@ -95,6 +91,11 @@ object ArtColors {
     private fun readableAccent(rgb: Int): Int {
         val hsl = FloatArray(3)
         ColorUtils.colorToHSL(rgb, hsl)
+        if (hsl[1] < 0.08f) {
+            hsl[1] = 0f
+            hsl[2] = 0.85f
+            return ColorUtils.HSLToColor(hsl)
+        }
         hsl[1] = hsl[1].coerceIn(0.35f, 0.85f)
         hsl[2] = hsl[2].coerceIn(0.68f, 0.8f)
         return ColorUtils.HSLToColor(hsl)

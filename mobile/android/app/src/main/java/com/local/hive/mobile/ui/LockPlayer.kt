@@ -1,6 +1,11 @@
 package com.local.hive.mobile.ui
 
 import com.local.hive.mobile.ui.theme.HiveIcons
+import com.local.hive.mobile.ui.theme.LocalHiveColors
+import com.local.hive.mobile.ui.theme.withAccent
+import androidx.compose.animation.animateColorAsState
+import androidx.compose.animation.core.tween
+import androidx.compose.runtime.CompositionLocalProvider
 import android.os.Build
 import androidx.compose.animation.Crossfade
 import androidx.compose.animation.core.Animatable
@@ -69,65 +74,93 @@ fun LockPlayer(vm: MainViewModel, onUnlock: () -> Unit) {
     val c = Hive.colors
     val now by vm.nowPlaying.collectAsStateWithLifecycle()
     val aura by vm.aura.collectAsStateWithLifecycle()
-    val clock by produceState(LocalDateTime.now()) { while (true) { value = LocalDateTime.now(); kotlinx.coroutines.delay(1_000) } }
-    val swipe = remember { Animatable(0f) }
-    val scope = rememberCoroutineScope()
-    var lift by remember { mutableFloatStateOf(0f) }
-    var showLyrics by remember { mutableStateOf(false) }
+    val frame = rotatingCover(now.artworkUri, now.trackId)
+    val activeAura = frame.aura ?: aura
+    val animatedPrimary by androidx.compose.animation.animateColorAsState(
+        activeAura?.primary?.copy(alpha = 0.7f) ?: c.ambientA,
+        animationSpec = tween(600),
+        label = "lockAmbientA"
+    )
+    val animatedSecondary by androidx.compose.animation.animateColorAsState(
+        activeAura?.secondary?.copy(alpha = 0.6f) ?: c.ambientB,
+        animationSpec = tween(600),
+        label = "lockAmbientB"
+    )
+    val animatedAccent by androidx.compose.animation.animateColorAsState(
+        activeAura?.accent ?: c.accent,
+        animationSpec = tween(600),
+        label = "lockAccent"
+    )
+    val animatedGlow by androidx.compose.animation.animateColorAsState(
+        activeAura?.primary ?: c.accentGlow,
+        animationSpec = tween(600),
+        label = "lockGlow"
+    )
+    val lockColors = remember(c, animatedAccent) { c.withAccent(animatedAccent) }
 
-    Box(
-        Modifier.fillMaxSize().background(c.bg).pointerInput(Unit) {
-            // A swipe up from anywhere below the cover opens the phone's unlock.
-            detectVerticalDragGestures(onDragEnd = { if (lift < -size.height * 0.12f) onUnlock(); lift = 0f }, onDragCancel = { lift = 0f }) { change, dy ->
-                change.consume(); lift = (lift + dy).coerceAtMost(0f)
-            }
-        },
-    ) {
-        HiveAmbient(aura?.primary?.copy(alpha = 0.7f) ?: c.ambientA, aura?.secondary?.copy(alpha = 0.6f) ?: c.ambientB, Modifier.fillMaxSize(), intensity = 1.25f)
-        // Blur a fifth-size copy and scale it up: 1/25 the pixels to blur, same soft wash (22dp × 5 ≈ 110dp).
-        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.S) BlurredBackdropArt(now.artworkUri, Modifier.fillMaxSize(0.2f).align(Alignment.Center).graphicsLayer { scaleX = 5f; scaleY = 5f; alpha = 0.3f }.blur(22.dp))
-        Box(Modifier.fillMaxSize().background(Brush.verticalGradient(0f to c.bg.copy(alpha = 0.35f), 0.5f to Color.Transparent, 1f to c.bg.copy(alpha = 0.8f))))
+    CompositionLocalProvider(LocalHiveColors provides lockColors) {
+        val clock by produceState(LocalDateTime.now()) { while (true) { value = LocalDateTime.now(); kotlinx.coroutines.delay(1_000) } }
+        val swipe = remember { Animatable(0f) }
+        val scope = rememberCoroutineScope()
+        var lift by remember { mutableFloatStateOf(0f) }
+        var showLyrics by remember { mutableStateOf(false) }
 
-        Column(
-            Modifier.fillMaxSize().statusBarsPadding().navigationBarsPadding()
-                .graphicsLayer { translationY = lift * 0.35f; alpha = 1f - (abs(lift) / 900f).coerceIn(0f, 0.5f) },
-            horizontalAlignment = Alignment.CenterHorizontally,
+        Box(
+            Modifier.fillMaxSize().background(c.bg).pointerInput(Unit) {
+                // A swipe up from anywhere below the cover opens the phone's unlock.
+                detectVerticalDragGestures(onDragEnd = { if (lift < -size.height * 0.12f) onUnlock(); lift = 0f }, onDragCancel = { lift = 0f }) { change, dy ->
+                    change.consume(); lift = (lift + dy).coerceAtMost(0f)
+                }
+            },
         ) {
-            // The phone's own choice of 12- or 24-hour time, as its lock screen shows it.
-            val context = androidx.compose.ui.platform.LocalContext.current
-            val pattern = if (android.text.format.DateFormat.is24HourFormat(context)) "H:mm" else "h:mm"
-            Text(clock.format(DateTimeFormatter.ofPattern(pattern)), style = HiveText.heroTitle.copy(fontSize = 76.sp, lineHeight = 80.sp, fontWeight = FontWeight.Light), color = c.text, modifier = Modifier.padding(top = 28.dp))
-            Text(clock.format(DateTimeFormatter.ofPattern("EEEE, MMMM d")), style = HiveText.rowStrong, color = c.text.copy(alpha = 0.85f))
-            Spacer(Modifier.weight(1f))
-            // The cover and the lyrics share one place; a tap on either shows the other. The cover's
-            // shadow fades faster than the cover, so it never shows through the half-faded picture.
-            val coverShown by androidx.compose.animation.core.animateFloatAsState(if (showLyrics) 0f else 1f, label = "lockCover")
-            Box(Modifier.fillMaxWidth(0.82f).aspectRatio(1f), contentAlignment = Alignment.Center) {
-                if (coverShown < 1f) LyricsBody(vm, Modifier.fillMaxSize().graphicsLayer { alpha = 1f - coverShown }.clip(HiveShape.art).background(c.bg.copy(alpha = 0.35f)), onTap = { showLyrics = false }, compact = true)
-                if (coverShown > 0f) {
-                    val frame = rotatingCover(now.artworkUri, now.trackId)
-                    Artwork(
-                        frame.current,
-                        Modifier.fillMaxWidth(0.95f).aspectRatio(1f)
-                            .graphicsLayer { alpha = coverShown }
-                            .songSwipe(swipe, scope, onNext = { vm.player.next() }, onPrevious = { vm.player.previous() })
-                            .pointerInput(Unit) { detectTapGestures { showLyrics = true } }
-                            .graphicsLayer { translationX = swipe.value; alpha = 1f - (abs(swipe.value) / size.width).coerceIn(0f, 0.9f) },
-                        HiveShape.art, Icons.Rounded.MusicNote, glow = aura?.primary ?: c.accentGlow, elevation = 34.dp * (coverShown * coverShown * coverShown),
-                        replacing = frame.previous,
-                        highQuality = true,
-                    )
+            HiveAmbient(animatedPrimary, animatedSecondary, Modifier.fillMaxSize(), intensity = 1.25f)
+            // Blur a fifth-size copy of the active rotating cover and scale it up: crossfading smoothly!
+            if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.S) {
+                Crossfade(frame.current ?: now.artworkUri, animationSpec = tween(600), label = "lockBackdrop") { artModel ->
+                    BlurredBackdropArt(artModel, Modifier.fillMaxSize(0.2f).align(Alignment.Center).graphicsLayer { scaleX = 5f; scaleY = 5f; alpha = 0.3f }.blur(22.dp))
                 }
             }
-            Crossfade(now.title to now.artist, label = "lockText", modifier = Modifier.padding(top = 26.dp)) { (title, artist) ->
-                Column(horizontalAlignment = Alignment.CenterHorizontally) {
-                    Text(title.ifBlank { "Nothing playing" }, style = HiveText.npTitle, color = c.text, maxLines = 1, modifier = Modifier.padding(horizontal = 26.dp), overflow = TextOverflow.Ellipsis, textAlign = TextAlign.Center)
-                    Text(artist, style = HiveText.rowStrong, color = c.textDim, maxLines = 1, overflow = TextOverflow.Ellipsis, textAlign = TextAlign.Center, modifier = Modifier.padding(top = 4.dp))
+            Box(Modifier.fillMaxSize().background(Brush.verticalGradient(0f to c.bg.copy(alpha = 0.35f), 0.5f to Color.Transparent, 1f to c.bg.copy(alpha = 0.8f))))
+
+            Column(
+                Modifier.fillMaxSize().statusBarsPadding().navigationBarsPadding()
+                    .graphicsLayer { translationY = lift * 0.35f; alpha = 1f - (abs(lift) / 900f).coerceIn(0f, 0.5f) },
+                horizontalAlignment = Alignment.CenterHorizontally,
+            ) {
+                // The phone's own choice of 12- or 24-hour time, as its lock screen shows it.
+                val context = androidx.compose.ui.platform.LocalContext.current
+                val pattern = if (android.text.format.DateFormat.is24HourFormat(context)) "H:mm" else "h:mm"
+                Text(clock.format(DateTimeFormatter.ofPattern(pattern)), style = HiveText.heroTitle.copy(fontSize = 76.sp, lineHeight = 80.sp, fontWeight = FontWeight.Light), color = c.text, modifier = Modifier.padding(top = 28.dp))
+                Text(clock.format(DateTimeFormatter.ofPattern("EEEE, MMMM d")), style = HiveText.rowStrong, color = c.text.copy(alpha = 0.85f))
+                Spacer(Modifier.weight(1f))
+                // The cover and the lyrics share one place; a tap on either shows the other. The cover's
+                // shadow fades faster than the cover, so it never shows through the half-faded picture.
+                val coverShown by androidx.compose.animation.core.animateFloatAsState(if (showLyrics) 0f else 1f, label = "lockCover")
+                Box(Modifier.fillMaxWidth(0.82f).aspectRatio(1f), contentAlignment = Alignment.Center) {
+                    if (coverShown < 1f) LyricsBody(vm, Modifier.fillMaxSize().graphicsLayer { alpha = 1f - coverShown }.clip(HiveShape.art).background(c.bg.copy(alpha = 0.35f)), onTap = { showLyrics = false }, compact = true)
+                    if (coverShown > 0f) {
+                        Artwork(
+                            frame.current,
+                            Modifier.fillMaxWidth(0.95f).aspectRatio(1f)
+                                .graphicsLayer { alpha = coverShown }
+                                .songSwipe(swipe, scope, onNext = { vm.player.next() }, onPrevious = { vm.player.previous() })
+                                .pointerInput(Unit) { detectTapGestures { showLyrics = true } }
+                                .graphicsLayer { translationX = swipe.value; alpha = 1f - (abs(swipe.value) / size.width).coerceIn(0f, 0.9f) },
+                            HiveShape.art, Icons.Rounded.MusicNote, glow = animatedGlow, elevation = 34.dp * (coverShown * coverShown * coverShown),
+                            replacing = frame.previous,
+                            highQuality = true,
+                        )
+                    }
                 }
-            }
-            // The heart where the player has it: centred under the song.
-            NowHeart(vm, now.mediaId)
-            SeekBar(now, vm.position, onSeek = { vm.player.seekTo(it) })
+                Crossfade(now.title to now.artist, label = "lockText", modifier = Modifier.padding(top = 26.dp)) { (title, artist) ->
+                    Column(horizontalAlignment = Alignment.CenterHorizontally) {
+                        Text(title.ifBlank { "Nothing playing" }, style = HiveText.npTitle, color = c.text, maxLines = 1, modifier = Modifier.padding(horizontal = 26.dp), overflow = TextOverflow.Ellipsis, textAlign = TextAlign.Center)
+                        Text(artist, style = HiveText.rowStrong, color = c.textDim, maxLines = 1, overflow = TextOverflow.Ellipsis, textAlign = TextAlign.Center, modifier = Modifier.padding(top = 4.dp))
+                    }
+                }
+                // The heart where the player has it: centred under the song.
+                NowHeart(vm, now.mediaId)
+                SeekBar(now, vm.position, onSeek = { vm.player.seekTo(it) })
             Row(Modifier.fillMaxWidth().padding(horizontal = 18.dp).height(96.dp), horizontalArrangement = Arrangement.SpaceEvenly, verticalAlignment = Alignment.CenterVertically) {
                 // As in the player: shuffle and repeat mean nothing to a live station, but keep their places.
                 if (now.isLive) Spacer(Modifier.size(48.dp)) else ShuffleButton(now.shuffle) { vm.player.toggleShuffle() }
@@ -140,5 +173,6 @@ fun LockPlayer(vm: MainViewModel, onUnlock: () -> Unit) {
             Icon(Icons.Rounded.KeyboardArrowUp, null, tint = c.textDim, modifier = Modifier.size(22.dp))
             Text("Swipe up to unlock", style = HiveText.small, color = c.textDim, modifier = Modifier.padding(bottom = 18.dp))
         }
+    }
     }
 }

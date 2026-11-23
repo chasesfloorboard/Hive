@@ -400,7 +400,7 @@ fun CoverViewer(vm: MainViewModel, tracks: List<Track>, fallback: Any?, name: St
     Dialog(onDismiss, DialogProperties(usePlatformDefaultWidth = false, decorFitsSystemWindows = false)) {
         Box(Modifier.fillMaxSize().graphicsLayer { alpha = appear }.pointerInput(Unit) { detectTapGestures { onDismiss() } }) {
             val bg = Hive.colors.bg
-            val g = activeGlows ?: listOf(activePrimary, activeSecondary, activeSecondary, activePrimary, activeBgLight)
+            val g = listOf(activePrimary, activeSecondary, activeSecondary, activePrimary, activeBgLight)
             androidx.compose.foundation.Canvas(Modifier.fillMaxSize()) {
                 drawRect(androidx.compose.ui.graphics.lerp(activeBgLight, bg, 0.72f))
                 val r = maxOf(size.width, size.height) * 0.75f

@@ -154,8 +154,8 @@ fun Modifier.softShadow(elevation: Dp, shape: Shape, color: Color = Color.Black)
     drawContext.canvas.nativeCanvas.drawPath(path.asAndroidPath(), paint)
 }
 
-/** A cover carousel's frame: what to draw now, and the frame it replaces (to fade from). */
-data class CoverFrame(val current: Any?, val previous: Any?)
+/** A cover carousel's frame: what to draw now, the frame it replaces (to fade from), and its aura colors. */
+data class CoverFrame(val current: Any?, val previous: Any?, val aura: AuraColors? = null)
 
 /** How long each picture of a song shows in the cover carousel, as on the PC. */
 const val COVER_ROTATE_MS = 4_000L
@@ -174,7 +174,23 @@ fun rotatingCover(base: Any?, trackId: Long?): CoverFrame {
     val pictures by androidx.compose.runtime.produceState(emptyList<java.io.File>(), trackId, albumId) {
         value = trackId?.let { com.local.hive.mobile.data.EmbeddedPictures.forTrack(context, it, albumId) }.orEmpty()
     }
-    if (pictures.size < 2) return CoverFrame(base, null)
+    val auras by androidx.compose.runtime.produceState(emptyMap<java.io.File, AuraColors?>(), pictures) {
+        if (pictures.isEmpty()) {
+            value = emptyMap()
+            return@produceState
+        }
+        val map = mutableMapOf<java.io.File, AuraColors?>()
+        kotlinx.coroutines.withContext(kotlinx.coroutines.Dispatchers.IO) {
+            for (file in pictures) {
+                map[file] = ArtColors.extract(context, file)
+            }
+        }
+        value = map
+    }
+    val baseAura by androidx.compose.runtime.produceState<AuraColors?>(null, base) {
+        value = ArtColors.extract(context, base)
+    }
+    if (pictures.size < 2) return CoverFrame(base, null, baseAura)
     val tick by androidx.compose.runtime.produceState(System.currentTimeMillis() / COVER_ROTATE_MS, pictures) {
         while (true) {
             kotlinx.coroutines.delay(COVER_ROTATE_MS - System.currentTimeMillis() % COVER_ROTATE_MS)
@@ -182,7 +198,9 @@ fun rotatingCover(base: Any?, trackId: Long?): CoverFrame {
         }
     }
     val n = pictures.size
-    return CoverFrame(pictures[(tick % n).toInt()], pictures[((tick - 1) % n + n).toInt() % n])
+    val cur = pictures[(tick % n).toInt()]
+    val prev = pictures[((tick - 1) % n + n).toInt() % n]
+    return CoverFrame(cur, prev, auras[cur] ?: baseAura)
 }
 
 /** The sharpest memory-cache entry each cover has been drawn from, with its size in pixels. */
