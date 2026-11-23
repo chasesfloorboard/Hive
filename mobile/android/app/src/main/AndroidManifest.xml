@@ -75,6 +75,7 @@
             android:launchMode="singleInstance"
             android:taskAffinity="com.local.hive.mobile.lockplayer"
             android:showWhenLocked="true"
+            android:turnScreenOn="true"
             android:screenOrientation="portrait"
             android:configChanges="orientation|screenSize|screenLayout|smallestScreenSize" />
 

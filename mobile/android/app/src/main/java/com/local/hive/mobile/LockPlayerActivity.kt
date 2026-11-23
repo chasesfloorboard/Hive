@@ -115,6 +115,11 @@ class LockPlayerActivity : ComponentActivity() {
     override fun onCreate(savedInstanceState: Bundle?) {
         setShowWhenLocked(true)
         if (android.os.Build.VERSION.SDK_INT >= 27) setTurnScreenOn(true)
+        @Suppress("DEPRECATION")
+        window.addFlags(
+            android.view.WindowManager.LayoutParams.FLAG_SHOW_WHEN_LOCKED or
+            android.view.WindowManager.LayoutParams.FLAG_TURN_SCREEN_ON
+        )
         super.onCreate(savedInstanceState)
         enableEdgeToEdge(
             statusBarStyle = androidx.activity.SystemBarStyle.dark(android.graphics.Color.TRANSPARENT),
@@ -209,14 +214,26 @@ class LockPlayerActivity : ComponentActivity() {
             finish()
             return
         }
-        CarLog.lockPlayer(this, "pushed away")
-        if (!CarLog.inCar(this)) return
-        if (System.currentTimeMillis() - screenChangedAt > CAR_TAKEOVER_MS) return
-        val now = System.currentTimeMillis()
-        broughtBack.removeAll { now - it > 60_000 }
-        if (broughtBack.size >= 3) return
-        broughtBack += now
-        mainHandler.postDelayed({ CarLog.lockPlayer(this, "comes back"); showIfWanted(this) }, 400)
+        val km = getSystemService(KEYGUARD_SERVICE) as KeyguardManager
+        val isLocked = km.isKeyguardLocked || km.inKeyguardRestrictedInputMode() || km.isDeviceLocked
+        val inCar = CarLog.inCar(this)
+        CarLog.lockPlayer(this, "pushed away; isLocked=$isLocked, inCar=$inCar")
+        if (isLocked || inCar) {
+            val now = System.currentTimeMillis()
+            broughtBack.removeAll { now - it > 60_000 }
+            if (broughtBack.size < 5) {
+                broughtBack += now
+                mainHandler.postDelayed({
+                    if (!leaving && !sentAway && !isFinishing) {
+                        CarLog.lockPlayer(this, "comes back over lockscreen")
+                        finish()
+                        showIfWanted(this)
+                    }
+                }, 300)
+                return
+            }
+        }
+        finish()
     }
 
     /**
@@ -283,7 +300,7 @@ class LockPlayerActivity : ComponentActivity() {
             lastShowAttemptAt = 0L
             screenChangedAt = System.currentTimeMillis()
             activeInstance?.let {
-                if (!resumed && !it.isFinishing && System.currentTimeMillis() - screenChangedAt > 1_000L) {
+                if (!resumed && !it.isFinishing) {
                     it.finish()
                 }
             }

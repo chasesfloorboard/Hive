@@ -74,9 +74,28 @@ object CarLog {
     @Volatile var carConnected = false
     @Volatile private var carControllers = 0
 
-    /** The phone is in the car: Android Auto connected to Hive, or the phone in car mode. */
-    fun inCar(context: Context) = (carConnected && pluggedIn(context)) ||
-        (context.getSystemService(android.app.UiModeManager::class.java)?.currentModeType == android.content.res.Configuration.UI_MODE_TYPE_CAR)
+    /** The phone is in the car: Android Auto connected to Hive, car mode, or car audio. */
+    fun inCar(context: Context): Boolean {
+        if (carConnected) return true
+        if (context.getSystemService(android.app.UiModeManager::class.java)?.currentModeType == android.content.res.Configuration.UI_MODE_TYPE_CAR) return true
+        val audioManager = context.getSystemService(Context.AUDIO_SERVICE) as? android.media.AudioManager
+        if (audioManager != null) {
+            val devices = audioManager.getDevices(android.media.AudioManager.GET_DEVICES_OUTPUTS)
+            for (d in devices) {
+                if (d.type == android.media.AudioDeviceInfo.TYPE_BUS) return true
+                if (d.type == android.media.AudioDeviceInfo.TYPE_BLUETOOTH_A2DP) {
+                    val name = d.productName?.toString().orEmpty().lowercase()
+                    if (name.contains("car") || name.contains("sync") || name.contains("uconnect") ||
+                        name.contains("ford") || name.contains("honda") || name.contains("toyota") ||
+                        name.contains("mazda") || name.contains("bmw") || name.contains("audi")
+                    ) {
+                        return true
+                    }
+                }
+            }
+        }
+        return false
+    }
 
     /**
      * Android Auto (wired) is only there while the phone is plugged in. Its connection to Hive can
