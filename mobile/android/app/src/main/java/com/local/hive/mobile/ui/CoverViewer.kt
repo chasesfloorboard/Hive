@@ -267,9 +267,13 @@ fun CoverViewer(vm: MainViewModel, tracks: List<Track>, fallback: Any?, name: St
     }
 
     val bitmaps = remember { mutableStateMapOf<Int, ImageBitmap>() }
+    val coverAuras = remember { mutableStateMapOf<Int, AuraColors>() }
+    val coverGlows = remember { mutableStateMapOf<Int, List<Color>>() }
     val coverKeys = remember(covers) { covers.map { it.bytes.size to it.title } }
     LaunchedEffect(coverKeys) {
         bitmaps.clear()
+        coverAuras.clear()
+        coverGlows.clear()
     }
     LaunchedEffect(covers, pagerState.currentPage) {
         if (covers.isEmpty()) return@LaunchedEffect
@@ -278,24 +282,37 @@ fun CoverViewer(vm: MainViewModel, tracks: List<Track>, fallback: Any?, name: St
         for (i in toLoad) {
             if (!bitmaps.containsKey(i)) {
                 withContext(Dispatchers.Default) {
-                    decode(covers[i].bytes)?.asImageBitmap()?.let { bitmaps[i] = it }
+                    val androidBm = decode(covers[i].bytes)
+                    if (androidBm != null) {
+                        bitmaps[i] = androidBm.asImageBitmap()
+                        ArtColors.fromBitmap(androidBm)?.let { coverAuras[i] = it }
+                        coverGlows[i] = ArtColors.cornerGlows(androidBm)
+                    }
                 }
             }
         }
     }
 
-    val currentCover = covers.getOrNull(pagerState.currentPage) ?: covers.firstOrNull()
-    val activeBitmap = bitmaps[pagerState.currentPage]
-    val glows by produceState<List<Color>?>(null, activeBitmap) {
-        value = activeBitmap?.let { b ->
-            withContext(Dispatchers.Default) {
-                val q = android.graphics.Bitmap.createScaledBitmap(b.asAndroidBitmap(), 2, 2, true)
-                val all = android.graphics.Bitmap.createScaledBitmap(b.asAndroidBitmap(), 1, 1, true)
-                listOf(q.getPixel(0, 0), q.getPixel(1, 0), q.getPixel(0, 1), q.getPixel(1, 1), all.getPixel(0, 0)).map { Color(it) }
-            }
-        }
-    }
-    val aura by produceState<AuraColors?>(null, first?.albumId) { value = first?.albumId?.let { vm.albumColors(it) } }
+    val curPage = pagerState.currentPage.coerceIn(0, (covers.size - 1).coerceAtLeast(0))
+    val currentCover = covers.getOrNull(curPage) ?: covers.firstOrNull()
+    val activeAura = coverAuras[curPage]
+    val activeGlows = coverGlows[curPage]
+
+    val activePrimary by androidx.compose.animation.animateColorAsState(
+        activeAura?.primary ?: activeGlows?.getOrNull(4) ?: Hive.colors.accent,
+        animationSpec = tween(320),
+        label = "activePrimary"
+    )
+    val activeSecondary by androidx.compose.animation.animateColorAsState(
+        activeAura?.secondary ?: activeGlows?.getOrNull(1) ?: Hive.colors.ambientB,
+        animationSpec = tween(320),
+        label = "activeSecondary"
+    )
+    val activeBgLight by androidx.compose.animation.animateColorAsState(
+        activeGlows?.getOrNull(4) ?: activePrimary,
+        animationSpec = tween(320),
+        label = "activeBgLight"
+    )
 
     var saved by remember { mutableStateOf<String?>(null) }
     var savedOk by remember { mutableStateOf(false) }
@@ -330,12 +347,13 @@ fun CoverViewer(vm: MainViewModel, tracks: List<Track>, fallback: Any?, name: St
     Dialog(onDismiss, DialogProperties(usePlatformDefaultWidth = false, decorFitsSystemWindows = false)) {
         Box(Modifier.fillMaxSize().graphicsLayer { alpha = appear }.pointerInput(Unit) { detectTapGestures { onDismiss() } }) {
             val bg = Hive.colors.bg
-            val g = glows ?: listOf(aura?.primary ?: Hive.colors.ambientA, aura?.secondary ?: Hive.colors.ambientB, aura?.secondary ?: Hive.colors.ambientB, aura?.primary ?: Hive.colors.ambientA, aura?.primary ?: bg)
+            val g = activeGlows ?: listOf(activePrimary, activeSecondary, activeSecondary, activePrimary, activeBgLight)
             androidx.compose.foundation.Canvas(Modifier.fillMaxSize()) {
-                drawRect(androidx.compose.ui.graphics.lerp(g[4], bg, 0.72f))
+                drawRect(androidx.compose.ui.graphics.lerp(activeBgLight, bg, 0.72f))
                 val r = maxOf(size.width, size.height) * 0.75f
                 listOf(Offset(0f, 0f), Offset(size.width, 0f), Offset(0f, size.height), Offset(size.width, size.height)).forEachIndexed { i, at ->
-                    drawCircle(androidx.compose.ui.graphics.Brush.radialGradient(listOf(g[i].copy(alpha = 0.55f), g[i].copy(alpha = 0.18f), Color.Transparent), at, r), r, at)
+                    val c = g.getOrElse(i) { activePrimary }
+                    drawCircle(androidx.compose.ui.graphics.Brush.radialGradient(listOf(c.copy(alpha = 0.55f), c.copy(alpha = 0.18f), Color.Transparent), at, r), r, at)
                 }
                 drawRect(androidx.compose.ui.graphics.Brush.verticalGradient(listOf(Color.Black.copy(alpha = 0.22f), Color.Black.copy(alpha = 0.12f), Color.Black.copy(alpha = 0.38f))))
             }
@@ -347,6 +365,8 @@ fun CoverViewer(vm: MainViewModel, tracks: List<Track>, fallback: Any?, name: St
             ) { page ->
                 val isCurrent = page == pagerState.currentPage
                 val bmp = bitmaps[page]
+                val pageAura = coverAuras[page]
+                val shadowColor = pageAura?.primary ?: activePrimary
                 Box(
                     Modifier.fillMaxSize(),
                     contentAlignment = Alignment.Center
@@ -382,7 +402,7 @@ fun CoverViewer(vm: MainViewModel, tracks: List<Track>, fallback: Any?, name: St
                             Image(
                                 bmp,
                                 contentDescription = covers.getOrNull(page)?.caption ?: covers.getOrNull(page)?.title ?: "Cover",
-                                modifier = Modifier.fillMaxSize().softShadow(28.dp, HiveShape.art, aura?.primary ?: Color.Black),
+                                modifier = Modifier.fillMaxSize().softShadow(28.dp, HiveShape.art, shadowColor),
                                 contentScale = ContentScale.Fit
                             )
                         } else {
@@ -391,7 +411,7 @@ fun CoverViewer(vm: MainViewModel, tracks: List<Track>, fallback: Any?, name: St
                                 Modifier.fillMaxSize(),
                                 HiveShape.art,
                                 Icons.Rounded.LibraryMusic,
-                                glow = aura?.primary,
+                                glow = shadowColor,
                                 elevation = 28.dp,
                                 highQuality = true
                             )
@@ -516,7 +536,7 @@ fun CoverViewer(vm: MainViewModel, tracks: List<Track>, fallback: Any?, name: St
                                 Modifier
                                     .size(if (active) 8.dp else 6.dp)
                                     .clip(androidx.compose.foundation.shape.CircleShape)
-                                    .background(if (active) Hive.colors.accent else Hive.colors.textDimmer.copy(alpha = 0.45f))
+                                    .background(if (active) (activeAura?.accent ?: Hive.colors.accent) else Hive.colors.textDimmer.copy(alpha = 0.45f))
                                     .clickable {
                                         haptics.performHapticFeedback(androidx.compose.ui.hapticfeedback.HapticFeedbackType.TextHandleMove)
                                         scope.launch { pagerState.animateScrollToPage(i) }

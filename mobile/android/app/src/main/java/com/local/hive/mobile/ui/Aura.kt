@@ -59,6 +59,31 @@ object ArtColors {
         return colors
     }
 
+    /** Extracts AuraColors directly from a Bitmap. */
+    fun fromBitmap(bitmap: android.graphics.Bitmap): AuraColors? {
+        val palette = Palette.from(bitmap).maximumColorCount(16).generate()
+        val swatches = listOfNotNull(
+            palette.vibrantSwatch, palette.darkVibrantSwatch, palette.mutedSwatch,
+            palette.darkMutedSwatch, palette.lightVibrantSwatch, palette.dominantSwatch,
+        )
+        if (swatches.isEmpty()) return null
+        val primary = swatches.first().rgb
+        val secondary = (listOfNotNull(palette.darkVibrantSwatch, palette.mutedSwatch, palette.darkMutedSwatch, palette.dominantSwatch)
+            .firstOrNull { it.rgb != primary } ?: swatches.last()).rgb
+        return AuraColors(
+            primary = Color(glow(primary)),
+            secondary = Color(glow(secondary)),
+            accent = Color(readableAccent(palette.lightVibrantSwatch?.rgb ?: palette.vibrantSwatch?.rgb ?: primary)),
+        )
+    }
+
+    /** 5 corner & average light colours for the backdrop. */
+    fun cornerGlows(bitmap: android.graphics.Bitmap): List<Color> {
+        val q = android.graphics.Bitmap.createScaledBitmap(bitmap, 2, 2, true)
+        val all = android.graphics.Bitmap.createScaledBitmap(bitmap, 1, 1, true)
+        return listOf(q.getPixel(0, 0), q.getPixel(1, 0), q.getPixel(0, 1), q.getPixel(1, 1), all.getPixel(0, 0)).map { Color(it) }
+    }
+
     private fun glow(rgb: Int): Int {
         val hsl = FloatArray(3)
         ColorUtils.colorToHSL(rgb, hsl)
