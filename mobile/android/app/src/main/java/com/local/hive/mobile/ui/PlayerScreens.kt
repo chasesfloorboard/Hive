@@ -596,9 +596,11 @@ private fun FullPlayerContent(
         HiveGlassLayers(Modifier.fillMaxSize(), content = {
             HiveAmbient(animatedPrimary, animatedSecondary, Modifier.fillMaxSize(), intensity = 1.25f)
             if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.S) {
-                // Blur a fifth-size copy of the active rotating cover and scale it up: crossfading smoothly!
-                Crossfade(frame.current ?: now.artworkUri, animationSpec = tween(600), label = "blurredBackdrop") { artModel ->
-                    BlurredBackdropArt(artModel, Modifier.fillMaxSize(0.2f).align(Alignment.Center).graphicsLayer { scaleX = 5f; scaleY = 5f; alpha = 0.22f }.blur(22.dp))
+                // Blur a quarter-size copy of the active rotating cover and scale it up from the center to cover edge-to-edge
+                Crossfade(frame.current ?: now.artworkUri, modifier = Modifier.fillMaxSize(), animationSpec = tween(600), label = "blurredBackdrop") { artModel ->
+                    Box(Modifier.fillMaxSize(), contentAlignment = Alignment.Center) {
+                        BlurredBackdropArt(artModel, Modifier.fillMaxSize(0.25f).graphicsLayer { scaleX = 4.5f; scaleY = 4.5f; alpha = 0.22f }.blur(24.dp))
+                    }
                 }
             }
             Box(Modifier.fillMaxSize().background(Brush.verticalGradient(0f to Color.Transparent, 0.6f to c.bg.copy(alpha = 0.2f), 1f to c.bg.copy(alpha = 0.75f))))

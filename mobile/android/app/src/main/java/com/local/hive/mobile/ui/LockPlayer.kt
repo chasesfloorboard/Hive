@@ -116,8 +116,11 @@ fun LockPlayer(vm: MainViewModel, onUnlock: () -> Unit) {
             HiveAmbient(animatedPrimary, animatedSecondary, Modifier.fillMaxSize(), intensity = 1.25f)
             // Blur a fifth-size copy of the active rotating cover and scale it up: crossfading smoothly!
             if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.S) {
-                Crossfade(frame.current ?: now.artworkUri, animationSpec = tween(600), label = "lockBackdrop") { artModel ->
-                    BlurredBackdropArt(artModel, Modifier.fillMaxSize(0.2f).align(Alignment.Center).graphicsLayer { scaleX = 5f; scaleY = 5f; alpha = 0.3f }.blur(22.dp))
+                // Blur a quarter-size copy of the active rotating cover and scale it up from the center to cover edge-to-edge
+                Crossfade(frame.current ?: now.artworkUri, modifier = Modifier.fillMaxSize(), animationSpec = tween(600), label = "lockBackdrop") { artModel ->
+                    Box(Modifier.fillMaxSize(), contentAlignment = Alignment.Center) {
+                        BlurredBackdropArt(artModel, Modifier.fillMaxSize(0.25f).graphicsLayer { scaleX = 4.5f; scaleY = 4.5f; alpha = 0.3f }.blur(24.dp))
+                    }
                 }
             }
             Box(Modifier.fillMaxSize().background(Brush.verticalGradient(0f to c.bg.copy(alpha = 0.35f), 0.5f to Color.Transparent, 1f to c.bg.copy(alpha = 0.8f))))
