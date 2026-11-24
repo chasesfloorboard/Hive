@@ -303,10 +303,6 @@ class PlaybackService : MediaLibraryService() {
                 val locked = km.isKeyguardLocked || km.inKeyguardRestrictedInputMode() || km.isDeviceLocked
                 if (isPlaying) {
                     CarLog.lockPlayer(this@PlaybackService, "play started; locked=$locked")
-                    // Raise the player ONLY when on the lock screen -- NEVER over an unlocked phone
-                    if (locked) {
-                        bridge.showLockPlayerIfWanted(this@PlaybackService, bridge.wasRecentlyForeground())
-                    }
                 }
             }
         })
@@ -372,13 +368,6 @@ class PlaybackService : MediaLibraryService() {
                         CoverProvider.grant(this@PlaybackService, CarLog.ANDROID_AUTO, listOf(
                             mediaItem.buildUpon().setMediaMetadata(mediaItem.mediaMetadata.buildUpon().setArtworkUri(carUri).build()).build()
                         ))
-                    }
-                }
-                if (player.isPlaying) {
-                    val km = getSystemService(KEYGUARD_SERVICE) as android.app.KeyguardManager
-                    val locked = km.isKeyguardLocked || km.inKeyguardRestrictedInputMode() || km.isDeviceLocked
-                    if (locked) {
-                        bridge.showLockPlayerIfWanted(this@PlaybackService, bridge.wasRecentlyForeground())
                     }
                 }
             }

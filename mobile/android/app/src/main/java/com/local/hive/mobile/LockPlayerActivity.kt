@@ -84,9 +84,10 @@ class LockPlayerActivity : ComponentActivity() {
             // automatic exit is this: left untouched well past the lock screen's own timeout, step aside so
             // the screen can sleep (the phone may not sleep a foreign window the way it sleeps its lock
             // screen). In the car the phone stays on while it charges, so there the player stays up.
-            if (awake && !leaving && !CarLog.inCar(this@LockPlayerActivity) && System.currentTimeMillis() - touchedAt > SLEEP_AFTER_MS + IDLE_GRACE_MS) {
+            if (awake && !leaving && System.currentTimeMillis() - touchedAt > SLEEP_AFTER_MS + IDLE_GRACE_MS) {
                 CarLog.lockPlayer(this@LockPlayerActivity, "left idle, stepping aside so the screen can sleep")
                 dismissToPrevious()
+                if (activeInstance === this@LockPlayerActivity) activeInstance = null
                 finishAndRemoveTask()
                 return
             }
@@ -115,13 +116,9 @@ class LockPlayerActivity : ComponentActivity() {
 
     override fun onCreate(savedInstanceState: Bundle?) {
         setShowWhenLocked(true)
-        if (android.os.Build.VERSION.SDK_INT >= 27) setTurnScreenOn(true)
         if (android.os.Build.VERSION.SDK_INT >= 33) setRecentsScreenshotEnabled(false)
         @Suppress("DEPRECATION")
-        window.addFlags(
-            android.view.WindowManager.LayoutParams.FLAG_SHOW_WHEN_LOCKED or
-            android.view.WindowManager.LayoutParams.FLAG_TURN_SCREEN_ON
-        )
+        window.addFlags(android.view.WindowManager.LayoutParams.FLAG_SHOW_WHEN_LOCKED)
         super.onCreate(savedInstanceState)
         enableEdgeToEdge(
             statusBarStyle = androidx.activity.SystemBarStyle.dark(android.graphics.Color.TRANSPARENT),
@@ -153,13 +150,11 @@ class LockPlayerActivity : ComponentActivity() {
     override fun onAttachedToWindow() {
         super.onAttachedToWindow()
         setShowWhenLocked(true)
-        if (android.os.Build.VERSION.SDK_INT >= 27) setTurnScreenOn(true)
     }
 
     override fun onNewIntent(intent: Intent) {
         super.onNewIntent(intent)
         setShowWhenLocked(true)
-        if (android.os.Build.VERSION.SDK_INT >= 27) setTurnScreenOn(true)
         leaving = false
     }
 
@@ -185,13 +180,13 @@ class LockPlayerActivity : ComponentActivity() {
         sentAway = true
         leaving("user left (home/recents pressed)")
         dismissToPrevious()
+        if (activeInstance === this) activeInstance = null
         finishAndRemoveTask()
     }
 
     override fun onResume() {
         super.onResume()
         setShowWhenLocked(true)
-        if (android.os.Build.VERSION.SDK_INT >= 27) setTurnScreenOn(true)
         resumed = true
         resumedAt = System.currentTimeMillis()
         touchedAt = resumedAt
@@ -208,54 +203,35 @@ class LockPlayerActivity : ComponentActivity() {
     }
 
     /**
-     * Pushed off the lock screen while the phone is still locked and on: in the
-     * car, Android Auto (or the phone's car mode) brings its own screen up as the
-     * phone wakes, or a notification appears. Hive's player re-asserts itself
-     * while the phone is locked, but NEVER terminates itself so that when the
-     * notification is swiped away or finished, it remains visible.
-     * If the phone is UNLOCKED and this activity stops, the user has navigated away,
-     * so it dismisses cleanly and removes itself from Recents.
+     * When the activity stops:
+     * - If the screen is turning off / sleeping, finish cleanly so the display sleeps peacefully.
+     * - If the phone is unlocked, clean up completely.
+     * - Under NO circumstances do we call startActivity here, which would abort screen-off and cause wake loops!
      */
     override fun onStop() {
         super.onStop()
         mainHandler.removeCallbacks(idleWatch)
-        if (leaving || sentAway || isFinishing || isChangingConfigurations) return
+        if (leaving || isFinishing || isChangingConfigurations) return
         val awake = (getSystemService(POWER_SERVICE) as android.os.PowerManager).isInteractive
+        val km = getSystemService(KEYGUARD_SERVICE) as KeyguardManager
+        val isLocked = km.isKeyguardLocked || km.inKeyguardRestrictedInputMode() || km.isDeviceLocked
+        CarLog.lockPlayer(this, "stopped; isLocked=$isLocked, awake=$awake")
         if (!awake) {
             // Screen went to sleep: finish cleanly so next wake starts completely fresh
+            if (activeInstance === this) activeInstance = null
             finishAndRemoveTask()
             return
         }
-        val km = getSystemService(KEYGUARD_SERVICE) as KeyguardManager
-        val isLocked = km.isKeyguardLocked || km.inKeyguardRestrictedInputMode() || km.isDeviceLocked
-        CarLog.lockPlayer(this, "stopped; isLocked=$isLocked")
         if (!isLocked) {
             // Phone is unlocked and the user navigated away (Recents, Home, app switch):
             // Dismiss and remove task completely so it never lingers or shows in Recents.
             if (unlockReShowRunnable == null) {
                 sentAway = true
                 leaving("stopped while unlocked (navigated away)")
+                if (activeInstance === this) activeInstance = null
                 finishAndRemoveTask()
             }
             return
-        }
-        // If the phone is locked and screen is still awake, a notification or SystemUI briefly covered us.
-        // DO NOT call finish()! We stay alive so when the user swipes away the notification, we resume.
-        // Also re-foreground ourselves over the lockscreen if still locked:
-        val now = System.currentTimeMillis()
-        broughtBack.removeAll { now - it > 60_000 }
-        if (broughtBack.size < 5) {
-            broughtBack += now
-            mainHandler.postDelayed({
-                if (!leaving && !sentAway && !isFinishing) {
-                    CarLog.lockPlayer(this, "re-asserts over lockscreen")
-                    val options = android.app.ActivityOptions.makeBasic()
-                    if (android.os.Build.VERSION.SDK_INT >= 34) {
-                        options.setPendingIntentBackgroundActivityStartMode(android.app.ActivityOptions.MODE_BACKGROUND_ACTIVITY_START_ALLOWED)
-                    }
-                    runCatching { startActivity(launchIntent(this@LockPlayerActivity), options.toBundle()) }
-                }
-            }, 300)
         }
     }
 
@@ -272,6 +248,7 @@ class LockPlayerActivity : ComponentActivity() {
         sentAway = true
         leaving("back: to previous app / lock screen")
         dismissToPrevious()
+        if (activeInstance === this) activeInstance = null
         finishAndRemoveTask()
     }
 
@@ -280,6 +257,7 @@ class LockPlayerActivity : ComponentActivity() {
         unlockReShowRunnable = null
         mainHandler.removeCallbacksAndMessages(null)
         sentAway = true
+        if (activeInstance === this) activeInstance = null
         // Already unlocked (face unlock): dismiss straight to whatever was open before, no keyguard request.
         if (!(getSystemService(KEYGUARD_SERVICE) as KeyguardManager).isKeyguardLocked) {
             dismissToPrevious(); leaving("unlock: to previous"); finishAndRemoveTask()
@@ -308,8 +286,6 @@ class LockPlayerActivity : ComponentActivity() {
         @Volatile private var activeInstance: LockPlayerActivity? = null
         /** When the keyguard last unlocked (face/fingerprint). Kept in companion so it survives activity recreation. */
         @Volatile var lastUnlockedAt = 0L
-        /** When the player was last brought back after being pushed away (see onStop). */
-        private val broughtBack = mutableListOf<Long>()
         /** Home or Back pressed on the player: it stays away until the phone next goes to sleep (see [screenChanged]). */
         @Volatile private var sentAway = false
         /** The player is on screen right now (between onResume and onPause). When it is NOT, a re-show must
@@ -329,6 +305,7 @@ class LockPlayerActivity : ComponentActivity() {
                     it.finishAndRemoveTask()
                 }
             }
+            activeInstance = null
         }
         /** When the screen last went off or came on. */
         @Volatile private var screenChangedAt = 0L
@@ -362,21 +339,23 @@ class LockPlayerActivity : ComponentActivity() {
         fun inCall(context: Context) = (context.getSystemService(Context.AUDIO_SERVICE) as android.media.AudioManager).mode != android.media.AudioManager.MODE_NORMAL
 
         /**
-         * Called as the screen goes off or comes on locked, or as music starts on a locked phone.
-         * [hiveForeground] records whether Hive's own UI was the app in use, which decides where a later
-         * unlock lands; a call coming back (no fresh signal) keeps the value from when the player first showed.
+         * Called as the screen comes on locked.
          */
-        /** The intent that raises the player -- EVERY launch site goes through this. When the player is NOT
-         *  already on screen, CLEAR_TASK makes it a FRESH start: Android 16+ refuses to bring a backgrounded
-         *  activity to the front, so a plain re-launch (a reorder) silently does nothing -- the "shows once,
-         *  then never again" bug. A fresh start is the one launch Android still allows. When the player IS on
-         *  screen (a re-show on a song change), no CLEAR_TASK, so it is not needlessly recreated / flickered. */
         private fun launchIntent(context: Context): Intent =
             Intent(context, LockPlayerActivity::class.java)
                 .addFlags(Intent.FLAG_ACTIVITY_NEW_TASK or Intent.FLAG_ACTIVITY_NO_ANIMATION or Intent.FLAG_ACTIVITY_EXCLUDE_FROM_RECENTS)
-                .apply { if (!resumed && activeInstance == null) addFlags(Intent.FLAG_ACTIVITY_CLEAR_TASK) }
+                .apply { if (!resumed || activeInstance == null || activeInstance?.isFinishing == true) addFlags(Intent.FLAG_ACTIVITY_CLEAR_TASK) }
 
-        fun showIfWanted(context: Context, hiveForeground: Boolean = hiveWasForeground) {
+        fun showIfWanted(context: Context, hiveForeground: Boolean = hiveWasForeground, freshWake: Boolean = false) {
+            val pm = context.getSystemService(Context.POWER_SERVICE) as? android.os.PowerManager
+            if (pm?.isInteractive != true) {
+                CarLog.lockPlayer(context, "not shown: screen is off")
+                return
+            }
+            if (freshWake) {
+                sentAway = false
+                lastShowAttemptAt = 0L
+            }
             if (resumed) {
                 CarLog.lockPlayer(context, "already on screen")
                 return

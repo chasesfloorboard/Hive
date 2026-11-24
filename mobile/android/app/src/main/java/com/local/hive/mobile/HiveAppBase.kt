@@ -93,7 +93,7 @@ abstract class HiveAppBase : Application(), coil3.SingletonImageLoader.Factory, 
             android.app.PendingIntent.FLAG_IMMUTABLE or android.app.PendingIntent.FLAG_UPDATE_CURRENT,
         )
     override fun wasRecentlyForeground() = MainActivity.wasRecentlyForeground()
-    override fun showLockPlayerIfWanted(context: android.content.Context, hiveForeground: Boolean) = LockPlayerActivity.showIfWanted(context, hiveForeground)
+    override fun showLockPlayerIfWanted(context: android.content.Context, hiveForeground: Boolean) = LockPlayerActivity.showIfWanted(context, hiveForeground, freshWake = true)
     override fun lockScreenChanged() = LockPlayerActivity.screenChanged()
     /** Coil, with album art read at full quality (see [com.local.hive.mobile.data.AlbumArtFetcher]) and network fetching. */
     override fun newImageLoader(context: coil3.PlatformContext): coil3.ImageLoader = coil3.ImageLoader.Builder(context)
