@@ -38,6 +38,7 @@ Hive is designed around the idea that your music library should remain useful ou
 - **Playlists & queue** — persistent playlists, queue management, and Favorites as a first-class library view.
 - **Full tag editor** — individual and bulk metadata editing, artwork, lyrics, and advanced fields.
 - **Yearly Wrap** — private, local listening statistics with MusicBee Wrapped archive import.
+- **Plugins (early beta)** — sandboxed JavaScript/CSS plugins (including a built-in visualizer) with a Verified store and an experimental Community (Untested) catalog on desktop and mobile.
 - **Portable by design** — the application, settings, and library database can live together in one folder, including on a removable drive.
 - **Local-first privacy** — your library data and listening history stay local unless you explicitly use an optional integration.
 
@@ -60,6 +61,14 @@ Edit one song or a whole album without leaving the player: titles, artists, albu
 Light, dark and a set of colour themes, each still tinted by the album that's playing. Themes can also switch by time of day, and Settings › Appearance › **Browse themes** has more, shared by other Hive users (share yours with **Share theme**).
 
 ![The same Hive window in a light theme on the left and a dark theme on the right.](resources/screenshots/hive-themes.png)
+
+### Plugins
+
+Hive has a built-in plugin system for custom views and visualizers on both desktop and mobile (Settings › **Plugins** › **Browse plugins**). Plugins run inside a zero-network sandbox and declare their permissions up front.
+
+The plugin store is split into two tabs: **Verified** ([`plugins/store.json`](plugins/store.json), reviewed by maintainers) and **Community (Untested)** ([`plugins/community.json`](plugins/community.json), user-submitted plugins that have not been audited yet).
+
+> **Note:** Community plugin support is currently **partially working / early beta** — the sandboxed plugin host, store catalogs, and GitHub issue submission workflow are live, while broader plugin APIs and community testing are still evolving.
 
 ### Yearly Wrap
 
@@ -109,6 +118,7 @@ Hive Mobile is a music player for Android 10 or newer. It plays the music on you
 - Favorites (Love) are written into the song files too, the same way Hive on the computer writes them, so they survive anything.
 - A Yearly Wrap of your listening, month by month.
 - **Browse themes** made by other Hive users and **share your own** (on the phone and the computer). Shared themes join the gallery once the maintainer approves them.
+- **Plugins & Visualizer** (early beta): browse **Verified** and **Community (Untested)** plugins in Settings › Plugins, or open the built-in audio visualizer from Now Playing.
 - If Hive Mobile ever closes unexpectedly, it asks the next time whether to send the crash report; you choose where it goes, and nothing is sent otherwise.
 - Uninstalling never loses anything: Hive Mobile keeps a backup of itself on the phone (and on your computer, if paired), and a fresh install offers to restore it exactly as it was.
 - It works on its own with no computer and no account.
@@ -164,6 +174,7 @@ Hive is intentionally local-first:
 - Crash reporting is local-only. Hive Mobile keeps its crash reports on the phone and asks before sharing one; nothing is sent anywhere by itself.
 - Phone backups never contain passwords or sign-ins (Soulseek, Spotify, Apple Music, scrobbling) or the phone's key for the computer.
 - Themes from the theme gallery are colours and sizes only; they can't load anything from the internet.
+- Plugins run in a zero-network sandbox with explicit permission checks; **Community (Untested)** plugins are clearly marked before install.
 - Updates are checked and installed only with user consent.
 
 For the deeper architecture and security model, see [`docs/ARCHITECTURE.md`](docs/ARCHITECTURE.md).

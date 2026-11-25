@@ -132,7 +132,7 @@ internal class VisualizerShaper {
     fun stepBars(current: FloatArray, target: FloatArray, dtSeconds: Float, decayMs: Float): FloatArray {
         val out = if (current.size == target.size) current else FloatArray(target.size)
         val dt = dtSeconds.coerceIn(0.001f, 0.1f)
-        val attack = 1f - exp(-dt / 0.012f)
+        val attack = 1f - exp(-dt / 0.008f)
         val decay = 1f - exp(-dt / (decayMs.coerceIn(20f, 400f) / 1000f))
         for (i in target.indices) {
             val from = out[i]
@@ -241,6 +241,8 @@ private fun VisualizerStage(
         vizPlugin?.settings?.get("accentColor")?.toBooleanStrictOrNull() ?: true
     }
 
+    val context = androidx.compose.ui.platform.LocalContext.current
+
     // Attach to ExoPlayer's real-time SpectrumBus only while this screen is on screen.
     DisposableEffect(Unit) {
         SpectrumBus.acquire()
@@ -248,25 +250,41 @@ private fun VisualizerStage(
     }
 
     val shaper = remember { VisualizerShaper() }
-    var drawnBars by remember(barCount) { mutableStateOf(FloatArray(barCount)) }
-    val rawLevels by SpectrumBus.levels.collectAsStateWithLifecycle()
-    val latestLevels = androidx.compose.runtime.rememberUpdatedState(rawLevels)
+    // Mutate bars in place and invalidate ONLY Canvas's draw phase via frameTick (zero per-frame recomposition).
+    val barsState = remember(barCount) { FloatArray(barCount) }
+    val frameTick = remember { androidx.compose.runtime.mutableLongStateOf(0L) }
     val latestPlaying = androidx.compose.runtime.rememberUpdatedState(now.isPlaying)
+    val latestSpeed = androidx.compose.runtime.rememberUpdatedState(now.speed)
 
     LaunchedEffect(barCount, sensitivity, decayMs, smooth) {
         var lastNs = 0L
-        var state = FloatArray(barCount)
+        var lastRouteCheckNs = 0L
+        var outputLatencyMs = SpectrumBus.estimatedOutputLatencyMs(context)
+        val rawScratch = FloatArray(SpectrumBus.BANDS)
+        val zeroTarget = FloatArray(barCount)
         while (true) {
             withFrameNanos { nowNs ->
                 val dt = if (lastNs == 0L) 1f / 60f else ((nowNs - lastNs) / 1_000_000_000f).coerceIn(0.001f, 0.1f)
                 lastNs = nowNs
-                val target = if (latestPlaying.value) {
-                    shaper.shapeFrame(latestLevels.value, barCount, sensitivity, smooth, dt)
-                } else {
-                    FloatArray(barCount)
+                if (nowNs - lastRouteCheckNs > 2_000_000_000L) {
+                    lastRouteCheckNs = nowNs
+                    outputLatencyMs = SpectrumBus.estimatedOutputLatencyMs(context)
                 }
-                state = shaper.stepBars(state, target, dt, decayMs)
-                drawnBars = state.copyOf()
+                val playing = latestPlaying.value
+                val target = if (playing) {
+                    SpectrumBus.sampleNow(
+                        isPlaying = true,
+                        speed = latestSpeed.value,
+                        targetLagMs = outputLatencyMs,
+                        out = rawScratch,
+                    )
+                    shaper.shapeFrame(rawScratch, barCount, sensitivity, smooth, dt)
+                } else {
+                    SpectrumBus.sampleNow(isPlaying = false, out = rawScratch)
+                    zeroTarget
+                }
+                shaper.stepBars(barsState, target, dt, decayMs)
+                frameTick.longValue = nowNs
             }
         }
     }
@@ -312,14 +330,16 @@ private fun VisualizerStage(
                         .fillMaxWidth()
                         .height(if (landscape) (stageMaxH * 0.44f).coerceIn(96.dp, 220.dp) else (stageMaxH * 0.32f).coerceIn(130.dp, 260.dp))
                 ) {
-                    val count = drawnBars.size.coerceAtLeast(1)
+                    // Read frameTick inside draw scope so only Canvas redraws at 60/120 Hz (zero recomposition).
+                    frameTick.longValue
+                    val count = barsState.size.coerceAtLeast(1)
                     val gapRatio = VisualizerShaper.GAP_RATIO
                     val barW = size.width / (count + (count - 1) * gapRatio)
                     val gap = barW * gapRatio
                     val step = barW + gap
                     val radius = CornerRadius(barW * 0.22f, barW * 0.22f)
                     for (i in 0 until count) {
-                        val v = drawnBars[i].coerceIn(0f, 1f)
+                        val v = barsState[i].coerceIn(0f, 1f)
                         val h = maxOf(size.height * VisualizerShaper.MIN_BAR, v * size.height)
                         val x = i * step
                         val y = size.height - h

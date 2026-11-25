@@ -56,4 +56,30 @@ class SpectrumProcessorTest {
         assertEquals(fFloat, proc.configure(fFloat))
         assertEquals(androidx.media3.common.audio.AudioProcessor.AudioFormat.NOT_SET, proc.configure(exotic))
     }
+
+    @Test
+    fun timelinePreservesBurstFramesAndAlignsToOutputLatencyWithInterpolation() {
+        val timeline = SpectrumTimeline()
+        // Simulate ExoPlayer feeding a 300 ms refill burst in <1 ms wall time (15 frames, 20 ms apart).
+        for (i in 1..15) {
+            val bands = FloatArray(SpectrumBus.BANDS) { i / 15f }
+            timeline.push(streamMs = i * 20.0, wallMs = 1_000L, bands = bands)
+        }
+        val out = FloatArray(SpectrumBus.BANDS)
+        // With 240 ms target output lag, initial sample at wall=1000ms reads streamMs = 300 - 240 = 60 ms (frame 3 = 3/15 = 0.2).
+        assertTrue(timeline.sample(nowWallMs = 1_000L, isPlaying = true, speed = 1f, targetLagMs = 240.0, out = out))
+        assertEquals(3f / 15f, out[0], 0.01f)
+
+        // 10 ms later (halfway between frame 3 at 60 ms and frame 4 at 80 ms) interpolates smoothly to 3.5/15.
+        assertTrue(timeline.sample(nowWallMs = 1_010L, isPlaying = true, speed = 1f, targetLagMs = 240.0, out = out))
+        assertEquals(3.5f / 15f, out[0], 0.01f)
+
+        // 20 ms after start -> frame 4 (80 ms = 4/15). Burst frames were NOT discarded!
+        assertTrue(timeline.sample(nowWallMs = 1_020L, isPlaying = true, speed = 1f, targetLagMs = 240.0, out = out))
+        assertEquals(4f / 15f, out[0], 0.01f)
+
+        // Pausing immediately returns silence (all zeros).
+        assertEquals(false, timeline.sample(nowWallMs = 1_030L, isPlaying = false, speed = 1f, targetLagMs = 240.0, out = out))
+        assertTrue(out.all { it == 0f })
+    }
 }

@@ -76,6 +76,8 @@ class PlaybackService : MediaLibraryService() {
         store.setProgress(id, if (duration != null && player.currentPosition > duration - 30_000) com.local.hive.mobile.data.PodcastStorePort.FINISHED else player.currentPosition)
     }
     private var screenOff: android.content.BroadcastReceiver? = null
+    private var displayListener: android.hardware.display.DisplayManager.DisplayListener? = null
+    private var lastDefaultDisplayState: Int = android.view.Display.STATE_UNKNOWN
     private val replayGainTags = MutableStateFlow<Map<String, String>>(emptyMap())
     private val queueTick = MutableStateFlow(0)
     /** When music last played or stopped playing; paused this long ago or less, the lock player still shows. */
@@ -294,15 +296,53 @@ class PlaybackService : MediaLibraryService() {
                 addAction(Intent.ACTION_SCREEN_ON)
                 addAction(Intent.ACTION_USER_PRESENT)
             },
-            androidx.core.content.ContextCompat.RECEIVER_NOT_EXPORTED,
+            androidx.core.content.ContextCompat.RECEIVER_EXPORTED,
         )
+        // Android Auto holds active virtual displays, so global PowerManager wakefulness stays Awake
+        // all drive and Android suppresses ACTION_SCREEN_ON / ACTION_SCREEN_OFF even when the phone's
+        // own screen sleeps and wakes for taps or notifications. Listen to Display 0 directly.
+        val displayManager = getSystemService(DISPLAY_SERVICE) as? android.hardware.display.DisplayManager
+        lastDefaultDisplayState = displayManager?.getDisplay(android.view.Display.DEFAULT_DISPLAY)?.state ?: android.view.Display.STATE_UNKNOWN
+        if (displayManager != null) {
+            val dl = object : android.hardware.display.DisplayManager.DisplayListener {
+                override fun onDisplayAdded(displayId: Int) {}
+                override fun onDisplayRemoved(displayId: Int) {}
+                override fun onDisplayChanged(displayId: Int) {
+                    if (displayId != android.view.Display.DEFAULT_DISPLAY) return
+                    val state = displayManager.getDisplay(android.view.Display.DEFAULT_DISPLAY)?.state ?: return
+                    val prev = lastDefaultDisplayState
+                    lastDefaultDisplayState = state
+                    when (LockPlayerPolicy.classifyDisplayTransition(prev, state)) {
+                        DisplayTransition.TURNED_OFF -> {
+                            bridge.lockScreenChanged()
+                            CarLog.lockPlayer(this@PlaybackService, "display 0 OFF (${LockPlayerPolicy.displayStateName(prev)}->${LockPlayerPolicy.displayStateName(state)}); wants=${wantsLockPlayer(player)}")
+                        }
+                        DisplayTransition.TURNED_ON -> {
+                            val km = getSystemService(KEYGUARD_SERVICE) as KeyguardManager
+                            val locked = km.isKeyguardLocked || km.inKeyguardRestrictedInputMode() || km.isDeviceLocked
+                            CarLog.lockPlayer(this@PlaybackService, "display 0 ON (${LockPlayerPolicy.displayStateName(prev)}->on); wants=${wantsLockPlayer(player)}, locked=$locked")
+                            if (wantsLockPlayer(player) && locked) bridge.showLockPlayerIfWanted(this@PlaybackService, bridge.wasRecentlyForeground())
+                        }
+                        DisplayTransition.NONE -> Unit
+                    }
+                }
+            }
+            displayListener = dl
+            displayManager.registerDisplayListener(dl, android.os.Handler(android.os.Looper.getMainLooper()))
+        }
         player.addListener(object : Player.Listener {
             override fun onIsPlayingChanged(isPlaying: Boolean) {
                 lastPlayingAt = System.currentTimeMillis()
                 val km = getSystemService(KEYGUARD_SERVICE) as android.app.KeyguardManager
                 val locked = km.isKeyguardLocked || km.inKeyguardRestrictedInputMode() || km.isDeviceLocked
+                val displayOn = LockPlayerPolicy.isDefaultDisplayOn(this@PlaybackService)
                 if (isPlaying) {
-                    CarLog.lockPlayer(this@PlaybackService, "play started; locked=$locked")
+                    CarLog.lockPlayer(this@PlaybackService, "play started; locked=$locked, displayOn=$displayOn")
+                    // If the screen is already ON and locked (e.g. phone woke on car plug-in or a notification
+                    // right before Android Auto resumed playback), show the lock player without ever waking a sleeping screen.
+                    if (LockPlayerPolicy.shouldShowOnPlayStart(true, locked, displayOn)) {
+                        bridge.showLockPlayerIfWanted(this@PlaybackService, bridge.wasRecentlyForeground())
+                    }
                 }
             }
         })
@@ -754,6 +794,10 @@ class PlaybackService : MediaLibraryService() {
     override fun onDestroy() {
         OpenSongs.ids = emptySet()
         screenOff?.let { runCatching { unregisterReceiver(it) } }
+        displayListener?.let { dl ->
+            runCatching { (getSystemService(DISPLAY_SERVICE) as? android.hardware.display.DisplayManager)?.unregisterDisplayListener(dl) }
+        }
+        displayListener = null
         session?.player?.let { memory.saveCursor(it) }
         if (::crossfader.isInitialized) crossfader.close()
         scope.cancel()

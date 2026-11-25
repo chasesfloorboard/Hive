@@ -82,7 +82,6 @@ object CarLog {
         if (audioManager != null) {
             val devices = audioManager.getDevices(android.media.AudioManager.GET_DEVICES_OUTPUTS)
             for (d in devices) {
-                if (d.type == android.media.AudioDeviceInfo.TYPE_BUS) return true
                 if (d.type == android.media.AudioDeviceInfo.TYPE_BLUETOOTH_A2DP) {
                     val name = d.productName?.toString().orEmpty().lowercase()
                     if (name.contains("car") || name.contains("sync") || name.contains("uconnect") ||
@@ -119,8 +118,11 @@ object CarLog {
     /** What Hive's lock-screen player did, and the phone's lock state then, for when it doesn't stay up. */
     fun lockPlayer(context: Context, event: String) {
         val km = context.getSystemService(android.app.KeyguardManager::class.java)
-        val pm = context.getSystemService(android.os.PowerManager::class.java)
-        write(context, "lock player $event (keyguard ${if (km?.isKeyguardLocked == true) "up" else "down"}, ${if (km?.isDeviceLocked == true) "locked" else "unlocked"}, screen ${if (pm?.isInteractive == true) "on" else "off"}, car ${inCar(context)})")
+        val dm = context.getSystemService(Context.DISPLAY_SERVICE) as? android.hardware.display.DisplayManager
+        val d0State = dm?.getDisplay(android.view.Display.DEFAULT_DISPLAY)?.state
+        val screenLabel = if (d0State != null) LockPlayerPolicy.displayStateName(d0State)
+            else if (context.getSystemService(android.os.PowerManager::class.java)?.isInteractive == true) "on" else "off"
+        write(context, "lock player $event (keyguard ${if (km?.isKeyguardLocked == true) "up" else "down"}, ${if (km?.isDeviceLocked == true) "locked" else "unlocked"}, screen $screenLabel, car ${inCar(context)})")
     }
 
     fun note(context: Context, caller: String, event: String) {

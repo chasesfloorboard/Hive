@@ -161,15 +161,19 @@ fun PluginHostScreen(
         wv.evaluateJavascript("window.__hiveDeliver && window.__hiveDeliver('settings', $payload);", null)
     }
 
-    // Push 30 fps spectrum frames when the plugin declared `spectrum.read`.
-    LaunchedEffect(webViewRef, pageReady, hasSpectrum, now.isPlaying) {
+    // Push latency-aligned 60 fps spectrum frames when the plugin declared `spectrum.read`.
+    LaunchedEffect(webViewRef, pageReady, hasSpectrum, now.isPlaying, now.speed) {
         val wv = webViewRef ?: return@LaunchedEffect
         if (!pageReady || !hasSpectrum) return@LaunchedEffect
+        val scratch = FloatArray(SpectrumBus.BANDS)
+        var routeCheckTick = 0
+        var latencyMs = SpectrumBus.estimatedOutputLatencyMs(context)
         while (true) {
-            val levels = if (now.isPlaying) SpectrumBus.levels.value else FloatArray(SpectrumBus.BANDS)
+            if (routeCheckTick++ % 120 == 0) latencyMs = SpectrumBus.estimatedOutputLatencyMs(context)
+            val levels = SpectrumBus.sampleNow(now.isPlaying, now.speed, latencyMs, scratch)
             val arr = levels.joinToString(",", "[", "]") { "%.3f".format(java.util.Locale.US, it) }
             wv.evaluateJavascript("window.__hiveDeliver && window.__hiveDeliver('spectrum', $arr);", null)
-            delay(33L)
+            delay(16L)
         }
     }
 
