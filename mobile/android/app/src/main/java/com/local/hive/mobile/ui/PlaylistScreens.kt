@@ -11,6 +11,7 @@ import androidx.compose.foundation.background
 import androidx.compose.foundation.border
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.gestures.detectDragGestures
+import androidx.compose.foundation.gestures.scrollBy
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
@@ -298,6 +299,33 @@ fun PlaylistScreen(vm: MainViewModel, id: Long, actions: TrackActions, bottomPad
     var rowPx by remember { mutableIntStateOf(1) }
     val rowHeight = 64.dp
     rowPx = with(LocalDensity.current) { rowHeight.roundToPx() }
+    val dragEdgeZone = with(LocalDensity.current) { 88.dp.toPx() }
+    val dragMaxStep = with(LocalDensity.current) { 18.dp.toPx() }
+    LaunchedEffect(dragKey) {
+        val k = dragKey ?: return@LaunchedEffect
+        while (dragKey == k) {
+            androidx.compose.runtime.withFrameNanos { }
+            val info = list.layoutInfo
+            val vh = (info.viewportEndOffset - info.viewportStartOffset).toFloat()
+            val me = info.visibleItemsInfo.firstOrNull { it.key == k } ?: continue
+            val centerY = me.offset + dragOffset + me.size / 2f
+            val delta = DragAutoScroll.computeEdgeScrollDelta(centerY, vh, dragEdgeZone, dragMaxStep, list.canScrollBackward, list.canScrollForward)
+            if (delta != 0f) {
+                val scrolled = list.scrollBy(delta)
+                dragOffset += scrolled
+                val pos = order.indexOf(k)
+                val target = when {
+                    dragOffset > rowPx / 2f && pos in 0 until order.lastIndex -> pos + 1
+                    dragOffset < -rowPx / 2f && pos > 0 -> pos - 1
+                    else -> null
+                }
+                if (target != null) {
+                    order = order.toMutableList().apply { add(target, removeAt(pos)) }
+                    dragOffset -= (target - pos) * rowPx
+                }
+            }
+        }
+    }
     fun finishEditing() { editing = false; if (order != keys) vm.setPlaylistEntries(id, order.mapNotNull { byKey[it]?.entry }) }
     val shown = if (editing) order.mapNotNull { byKey[it] } else rows
     // Searching the playlist: its songs by title, artist or album. A found song plays the playlist from there.

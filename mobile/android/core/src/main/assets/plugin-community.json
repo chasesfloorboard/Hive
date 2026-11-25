@@ -1,0 +1,45 @@
+{
+  "version": 1,
+  "tier": "community",
+  "warning": "Community plugins are uploaded by users and have NOT been audited by Hive. They run inside Hive's zero-network sandbox, but install at your own risk.",
+  "plugins": [
+    {
+      "id": "community.studio-clock",
+      "name": "Minimal Studio Clock",
+      "version": "1.0.0",
+      "author": "Hive Community",
+      "description": "A clean fullscreen studio clock paired with the currently playing song, album art, and theme accent. Starter example for community plugins.",
+      "icon": "◷",
+      "apiVersion": 2,
+      "verified": false,
+      "builtin": false,
+      "platforms": [
+        "desktop",
+        "mobile"
+      ],
+      "permissions": [
+        "player.read",
+        "ui.view",
+        "settings"
+      ],
+      "settings": [
+        {
+          "id": "showSeconds",
+          "type": "boolean",
+          "label": "Show seconds",
+          "description": "Display seconds on the clock.",
+          "default": true
+        },
+        {
+          "id": "hour24",
+          "type": "boolean",
+          "label": "24-hour format",
+          "description": "Use 24-hour time instead of AM/PM.",
+          "default": false
+        }
+      ],
+      "css": ".hsc{display:flex;align-items:center;justify-content:center;width:100%;height:100%;background:transparent;color:var(--text,#f5f5f7);font-family:inherit}.hsc-wrap{display:flex;flex-direction:column;align-items:center;gap:18px;text-align:center;padding:24px;max-width:640px;width:100%;box-sizing:border-box}.hsc-time{font-size:clamp(38px,11vw,128px);font-weight:700;letter-spacing:-0.03em;line-height:1;font-variant-numeric:tabular-nums;white-space:nowrap;color:var(--accent,#fff)}.hsc-date{font-size:15px;opacity:.68;letter-spacing:.04em;text-transform:uppercase}.hsc-track{display:flex;align-items:center;gap:14px;padding:12px 18px;border-radius:16px;background:rgba(255,255,255,.06);border:1px solid rgba(255,255,255,.09);max-width:100%}.hsc-art{width:46px;height:46px;border-radius:8px;object-fit:cover;flex:none;background:rgba(255,255,255,.08)}.hsc-meta{min-width:0;text-align:left}.hsc-title{font-size:15px;font-weight:600;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}.hsc-artist{font-size:13px;opacity:.7;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}.hsc-empty{display:none}",
+      "js": "return (async function (Hive) {\n  let settings = { showSeconds: true, hour24: false };\n  try { settings = Object.assign(settings, await Hive.settings.load()); } catch {}\n  const listeners = new Set();\n  Hive.settings.onChange(next => { settings = Object.assign(settings, next || {}); listeners.forEach(fn => fn()); });\n\n  function mount(host) {\n    host.classList.add('hsc');\n    host.innerHTML = '<div class=\"hsc-wrap\"><div class=\"hsc-time\">--:--</div><div class=\"hsc-date\"></div><div class=\"hsc-track hsc-empty\"><img class=\"hsc-art\" alt=\"\"><div class=\"hsc-meta\"><div class=\"hsc-title\"></div><div class=\"hsc-artist\"></div></div></div></div>';\n    const timeEl = host.querySelector('.hsc-time');\n    const dateEl = host.querySelector('.hsc-date');\n    const trackBox = host.querySelector('.hsc-track');\n    const artEl = host.querySelector('.hsc-art');\n    const titleEl = host.querySelector('.hsc-title');\n    const artistEl = host.querySelector('.hsc-artist');\n\n    function tick() {\n      const now = new Date();\n      const opts = { hour: '2-digit', minute: '2-digit', hour12: !settings.hour24 };\n      if (settings.showSeconds) opts.second = '2-digit';\n      timeEl.textContent = now.toLocaleTimeString([], opts);\n      dateEl.textContent = now.toLocaleDateString([], { weekday: 'long', month: 'long', day: 'numeric' });\n    }\n    function showTrack(track) {\n      if (!track || !track.title) { trackBox.classList.add('hsc-empty'); return; }\n      trackBox.classList.remove('hsc-empty');\n      titleEl.textContent = track.title || '';\n      artistEl.textContent = track.artist || '';\n      const cover = Hive.player.getCoverUrl(track);\n      if (cover) { artEl.src = cover; artEl.style.display = 'block'; } else { artEl.removeAttribute('src'); artEl.style.display = 'none'; }\n    }\n    artEl.onerror = () => { artEl.style.display = 'none'; };\n    tick();\n    const timer = setInterval(tick, 500);\n    listeners.add(tick);\n    const offTrack = Hive.events.on('track-change', showTrack);\n    showTrack(Hive.player.getCurrent());\n    return () => { clearInterval(timer); listeners.delete(tick); offTrack(); };\n  }\n\n  let cleanup = null;\n  Hive.ui.registerView({\n    id: 'clock',\n    title: 'Studio Clock',\n    description: 'Minimal studio clock with the playing song',\n    mount: (host) => { cleanup = mount(host); },\n    unmount: () => { if (cleanup) { cleanup(); cleanup = null; } }\n  });\n})(Hive);\n"
+    }
+  ]
+}

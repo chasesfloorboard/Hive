@@ -1,10 +1,11 @@
 package com.local.hive.mobile.ui
 
 import com.local.hive.mobile.HiveApp
+import com.local.hive.mobile.link.BackupArchiveVerifier
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.launch
 
-/** Phone backup and restore (a cloud copy, the PC's copy of this phone, or a picked file),
+/** Phone backup and restore (local verified copy, PC copy, cloud copy, or a picked file),
  *  lifted out of MainViewModel, which delegates the backup calls here. */
 class BackupVm(private val app: HiveApp, private val scope: CoroutineScope) {
     /** A backup a fresh install could restore (see PhoneBackup). */
@@ -13,6 +14,25 @@ class BackupVm(private val app: HiveApp, private val scope: CoroutineScope) {
     /** Where the backup copies are (Settings › Backup). */
     val backupStatus = app.phoneBackup.status
     fun refreshBackupStatus() = app.phoneBackup.refreshStatus()
+    fun backUpNow(onResult: (String) -> Unit) = scope.launch {
+        runCatching {
+            val conn = runCatching { app.sync.pcConnection() }.getOrNull()
+            when (val res = app.phoneBackup.saveNow(conn)) {
+                is BackupArchiveVerifier.Result.Verified ->
+                    "Verified backup saved (${res.entryCount} files · ${res.meta.trackCount} songs, ${res.meta.loveCount} favorites, ${res.meta.playlistCount} playlists)."
+                is BackupArchiveVerifier.Result.Invalid -> "Backup check warning: ${res.reason}"
+            }
+        }.onSuccess(onResult).onFailure { onResult("Backup failed: ${it.message ?: it.javaClass.simpleName}") }
+    }
+    fun verifyBackup(onResult: (String) -> Unit) = scope.launch {
+        runCatching {
+            when (val res = app.phoneBackup.verifyLatest()) {
+                is BackupArchiveVerifier.Result.Verified ->
+                    "Integrity OK: ${res.entryCount} files matched SHA-256 & SQLite check (${res.meta.trackCount} songs, ${res.meta.loveCount} favorites, ${res.meta.playlistCount} playlists)."
+                is BackupArchiveVerifier.Result.Invalid -> "Integrity issue: ${res.reason}"
+            }
+        }.onSuccess(onResult).onFailure { onResult("Verify failed: ${it.message ?: it.javaClass.simpleName}") }
+    }
     fun backUpToCloud(uri: android.net.Uri) = scope.launch { app.phoneBackup.setCloud(uri) }
     fun stopCloudBackup() = app.phoneBackup.stopCloud()
     /** The newest backup the PC keeps from another install, shown as the restore offer; false when there's none. */

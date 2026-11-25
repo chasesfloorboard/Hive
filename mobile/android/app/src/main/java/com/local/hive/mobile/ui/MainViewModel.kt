@@ -135,6 +135,8 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
     val nowPlaying = app.player.state
     /** The live playing position (see PlayerConnection.position). */
     val position = app.player.position
+    /** Installed plugins & per-plugin settings (Visualizer, verified & community plugins). */
+    val plugins = app.plugins
 
     /** Colours of what is playing now, for the aura and the accent. */
     @OptIn(kotlinx.coroutines.ExperimentalCoroutinesApi::class)
@@ -258,6 +260,8 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
     fun declineRestore() = backupVm.declineRestore()
     val backupStatus = backupVm.backupStatus
     fun refreshBackupStatus() = backupVm.refreshBackupStatus()
+    fun backUpNow(onResult: (String) -> Unit) = backupVm.backUpNow(onResult)
+    fun verifyBackup(onResult: (String) -> Unit) = backupVm.verifyBackup(onResult)
     fun backUpToCloud(uri: android.net.Uri) = backupVm.backUpToCloud(uri)
     fun stopCloudBackup() = backupVm.stopCloudBackup()
     fun offerPcBackup(onResult: (String?) -> Unit) = backupVm.offerPcBackup(onResult)
@@ -267,9 +271,11 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
     // ---- love ----
 
     fun setLoved(tracks: List<Track>, loved: Boolean) = viewModelScope.launch { app.sync.setLoved(tracks.map { it.id }, loved) }
-    /** Album Favorites stay on this phone and never change the songs' Love. */
+    /** Album Favorites stay on this phone and never change the songs' Love. Unliking forgets its saved spot so re-liking moves it to the top. */
     fun toggleFavoriteAlbum(album: String, artist: String) = viewModelScope.launch {
         val key = FavoriteAlbum.keyOf(album, artist)
+        val tileKey = "album:$key"
+        forgetFavoriteOrderKeys(tileKey)
         // Taken out by hand, an album stays out even though it has liked songs.
         if (key in favoriteAlbumKeys.value) dao.deleteFavoriteAlbum(key)
         else dao.upsertFavoriteAlbum(FavoriteAlbum(key, album, artist, System.currentTimeMillis()))
@@ -278,9 +284,11 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
     /** Liked artists and playlists, the most recently liked first (see the Favorites page). */
     val favoriteItems: StateFlow<List<com.local.hive.mobile.data.FavoriteItem>> = dao.favoriteItems().state(emptyList())
     val favoriteItemKeys: StateFlow<Set<String>> = dao.favoriteItems().map { list -> list.mapTo(HashSet()) { it.key } }.state(emptySet())
-    /** Likes [item] (an artist or a playlist), or takes the like back. */
+    /** Likes [item] (an artist or a playlist), or takes the like back. Unliking forgets its saved position so re-liking moves it to the top. */
     fun toggleFavorite(item: com.local.hive.mobile.data.FavoriteItem) = viewModelScope.launch {
-        if (item.key in favoriteItemKeys.value) dao.deleteFavoriteItem(item.key) else dao.upsertFavoriteItem(item.copy(addedAt = System.currentTimeMillis()))
+        forgetFavoriteOrderKeys(item.key)
+        if (item.key in favoriteItemKeys.value) dao.deleteFavoriteItem(item.key)
+        else dao.upsertFavoriteItem(item.copy(addedAt = System.currentTimeMillis()))
     }
 
     /**
@@ -325,6 +333,12 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
 
     // ---- the Favorites page's own order ----
 
+    private val searchHistoryStore = com.local.hive.mobile.data.SearchHistoryStore(app)
+    val searchHistory: StateFlow<List<String>> = searchHistoryStore.history
+    fun recordSearch(query: String) = searchHistoryStore.record(query)
+    fun removeSearchHistory(query: String) = searchHistoryStore.remove(query)
+    fun clearSearchHistory() = searchHistoryStore.clear()
+
     private val favoriteOrderPrefs = app.getSharedPreferences("favorites-order", android.content.Context.MODE_PRIVATE)
     private val _favoriteOrder = MutableStateFlow(favoriteOrderPrefs.getString("keys", "").orEmpty().split('\n').filter { it.isNotBlank() })
     /** The squares' order as the user arranged them (keys); squares liked since then come first. */
@@ -332,6 +346,10 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
     fun setFavoriteOrder(keys: List<String>) {
         _favoriteOrder.value = keys
         favoriteOrderPrefs.edit().putString("keys", keys.joinToString("\n")).apply()
+    }
+    private fun forgetFavoriteOrderKeys(vararg keys: String) {
+        val next = com.local.hive.mobile.data.FavoriteOrderRules.forgetKeys(_favoriteOrder.value, *keys)
+        if (next !== _favoriteOrder.value) setFavoriteOrder(next)
     }
 
     /** Pictures chosen for playlists (see PlaylistImages). */
@@ -806,7 +824,14 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
     fun setSongSync(on: Boolean) {
         app.linkStore.songSync = on
         _songSyncOn.value = on
-        if (on) com.local.hive.mobile.link.SongSync.schedule(app) else com.local.hive.mobile.link.SongSync.cancel(app)
+        if (on) com.local.hive.mobile.link.SongSync.schedule(app, now = true) else com.local.hive.mobile.link.SongSync.cancel(app)
+    }
+    fun syncSongsNow() {
+        if (!app.linkStore.songSync) {
+            app.linkStore.songSync = true
+            _songSyncOn.value = true
+        }
+        com.local.hive.mobile.link.SongSync.schedule(app, now = true, allowMetered = true)
     }
 
     // ---- theme ----

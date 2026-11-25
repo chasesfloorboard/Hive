@@ -52,10 +52,28 @@ import kotlinx.coroutines.launch
 
 /** Settings laid out as in Hive: titled sections with a description, label-and-hint rows with the control on the right. */
 @Composable
-fun SettingsScreen(vm: MainViewModel, bottomPadding: Dp, onOpenEqualiser: () -> Unit, onBack: () -> Unit) {
+fun SettingsScreen(
+    vm: MainViewModel,
+    bottomPadding: Dp,
+    onOpenEqualiser: () -> Unit,
+    initialPage: String? = null,
+    onOpenPlugin: (String) -> Unit = {},
+    onToast: (String) -> Unit = {},
+    onBack: () -> Unit,
+) {
     // Everyday settings on the first page; the rest a tap away, each on its own page.
-    var page by androidx.compose.runtime.saveable.rememberSaveable { mutableStateOf(SettingsPage.Main) }
-    androidx.activity.compose.BackHandler(enabled = page != SettingsPage.Main) { page = SettingsPage.Main }
+    val startPage = remember(initialPage) {
+        when (initialPage?.lowercase()) {
+            "plugins" -> SettingsPage.Plugins
+            "gallery", "themes" -> SettingsPage.Gallery
+            "pc" -> SettingsPage.Pc
+            else -> SettingsPage.Main
+        }
+    }
+    var page by androidx.compose.runtime.saveable.rememberSaveable(initialPage) { mutableStateOf(startPage) }
+    androidx.activity.compose.BackHandler(enabled = page != SettingsPage.Main) {
+        if (initialPage != null && page == startPage) onBack() else page = SettingsPage.Main
+    }
     // The first page keeps its place while a page opened from it is shown.
     val mainList = androidx.compose.foundation.lazy.rememberLazyListState()
     androidx.compose.animation.AnimatedContent(
@@ -69,7 +87,7 @@ fun SettingsScreen(vm: MainViewModel, bottomPadding: Dp, onOpenEqualiser: () -> 
         },
         label = "settingsPage",
     ) { shown ->
-        SettingsPageFrame(if (shown == SettingsPage.Main) "Settings" else shown.title, bottomPadding, if (shown == SettingsPage.Main) mainList else androidx.compose.foundation.lazy.rememberLazyListState(), onBack = { if (shown == SettingsPage.Main) onBack() else page = SettingsPage.Main }) {
+        SettingsPageFrame(if (shown == SettingsPage.Main) "Settings" else shown.title, bottomPadding, if (shown == SettingsPage.Main) mainList else androidx.compose.foundation.lazy.rememberLazyListState(), onBack = { if (shown == SettingsPage.Main || (initialPage != null && shown == startPage)) onBack() else page = SettingsPage.Main }) {
             when (shown) {
                 SettingsPage.Main -> mainSettings(vm, onOpenEqualiser) { page = it }
                 SettingsPage.Pc -> item {
@@ -85,12 +103,13 @@ fun SettingsScreen(vm: MainViewModel, bottomPadding: Dp, onOpenEqualiser: () -> 
                 SettingsPage.Advanced -> advancedSettings(vm) { page = SettingsPage.Developer }
                 SettingsPage.Developer -> developerSettings(vm) { page = SettingsPage.Advanced }
                 SettingsPage.Gallery -> themeGallery(vm)
+                SettingsPage.Plugins -> pluginsAndStorePage(vm, onOpenPlugin, onToast)
             }
         }
     }
 }
 
-private enum class SettingsPage(val title: String) { Main("Settings"), Pc("Hive on your PC"), Backup("Backup"), Accounts("Accounts"), Advanced("Advanced"), Developer("Developer"), Gallery("Browse themes") }
+private enum class SettingsPage(val title: String) { Main("Settings"), Pc("Hive on your PC"), Backup("Backup"), Accounts("Accounts"), Advanced("Advanced"), Developer("Developer"), Gallery("Browse themes"), Plugins("Plugins & Store") }
 
 @Composable
 private fun SettingsPageFrame(title: String, bottomPadding: Dp, state: androidx.compose.foundation.lazy.LazyListState, onBack: () -> Unit, content: androidx.compose.foundation.lazy.LazyListScope.() -> Unit) {
@@ -113,6 +132,7 @@ private fun androidx.compose.foundation.lazy.LazyListScope.mainSettings(vm: Main
             var sharing by remember { mutableStateOf(false) }
             NavRow("Share your theme", "Put the theme you're using in the gallery") { sharing = true }
             if (sharing) ShareThemeDialog(vm) { sharing = false }
+            NavRow("Plugins & Store", "Visualizer, verified plugins & community uploads") { open(SettingsPage.Plugins) }
             val photos by vm.artistPhotos.collectAsStateWithLifecycle()
             SettingRow("Artist pictures", if (photos) "Photos from the internet" else "Their album covers") {
                 HiveToggle(listOf("Covers", "Photos"), if (photos) 1 else 0, { vm.setArtistPhotos(it == 1) })
@@ -399,9 +419,11 @@ private fun SongSyncRows(vm: MainViewModel) {
     if (!on) {
         // What would be copied is worked out as soon as this shows, so the start button is right there.
         androidx.compose.runtime.LaunchedEffect(Unit) { if (s.plan == null && !s.checking) vm.checkSongs() }
-        SettingRow("Song sync", "Copies songs that are only on the phone or only on the PC to the other, on Wi-Fi. Songs you delete aren't copied back.") {
-            if (s.checking || plan == null) HiveButton(if (s.checking) "Checking…" else "Check", enabled = !s.checking) { vm.checkSongs() }
-            else if (plan.toPhone > 0 || plan.toPc > 0) HiveButton("Start song sync", primary = true) { vm.setSongSync(true) }
+        val offHint = if (s.checking) "Checking your music folders…"
+            else "Copies songs that are only on the phone or only on the PC to the other, on Wi-Fi. Songs you delete aren't copied back."
+        SettingRow("Song sync", offHint) {
+            if (s.checking || plan == null) HiveButton(if (s.checking) "Checking…" else if (s.message != null) "Retry" else "Check", enabled = !s.checking) { vm.checkSongs() }
+            else HiveButton(if (plan.toPhone > 0 || plan.toPc > 0) "Start song sync" else "Turn on", primary = true) { vm.setSongSync(true) }
         }
         if (planText != null) {
             Text(planText, style = HiveText.small, color = c.textDim, modifier = Modifier.padding(horizontal = 18.dp, vertical = 4.dp))
@@ -413,7 +435,12 @@ private fun SongSyncRows(vm: MainViewModel) {
             planText != null -> planText + if ((plan?.toPhone ?: 0) + (plan?.toPc ?: 0) > 0) "\nWaiting for Wi-Fi" else ""
             else -> "On. Songs copy over Wi-Fi when Hive is open on the PC."
         } + if (s.failed > 0) "\n${s.failed} couldn't be copied; they'll be tried again." else ""
-        SettingRow("Song sync", status) { HiveButton("Turn off") { vm.setSongSync(false) } }
+        SettingRow("Song sync", status) {
+            Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                if (!s.running && !s.checking) HiveButton("Sync now", primary = true) { vm.syncSongsNow() }
+                HiveButton("Turn off") { vm.setSongSync(false) }
+            }
+        }
     }
     s.message?.let { Text(it, style = HiveText.small, color = Color(0xFFFF8A8A), modifier = Modifier.padding(horizontal = 18.dp, vertical = 4.dp)) }
     s.manyWaiting?.let { n -> SettingRow("$n files to copy", "That's more than usual. If you just added or changed a lot of music, go ahead.") { HiveButton("Copy them anyway", primary = true) { vm.songSyncOps.allowManyOnce() } } }
@@ -748,15 +775,49 @@ private fun whenSaved(at: Long): String {
 
 @Composable
 private fun BackupRows(vm: MainViewModel) {
-    val context = androidx.compose.ui.platform.LocalContext.current
     val b by vm.backupStatus.collectAsStateWithLifecycle()
+    val link by vm.link.collectAsStateWithLifecycle()
     var error by remember { mutableStateOf<String?>(null) }
+    var statusMsg by remember { mutableStateOf<String?>(null) }
+    var busy by remember { mutableStateOf(false) }
     androidx.lifecycle.compose.LifecycleResumeEffect(Unit) { vm.refreshBackupStatus(); onPauseOrDispose {} }
     val create = androidx.activity.compose.rememberLauncherForActivityResult(androidx.activity.result.contract.ActivityResultContracts.CreateDocument("application/zip")) { uri ->
         uri?.let(vm::backUpToCloud)
     }
     val open = androidx.activity.compose.rememberLauncherForActivityResult(OpenBackupFile()) { uri ->
         uri?.let { vm.offerBackupFile(it) { e -> error = e } }
+    }
+    val countsLine = buildList {
+        if (b.trackCount > 0) add("${b.trackCount} songs")
+        if (b.loveCount > 0) add("${b.loveCount} favorites")
+        if (b.playlistCount > 0) add("${b.playlistCount} playlists")
+        if (b.pluginCount > 0) add("${b.pluginCount} plugins")
+    }.joinToString(" · ")
+    val phoneSub = buildString {
+        append(if (b.phoneAt > 0) "Saved ${whenSaved(b.phoneAt)}" else "Not backed up yet")
+        if (b.verifiedAt > 0) append(" · SHA-256 verified")
+        if (countsLine.isNotBlank()) append("\n$countsLine")
+    }
+    SettingRow("Phone backup", phoneSub) {
+        HiveButton(if (busy) "Working…" else "Back up now", primary = true, enabled = !busy) {
+            busy = true; error = null
+            vm.backUpNow { msg -> busy = false; statusMsg = msg }
+        }
+    }
+    SettingRow(
+        "Verify integrity",
+        statusMsg ?: b.lastVerifyMessage ?: "Checks ZIP CRC-32, SQLite database health, and SHA-256 checksums.",
+    ) {
+        HiveButton("Verify", enabled = !busy) {
+            busy = true; error = null
+            vm.verifyBackup { msg -> busy = false; statusMsg = msg }
+        }
+    }
+    if (link.paired) {
+        SettingRow(
+            "PC copy",
+            if (b.pcAt > 0) "Synced ${whenSaved(b.pcAt)} (keeps daily history & shrink protection)" else "Will sync to your paired PC automatically",
+        ) {}
     }
     SettingRow(
         "Back up to the cloud",
@@ -769,7 +830,7 @@ private fun BackupRows(vm: MainViewModel) {
         if (b.cloudName == null) HiveButton("Choose") { runCatching { create.launch("Hive Mobile backup.zip") } }
         else HiveButton("Stop") { vm.stopCloudBackup() }
     }
-    SettingRow("Restore from the cloud", "Pick your backup in Google Drive or another storage app") {
+    SettingRow("Restore from a file", "Pick your backup in Google Drive or another storage app") {
         HiveButton("Restore") { error = null; runCatching { open.launch(arrayOf("application/zip", "application/octet-stream", "*/*")) } }
     }
     error?.let { Text(it, style = HiveText.small, color = Color(0xFFFF8A8A), modifier = Modifier.padding(horizontal = 18.dp, vertical = 4.dp)) }

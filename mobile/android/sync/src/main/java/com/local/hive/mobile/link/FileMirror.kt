@@ -11,7 +11,14 @@ import kotlinx.serialization.builtins.serializer
 import kotlinx.serialization.json.Json
 import java.io.File
 import java.io.IOException
+import kotlinx.coroutines.async
+import kotlinx.coroutines.coroutineScope
 import kotlinx.coroutines.sync.withLock
+import java.nio.file.FileVisitResult
+import java.nio.file.Files
+import java.nio.file.Path
+import java.nio.file.SimpleFileVisitor
+import java.nio.file.attribute.BasicFileAttributes
 
 /** A file's size and modified time (ms), as one side last saw it. */
 @Serializable data class FileStat(val size: Long, val modified: Long) {
@@ -126,11 +133,13 @@ object MirrorPlanner {
             val phoneOnly = phone.entries.filter { it.key.lowercase().let { k -> k !in pcKeys && loose(k) } }
             val phoneBySize = phoneOnly.groupBy { ext(it.key) to it.value.size }
             val pcBySize = pcOnly.values.flatten().groupBy { ext(it.key) to it.value.size }
+            val movedTargets = HashSet<String>()
             for ((path, stat) in phoneOnly) {
                 val twin = pcOnly[name(path) to stat.size]?.removeFirstOrNull()
-                    ?: (ext(path) to stat.size).let { key -> pcBySize[key]?.singleOrNull()?.takeIf { phoneBySize[key]?.size == 1 && it.key !in moves.values } }
+                    ?: (ext(path) to stat.size).let { key -> pcBySize[key]?.singleOrNull()?.takeIf { phoneBySize[key]?.size == 1 && it.key !in movedTargets } }
                     ?: continue
                 pcOnly[name(twin.key) to twin.value.size]?.remove(twin)
+                movedTargets += twin.key
                 moves[phoneRaw.getValue(path.lowercase())] = twin.key
             }
             if (moves.isNotEmpty()) phone = phone.entries.associate { (p, st) -> (moves[phoneRaw[p.lowercase()]] ?: p) to st }
@@ -277,11 +286,15 @@ class FileMirror(private val context: Context) {
 
     /** Works out the plan without copying anything. */
     suspend fun check(client: HiveLinkClient, conn: HiveLinkClient.Connection, left: Set<String>): MirrorPlan = kotlinx.coroutines.withContext(kotlinx.coroutines.Dispatchers.IO) {
-        // Walking the whole music folder and reading the ledger: never on the screen's thread.
+        // Walking the whole music folder and fetching the PC file list run in parallel off the UI thread.
         val root = root() ?: throw IOException("Hive can't reach this phone's music folder (allow All files access).")
-        val listed = client.files(conn)
-        val pc = listed.files.associate { it.p to FileStat(it.s, it.m) }
-        MirrorPlanner.plan(phoneFiles(root), pc, ledger(), left, listed.unreadable)
+        coroutineScope {
+            val listedDeferred = async { client.files(conn) }
+            val phoneDeferred = async { phoneFiles(root) }
+            val listed = listedDeferred.await()
+            val pc = listed.files.associate { it.p to FileStat(it.s, it.m) }
+            MirrorPlanner.plan(phoneDeferred.await(), pc, ledger(), left, listed.unreadable)
+        }
     }
 
     /**
@@ -294,10 +307,12 @@ class FileMirror(private val context: Context) {
         allowMany: Boolean = false,
         /** Hive takes tags without the file: songs whose audio is the same on both sides go by their tags. */
         tagSync: Boolean = false,
+        /** Called once the run's plan is ready (avoids a second full folder walk / PC list fetch). */
+        onPlan: (MirrorPlan) -> Unit = {},
     ): Result {
         val root = root() ?: throw IOException("Hive can't reach this phone's music folder (allow All files access).")
         // One run at a time (the ledger is held in memory for the run and saved by it).
-        return gate.withLock { runLocked(client, conn, left, budget, root, step, allowMany, tagSync) }
+        return gate.withLock { runLocked(client, conn, left, budget, root, step, allowMany, tagSync, onPlan) }
     }
 
     private suspend fun runLocked(
@@ -305,12 +320,19 @@ class FileMirror(private val context: Context) {
         step: suspend (label: String, work: suspend () -> Unit) -> Boolean,
         allowMany: Boolean,
         tagSync: Boolean,
+        onPlan: (MirrorPlan) -> Unit,
     ): Result {
         pruneDeleted(root)
-        val listed = client.files(conn)
+        val (listed, phoneNow) = kotlinx.coroutines.withContext(kotlinx.coroutines.Dispatchers.IO) {
+            coroutineScope {
+                val listedDeferred = async { client.files(conn) }
+                val phoneDeferred = async { phoneFiles(root) }
+                listedDeferred.await() to phoneDeferred.await()
+            }
+        }
         val pc = listed.files.associate { it.p to FileStat(it.s, it.m) }
-        val phoneNow = phoneFiles(root)
         val plan = MirrorPlanner.plan(phoneNow, pc, ledger(), left, listed.unreadable)
+        onPlan(plan)
         // Songs the player has open now (playing, just played, next up) are left as they are this
         // run: replaced or moved under the player, it skips or stops. They're done on a later run.
         val open = openPaths()
@@ -427,6 +449,9 @@ class FileMirror(private val context: Context) {
         saveLedger(ledger)
         // Android's music library learns of the new and changed files.
         scan.chunked(500).forEach { MediaScannerConnection.scanFile(context, it.toTypedArray(), null, null) }
+        // Any mirrored file may carry updated embedded artwork from the PC: clear cached picture copies
+        // so CoverViewer and Now Playing re-read the new artwork on next open.
+        if (scan.isNotEmpty()) runCatching { File(context.cacheDir, "pictures").deleteRecursively() }
         return Result(plan, copied, failed)
     }
 
@@ -563,14 +588,40 @@ class FileMirror(private val context: Context) {
     }
 
     companion object {
-        /** Every file in the phone's music folder, by its own paths. Unfinished downloads and Android's own files are left out. */
+        /**
+         * Every file in the phone's music folder, by its own paths. Unfinished downloads and Android's
+         * own files are left out. Uses NIO walkFileTree so each entry takes a single lstat() instead of
+         * four separate File.isDirectory/isFile/length/lastModified FUSE roundtrips on Android storage.
+         */
         fun phoneFiles(root: File): Map<String, FileStat> {
             val out = HashMap<String, FileStat>()
-            val base = root.path.length + 1
-            root.walkTopDown()
-                .onEnter { dir -> dir == root || dir.name !in SKIPPED_FOLDERS }
-                .filter { it.isFile && !SKIPPED_FILE.containsMatchIn(it.name).also { skipped -> if (skipped) dropStalePart(it) } }
-                .forEach { f -> out[f.path.substring(base)] = FileStat(f.length(), f.lastModified()) }
+            if (!root.isDirectory) return out
+            val rootPath = root.toPath()
+            val now = System.currentTimeMillis()
+            Files.walkFileTree(rootPath, object : SimpleFileVisitor<Path>() {
+                override fun preVisitDirectory(dir: Path, attrs: BasicFileAttributes): FileVisitResult {
+                    if (dir != rootPath) {
+                        val name = dir.fileName?.toString().orEmpty()
+                        if (name in SKIPPED_FOLDERS) return FileVisitResult.SKIP_SUBTREE
+                    }
+                    return FileVisitResult.CONTINUE
+                }
+
+                override fun visitFile(file: Path, attrs: BasicFileAttributes): FileVisitResult {
+                    if (!attrs.isRegularFile) return FileVisitResult.CONTINUE
+                    val name = file.fileName?.toString().orEmpty()
+                    val mtime = attrs.lastModifiedTime().toMillis()
+                    if (SKIPPED_FILE.containsMatchIn(name)) {
+                        dropStalePart(file.toFile(), mtime, now)
+                        return FileVisitResult.CONTINUE
+                    }
+                    val rel = rootPath.relativize(file).toString().replace(File.separatorChar, '/')
+                    out[rel] = FileStat(attrs.size(), mtime)
+                    return FileVisitResult.CONTINUE
+                }
+
+                override fun visitFileFailed(file: Path, exc: IOException): FileVisitResult = FileVisitResult.CONTINUE
+            })
             return out
         }
 
@@ -590,8 +641,8 @@ class FileMirror(private val context: Context) {
          * A half-copied file left by a copy that never finished (the app stopped mid-copy): gone once
          * it's had no writes for a minute (a live copy gives up after 30 s without data).
          */
-        private fun dropStalePart(f: java.io.File) {
-            if (f.name.endsWith(".hive-mirror-part", ignoreCase = true) && System.currentTimeMillis() - f.lastModified() > 60_000L) f.delete()
+        private fun dropStalePart(f: java.io.File, modified: Long = f.lastModified(), now: Long = System.currentTimeMillis()) {
+            if (f.name.endsWith(".hive-mirror-part", ignoreCase = true) && now - modified > 60_000L) f.delete()
         }
 
         private val SKIPPED_FILE = Regex("""^\.(pending|trashed)-|\.hive-mirror-part$|\.hive-edit$|\.hivelink-part$|\.beehive-[a-z-]+-[0-9a-f]{6,}(\.[a-z0-9]+)?$""", RegexOption.IGNORE_CASE)

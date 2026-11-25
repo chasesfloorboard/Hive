@@ -79,7 +79,7 @@ class TagEditVm(private val app: HiveApp, private val scope: CoroutineScope) {
 
     /** Hive's kept copy of each album's cover becomes [cover] at once (Android's own readers lag behind the file). */
     private fun refreshCovers(albumIds: List<Long>, cover: ByteArray) {
-        val dir = java.io.File(app.cacheDir, "embedded-art").apply { mkdirs() }
+        val dir = java.io.File(app.cacheDir, "embedded-art-v2").apply { mkdirs() }
         albumIds.forEach { runCatching { java.io.File(dir, "$it.img").writeBytes(cover) } }
         // Only pictures in memory: the disk cache holds online covers, which didn't change.
         coil3.SingletonImageLoader.get(app).memoryCache?.clear()

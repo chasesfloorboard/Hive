@@ -474,7 +474,7 @@ class HiveLinkClient(private val http: OkHttpClient = defaultHttp()) {
 
     /** Every file in Hive's library folder. */
     suspend fun files(conn: Connection): FilesResponse =
-        withContext(Dispatchers.IO) { transferHttp.newCall(authed(conn, "/api/files").build()).execute().use { json.decodeFromString(FilesResponse.serializer(), read(it)) } }
+        withContext(Dispatchers.IO) { http.newCall(authed(conn, "/api/files").build()).execute().use { json.decodeFromString(FilesResponse.serializer(), read(it)) } }
 
     /** Writes one of Hive's files to [out]; returns its modified time on the PC. */
     suspend fun downloadFile(conn: Connection, rel: String, out: java.io.OutputStream): Long = withContext(Dispatchers.IO) {
@@ -517,13 +517,19 @@ class HiveLinkClient(private val http: OkHttpClient = defaultHttp()) {
     }
 
     /** Sends a copy of Hive Mobile as it is (see AppSnapshot) to keep on the PC. */
-    suspend fun sendPhoneBackup(conn: Connection, file: java.io.File, savedAt: Long, versionName: String) = withContext(Dispatchers.IO) {
+    suspend fun sendPhoneBackup(conn: Connection, file: java.io.File, savedAt: Long, versionName: String, sha256: String = "") = withContext(Dispatchers.IO) {
         val body = object : okhttp3.RequestBody() {
             override fun contentType() = "application/zip".toMediaType()
             override fun contentLength() = file.length()
             override fun writeTo(sink: okio.BufferedSink) { file.inputStream().use { input -> sink.outputStream().let { input.copyTo(it, 1 shl 16); it.flush() } } }
         }
-        transferHttp.newCall(authed(conn, "/api/phone-backup").header("X-Saved-At", savedAt.toString()).header("X-Version-Name", versionName).put(body).build()).execute().use { read(it) }
+        val req = authed(conn, "/api/phone-backup")
+            .header("X-Saved-At", savedAt.toString())
+            .header("X-Version-Name", versionName)
+            .apply { if (sha256.isNotBlank()) header("X-Backup-Sha256", sha256) }
+            .put(body)
+            .build()
+        transferHttp.newCall(req).execute().use { read(it) }
     }
 
     /** The copies of Hive Mobile the PC keeps, newest first; none from a Hive that keeps none. */

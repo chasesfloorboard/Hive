@@ -158,7 +158,7 @@ class PlaybackService : MediaLibraryService() {
         // sink gets its own cap instance; the equaliser then configures at the capped rate.
         fun renderers(processor: EqualiserProcessor) = object : DefaultRenderersFactory(this) {
             override fun buildAudioSink(context: Context, enableFloatOutput: Boolean, enableAudioTrackPlaybackParams: Boolean): AudioSink =
-                DefaultAudioSink.Builder(context).setAudioProcessors(arrayOf<AudioProcessor>(DeviceRateCap(), processor)).build()
+                DefaultAudioSink.Builder(context).setAudioProcessors(arrayOf<AudioProcessor>(DeviceRateCap(), processor, SpectrumProcessor())).build()
         }
         val musicAttributes = AudioAttributes.Builder().setUsage(C.USAGE_MEDIA).setContentType(C.AUDIO_CONTENT_TYPE_MUSIC).build()
         // Plays once a second is buffered (not ExoPlayer's 2.5): streamed songs start sooner, files are instant anyway.

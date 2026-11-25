@@ -9,3 +9,9 @@
 -dontwarn javax.imageio.**
 -dontwarn javax.swing.**
 -dontwarn java.beans.**
+
+# Keep sandboxed plugin WebView JS bridge methods in minified release builds.
+-keepattributes *Annotation*
+-keepclassmembers class * {
+    @android.webkit.JavascriptInterface <methods>;
+}

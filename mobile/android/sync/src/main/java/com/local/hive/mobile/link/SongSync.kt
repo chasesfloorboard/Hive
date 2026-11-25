@@ -460,13 +460,23 @@ class SongSync(
 
     /** The file mirror's run: everything changed on one side copied to the other. */
     private suspend fun runMirror(conn: HiveLinkClient.Connection, info: InfoResponse, onProgress: suspend (SongSyncState) -> Unit): Boolean {
-        val plan = mirrorPlan(conn, info, note = false)
-        _state.update { it.copy(total = plan.toPhone.size + plan.toPc.size) }
         val free = MusicHome.freeBytes(context, (MusicHome.find(context) ?: MusicHome.Place(MediaStore.VOLUME_EXTERNAL_PRIMARY, "Hive")).volume)
         val budget = if (free == null) Long.MAX_VALUE else free - 2L * 1024 * 1024 * 1024
         val allowMany = context.getSharedPreferences("file-mirror", Context.MODE_PRIVATE).getBoolean("allowManyOnce", false)
         val result = try {
-            mirror.run(client, conn, leftFiles(), budget, { label, work -> step(label, onProgress, work) }, allowMany, tagSync = info.fileTags)
+            mirror.run(
+                client, conn, leftFiles(), budget, { label, work -> step(label, onProgress, work) }, allowMany, tagSync = info.fileTags,
+                onPlan = { plan ->
+                    android.util.Log.i("HiveSongSync", "file mirror: ${plan.toPhone.size} to the phone, ${plan.toPc.size} to the PC, ${plan.goneFromPc.size} gone from the PC, ${plan.goneFromPhone.size} gone from the phone, ${plan.moves.size} moved, ${plan.agreed.size} the same" +
+                        (plan.toPc + plan.toPhone + plan.goneFromPc + plan.goneFromPhone).take(10).joinToString("") { "\n  $it" })
+                    _state.update {
+                        it.copy(
+                            plan = PlanSummary(plan.toPhone.size, plan.bytesToPhone, plan.toPc.size, plan.bytesToPc, true),
+                            total = plan.toPhone.size + plan.toPc.size,
+                        )
+                    }
+                },
+            )
         } catch (e: FileMirror.TooManyCopies) {
             // Said once and left waiting: not tried again and again (each try listing everything) until the user answers.
             _state.update { it.copy(message = e.message, manyWaiting = e.copies) }
@@ -474,11 +484,11 @@ class SongSync(
         }
         if (allowMany) context.getSharedPreferences("file-mirror", Context.MODE_PRIVATE).edit().remove("allowManyOnce").apply()
         _state.update { it.copy(manyWaiting = null) }
-        if (plan.bytesToPhone > budget) _state.update { it.copy(message = "This phone is nearly full, so some files from the PC weren't copied.") }
+        if (result.plan.bytesToPhone > budget) _state.update { it.copy(message = "This phone is nearly full, so some files from the PC weren't copied.") }
         // New files on the PC are new songs there: matching again (once Hive has scanned them)
         // lets their Love and plays line up.
         if (result.plan.toPc.isNotEmpty()) sync.matchAgainNextSync()
-        applyDeletions(conn, plan)
+        applyDeletions(conn, result.plan)
         return true
     }
 
@@ -635,15 +645,17 @@ class SongSync(
         /**
          * Runs song sync in the background on Wi-Fi (or any unmetered network). [now]: Hive was
          * just reached, or new songs are waiting, so a sync held back after an earlier failure
-         * starts over at once (one that's running is left to finish).
+         * starts over at once (one that's running is left to finish). [allowMetered]: only for
+         * an explicit user "Sync now" tap so metered Wi-Fi / hotspot / USB doesn't sit idle.
          */
-        fun schedule(context: Context, now: Boolean = false) {
+        fun schedule(context: Context, now: Boolean = false, allowMetered: Boolean = false) {
             val wm = WorkManager.getInstance(context)
             val running = runCatching { wm.getWorkInfosForUniqueWork(WORK).get().any { it.state == androidx.work.WorkInfo.State.RUNNING } }.getOrDefault(true)
+            val net = if (allowMetered) NetworkType.CONNECTED else NetworkType.UNMETERED
             wm.enqueueUniqueWork(
                 WORK, if (now && !running) ExistingWorkPolicy.REPLACE else ExistingWorkPolicy.KEEP,
                 OneTimeWorkRequestBuilder<SongSyncWorker>()
-                    .setConstraints(Constraints.Builder().setRequiredNetworkType(NetworkType.UNMETERED).build())
+                    .setConstraints(Constraints.Builder().setRequiredNetworkType(net).build())
                     .build(),
             )
         }

@@ -112,6 +112,7 @@ abstract class HiveAppBase : Application(), coil3.SingletonImageLoader.Factory, 
     val playlistImages by lazy { com.local.hive.mobile.data.PlaylistImages(this) }
     val albumCovers by lazy { com.local.hive.mobile.data.AlbumCovers(this) }
     override val equaliser by lazy { com.local.hive.mobile.playback.EqualiserStore(this) }
+    val plugins by lazy { com.local.hive.mobile.data.PluginStore(this) }
     // The compliant discovery tier — keyless, shared by both editions (see :core/discovery).
     val radio by lazy { com.local.hive.mobile.discovery.RadioDirectory() }
     val radioStore by lazy { com.local.hive.mobile.discovery.RadioStore(this) }
@@ -122,7 +123,27 @@ abstract class HiveAppBase : Application(), coil3.SingletonImageLoader.Factory, 
     override val linkStore by lazy { LinkStore(this) }
     /** Hive Mobile updates from Hive on the PC (see AppUpdater). Clean never runs it (see [selfUpdates]). */
     val appUpdater: com.local.hive.mobile.link.AppUpdater by lazy { com.local.hive.mobile.link.AppUpdater(this, HiveLinkClient(), scope, connection = { sync.pcConnection() }, beta = { linkStore.betaUpdates }) }
-    override val sync: SyncEngine by lazy { SyncEngine(database.dao(), linkStore, HiveLinkClient(), scope, afterSync = { scope.launch { keepSafeOnPc() }; scope.launch { sync.pcConnection()?.let { pcEdits.send(it); if (selfUpdates) appUpdater.check(it) } }; scope.launch { runCatching { pcLibrary.refreshPlaylists() }; syncPlaylists() }; if (linkStore.songSync) com.local.hive.mobile.link.SongSync.schedule(this, now = true) }, onThemes = { themes.setPcThemes(it.themes, it.current) }, streamLoves = streamLoves, saveListening = { com.local.hive.mobile.data.ListeningFile.save(this, it) }) }
+    override val sync: SyncEngine by lazy {
+        SyncEngine(
+            database.dao(), linkStore, HiveLinkClient(), scope,
+            afterSync = {
+                scope.launch { keepSafeOnPc() }
+                scope.launch { runCatching { pcLibrary.refreshPlaylists() }; syncPlaylists() }
+                // Send queued phone tag/cover edits to the PC BEFORE starting file-mirror SongSync,
+                // so FileMirror's bothChanged resolution never overwrites a phone edit with an older PC copy.
+                scope.launch {
+                    sync.pcConnection()?.let {
+                        pcEdits.send(it)
+                        if (selfUpdates) appUpdater.check(it)
+                    }
+                    if (linkStore.songSync) com.local.hive.mobile.link.SongSync.schedule(this@HiveAppBase, now = true)
+                }
+            },
+            onThemes = { themes.setPcThemes(it.themes, it.current) },
+            streamLoves = streamLoves,
+            saveListening = { com.local.hive.mobile.data.ListeningFile.save(this, it) },
+        )
+    }
     override val streamLoves by lazy { com.local.hive.mobile.link.StreamLoves(this) }
     /** Tag and cover edits on their way to Hive on the PC. */
     val pcEdits by lazy { com.local.hive.mobile.link.PcEdits(this, database.dao(), linkStore, pcTracks = { pcLibrary.tracks.value }) }

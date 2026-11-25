@@ -256,8 +256,26 @@ private fun HiveContent(vm: MainViewModel, openPlayerInitially: Boolean) {
                                 nav.navigate(if ("open.spotify.com" in url || url.startsWith("spotify:")) "spotify/c?url=${enc(url.removePrefix("spotify:"))}" else appleRoute(url))
                             }
                         }
-                        page("settings") { SettingsScreen(vm, bottomPadding, onOpenEqualiser = { nav.navigate("equaliser") }) { nav.popBackStack() } }
+                        page(
+                            "settings?page={page}",
+                            listOf(navArgument("page") { type = NavType.StringType; nullable = true; defaultValue = null }),
+                        ) { entry ->
+                            SettingsScreen(
+                                vm, bottomPadding,
+                                onOpenEqualiser = { nav.navigate("equaliser") },
+                                initialPage = entry.arguments?.getString("page"),
+                                onOpenPlugin = { id ->
+                                    if (id == com.local.hive.mobile.data.PluginGallery.MONSTERCAT_ID) nav.navigate("visualizer") { launchSingleTop = true }
+                                    else nav.navigate("plugin/${enc(id)}") { launchSingleTop = true }
+                                },
+                                onToast = { toast = it },
+                            ) { nav.popBackStack() }
+                        }
                         page("equaliser") { EqualiserScreen(vm, bottomPadding) { nav.popBackStack() } }
+                        page("visualizer") { VisualizerScreen(vm) { nav.popBackStack() } }
+                        page("plugin/{id}") { entry ->
+                            PluginHostScreen(vm, entry.arguments?.getString("id").orEmpty(), onToast = { toast = it }) { nav.popBackStack() }
+                        }
                         page(ALBUM, listOf(navArgument("id") { type = NavType.LongType })) { entry ->
                             val id = entry.arguments?.getLong("id") ?: 0L
                             val albums by vm.albums.collectAsStateWithLifecycle()
@@ -332,8 +350,8 @@ private fun HiveContent(vm: MainViewModel, openPlayerInitially: Boolean) {
                     }
                 },
                 overlay = {
-                    // The Yearly Wrap is a full-screen story: the mini player steps away while it's open.
-                    if (hasMedia && route?.destination?.route != "wrap") {
+                    // The Yearly Wrap, full-screen Visualizer, and full-screen plugins have their own chrome: step the mini playbar aside.
+                    if (hasMedia && route?.destination?.route != "wrap" && route?.destination?.route != "visualizer" && route?.destination?.route != "plugin/{id}") {
                         PlayerSheet(
                             vm,
                             open = playerOpen,
@@ -346,6 +364,7 @@ private fun HiveContent(vm: MainViewModel, openPlayerInitially: Boolean) {
                             onAddToPlaylist = { addTarget = listOf(it) },
                             onOpenLyrics = { lyricsOpen = true },
                             onOpenEqualiser = { playerOpen = false; nav.navigate("equaliser") { launchSingleTop = true } },
+                            onOpenVisualizer = { playerOpen = false; nav.navigate("visualizer") { launchSingleTop = true } },
                             onOpenSettings = { playerOpen = false; nav.navigate("settings") { launchSingleTop = true } },
                             onToast = { toast = it },
                         )

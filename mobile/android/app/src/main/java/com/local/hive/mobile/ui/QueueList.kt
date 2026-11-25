@@ -103,6 +103,33 @@ fun QueueList(
     var dragOffset by remember { mutableFloatStateOf(0f) }
     val rowPx = with(LocalDensity.current) { QueueRow.toPx() }
     val listState = rememberLazyListState()
+    val edgeZone = with(LocalDensity.current) { 88.dp.toPx() }
+    val maxStep = with(LocalDensity.current) { 18.dp.toPx() }
+    LaunchedEffect(dragKey) {
+        val k = dragKey ?: return@LaunchedEffect
+        while (dragKey == k) {
+            androidx.compose.runtime.withFrameNanos { }
+            val info = listState.layoutInfo
+            val vh = (info.viewportEndOffset - info.viewportStartOffset).toFloat()
+            val me = info.visibleItemsInfo.firstOrNull { it.key == k } ?: continue
+            val centerY = me.offset + dragOffset + me.size / 2f
+            val delta = DragAutoScroll.computeEdgeScrollDelta(centerY, vh, edgeZone, maxStep, listState.canScrollBackward, listState.canScrollForward)
+            if (delta != 0f) {
+                val scrolled = listState.scrollBy(delta)
+                dragOffset += scrolled
+                val pos = order.indexOf(k)
+                val target = when {
+                    dragOffset > rowPx / 2f && pos in 0 until order.lastIndex -> pos + 1
+                    dragOffset < -rowPx / 2f && pos > 0 -> pos - 1
+                    else -> null
+                }
+                if (target != null) {
+                    order = order.toMutableList().apply { add(target, removeAt(pos)) }
+                    dragOffset -= (target - pos) * rowPx
+                }
+            }
+        }
+    }
     // The playing song is brought into view when the song changes, not when the queue is edited:
     // taking a song out leaves the list where it was.
     LaunchedEffect(now.mediaId) { if (now.queueIndex in tracks.indices) listState.scrollToItem((now.queueIndex - 2).coerceAtLeast(0)) }

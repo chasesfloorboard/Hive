@@ -1,11 +1,18 @@
 package com.local.hive.mobile.ui
 
 import androidx.compose.foundation.gestures.detectDragGesturesAfterLongPress
+import androidx.compose.foundation.gestures.scrollBy
 import androidx.compose.foundation.border
 import androidx.compose.ui.input.pointer.pointerInput
 import androidx.compose.ui.graphics.graphicsLayer
 import androidx.compose.ui.zIndex
 import androidx.compose.foundation.combinedClickable
+import androidx.compose.ui.layout.onSizeChanged
+import androidx.compose.ui.platform.LocalDensity
+import androidx.compose.ui.unit.IntOffset
+import androidx.compose.foundation.layout.offset
+import androidx.compose.runtime.withFrameNanos
+import kotlin.math.roundToInt
 import kotlinx.coroutines.flow.first
 import kotlinx.coroutines.flow.map
 import com.local.hive.mobile.ui.theme.HiveIcons
@@ -143,17 +150,21 @@ internal fun FavoritesTab(vm: MainViewModel, nav: HomeNavigation, actions: Track
     val q = LibrarySort.words(query)
     val tracks by rememberComputed(allTracks, allTracks, q) { if (q.isEmpty()) allTracks else allTracks.filter { LibrarySort.matches("${it.title} ${it.artist} ${it.album}", q) } }
     val streams by rememberComputed(allStreams, allStreams, q) { if (q.isEmpty()) allStreams else allStreams.filter { (s, _) -> LibrarySort.matches("${s.title} ${s.artist} ${s.album}", q) } }
-    // Every album and artist with a song you've favorited, the most favorited first.
-    val likedAlbums by rememberComputed(emptyList<LikedGroup>(), allTracks, q) {
-        allTracks.groupBy { it.albumId }.map { (id, songs) -> LikedGroup(songs.first().album, songs.first().displayAlbumArtist, id, songs.size) }
+    // Every album and artist with a song you've favorited, the most favorited first (newest-liked tie-break).
+    val likedAlbums by rememberComputed(emptyList<LikedGroup>(), allTracks, favoritedAt, q) {
+        allTracks.groupBy { it.albumId }.map { (id, songs) ->
+            LikedGroup(songs.first().album, songs.first().displayAlbumArtist, id, songs.size, songs.maxOfOrNull { favoritedAt[it.id] ?: 0L } ?: 0L)
+        }
             .filter { q.isEmpty() || LibrarySort.matches("${it.name} ${it.artist}", q) }
-            .sortedWith(compareByDescending<LikedGroup> { it.liked }.thenBy { it.name.lowercase() })
+            .sortedWith(compareByDescending<LikedGroup> { it.liked }.thenByDescending { it.latestLovedAt }.thenBy { it.name.lowercase() })
     }
-    val likedArtists by rememberComputed(emptyList<LikedGroup>(), allTracks, q) {
+    val likedArtists by rememberComputed(emptyList<LikedGroup>(), allTracks, favoritedAt, q) {
         allTracks.filter { it.artist.isNotBlank() && it.artist != "<unknown>" }.groupBy { it.artist.trim().lowercase() }
-            .map { (_, songs) -> LikedGroup(songs.first().artist.trim(), "", songs.groupingBy { it.albumId }.eachCount().maxBy { it.value }.key, songs.size) }
+            .map { (_, songs) ->
+                LikedGroup(songs.first().artist.trim(), "", songs.groupingBy { it.albumId }.eachCount().maxBy { it.value }.key, songs.size, songs.maxOfOrNull { favoritedAt[it.id] ?: 0L } ?: 0L)
+            }
             .filter { q.isEmpty() || LibrarySort.matches(it.name, q) }
-            .sortedWith(compareByDescending<LikedGroup> { it.liked }.thenBy { it.name.lowercase() })
+            .sortedWith(compareByDescending<LikedGroup> { it.liked }.thenByDescending { it.latestLovedAt }.thenBy { it.name.lowercase() })
     }
     // A new setting name, so everyone starts on the Favorites page itself.
     var view by rememberSetting("view.favorites.v2", FavoriteView.Home)
@@ -215,7 +226,7 @@ internal fun FavoritesTab(vm: MainViewModel, nav: HomeNavigation, actions: Track
 }
 
 /** An album or artist with songs you've favorited: [liked] of them. [albumId] is the album, or the artist's most liked album (for a picture). */
-private data class LikedGroup(val name: String, val artist: String, val albumId: Long, val liked: Int)
+private data class LikedGroup(val name: String, val artist: String, val albumId: Long, val liked: Int, val latestLovedAt: Long = 0L)
 
 /** "♥ 3 · Artist": how many songs are favorited, then the rest. */
 private fun likedLine(liked: Int, rest: String = "") = listOf("♥ ${countOf(liked, "song")}", rest).filter { it.isNotBlank() }.joinToString(" · ")
@@ -237,88 +248,187 @@ private fun LikedArtistRow(vm: MainViewModel, a: LikedGroup, onClick: () -> Unit
 @Composable
 private fun FavoritesHome(vm: MainViewModel, nav: HomeNavigation, tracks: List<Track>, streams: List<Pair<StreamTrack, Long>>, tiles: List<FavoriteTile>, favoritesImage: String?, bottom: Dp, searching: Boolean) {
     val c = Hive.colors
+    val density = LocalDensity.current
     val selection = LocalSelection.current
     val scope = androidx.compose.runtime.rememberCoroutineScope()
     val haptics = androidx.compose.ui.platform.LocalHapticFeedback.current
     val perfectIds by vm.perfectAlbumIds.collectAsStateWithLifecycle()
     val grid = androidx.compose.foundation.lazy.grid.rememberLazyGridState()
-    // The squares in the order the user arranged them; ones liked since then come first, newest first.
+    // The squares in the order the user arranged them; newly liked or re-liked ones jump straight to the top.
     val order by vm.favoriteOrder.collectAsStateWithLifecycle()
     val arranged = remember(tiles, order) {
-        val at = order.withIndex().associate { it.value to it.index }
-        val (known, fresh) = tiles.partition { it.key in at }
-        fresh + known.sortedBy { at[it.key] }
+        com.local.hive.mobile.data.FavoriteOrderRules.arrange(tiles, order, { it.key }, { it.addedAt })
     }
     // What the grid shows: the arranged order, or the order mid-drag.
     val shown = remember { androidx.compose.runtime.mutableStateListOf<FavoriteTile>() }
     var dragging by remember { mutableStateOf<String?>(null) }
-    var dragOffset by remember { mutableStateOf(androidx.compose.ui.geometry.Offset.Zero) }
+    var pointerPos by remember { mutableStateOf(androidx.compose.ui.geometry.Offset.Zero) }
+    var grabOffset by remember { mutableStateOf(androidx.compose.ui.geometry.Offset.Zero) }
+    var draggedSize by remember { mutableStateOf(androidx.compose.ui.unit.IntSize.Zero) }
+    var viewportHeightPx by remember { mutableStateOf(0f) }
+    var lastSwapMs by remember { mutableStateOf(0L) }
     LaunchedEffect(arranged) { if (dragging == null) { shown.clear(); shown.addAll(arranged) } }
     fun groupKey(t: FavoriteTile) = "fav:" + t.key
     fun kindOf(t: FavoriteTile) = when (t.kind) { "album", "artist" -> t.kind; else -> "playlist" }
     fun pick(t: FavoriteTile) { val sel = selection ?: return; scope.launch { sel.toggleGroup(groupKey(t), kindOf(t), vm.tracksForTile(t)) } }
-    androidx.compose.foundation.lazy.grid.LazyVerticalGrid(
-        androidx.compose.foundation.lazy.grid.GridCells.Fixed(2),
-        Modifier.fillMaxSize(),
-        state = grid,
-        contentPadding = PaddingValues(start = 16.dp, end = 16.dp, top = 6.dp, bottom = bottom + 12.dp),
-        horizontalArrangement = Arrangement.spacedBy(14.dp),
-        verticalArrangement = Arrangement.spacedBy(16.dp),
-    ) {
-        if (!searching) item(key = "favorites") {
-            val covers: List<Any> = favoritesImage?.let { listOf(it) } ?: mosaicCovers(tracks) + streams.mapNotNull { it.first.artworkUrl.ifBlank { null } }.distinct().take(MOSAIC)
-            // Hold: the Favorites menu (play, shuffle, play next, add to queue…), as holding its card on Playlists does.
-            FavoriteSquare(AutoPlaylist.Favorites.title, covers, round = false, icon = Icons.Rounded.Favorite,
-                onLongClick = if (tracks.isEmpty()) null else ({ haptics.performHapticFeedback(androidx.compose.ui.hapticfeedback.HapticFeedbackType.LongPress); nav.collection(AutoDjRequest(AutoPlaylist.Favorites.title) { tracks }) })) {
-                nav.openPlaylist(AutoPlaylist.Favorites)
-            }
+
+    fun trySwapAtPointer(throttleMs: Long = 0L) {
+        val key = dragging ?: return
+        val nowMs = System.currentTimeMillis()
+        if (throttleMs > 0L && nowMs - lastSwapMs < throttleMs) return
+        val visible = grid.layoutInfo.visibleItemsInfo.map { item ->
+            DragAutoScroll.VisibleSlot(
+                key = item.key,
+                left = item.offset.x.toFloat(),
+                top = item.offset.y.toFloat(),
+                right = (item.offset.x + item.size.width).toFloat(),
+                bottom = (item.offset.y + item.size.height).toFloat(),
+            )
         }
-        gridItems(shown, key = { it.key }) { t ->
-            val isDragged = dragging == t.key
-            val picked = selection?.hasGroup(groupKey(t)) == true
-            Box(
-                Modifier
-                    .then(if (isDragged) Modifier.zIndex(1f).graphicsLayer { translationX = dragOffset.x; translationY = dragOffset.y; scaleX = 1.05f; scaleY = 1.05f } else Modifier.animateItem())
-                    // Hold: pick it, and (not while searching) drag it to a new place; release keeps the order.
-                    .pointerInput(t.key, searching) {
-                        detectDragGesturesAfterLongPress(
-                            onDragStart = {
-                                haptics.performHapticFeedback(androidx.compose.ui.hapticfeedback.HapticFeedbackType.LongPress)
-                                if (selection?.hasGroup(groupKey(t)) != true) pick(t)
-                                if (!searching) { dragging = t.key; dragOffset = androidx.compose.ui.geometry.Offset.Zero }
-                            },
-                            onDrag = { change, amount ->
-                                if (dragging != t.key) return@detectDragGesturesAfterLongPress
-                                change.consume()
-                                dragOffset += amount
-                                val visible = grid.layoutInfo.visibleItemsInfo
-                                val me = visible.firstOrNull { it.key == t.key } ?: return@detectDragGesturesAfterLongPress
-                                val centre = androidx.compose.ui.geometry.Offset(me.offset.x + dragOffset.x + me.size.width / 2f, me.offset.y + dragOffset.y + me.size.height / 2f)
-                                val over = visible.firstOrNull { it.key != t.key && it.key != "favorites" &&
-                                    centre.x >= it.offset.x && centre.x < it.offset.x + it.size.width && centre.y >= it.offset.y && centre.y < it.offset.y + it.size.height }
-                                    ?: return@detectDragGesturesAfterLongPress
-                                val from = shown.indexOfFirst { it.key == t.key }
-                                val to = shown.indexOfFirst { it.key == over.key }
-                                if (from < 0 || to < 0) return@detectDragGesturesAfterLongPress
-                                shown.add(to, shown.removeAt(from))
-                                // The square takes the other's place: keep it under the finger.
-                                dragOffset += androidx.compose.ui.geometry.Offset((me.offset.x - over.offset.x).toFloat(), (me.offset.y - over.offset.y).toFloat())
-                                haptics.performHapticFeedback(androidx.compose.ui.hapticfeedback.HapticFeedbackType.TextHandleMove)
-                            },
-                            onDragEnd = { if (dragging == t.key) { dragging = null; dragOffset = androidx.compose.ui.geometry.Offset.Zero; vm.setFavoriteOrder(shown.map { it.key }) } },
-                            onDragCancel = { if (dragging == t.key) { dragging = null; dragOffset = androidx.compose.ui.geometry.Offset.Zero; vm.setFavoriteOrder(shown.map { it.key }) } },
-                        )
-                    },
-            ) {
-                FavoriteSquare(t.title, listOfNotNull(t.art), round = false, icon = when (t.kind) { "artist" -> Icons.Rounded.Person; "album" -> Icons.Rounded.LibraryMusic; else -> Icons.AutoMirrored.Rounded.QueueMusic }, picked = picked,
-                    perfect = t.kind == "album" && t.route.removePrefix("album/").toLongOrNull()?.let { it in perfectIds } == true) {
-                    // While picking, a tap picks or un-picks; otherwise it opens.
-                    if (selection?.active == true) pick(t) else nav.open(t.route)
+        val targetKey = DragAutoScroll.findSwapTargetKey(
+            draggedKey = key,
+            pinnedKey = "favorites",
+            centerX = pointerPos.x,
+            centerY = pointerPos.y,
+            visible = visible,
+        ) ?: return
+        val from = shown.indexOfFirst { it.key == key }
+        val to = shown.indexOfFirst { it.key == targetKey }
+        if (from < 0 || to < 0 || from == to) return
+        shown.add(to, shown.removeAt(from))
+        lastSwapMs = nowMs
+        haptics.performHapticFeedback(androidx.compose.ui.hapticfeedback.HapticFeedbackType.TextHandleMove)
+    }
+
+    // Smooth auto-scroll when dragging an album/artist/playlist near the top or bottom edge of the screen.
+    val edgeZonePx = with(density) { 104.dp.toPx() }
+    val maxScrollStepPx = with(density) { 24.dp.toPx() }
+    LaunchedEffect(dragging) {
+        if (dragging == null) return@LaunchedEffect
+        while (dragging != null) {
+            withFrameNanos { }
+            val vh = viewportHeightPx
+            if (vh > 0f) {
+                val delta = DragAutoScroll.computeEdgeScrollDelta(
+                    pointerY = pointerPos.y,
+                    viewportHeight = vh,
+                    edgeZonePx = edgeZonePx,
+                    maxStepPx = maxScrollStepPx,
+                    canScrollBackward = grid.canScrollBackward,
+                    canScrollForward = grid.canScrollForward,
+                )
+                if (delta != 0f) {
+                    grid.scrollBy(delta)
+                    trySwapAtPointer(throttleMs = 90L)
                 }
             }
         }
-        if (tiles.isEmpty() && !searching) item(span = { androidx.compose.foundation.lazy.grid.GridItemSpan(2) }) {
-            Text("Tap ♥ on an album, an artist or any playlist and it shows here.", style = HiveText.small, color = c.textDim, modifier = Modifier.padding(top = 8.dp, start = 4.dp, end = 4.dp))
+    }
+
+    Box(
+        Modifier
+            .fillMaxSize()
+            .onSizeChanged { viewportHeightPx = it.height.toFloat() }
+    ) {
+        androidx.compose.foundation.lazy.grid.LazyVerticalGrid(
+            androidx.compose.foundation.lazy.grid.GridCells.Fixed(2),
+            Modifier
+                .fillMaxSize()
+                // Gesture lives on the grid container (not individual tiles) so auto-scrolling past the
+                // original screen never cancels the drag!
+                .pointerInput(searching) {
+                    if (searching) return@pointerInput
+                    detectDragGesturesAfterLongPress(
+                        onDragStart = { start ->
+                            val hit = grid.layoutInfo.visibleItemsInfo.firstOrNull { item ->
+                                item.key is String && item.key != "favorites" &&
+                                    start.x >= item.offset.x && start.x <= item.offset.x + item.size.width &&
+                                    start.y >= item.offset.y && start.y <= item.offset.y + item.size.height
+                            } ?: return@detectDragGesturesAfterLongPress
+                            val key = hit.key as String
+                            val tile = shown.firstOrNull { it.key == key } ?: return@detectDragGesturesAfterLongPress
+                            haptics.performHapticFeedback(androidx.compose.ui.hapticfeedback.HapticFeedbackType.LongPress)
+                            if (selection?.hasGroup(groupKey(tile)) != true) pick(tile)
+                            dragging = key
+                            pointerPos = start
+                            grabOffset = androidx.compose.ui.geometry.Offset(start.x - hit.offset.x, start.y - hit.offset.y)
+                            draggedSize = hit.size
+                        },
+                        onDrag = { change, amount ->
+                            if (dragging == null) return@detectDragGesturesAfterLongPress
+                            change.consume()
+                            pointerPos += amount
+                            trySwapAtPointer()
+                        },
+                        onDragEnd = {
+                            if (dragging != null) {
+                                dragging = null
+                                vm.setFavoriteOrder(shown.map { it.key })
+                            }
+                        },
+                        onDragCancel = {
+                            if (dragging != null) {
+                                dragging = null
+                                vm.setFavoriteOrder(shown.map { it.key })
+                            }
+                        },
+                    )
+                },
+            state = grid,
+            contentPadding = PaddingValues(start = 16.dp, end = 16.dp, top = 6.dp, bottom = bottom + 12.dp),
+            horizontalArrangement = Arrangement.spacedBy(14.dp),
+            verticalArrangement = Arrangement.spacedBy(16.dp),
+        ) {
+            if (!searching) item(key = "favorites") {
+                val covers: List<Any> = favoritesImage?.let { listOf(it) } ?: mosaicCovers(tracks) + streams.mapNotNull { it.first.artworkUrl.ifBlank { null } }.distinct().take(MOSAIC)
+                // Hold: the Favorites menu (play, shuffle, play next, add to queue…), as holding its card on Playlists does.
+                FavoriteSquare(AutoPlaylist.Favorites.title, covers, round = false, icon = Icons.Rounded.Favorite,
+                    onLongClick = if (tracks.isEmpty()) null else ({ haptics.performHapticFeedback(androidx.compose.ui.hapticfeedback.HapticFeedbackType.LongPress); nav.collection(AutoDjRequest(AutoPlaylist.Favorites.title) { tracks }) })) {
+                    nav.openPlaylist(AutoPlaylist.Favorites)
+                }
+            }
+            gridItems(shown, key = { it.key }) { t ->
+                val isDragged = dragging == t.key
+                val picked = selection?.hasGroup(groupKey(t)) == true
+                Box(
+                    Modifier
+                        .animateItem()
+                        .alpha(if (isDragged) 0f else 1f),
+                ) {
+                    FavoriteSquare(t.title, listOfNotNull(t.art), round = false, icon = when (t.kind) { "artist" -> Icons.Rounded.Person; "album" -> Icons.Rounded.LibraryMusic; else -> Icons.AutoMirrored.Rounded.QueueMusic }, picked = picked,
+                        perfect = t.kind == "album" && t.route.removePrefix("album/").toLongOrNull()?.let { it in perfectIds } == true) {
+                        // While picking, a tap picks or un-picks; otherwise it opens.
+                        if (selection?.active == true) pick(t) else nav.open(t.route)
+                    }
+                }
+            }
+            if (tiles.isEmpty() && !searching) item(span = { androidx.compose.foundation.lazy.grid.GridItemSpan(2) }) {
+                Text("Tap ♥ on an album, an artist or any playlist and it shows here.", style = HiveText.small, color = c.textDim, modifier = Modifier.padding(top = 8.dp, start = 4.dp, end = 4.dp))
+            }
+        }
+
+        // Floating dragged tile overlay: stays glued right under the finger even while the grid scrolls across rows.
+        val draggedTile = dragging?.let { k -> shown.firstOrNull { it.key == k } }
+        if (draggedTile != null && draggedSize.width > 0) {
+            val widthDp = with(density) { draggedSize.width.toDp() }
+            val xPx = (pointerPos.x - grabOffset.x).roundToInt()
+            val yPx = (pointerPos.y - grabOffset.y).roundToInt()
+            Box(
+                Modifier
+                    .offset { IntOffset(xPx, yPx) }
+                    .width(widthDp)
+                    .zIndex(10f)
+                    .graphicsLayer { scaleX = 1.06f; scaleY = 1.06f; alpha = 0.96f },
+            ) {
+                FavoriteSquare(
+                    draggedTile.title,
+                    listOfNotNull(draggedTile.art),
+                    round = false,
+                    icon = when (draggedTile.kind) { "artist" -> Icons.Rounded.Person; "album" -> Icons.Rounded.LibraryMusic; else -> Icons.AutoMirrored.Rounded.QueueMusic },
+                    picked = selection?.hasGroup(groupKey(draggedTile)) == true,
+                    perfect = draggedTile.kind == "album" && draggedTile.route.removePrefix("album/").toLongOrNull()?.let { it in perfectIds } == true,
+                ) {}
+            }
         }
     }
 }

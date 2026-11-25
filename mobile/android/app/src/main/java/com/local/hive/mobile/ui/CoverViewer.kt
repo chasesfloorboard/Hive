@@ -289,6 +289,7 @@ fun Modifier.auraGlow(radius: Dp, shape: Shape, color: Color): Modifier = drawBe
  */
 @Composable
 fun CoverViewer(vm: MainViewModel, tracks: List<Track>, fallback: Any?, name: String, onDismiss: () -> Unit) {
+    AllowLandscape(true)
     val editor = LocalEditor.current
     val scope = rememberCoroutineScope()
     val first = tracks.firstOrNull()
@@ -403,7 +404,7 @@ fun CoverViewer(vm: MainViewModel, tracks: List<Track>, fallback: Any?, name: St
     }
 
     Dialog(onDismiss, DialogProperties(usePlatformDefaultWidth = false, decorFitsSystemWindows = false)) {
-        Box(
+        BoxWithConstraints(
             Modifier
                 .fillMaxSize()
                 .graphicsLayer { alpha = appear }
@@ -413,6 +414,11 @@ fun CoverViewer(vm: MainViewModel, tracks: List<Track>, fallback: Any?, name: St
                     }
                 }
         ) {
+            val landscape = maxWidth > maxHeight
+            LaunchedEffect(landscape) {
+                scale = 1f
+                offset = Offset.Zero
+            }
             val bg = Hive.colors.bg
             val g = listOf(activePrimary, activeSecondary, activeSecondary, activePrimary, activeBgLight)
             androidx.compose.foundation.Canvas(Modifier.fillMaxSize()) {
@@ -434,11 +440,19 @@ fun CoverViewer(vm: MainViewModel, tracks: List<Track>, fallback: Any?, name: St
                 val bmp = bitmaps[page]
                 val pageAura = coverAuras[page]
                 val shadowColor = pageAura?.primary ?: activePrimary
-                Box(
+                val coverMod = if (landscape) {
+                    Modifier
+                        .fillMaxSize()
+                        .padding(horizontal = if (covers.size > 1) 76.dp else 28.dp)
+                        .padding(top = if (showUi) 52.dp else 12.dp, bottom = if (showUi) 72.dp else 12.dp)
+                } else {
                     Modifier
                         .fillMaxSize()
                         .padding(horizontal = 48.dp)
-                        .padding(top = 76.dp, bottom = 140.dp),
+                        .padding(top = 76.dp, bottom = 140.dp)
+                }
+                Box(
+                    coverMod,
                     contentAlignment = Alignment.Center
                 ) {
                     val aspect = if (bmp != null && bmp.height > 0) bmp.width.toFloat() / bmp.height.toFloat() else 1f
@@ -602,7 +616,7 @@ fun CoverViewer(vm: MainViewModel, tracks: List<Track>, fallback: Any?, name: St
                     Modifier
                         .fillMaxWidth()
                         .navigationBarsPadding()
-                        .padding(horizontal = 24.dp, vertical = 20.dp),
+                        .padding(horizontal = 24.dp, vertical = if (landscape) 10.dp else 20.dp),
                     horizontalAlignment = Alignment.CenterHorizontally
                 ) {
                     androidx.compose.animation.AnimatedVisibility(
@@ -612,64 +626,110 @@ fun CoverViewer(vm: MainViewModel, tracks: List<Track>, fallback: Any?, name: St
                     ) {
                         var last by remember { mutableStateOf("") }
                         saved?.let { last = it }
-                        Row(Modifier.padding(bottom = 14.dp).hiveGlass(HiveShape.pill, strength = 0.3f).padding(horizontal = 16.dp, vertical = 10.dp), verticalAlignment = Alignment.CenterVertically) {
+                        Row(Modifier.padding(bottom = if (landscape) 6.dp else 14.dp).hiveGlass(HiveShape.pill, strength = 0.3f).padding(horizontal = 16.dp, vertical = 8.dp), verticalAlignment = Alignment.CenterVertically) {
                             Icon(if (savedOk) Icons.Rounded.CheckCircle else Icons.Rounded.ErrorOutline, null, tint = if (savedOk) Hive.colors.accent else Hive.colors.text, modifier = Modifier.size(20.dp))
                             Spacer(Modifier.width(8.dp))
                             Text(last, style = HiveText.rowStrong, color = Hive.colors.text)
                         }
                     }
 
-                    // Caption (e.g. "Von dutch" or "The Life of Pablo"):
-                    currentCover?.caption?.takeIf { it.isNotBlank() }?.let { cap ->
-                        Text(
-                            text = cap,
-                            style = HiveText.rowStrong,
-                            color = Hive.colors.text,
-                            textAlign = androidx.compose.ui.text.style.TextAlign.Center,
-                            modifier = Modifier.padding(bottom = 8.dp)
-                        )
-                    }
-
-                    // Desktop-style discrete dots for multiple covers
-                    if (covers.size > 1) {
-                        Row(
-                            horizontalArrangement = Arrangement.spacedBy(6.dp),
-                            verticalAlignment = Alignment.CenterVertically,
-                            modifier = Modifier.padding(bottom = 14.dp)
-                        ) {
-                            covers.forEachIndexed { i, _ ->
-                                val active = pagerState.currentPage == i
-                                Box(
-                                    Modifier
-                                        .size(if (active) 8.dp else 6.dp)
-                                        .clip(androidx.compose.foundation.shape.CircleShape)
-                                        .background(if (active) (activeAura?.accent ?: Hive.colors.accent) else Hive.colors.textDimmer.copy(alpha = 0.45f))
-                                        .clickable {
-                                            haptics.performHapticFeedback(androidx.compose.ui.hapticfeedback.HapticFeedbackType.TextHandleMove)
-                                            scope.launch { pagerState.animateScrollToPage(i) }
-                                        }
-                                )
+                    val doSave: () -> Unit = {
+                        val b = currentCover?.bytes
+                        if (b == null) {
+                            savedOk = false
+                            saved = "This cover isn't available to save"
+                        } else {
+                            val suffix = if (covers.size > 1) " - ${pagerState.currentPage + 1}" else ""
+                            vm.savePicture(b, "${first?.displayAlbumArtist.orEmpty()} - $name$suffix".trim(' ', '-')) { msg ->
+                                savedOk = msg.startsWith("Cover saved")
+                                saved = if (savedOk) "Saved to Pictures › Hive" else msg
+                                if (savedOk) haptics.performHapticFeedback(androidx.compose.ui.hapticfeedback.HapticFeedbackType.Confirm)
                             }
                         }
                     }
+                    val doEdit: () -> Unit = {
+                        if (tracks.isNotEmpty()) { onDismiss(); editor.changeCover(tracks) }
+                    }
 
-                    Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(10.dp)) {
-                        PillButton(if (saved != null && savedOk) "Saved" else "Save", if (saved != null && savedOk) Icons.Rounded.Check else Icons.Rounded.Download, accent = true, modifier = Modifier.weight(1f)) {
-                            val b = currentCover?.bytes
-                            if (b == null) {
-                                savedOk = false
-                                saved = "This cover isn't available to save"
-                            } else {
-                                val suffix = if (covers.size > 1) " - ${pagerState.currentPage + 1}" else ""
-                                vm.savePicture(b, "${first?.displayAlbumArtist.orEmpty()} - $name$suffix".trim(' ', '-')) { msg ->
-                                    savedOk = msg.startsWith("Cover saved")
-                                    saved = if (savedOk) "Saved to Pictures › Hive" else msg
-                                    if (savedOk) haptics.performHapticFeedback(androidx.compose.ui.hapticfeedback.HapticFeedbackType.Confirm)
+                    if (landscape) {
+                        Row(
+                            Modifier.fillMaxWidth().padding(horizontal = 8.dp),
+                            verticalAlignment = Alignment.CenterVertically,
+                            horizontalArrangement = Arrangement.spacedBy(12.dp),
+                        ) {
+                            Row(
+                                Modifier.weight(1f),
+                                verticalAlignment = Alignment.CenterVertically,
+                                horizontalArrangement = Arrangement.spacedBy(10.dp),
+                            ) {
+                                currentCover?.caption?.takeIf { it.isNotBlank() }?.let { cap ->
+                                    Text(
+                                        text = cap,
+                                        style = HiveText.rowStrong,
+                                        color = Hive.colors.text,
+                                        maxLines = 1,
+                                        overflow = androidx.compose.ui.text.style.TextOverflow.Ellipsis,
+                                    )
+                                }
+                                if (covers.size > 1) {
+                                    Row(horizontalArrangement = Arrangement.spacedBy(6.dp), verticalAlignment = Alignment.CenterVertically) {
+                                        covers.forEachIndexed { i, _ ->
+                                            val active = pagerState.currentPage == i
+                                            Box(
+                                                Modifier
+                                                    .size(if (active) 8.dp else 6.dp)
+                                                    .clip(androidx.compose.foundation.shape.CircleShape)
+                                                    .background(if (active) (activeAura?.accent ?: Hive.colors.accent) else Hive.colors.textDimmer.copy(alpha = 0.45f))
+                                                    .clickable {
+                                                        haptics.performHapticFeedback(androidx.compose.ui.hapticfeedback.HapticFeedbackType.TextHandleMove)
+                                                        scope.launch { pagerState.animateScrollToPage(i) }
+                                                    }
+                                            )
+                                        }
+                                    }
+                                }
+                            }
+                            PillButton(if (saved != null && savedOk) "Saved" else "Save", if (saved != null && savedOk) Icons.Rounded.Check else Icons.Rounded.Download, accent = true, onClick = doSave)
+                            PillButton("Edit cover", Icons.Rounded.Image, accent = false, onClick = doEdit)
+                        }
+                    } else {
+                        // Caption (e.g. "Von dutch" or "The Life of Pablo"):
+                        currentCover?.caption?.takeIf { it.isNotBlank() }?.let { cap ->
+                            Text(
+                                text = cap,
+                                style = HiveText.rowStrong,
+                                color = Hive.colors.text,
+                                textAlign = androidx.compose.ui.text.style.TextAlign.Center,
+                                modifier = Modifier.padding(bottom = 8.dp)
+                            )
+                        }
+
+                        // Desktop-style discrete dots for multiple covers
+                        if (covers.size > 1) {
+                            Row(
+                                horizontalArrangement = Arrangement.spacedBy(6.dp),
+                                verticalAlignment = Alignment.CenterVertically,
+                                modifier = Modifier.padding(bottom = 14.dp)
+                            ) {
+                                covers.forEachIndexed { i, _ ->
+                                    val active = pagerState.currentPage == i
+                                    Box(
+                                        Modifier
+                                            .size(if (active) 8.dp else 6.dp)
+                                            .clip(androidx.compose.foundation.shape.CircleShape)
+                                            .background(if (active) (activeAura?.accent ?: Hive.colors.accent) else Hive.colors.textDimmer.copy(alpha = 0.45f))
+                                            .clickable {
+                                                haptics.performHapticFeedback(androidx.compose.ui.hapticfeedback.HapticFeedbackType.TextHandleMove)
+                                                scope.launch { pagerState.animateScrollToPage(i) }
+                                            }
+                                    )
                                 }
                             }
                         }
-                        PillButton("Edit cover", Icons.Rounded.Image, accent = false, modifier = Modifier.weight(1f)) {
-                            if (tracks.isNotEmpty()) { onDismiss(); editor.changeCover(tracks) }
+
+                        Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(10.dp)) {
+                            PillButton(if (saved != null && savedOk) "Saved" else "Save", if (saved != null && savedOk) Icons.Rounded.Check else Icons.Rounded.Download, accent = true, modifier = Modifier.weight(1f), onClick = doSave)
+                            PillButton("Edit cover", Icons.Rounded.Image, accent = false, modifier = Modifier.weight(1f), onClick = doEdit)
                         }
                     }
                 }

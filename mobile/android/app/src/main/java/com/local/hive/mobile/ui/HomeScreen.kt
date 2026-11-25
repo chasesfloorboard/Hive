@@ -50,6 +50,7 @@ import androidx.compose.material.icons.rounded.Explore
 import androidx.compose.material.icons.rounded.FileOpen
 import androidx.compose.material.icons.rounded.Favorite
 import androidx.compose.material.icons.rounded.Folder
+import androidx.compose.material.icons.rounded.Equalizer
 import androidx.compose.material.icons.rounded.GraphicEq
 import androidx.compose.material.icons.rounded.History
 import androidx.compose.material.icons.rounded.MoreVert
@@ -109,7 +110,7 @@ import androidx.compose.ui.layout.layout
 /** The library's tabs, in Samsung Music's order, with Hive's Browse for everything beyond the phone. */
 enum class HomeTab(val label: String) {
     Favorites("Favorites"), Playlists("Playlists"), Albums("Albums"), Tracks("Tracks"), Artists("Artists"),
-    Browse("Browse"), Genres("Genres"), Folders("Folders"),
+    Visualizer("Visualizer"), Browse("Browse"), Genres("Genres"), Folders("Folders"),
 }
 
 /**
@@ -179,7 +180,12 @@ internal enum class TrackSort(val label: String) { Title("Name"), Artist("Artist
 @Composable
 fun HomeScreen(vm: MainViewModel, nav: HomeNavigation, actions: TrackActions, bottomPadding: Dp) {
     val context = androidx.compose.ui.platform.LocalContext.current
-    val tabs = HomeTabOrder.get(context)
+    val installedPlugins by vm.plugins.installed.collectAsStateWithLifecycle()
+    val visualizerEnabled = installedPlugins.any { it.plugin.id == com.local.hive.mobile.data.PluginGallery.MONSTERCAT_ID && it.enabled }
+    val orderedTabs = HomeTabOrder.get(context)
+    val tabs = remember(orderedTabs, visualizerEnabled) {
+        orderedTabs.filter { it != HomeTab.Visualizer || visualizerEnabled }.ifEmpty { listOf(HomeTab.Albums) }
+    }
     val prefs = remember { context.getSharedPreferences("ui", android.content.Context.MODE_PRIVATE) }
     // Opens on the tab used last, as Samsung Music does (kept by name, so arranging the tabs doesn't change it;
     // older versions kept its place in the original order).
@@ -210,16 +216,24 @@ fun HomeScreen(vm: MainViewModel, nav: HomeNavigation, actions: TrackActions, bo
             }
         }
         Spacer(Modifier.height(4.dp))
-        HorizontalPager(pager, Modifier.fillMaxSize(), beyondViewportPageCount = 0, key = { tabs[it] }) { page ->
-            when (tabs[page]) {
+        HorizontalPager(pager, Modifier.fillMaxSize(), beyondViewportPageCount = 0, key = { tabs.getOrNull(it)?.name ?: it }) { page ->
+            when (tabs.getOrNull(page)) {
                 HomeTab.Favorites -> FavoritesTab(vm, nav, actions, bottomPadding)
                 HomeTab.Playlists -> PlaylistsTab(vm, nav, bottomPadding) { naming = true }
                 HomeTab.Albums -> AlbumsTab(vm, nav, bottomPadding)
                 HomeTab.Tracks -> TracksTab(vm, actions, bottomPadding)
                 HomeTab.Artists -> ArtistsTab(vm, nav, bottomPadding)
+                HomeTab.Visualizer -> VisualizerTab(
+                    vm = vm,
+                    bottomPadding = bottomPadding,
+                    active = tabs.getOrNull(pager.currentPage) == HomeTab.Visualizer,
+                    onOpenFullScreen = { nav.open("visualizer") },
+                    onOpenPluginStore = { nav.open("settings?page=plugins") },
+                )
                 HomeTab.Browse -> BrowseTab(vm, nav, bottomPadding)
                 HomeTab.Genres -> GenresTab(vm, bottomPadding, nav.openGenre)
                 HomeTab.Folders -> NamedTab(vm.folders, Icons.Rounded.Folder, "No folders yet", bottomPadding, nav.openFolder)
+                null -> Unit
             }
         }
     }
@@ -273,6 +287,8 @@ private fun HomeBar(vm: MainViewModel, nav: HomeNavigation, onCreatePlaylist: ()
             BarIcon(Icons.Rounded.MoreVert, "More options", { menu = true })
             HiveMenu(menu, { menu = false }) {
                 HiveMenuItem("Equaliser", Icons.Rounded.GraphicEq) { menu = false; nav.open("equaliser") }
+                HiveMenuItem("Visualizer", Icons.Rounded.Equalizer) { menu = false; nav.open("visualizer") }
+                HiveMenuItem("Plugins & Store", Icons.Rounded.Explore) { menu = false; nav.open("settings?page=plugins") }
                 HiveMenuItem("Yearly Wrap", Icons.Rounded.AutoAwesome) { menu = false; nav.open("wrap") }
                 if (link.paired) HiveMenuItem("Playing on your PC", Icons.Rounded.Devices) { menu = false; nav.open("remote") }
                 HiveMenuDivider()

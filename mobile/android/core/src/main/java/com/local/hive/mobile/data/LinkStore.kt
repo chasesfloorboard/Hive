@@ -129,10 +129,10 @@ class LinkStore(context: Context) {
 
     /**
      * Song sync is on: songs on one side only are copied to the other on
-     * Wi-Fi. Off until the user has seen the first plan and started it.
+     * Wi-Fi. Enabled by default when paired so libraries stay one-to-one.
      */
     var songSync: Boolean
-        get() = prefs.getBoolean("songSync", false)
+        get() = prefs.getBoolean("songSync", true)
         set(value) = prefs.edit { putBoolean("songSync", value) }
 
     /** Songs deleted on one side that the user chose to leave as they are: not asked about again. */

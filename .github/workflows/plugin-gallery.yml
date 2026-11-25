@@ -1,0 +1,77 @@
+# Hive Plugin Store automation:
+# 1. Verified Store (plugins/store.json):
+#    Users submit plugins via pre-filled GitHub issues labelled "plugin".
+#    Once a maintainer audits the code and applies the "approved" label,
+#    this workflow validates the plugin with app/main/plugin-store.js and
+#    publishes it live to plugins/store.json (Desktop & Mobile).
+# 2. Community / Untested Section (plugins/community.json):
+#    Users submit untested plugins via issues labelled "plugin-community".
+#    Publishes to plugins/community.json (verified: false) when a maintainer
+#    applies "community-untested", OR automatically on open if the repo
+#    variable ALLOW_AUTO_COMMUNITY_PLUGINS is set to "true".
+name: Plugin store
+on:
+  issues:
+    types: [opened, labeled]
+concurrency:
+  group: plugin-gallery
+  cancel-in-progress: false
+permissions:
+  contents: write
+  issues: write
+jobs:
+  publish-verified:
+    if: github.event.action == 'labeled' && github.event.label.name == 'approved' && contains(github.event.issue.labels.*.name, 'plugin')
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with: { node-version: 20 }
+      - name: Validate and add plugin to Verified store
+        env:
+          ISSUE_BODY: ${{ github.event.issue.body }}
+          ISSUE_AUTHOR: ${{ github.event.issue.user.login }}
+        run: node scripts/plugin-gallery-add.js --tier verified
+      - name: Commit verified plugin
+        env:
+          ISSUE_NUMBER: ${{ github.event.issue.number }}
+        run: |
+          git config user.name "Hive plugin store"
+          git config user.email "actions@users.noreply.github.com"
+          git add plugins/store.json
+          git diff --cached --quiet || git commit -m "Plugin store (Verified): publish plugin (#${ISSUE_NUMBER})"
+          git push
+      - name: Close issue
+        env:
+          GH_TOKEN: ${{ github.token }}
+          ISSUE_NUMBER: ${{ github.event.issue.number }}
+        run: gh issue close "$ISSUE_NUMBER" --comment "Verified and added to the live Hive Plugin Store. It will appear in Desktop and Mobile within a few minutes."
+
+  publish-community:
+    if: >
+      (github.event.action == 'labeled' && github.event.label.name == 'community-untested' && contains(github.event.issue.labels.*.name, 'plugin-community'))
+      || (github.event.action == 'opened' && vars.ALLOW_AUTO_COMMUNITY_PLUGINS == 'true' && startsWith(github.event.issue.title, 'Plugin (Community/Untested):'))
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with: { node-version: 20 }
+      - name: Validate and add plugin to Community (Untested) store
+        env:
+          ISSUE_BODY: ${{ github.event.issue.body }}
+          ISSUE_AUTHOR: ${{ github.event.issue.user.login }}
+        run: node scripts/plugin-gallery-add.js --tier community
+      - name: Commit community plugin
+        env:
+          ISSUE_NUMBER: ${{ github.event.issue.number }}
+        run: |
+          git config user.name "Hive plugin store"
+          git config user.email "actions@users.noreply.github.com"
+          git add plugins/community.json
+          git diff --cached --quiet || git commit -m "Plugin store (Community/Untested): publish plugin (#${ISSUE_NUMBER})"
+          git push
+      - name: Close issue
+        env:
+          GH_TOKEN: ${{ github.token }}
+          ISSUE_NUMBER: ${{ github.event.issue.number }}
+        run: gh issue close "$ISSUE_NUMBER" --comment "Published to the Community / Untested section of the Hive Plugin Store. Maintainers can still review and promote it to Verified later."

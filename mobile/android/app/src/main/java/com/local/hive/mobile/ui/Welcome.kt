@@ -68,9 +68,10 @@ import kotlin.math.abs
 private class Step(val icon: ImageVector, val title: String, val body: String)
 
 private val STEPS = listOf(
-    Step(Icons.Rounded.MusicNote, "Welcome to Hive", "Your own music player — the songs already on this phone, in a library that's yours to arrange."),
+    Step(Icons.Rounded.MusicNote, "Welcome to Hive", "Hive relies on a local library. You can use the streaming elements, but it was built around carrying your music with you."),
     Step(Icons.Rounded.LibraryMusic, "Play your music", "Everything on this phone, sorted into albums, artists and genres. Hive needs permission to read it."),
-    Step(Icons.Rounded.Devices, "Link your PC", "Open Hive on your computer and pair this phone in Settings — favourites, plays and playlists then stay in step across both."),
+    Step(Icons.Rounded.Devices, "Hive Sync", "Hive Sync relies on two libraries of the same music on separate devices: one folder on your PC and one folder on your mobile phone."),
+    Step(Icons.Rounded.Devices, "Two-Way Wi-Fi Sync", "These two sync over Wi-Fi. You can make changes to one away from the other, and when they connect, the changes will sync and the files in the library should be one-to-one on both sides."),
     Step(Icons.Rounded.Palette, "Make it yours", "Themes, the equaliser and your own playlists all live in Settings. Tune Hive to taste whenever you like."),
 )
 

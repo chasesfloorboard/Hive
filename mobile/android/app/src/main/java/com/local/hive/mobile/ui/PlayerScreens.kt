@@ -116,6 +116,7 @@ import androidx.compose.material.icons.rounded.Check
 import androidx.compose.material.icons.rounded.Speed
 import androidx.compose.material.icons.rounded.Radio
 import androidx.compose.animation.core.animateFloat
+import androidx.compose.material.icons.rounded.Equalizer
 import androidx.compose.material.icons.rounded.GraphicEq
 import androidx.compose.material.icons.rounded.Lyrics
 import androidx.compose.material.icons.rounded.Info
@@ -167,9 +168,11 @@ fun PlayerSheet(
     onAddToPlaylist: (Track) -> Unit,
     onOpenLyrics: () -> Unit,
     onOpenEqualiser: () -> Unit,
+    onOpenVisualizer: () -> Unit = {},
     onOpenSettings: () -> Unit = {},
     onToast: (String) -> Unit = {},
 ) {
+    AllowLandscape(open)
     val c = Hive.colors
     // The cover follows a sideways swipe on Now Playing; let go far or fast enough and the song changes.
     val swipe = remember { Animatable(0f) }
@@ -319,6 +322,7 @@ fun PlayerSheet(
                         onAddToPlaylist = onAddToPlaylist,
                         onOpenLyrics = onOpenLyrics,
                         onOpenEqualiser = onOpenEqualiser,
+                        onOpenVisualizer = onOpenVisualizer,
                         onOpenSettings = onOpenSettings,
                         onOpenArtist = onOpenArtist,
                         onToast = onToast,
@@ -546,6 +550,7 @@ private fun FullPlayerContent(
     onAddToPlaylist: (Track) -> Unit,
     onOpenLyrics: () -> Unit,
     onOpenEqualiser: () -> Unit,
+    onOpenVisualizer: () -> Unit = {},
     onOpenSettings: () -> Unit = {},
     onToast: (String) -> Unit,
     onArtPlaced: (Rect) -> Unit,
@@ -606,14 +611,15 @@ private fun FullPlayerContent(
             Box(Modifier.fillMaxSize().background(Brush.verticalGradient(0f to Color.Transparent, 0.6f to c.bg.copy(alpha = 0.2f), 1f to c.bg.copy(alpha = 0.75f))))
         }, overlay = {
         BoxWithConstraints(Modifier.fillMaxSize().statusBarsPadding().navigationBarsPadding()) {
+            val landscape = maxWidth > maxHeight && maxWidth >= 520.dp
             val compact = maxHeight < 700.dp
-            Column(Modifier.fillMaxSize()) {
-                Row(Modifier.fillMaxWidth().padding(horizontal = 8.dp, vertical = 4.dp), verticalAlignment = Alignment.CenterVertically) {
+            val topBar: @Composable () -> Unit = {
+                Row(Modifier.fillMaxWidth().padding(horizontal = 8.dp, vertical = if (landscape) 2.dp else 4.dp), verticalAlignment = Alignment.CenterVertically) {
                     BarIcon(Icons.Rounded.KeyboardArrowDown, "Close player", onClose)
                     Column(Modifier.weight(1f).clickable { current?.let(onOpenAlbum) }, horizontalAlignment = Alignment.CenterHorizontally) {
                         Text(if (queueOpen) "Playing tracks" else "Now playing", style = HiveText.small, color = c.textDim)
-                        Crossfade(now.album, animationSpec = Motion.swap(), label = "album") { album ->
-                            Text(album.ifBlank { "Your library" }, style = HiveText.rowStrong, color = c.text, maxLines = 1, overflow = TextOverflow.Ellipsis, modifier = Modifier.padding(horizontal = 12.dp))
+                        Crossfade(now.album, animationSpec = Motion.swap(), modifier = Modifier.fillMaxWidth(), label = "album") { album ->
+                            Text(album.ifBlank { "Your library" }, style = HiveText.rowStrong, color = c.text, maxLines = 1, overflow = TextOverflow.Ellipsis, textAlign = androidx.compose.ui.text.style.TextAlign.Center, modifier = Modifier.fillMaxWidth().padding(horizontal = 12.dp))
                         }
                     }
                     Box {
@@ -656,6 +662,7 @@ private fun FullPlayerContent(
                             }
                             if (now.mediaId?.startsWith("pod:") == true) HiveMenuItem("Speed · ${"%.2g".format(now.speed)}×", Icons.Rounded.Speed) { menu = false; speedMenu = true }
                             HiveMenuItem("Equaliser", Icons.Rounded.GraphicEq) { menu = false; onOpenEqualiser() }
+                            HiveMenuItem("Visualizer", Icons.Rounded.Equalizer) { menu = false; onOpenVisualizer() }
                             HiveMenuItem(sleepLabel(sleep), Icons.Rounded.Bedtime) { menu = false; sleepMenu = true }
                             HiveMenuDivider()
                             HiveMenuItem("Settings", Icons.Rounded.Settings) { menu = false; onOpenSettings() }
@@ -670,6 +677,20 @@ private fun FullPlayerContent(
                         }
                     }
                 }
+            }
+            if (landscape) {
+                FullPlayerLandscapeContent(
+                    vm = vm, now = now, current = current, upNext = upNext,
+                    queueOpen = queueOpen, onQueueChange = onQueueChange,
+                    swipe = swipe, topBar = topBar,
+                    onOpenArtist = onOpenArtist, onOpenAlbum = onOpenAlbum,
+                    onAddToPlaylist = onAddToPlaylist, onOpenLyrics = onOpenLyrics,
+                    onOpenCoverViewer = { viewingCover = true },
+                    onArtPlaced = onArtPlaced,
+                )
+            } else {
+            Column(Modifier.fillMaxSize()) {
+                topBar()
 
                 // The stage: the cover at full size, or as a thumbnail over the queue.
                 BoxWithConstraints(Modifier.weight(1f).fillMaxWidth()) {
@@ -714,37 +735,12 @@ private fun FullPlayerContent(
                     // As Samsung Music lays it out: the song centred under the cover, then
                     // the heart in the middle.
                     Column(Modifier.fillMaxWidth().padding(horizontal = 22.dp).padding(top = 8.dp), horizontalAlignment = Alignment.CenterHorizontally) {
-                        androidx.compose.animation.AnimatedContent(
-                            current to now.queueIndex,
-                            transitionSpec = {
-                                val dir = if (targetState.second >= initialState.second) 1 else -1
-                                (androidx.compose.animation.slideInHorizontally(spring(dampingRatio = 0.85f, stiffness = 500f)) { dir * it / 5 } + androidx.compose.animation.fadeIn(tween(220, delayMillis = 40)))
-                                    .togetherWith(androidx.compose.animation.slideOutHorizontally(tween(160)) { -dir * it / 5 } + androidx.compose.animation.fadeOut(tween(120)))
-                            },
-                            contentKey = { it.first?.id ?: now.mediaId },
-                            label = "meta",
-                        ) { (t, _) ->
-                            Column(Modifier.fillMaxWidth(), horizontalAlignment = Alignment.CenterHorizontally, verticalArrangement = Arrangement.spacedBy(3.dp)) {
-                                // One line, so a long title never pushes the cover; it scrolls to show the rest,
-                                // fading out at the edges rather than being cut off.
-                                Box(
-                                    Modifier.fillMaxWidth()
-                                        .graphicsLayer { compositingStrategy = androidx.compose.ui.graphics.CompositingStrategy.Offscreen }
-                                        .drawWithContent {
-                                            drawContent()
-                                            val fade = 18.dp.toPx() / size.width
-                                            drawRect(Brush.horizontalGradient(0f to Color.Transparent, fade to Color.Black, 1f - fade to Color.Black, 1f to Color.Transparent), blendMode = androidx.compose.ui.graphics.BlendMode.DstIn)
-                                        },
-                                    contentAlignment = Alignment.Center,
-                                ) {
-                                    Text(
-                                        now.title.ifBlank { "Nothing playing" }, style = HiveText.npTitle, color = c.text, maxLines = 1, textAlign = androidx.compose.ui.text.style.TextAlign.Center,
-                                        modifier = Modifier.basicMarquee(iterations = Int.MAX_VALUE, initialDelayMillis = 1_500, repeatDelayMillis = 2_000, velocity = 36.dp),
-                                    )
-                                }
-                                Text(now.artist, style = HiveText.rowStrong, color = c.text.copy(alpha = 0.86f), maxLines = 1, overflow = TextOverflow.Ellipsis, textAlign = androidx.compose.ui.text.style.TextAlign.Center, modifier = Modifier.clickable { t?.let(onOpenArtist) })
-                            }
-                        }
+                        TrackMetaTransition(
+                            now = now,
+                            wentBack = { vm.player.wentBack() },
+                            centered = true,
+                            onArtistClick = { current?.let(onOpenArtist) },
+                        )
                         NowHeart(vm, now.mediaId)
                     }
                 }
@@ -772,6 +768,7 @@ private fun FullPlayerContent(
                     )
                     TransportButton(Icons.AutoMirrored.Rounded.QueueMusic, if (queueOpen) "Close queue" else "Queue", 24.dp, active = if (queueOpen) true else null) { onQueueChange(!queueOpen) }
                 }
+            }
             }
         }
     })

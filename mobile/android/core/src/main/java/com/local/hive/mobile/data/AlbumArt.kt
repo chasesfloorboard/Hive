@@ -46,6 +46,12 @@ class AlbumArtFetcher(private val context: Context, private val albumId: Long, p
         }
         val kept = File(File(context.cacheDir, "embedded-art-v2").apply { mkdirs() }, "$albumId.img")
         val hq = File(File(context.cacheDir, "hq-art").apply { mkdirs() }, "$albumId.jpg")
+        // If the underlying audio file was rewritten (e.g. a new HQ cover synced from PC), invalidate stale cache.
+        if (song != null && kept.length() > 0 && song.modifiedMs > kept.lastModified()) {
+            kept.delete()
+            hq.delete()
+            File(File(context.cacheDir, "hq-art"), "$albumId.differs").delete()
+        }
         // Hive's own extracted copy of the album's embedded cover, kept once per album.
         if (kept.length() > 0) return@withContext result(kept.readBytes())
         // The cover is read from the first song's OWN embedded picture — never a stray image sitting in
@@ -104,11 +110,11 @@ class AlbumArtFetcher(private val context: Context, private val albumId: Long, p
         return maxOf(px(options.size.width), px(options.size.height)) <= THUMBNAIL_PX
     }
 
-    private data class Song(val uri: android.net.Uri, val album: String, val artist: String)
+    private data class Song(val uri: android.net.Uri, val album: String, val artist: String, val modifiedMs: Long = 0L)
 
     private fun firstSong(): Song? = context.contentResolver.query(
         MediaStore.Audio.Media.EXTERNAL_CONTENT_URI,
-        arrayOf(MediaStore.Audio.Media._ID, MediaStore.Audio.Media.ALBUM, MediaStore.Audio.Media.ARTIST, "album_artist"),
+        arrayOf(MediaStore.Audio.Media._ID, MediaStore.Audio.Media.ALBUM, MediaStore.Audio.Media.ARTIST, "album_artist", MediaStore.Audio.Media.DATE_MODIFIED),
         android.os.Bundle().apply {
             putString(android.content.ContentResolver.QUERY_ARG_SQL_SELECTION, "${MediaStore.Audio.Media.ALBUM_ID} = ?")
             putStringArray(android.content.ContentResolver.QUERY_ARG_SQL_SELECTION_ARGS, arrayOf(albumId.toString()))
@@ -118,7 +124,12 @@ class AlbumArtFetcher(private val context: Context, private val albumId: Long, p
         null,
     )?.use { c ->
         if (!c.moveToFirst()) null
-        else Song(ContentUris.withAppendedId(MediaStore.Audio.Media.EXTERNAL_CONTENT_URI, c.getLong(0)), c.getString(1).orEmpty(), c.getString(3)?.ifBlank { null } ?: c.getString(2).orEmpty())
+        else Song(
+            ContentUris.withAppendedId(MediaStore.Audio.Media.EXTERNAL_CONTENT_URI, c.getLong(0)),
+            c.getString(1).orEmpty(),
+            c.getString(3)?.ifBlank { null } ?: c.getString(2).orEmpty(),
+            modifiedMs = c.getLong(4) * 1000L,
+        )
     }
 
     /** The album's cover from Apple Music, kept on the phone; a miss is remembered for a week. */

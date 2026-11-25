@@ -44,6 +44,8 @@ import androidx.compose.material.icons.automirrored.rounded.PlaylistPlay
 import androidx.compose.material.icons.automirrored.rounded.ArrowBack
 import androidx.compose.material.icons.rounded.Favorite
 import androidx.compose.material.icons.rounded.FavoriteBorder
+import androidx.compose.material.icons.rounded.Close
+import androidx.compose.material.icons.rounded.History
 import androidx.compose.material.icons.rounded.LibraryMusic
 import androidx.compose.material.icons.rounded.Person
 import androidx.compose.material.icons.rounded.Search
@@ -227,7 +229,7 @@ fun PillButton(label: String, icon: androidx.compose.ui.graphics.vector.ImageVec
     val base = modifier.height(46.dp)
     Row(
         (if (accent) base.softShadow(14.dp, HiveShape.pill, c.accent).clip(HiveShape.pill).background(c.accent)
-        else base.hiveGlass(HiveShape.pill, strength = 0.2f)).pressable(onClick, 0.96f),
+        else base.hiveGlass(HiveShape.pill, strength = 0.2f)).pressable(onClick, 0.96f).padding(horizontal = 18.dp),
         horizontalArrangement = Arrangement.Center,
         verticalAlignment = Alignment.CenterVertically,
     ) {
@@ -553,7 +555,19 @@ fun SearchScreen(vm: MainViewModel, actions: TrackActions, bottomPadding: Dp, on
     val focusManager = androidx.compose.ui.platform.LocalFocusManager.current
     // Results follow the library, so a deleted or newly scanned song shows at once.
     val library by vm.tracks.collectAsStateWithLifecycle()
+    val recentSearches by vm.searchHistory.collectAsStateWithLifecycle()
+    val suggestions = remember(recentSearches, query) {
+        com.local.hive.mobile.data.SearchHistoryRules.suggest(recentSearches, query, limit = if (query.isBlank()) 10 else 4)
+    }
     LaunchedEffect(query, library) { delay(140); results = vm.search(query) }
+    // Also record settled searches (~1.4s after user stops typing) even if they browse live results without pressing Search.
+    LaunchedEffect(query, online) {
+        val settled = query.trim()
+        if (settled.length >= 2) {
+            delay(1400)
+            vm.recordSearch(settled)
+        }
+    }
     // Library picks and online picks don't mix: switching search ends picking.
     val selection = LocalSelection.current
     var pickedFrom by rememberSaveable { mutableStateOf(online) }
@@ -636,7 +650,18 @@ fun SearchScreen(vm: MainViewModel, actions: TrackActions, bottomPadding: Dp, on
                 Icon(Icons.AutoMirrored.Rounded.ArrowBack, "Navigate up", tint = c.text, modifier = Modifier.size(20.dp))
             }
             Spacer(Modifier.width(10.dp))
-            SearchField(query, { query = it }, if (online) "Search Apple Music & Spotify…" else "Search library…", onSubmit = {}, onClear = { query = "" }, modifier = Modifier.weight(1f), focus = focus)
+            SearchField(
+                query,
+                { query = it },
+                if (online) "Search Apple Music & Spotify…" else "Search library…",
+                onSubmit = {
+                    if (query.trim().length >= 2) vm.recordSearch(query)
+                    focusManager.clearFocus()
+                },
+                onClear = { query = "" },
+                modifier = Modifier.weight(1f),
+                focus = focus,
+            )
             // Library or online (Apple Music and Spotify): lit while searching online. Hidden in Hive Clean.
             if (streamingSearchAvailable()) {
                 Spacer(Modifier.width(10.dp))
@@ -644,6 +669,7 @@ fun SearchScreen(vm: MainViewModel, actions: TrackActions, bottomPadding: Dp, on
                     Modifier.size(42.dp).hiveGlass(CircleShape).then(if (online) Modifier.background(c.accent.copy(alpha = 0.22f), CircleShape) else Modifier)
                         .clickable {
                             online = !online
+                            if (query.trim().length >= 2) vm.recordSearch(query)
                             // With something typed, the results take the screen instead of the keyboard.
                             if (query.isNotBlank()) focusManager.clearFocus()
                         }.semantics { contentDescription = if (online) "Search your library" else "Search Apple Music and Spotify" },
@@ -655,7 +681,25 @@ fun SearchScreen(vm: MainViewModel, actions: TrackActions, bottomPadding: Dp, on
         if (online) {
             HiveToggle(listOf("Albums", "Tracks"), if (onlineAlbums) 0 else 1, { onlineAlbums = it == 0 }, Modifier.padding(horizontal = 16.dp))
             LazyColumn(Modifier.fillMaxSize(), contentPadding = PaddingValues(top = 12.dp, bottom = bottomPadding + 12.dp)) {
-                item { OnlineSearchResults(vm, query, onlineAlbums, onOpenService) }
+                if (q.isEmpty() && suggestions.isNotEmpty()) {
+                    item {
+                        RecentSearchesHeader(onClear = { vm.clearSearchHistory() })
+                    }
+                    items(suggestions, key = { "rec:$it" }) { item ->
+                        RecentSearchRow(
+                            text = item,
+                            onPick = { query = item; vm.recordSearch(item); focusManager.clearFocus() },
+                            onRemove = { vm.removeSearchHistory(item) },
+                        )
+                    }
+                } else {
+                    item {
+                        OnlineSearchResults(vm, query, onlineAlbums) { route ->
+                            if (q.length >= 2) vm.recordSearch(q)
+                            onOpenService(route)
+                        }
+                    }
+                }
             }
             return@Column
         }
@@ -664,23 +708,85 @@ fun SearchScreen(vm: MainViewModel, actions: TrackActions, bottomPadding: Dp, on
             val searchList = androidx.compose.foundation.lazy.rememberLazyListState()
             val dragRows: Map<Any, Any> = remember(results, likedHits) { (results.associate { ("t" + it.id) as Any to (it as Any) } + likedHits.associate { ("s" + it.key) as Any to (it as Any) }) }
             LazyColumn(Modifier.fillMaxSize().songDragSelect(searchList, dragRows, dragRows.values.toList()), state = searchList, contentPadding = PaddingValues(top = 8.dp, bottom = bottomPadding + 12.dp)) {
-                if (q.isEmpty()) item { EmptyState("Search your library", "Songs, albums and artists on this phone.") }
-                else if (results.isEmpty() && albumHits.isEmpty() && artistHits.isEmpty() && likedHits.isEmpty()) item { EmptyState("No results", "Nothing matches “$q”.") }
+                if (q.isEmpty()) {
+                    if (suggestions.isNotEmpty()) {
+                        item { RecentSearchesHeader(onClear = { vm.clearSearchHistory() }) }
+                        items(suggestions, key = { "rec:$it" }) { item ->
+                            RecentSearchRow(
+                                text = item,
+                                onPick = { query = item; vm.recordSearch(item); focusManager.clearFocus() },
+                                onRemove = { vm.removeSearchHistory(item) },
+                            )
+                        }
+                    } else {
+                        item { EmptyState("Search your library", "Songs, albums and artists on this phone.") }
+                    }
+                } else {
+                    if (suggestions.isNotEmpty()) {
+                        item { HiveLabel("Recent searches", Modifier.padding(start = 18.dp, top = 4.dp, bottom = 2.dp)) }
+                        items(suggestions, key = { "sug:$it" }) { item ->
+                            RecentSearchRow(
+                                text = item,
+                                onPick = { query = item; vm.recordSearch(item); focusManager.clearFocus() },
+                                onRemove = { vm.removeSearchHistory(item) },
+                            )
+                        }
+                    }
+                    if (results.isEmpty() && albumHits.isEmpty() && artistHits.isEmpty() && likedHits.isEmpty() && suggestions.isEmpty()) {
+                        item { EmptyState("No results", "Nothing matches “$q”.") }
+                    }
+                }
                 if (artistHits.isNotEmpty()) {
                     item { HiveLabel("Artists", Modifier.padding(start = 18.dp, top = 10.dp, bottom = 4.dp)) }
-                    items(artistHits, key = { "a" + it.artist }) { a -> LibraryRow(Uri.parse("content://media/external/audio/albumart/${a.albumId}"), Icons.Rounded.Person, a.artist, countOf(a.trackCount, "track"), round = true) { onOpenArtist(a.artist) } }
+                    items(artistHits, key = { "a" + it.artist }) { a -> LibraryRow(Uri.parse("content://media/external/audio/albumart/${a.albumId}"), Icons.Rounded.Person, a.artist, countOf(a.trackCount, "track"), round = true) { vm.recordSearch(q); onOpenArtist(a.artist) } }
                 }
                 if (albumHits.isNotEmpty()) {
                     item { HiveLabel("Albums", Modifier.padding(start = 18.dp, top = 10.dp, bottom = 4.dp)) }
-                    items(albumHits, key = { "l" + it.albumId }) { a -> LibraryRow(Uri.parse("content://media/external/audio/albumart/${a.albumId}"), Icons.Rounded.LibraryMusic, a.album, a.artist) { onOpenAlbum(a.albumId) } }
+                    items(albumHits, key = { "l" + it.albumId }) { a -> LibraryRow(Uri.parse("content://media/external/audio/albumart/${a.albumId}"), Icons.Rounded.LibraryMusic, a.album, a.artist) { vm.recordSearch(q); onOpenAlbum(a.albumId) } }
                 }
                 if (results.isNotEmpty() || likedHits.isNotEmpty()) {
                     item { HiveLabel("Songs", Modifier.padding(start = 18.dp, top = 10.dp, bottom = 4.dp)) }
-                    itemsIndexed(results, key = { _, t -> "t" + t.id }) { i, t -> TrackRow(t, t.id in loved, now.trackId == t.id, now.isPlaying, actions, onClick = { vm.play(results, i) }) }
+                    itemsIndexed(results, key = { _, t -> "t" + t.id }) { i, t -> TrackRow(t, t.id in loved, now.trackId == t.id, now.isPlaying, actions, onClick = { vm.recordSearch(q); vm.play(results, i) }) }
                     // Liked Apple Music and Spotify songs are in Favorites, so search finds them too.
-                    itemsIndexed(likedHits, key = { _, s -> "s" + s.key }) { i, s -> StreamRow(s, now.mediaId == s.key, now.isPlaying, full, onClick = { vm.playStreams(likedHits, i) }, vm = vm) }
+                    itemsIndexed(likedHits, key = { _, s -> "s" + s.key }) { i, s -> StreamRow(s, now.mediaId == s.key, now.isPlaying, full, onClick = { vm.recordSearch(q); vm.playStreams(likedHits, i) }, vm = vm) }
                 }
             }
+        }
+    }
+}
+
+@Composable
+private fun RecentSearchesHeader(onClear: () -> Unit) {
+    val c = Hive.colors
+    Row(
+        Modifier.fillMaxWidth().padding(start = 18.dp, end = 12.dp, top = 6.dp, bottom = 4.dp),
+        verticalAlignment = Alignment.CenterVertically,
+    ) {
+        Text("Recent searches", style = HiveText.small, color = c.textDim, modifier = Modifier.weight(1f))
+        Text(
+            "Clear",
+            style = HiveText.small,
+            color = c.accent,
+            modifier = Modifier.clip(HiveShape.pill).clickable(onClick = onClear).padding(horizontal = 10.dp, vertical = 4.dp),
+        )
+    }
+}
+
+@Composable
+private fun RecentSearchRow(text: String, onPick: () -> Unit, onRemove: () -> Unit) {
+    val c = Hive.colors
+    Row(
+        Modifier.fillMaxWidth().clickable(onClick = onPick).padding(start = 18.dp, end = 8.dp, top = 6.dp, bottom = 6.dp),
+        verticalAlignment = Alignment.CenterVertically,
+    ) {
+        Icon(Icons.Rounded.History, null, tint = c.textDim, modifier = Modifier.size(18.dp))
+        Spacer(Modifier.width(12.dp))
+        Text(text, style = HiveText.row, color = c.text, maxLines = 1, overflow = TextOverflow.Ellipsis, modifier = Modifier.weight(1f))
+        Box(
+            Modifier.size(36.dp).clip(CircleShape).clickable(onClick = onRemove),
+            contentAlignment = Alignment.Center,
+        ) {
+            Icon(Icons.Rounded.Close, "Remove $text", tint = c.textDim, modifier = Modifier.size(16.dp))
         }
     }
 }

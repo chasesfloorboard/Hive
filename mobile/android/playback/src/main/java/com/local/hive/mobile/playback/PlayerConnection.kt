@@ -145,6 +145,7 @@ class PlayerConnection(private val context: Context, private val scope: Coroutin
             shuffleStartedAt = System.currentTimeMillis()
         }
         withController { c ->
+            lastSkipBackAt = 0L
             // A shuffle starts on a song on the phone when it can, which plays at once;
             // a streamed song would wait on YouTube first.
             val start = if (shuffle) items.indices.filter { items[it].isOnPhone() }.ifEmpty { items.indices.toList() }.random() else startIndex.coerceIn(items.indices)
@@ -219,7 +220,10 @@ class PlayerConnection(private val context: Context, private val scope: Coroutin
     private data class BeforeShuffle(val item: MediaItem, val positionMs: Long, val shuffleFirst: String)
     private var beforeShuffle: BeforeShuffle? = null
     fun seekTo(positionMs: Long) = withController { it.seekTo(positionMs) }
-    fun skipToQueueIndex(index: Int) = withController { it.seekTo(index, 0L) }
+    fun skipToQueueIndex(index: Int) = withController {
+        lastSkipBackAt = if (index < it.currentMediaItemIndex) System.currentTimeMillis() else 0L
+        it.seekTo(index, 0L)
+    }
     fun removeFromQueue(index: Int) = withController { c ->
         if (index !in 0 until c.mediaItemCount) return@withController
         keepForUndo(listOf(index to c.getMediaItemAt(index)))

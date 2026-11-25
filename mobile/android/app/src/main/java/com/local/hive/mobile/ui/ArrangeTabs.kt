@@ -20,9 +20,11 @@ import androidx.compose.material.icons.automirrored.rounded.QueueMusic
 import androidx.compose.material.icons.rounded.Album
 import androidx.compose.material.icons.rounded.Category
 import androidx.compose.material.icons.rounded.DragHandle
+import androidx.compose.material.icons.rounded.Equalizer
 import androidx.compose.material.icons.rounded.Explore
 import androidx.compose.material.icons.rounded.Favorite
 import androidx.compose.material.icons.rounded.Folder
+import androidx.compose.material.icons.rounded.GraphicEq
 import androidx.compose.material.icons.rounded.MusicNote
 import androidx.compose.material.icons.rounded.Person
 import androidx.compose.material3.Icon
@@ -59,6 +61,7 @@ private fun HomeTab.icon() = when (this) {
     HomeTab.Albums -> Icons.Rounded.Album
     HomeTab.Tracks -> Icons.Rounded.MusicNote
     HomeTab.Artists -> Icons.Rounded.Person
+    HomeTab.Visualizer -> Icons.Rounded.Equalizer
     HomeTab.Browse -> Icons.Rounded.Explore
     HomeTab.Genres -> Icons.Rounded.Category
     HomeTab.Folders -> Icons.Rounded.Folder

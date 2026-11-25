@@ -159,4 +159,24 @@ class MirrorPlannerTest {
             assertTrue("a half file being written stays", fresh.exists())
         } finally { root.deleteRecursively() }
     }
+
+    @Test fun phoneFilesWalkSkipsExcludedFoldersAndPreservesRelativePaths() {
+        val root = kotlin.io.path.createTempDirectory("mirror-walk").toFile()
+        try {
+            java.io.File(root, "Artist/Album").mkdirs()
+            java.io.File(root, FileMirror.DELETED_FOLDER).mkdirs()
+            java.io.File(root, "Soulseek Incomplete").mkdirs()
+            java.io.File(root, ".thumbnails").mkdirs()
+            java.io.File(root, "root-song.mp3").writeBytes(ByteArray(123))
+            java.io.File(root, "Artist/Album/track.flac").writeBytes(ByteArray(456))
+            java.io.File(root, "${FileMirror.DELETED_FOLDER}/deleted.mp3").writeBytes(ByteArray(99))
+            java.io.File(root, "Soulseek Incomplete/partial.mp3").writeBytes(ByteArray(99))
+            java.io.File(root, ".thumbnails/thumb.jpg").writeBytes(ByteArray(99))
+            java.io.File(root, ".pending-123-song.mp3").writeBytes(ByteArray(99))
+            val files = FileMirror.phoneFiles(root)
+            assertEquals(setOf("root-song.mp3", "Artist/Album/track.flac"), files.keys)
+            assertEquals(123L, files.getValue("root-song.mp3").size)
+            assertEquals(456L, files.getValue("Artist/Album/track.flac").size)
+        } finally { root.deleteRecursively() }
+    }
 }
