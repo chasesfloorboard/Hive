@@ -402,11 +402,13 @@ private fun VisualizerStage(
                     horizontalArrangement = Arrangement.spacedBy(if (landscape) 18.dp else 14.dp),
                 ) {
                     val artSize = if (landscape) 72.dp else 88.dp
+                    val artFrame = rotatingCover(now.artworkUri, now.trackId)
                     Artwork(
-                        now.artworkUri,
+                        artFrame.current,
                         Modifier.size(artSize).clip(RoundedCornerShape(8.dp)),
                         RoundedCornerShape(8.dp),
                         if (now.isLive) Icons.Rounded.Radio else Icons.Rounded.MusicNote,
+                        replacing = artFrame.previous,
                         highQuality = true,
                     )
                     Column(Modifier.weight(1f), verticalArrangement = Arrangement.spacedBy(2.dp)) {

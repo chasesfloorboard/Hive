@@ -176,8 +176,14 @@ fun AlbumScreen(
     val hidden by vm.hiddenAlbumCovers.collectAsStateWithLifecycle()
     val cleared = albumId in hidden
     val cover = com.local.hive.mobile.data.AlbumCovers.model(albumId, hidden)?.let { Uri.parse(it) }
-    // An album whose first song carries several pictures turns through them, as its card does on the PC.
-    val frame = if (cleared) CoverFrame(null, null) else rotatingCover(cover, tracks.firstOrNull()?.id)
+    // An album whose tracks carry multiple covers rotates through them; while a song from this album
+    // is playing, rotate in lockstep with that playing song's covers (including Bandcamp track art).
+    val playingHere = now.trackId != null && tracks.any { it.id == now.trackId }
+    val frame = if (cleared) CoverFrame(null, null) else rotatingCover(
+        cover,
+        if (playingHere) now.trackId else tracks.firstOrNull()?.id,
+        includeAlbumMismatch = playingHere,
+    )
     val activeColors = frame.aura ?: colors
     val animatedPrimary by animateColorAsState(activeColors?.primary?.copy(alpha = 0.55f) ?: c.ambientA, tween(600), label = "albumAmbientA")
     val animatedSecondary by animateColorAsState(activeColors?.secondary?.copy(alpha = 0.45f) ?: c.ambientB, tween(600), label = "albumAmbientB")

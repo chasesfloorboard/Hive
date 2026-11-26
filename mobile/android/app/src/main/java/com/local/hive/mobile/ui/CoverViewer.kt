@@ -140,10 +140,13 @@ suspend fun discoverCovers(
     }
 
     // 1. Single track view (e.g. Now Playing player or track info):
-    //    Inspect ONLY this song's file. Do NOT merge covers from other songs in the album!
+    //    Inspect this song's file only (never merging covers from other songs on the album).
+    //    If the song embeds its own individual cover distinct from the album's cover (e.g.
+    //    Bandcamp releases), show the album cover first and the song's embedded cover as back.
     if (tracks.size == 1) {
         val track = tracks.first()
         val songName = track.title.ifBlank { defaultName }
+        val albumName = track.album.ifBlank { songName }
         val pics = runCatching {
             context.contentResolver.openInputStream(track.uri)?.use { EmbeddedPictures.readTyped(it) }
         }.getOrNull().orEmpty()
@@ -155,6 +158,15 @@ suspend fun discoverCovers(
             list.add(0, front)
             list
         } else pics
+
+        val albumCoverBytes = runCatching {
+            com.local.hive.mobile.data.AlbumArtFetcher.albumCoverFile(context, track.albumId)?.readBytes()
+        }.getOrNull()
+        if (albumCoverBytes != null && albumCoverBytes.isNotEmpty() && sortedPics.isNotEmpty() &&
+            sortedPics.none { EmbeddedPictures.looksAlike(albumCoverBytes, it.data) }
+        ) {
+            add(albumCoverBytes, albumName)
+        }
 
         for (pic in sortedPics) {
             add(pic.data, songName)

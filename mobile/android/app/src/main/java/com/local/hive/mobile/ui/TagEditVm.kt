@@ -43,6 +43,7 @@ class TagEditVm(private val app: HiveApp, private val scope: CoroutineScope) {
             val albums = saved.map { it.albumId }.distinct()
             albums.forEach { albumId ->
                 java.io.File(app.cacheDir, "embedded-art-v2/$albumId.img").delete()
+                java.io.File(app.cacheDir, "embedded-art-v2/$albumId.small.img").delete()
                 java.io.File(app.cacheDir, "hq-art/$albumId.jpg").delete()
                 java.io.File(app.cacheDir, "hq-art/$albumId.differs").delete()
             }

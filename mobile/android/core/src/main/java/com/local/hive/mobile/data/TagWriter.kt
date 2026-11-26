@@ -148,6 +148,7 @@ object TagWriter {
 
     private fun invalidateCoverCache(context: Context, track: Track) {
         File(context.cacheDir, "embedded-art-v2/${track.albumId}.img").delete()
+        File(context.cacheDir, "embedded-art-v2/${track.albumId}.small.img").delete()
         File(context.cacheDir, "hq-art/${track.albumId}.jpg").delete()
         File(context.cacheDir, "hq-art/${track.albumId}.differs").delete()
         File(context.cacheDir, "pictures/${track.id}").deleteRecursively()

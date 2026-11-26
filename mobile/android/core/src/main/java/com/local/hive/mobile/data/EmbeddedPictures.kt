@@ -30,45 +30,189 @@ object EmbeddedPictures {
 
     /** Whether two pictures show the same artwork (perhaps at other sizes): a 16×16 average hash. */
     fun looksAlike(a: ByteArray, b: ByteArray): Boolean {
+        if (a.contentEquals(b)) return true
         val ha = averageHash(a) ?: return false
         val hb = averageHash(b) ?: return false
         return ha.indices.count { ha[it] != hb[it] } <= LOOK_ALIKE_BITS
     }
 
     /**
-     * The song's pictures when it has two or more distinct ones (with [albumId], the album's online
-     * cover counts when it differs from the embedded one, shown after it); otherwise empty.
+     * Pure rotation-order resolver for a track:
+     * - When the track belongs to an album with a displayed [albumCover] and the track's own embedded
+     *   [trackPictures] do NOT already contain that album cover (e.g. a Bandcamp album where some
+     *   tracks carry individual single artwork), [albumCover] is shown first and the track's own
+     *   embedded picture(s) follow as rotating back cover(s).
+     * - When the track already embeds the album cover alongside back/single covers (e.g. Charli XCX),
+     *   its own covers rotate without duplicating the album cover.
+     * - An [onlineAlternate] (when distinct) appends at the end.
+     * - Returns empty when fewer than 2 distinct frames exist (nothing to rotate).
      */
-    suspend fun forTrack(context: Context, trackId: Long, albumId: Long? = null): List<File> = withContext(Dispatchers.IO) {
-        val own = embeddedForTrack(context, trackId)
-        val alternate = albumId?.let { onlineAlternate(context, it) } ?: return@withContext own
-        // The song's own picture first, then the online one.
-        val first = if (own.isNotEmpty()) own else ownFirstPicture(context, trackId)?.let(::listOf).orEmpty()
-        if (first.isEmpty()) return@withContext own
-        first + alternate
+    fun resolveTrackRotation(
+        albumCover: ByteArray?,
+        trackPictures: List<ByteArray>,
+        onlineAlternate: ByteArray? = null,
+        same: (ByteArray, ByteArray) -> Boolean = ::looksAlike,
+    ): List<ByteArray> {
+        val own = mutableListOf<ByteArray>()
+        for (p in trackPictures) {
+            if (p.isNotEmpty() && own.none { same(it, p) }) own += p
+        }
+        val frames = mutableListOf<ByteArray>()
+        if (albumCover != null && albumCover.isNotEmpty() && own.isNotEmpty() && own.none { same(albumCover, it) }) {
+            frames += albumCover
+        }
+        frames += own
+        if (onlineAlternate != null && onlineAlternate.isNotEmpty() && frames.isNotEmpty() && frames.none { same(onlineAlternate, it) }) {
+            frames += onlineAlternate
+        }
+        return if (frames.size >= 2) frames else emptyList()
+    }
+
+    /**
+     * The song's rotating pictures when it has two or more distinct ones:
+     * - Multiple distinct pictures embedded in the song file itself (front first, then backs).
+     * - A Bandcamp-style track whose own embedded picture differs from its album's cover
+     *   (when [includeAlbumMismatch] is true): album cover first, then the song's embedded cover.
+     * - With [albumId], the album's online cover when it differs from the embedded one.
+     * Otherwise empty (nothing to rotate).
+     */
+    suspend fun forTrack(
+        context: Context,
+        trackId: Long,
+        albumId: Long? = null,
+        includeAlbumMismatch: Boolean = true,
+    ): List<File> = withContext(Dispatchers.IO) {
+        val trackModMs = trackModifiedMs(context, trackId)
+        val own = embeddedForTrack(context, trackId, trackModMs)
+        val albumCover = if (includeAlbumMismatch && albumId != null && albumId > 0L) {
+            AlbumArtFetcher.albumCoverFile(context, albumId)
+        } else null
+        val alternate = albumId?.let { onlineAlternate(context, it) }
+
+        val frames = mutableListOf<File>()
+        if (own.isNotEmpty()) {
+            if (albumCover != null && albumCover.length() > 0) {
+                val albBytes = runCatching { albumCover.readBytes() }.getOrNull()
+                val alreadyHasAlbum = albBytes != null && own.any { f ->
+                    runCatching { looksAlike(albBytes, f.readBytes()) }.getOrDefault(false)
+                }
+                if (!alreadyHasAlbum) frames += albumCover
+            }
+            frames += own
+        } else if (albumCover != null && albumId != null) {
+            val trackSingle = ownSingleIfDifferentFromAlbum(context, trackId, albumId, albumCover, trackModMs)
+            if (trackSingle != null) {
+                frames += albumCover
+                frames += trackSingle
+            }
+        }
+
+        if (alternate != null && alternate.length() > 0) {
+            if (frames.isEmpty()) {
+                val first = ownFirstPicture(context, trackId, trackModMs)
+                if (first != null) {
+                    frames += first
+                    frames += alternate
+                }
+            } else {
+                val altBytes = runCatching { alternate.readBytes() }.getOrNull()
+                val dup = altBytes != null && frames.any { f ->
+                    runCatching { looksAlike(altBytes, f.readBytes()) }.getOrDefault(false)
+                }
+                if (!dup) frames += alternate
+            }
+        }
+        if (frames.size >= 2) frames else emptyList()
+    }
+
+    private fun trackModifiedMs(context: Context, trackId: Long): Long = runCatching {
+        val uri = ContentUris.withAppendedId(MediaStore.Audio.Media.EXTERNAL_CONTENT_URI, trackId)
+        context.contentResolver.query(uri, arrayOf(MediaStore.Audio.Media.DATE_MODIFIED), null, null, null)?.use { c ->
+            if (c.moveToFirst()) c.getLong(0) * 1000L else 0L
+        } ?: 0L
+    }.getOrDefault(0L)
+
+    /**
+     * Checks whether a single-picture track carries its own individual embedded artwork distinct
+     * from [albumCover]. Writes only a 0-byte `same-<albumId>` marker when they match (zero extra
+     * image storage for normal albums), and caches `single.img` when they differ.
+     */
+    private fun ownSingleIfDifferentFromAlbum(
+        context: Context,
+        trackId: Long,
+        albumId: Long,
+        albumCover: File,
+        trackModMs: Long,
+    ): File? {
+        if (!albumCover.exists() || albumCover.length() <= 0L) return null
+        val dir = File(context.cacheDir, "pictures/$trackId")
+        val sameMarker = File(dir, "same-$albumId")
+        val diffMarker = File(dir, "diff-$albumId")
+        val singleFile = File(dir, "single.img")
+        val freshAfter = maxOf(trackModMs, albumCover.lastModified())
+
+        if (sameMarker.exists() && sameMarker.lastModified() >= freshAfter) return null
+        if (diffMarker.exists() && singleFile.length() > 0 && diffMarker.lastModified() >= freshAfter && singleFile.lastModified() >= trackModMs) {
+            return singleFile
+        }
+
+        val uri = ContentUris.withAppendedId(MediaStore.Audio.Media.EXTERNAL_CONTENT_URI, trackId)
+        val raw = runCatching { context.contentResolver.openInputStream(uri)?.use { readTyped(it) } }.getOrNull()
+            ?.let(::bestBytes)
+        dir.mkdirs()
+        if (raw == null || raw.isEmpty()) {
+            diffMarker.delete()
+            runCatching { sameMarker.writeText("") }
+            return null
+        }
+        val albBytes = runCatching { albumCover.readBytes() }.getOrNull() ?: return null
+        val fittedOwn = AlbumArtFetcher.fitted(raw) ?: raw
+        if (looksAlike(albBytes, raw) || (fittedOwn !== raw && looksAlike(albBytes, fittedOwn))) {
+            diffMarker.delete()
+            runCatching { sameMarker.writeText("") }
+            return null
+        }
+        sameMarker.delete()
+        return runCatching {
+            singleFile.writeBytes(fittedOwn)
+            diffMarker.writeText("")
+            singleFile
+        }.getOrNull()
     }
 
     /** The song's first embedded picture, kept as a file, for a song with only one. */
-    private fun ownFirstPicture(context: Context, trackId: Long): File? {
+    private fun ownFirstPicture(context: Context, trackId: Long, trackModMs: Long = 0L): File? {
         val file = File(context.cacheDir, "pictures/$trackId/single.img")
-        if (file.length() > 0) return file
+        if (file.length() > 0 && file.lastModified() >= trackModMs) return file
         val uri = ContentUris.withAppendedId(MediaStore.Audio.Media.EXTERNAL_CONTENT_URI, trackId)
-        val bytes = runCatching { context.contentResolver.openInputStream(uri)?.use { read(it) } }.getOrNull().orEmpty().firstOrNull() ?: return null
+        val bytes = runCatching { context.contentResolver.openInputStream(uri)?.use { readTyped(it) } }.getOrNull()
+            ?.let(::bestBytes)?.let(AlbumArtFetcher::fitted) ?: return null
         file.parentFile?.mkdirs()
         return runCatching { file.writeBytes(bytes); file }.getOrNull()
     }
 
-    private suspend fun embeddedForTrack(context: Context, trackId: Long): List<File> = withContext(Dispatchers.IO) {
+    private suspend fun embeddedForTrack(context: Context, trackId: Long, trackModMs: Long = 0L): List<File> = withContext(Dispatchers.IO) {
         val dir = File(context.cacheDir, "pictures/$trackId")
         val marker = File(dir, "count")
-        if (marker.exists()) return@withContext (0 until (marker.readText().toIntOrNull() ?: 0)).map { File(dir, "$it.img") }.filter { it.exists() }
+        if (marker.exists() && marker.lastModified() >= trackModMs) {
+            return@withContext (0 until (marker.readText().toIntOrNull() ?: 0)).map { File(dir, "$it.img") }.filter { it.exists() }
+        }
         val uri = ContentUris.withAppendedId(MediaStore.Audio.Media.EXTERNAL_CONTENT_URI, trackId)
-        val pictures = runCatching { context.contentResolver.openInputStream(uri)?.use { read(it) } }.getOrNull().orEmpty()
+        val typed = runCatching { context.contentResolver.openInputStream(uri)?.use { readTyped(it) } }.getOrNull().orEmpty()
+        // Put the designated Cover (Front) first so rotation always leads with the front cover.
+        val frontIdx = typed.indexOfFirst { it.type == FRONT }
+        val ordered = if (frontIdx > 0) {
+            val list = typed.toMutableList()
+            val front = list.removeAt(frontIdx)
+            list.add(0, front)
+            list
+        } else typed
+        val pictures = ordered.map { it.data }
         val distinct = lookDistinct(pictures.distinctBy { MessageDigest.getInstance("SHA-1").digest(it).contentHashCode() })
         dir.mkdirs()
-        // One picture (or none) is what the normal cover already shows; only the count is kept.
+        // One picture (or none) is handled by normal cover + album-mismatch check; keep count=0 here.
         val kept = if (distinct.size > 1) distinct else emptyList()
-        kept.forEachIndexed { i, bytes -> File(dir, "$i.img").writeBytes(bytes) }
+        kept.forEachIndexed { i, bytes -> File(dir, "$i.img").writeBytes(AlbumArtFetcher.fitted(bytes) ?: bytes) }
         marker.writeText(kept.size.toString())
         kept.indices.map { File(dir, "$it.img") }
     }

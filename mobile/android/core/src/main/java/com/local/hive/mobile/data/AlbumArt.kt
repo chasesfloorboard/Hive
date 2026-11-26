@@ -40,31 +40,34 @@ class AlbumArtFetcher(private val context: Context, private val albumId: Long, p
         if (albumId < 0) return@withContext ownAlbum(-albumId)
         val hidden = runCatching { AlbumCovers(context).hidden.value }.getOrDefault(emptySet())
         if (albumId in hidden) throw IllegalStateException("Album cover $albumId is cleared")
-        val song = firstSong()
-        if (song?.album.equals("beautiful sounds pc", ignoreCase = true) || song?.album.isNullOrBlank() || song?.album.equals("<unknown>", ignoreCase = true)) {
+        val songs = albumSongs(context, albumId)
+        val song = songs.firstOrNull()
+        if (isLooseCollection(song?.album)) {
             throw IllegalStateException("Songs in loose collections have no album cover")
         }
         val kept = File(File(context.cacheDir, "embedded-art-v2").apply { mkdirs() }, "$albumId.img")
+        val smallKept = File(File(context.cacheDir, "embedded-art-v2"), "$albumId.small.img")
         val hq = File(File(context.cacheDir, "hq-art").apply { mkdirs() }, "$albumId.jpg")
-        // If the underlying audio file was rewritten (e.g. a new HQ cover synced from PC), invalidate stale cache.
-        if (song != null && kept.length() > 0 && song.modifiedMs > kept.lastModified()) {
+        val maxModifiedMs = songs.maxOfOrNull { it.modifiedMs } ?: 0L
+        // If any underlying audio file was rewritten (e.g. a new HQ cover synced from PC), invalidate stale cache.
+        if (maxModifiedMs > 0L && kept.length() > 0 && maxModifiedMs > kept.lastModified()) {
             kept.delete()
+            smallKept.delete()
             hq.delete()
             File(File(context.cacheDir, "hq-art"), "$albumId.differs").delete()
         }
         // Hive's own extracted copy of the album's embedded cover, kept once per album.
         if (kept.length() > 0) return@withContext result(kept.readBytes())
-        // The cover is read from the first song's OWN embedded picture — never a stray image sitting in
-        // the song's folder. MediaStore's albumart (content://.../albumart) scrapes a folder image as the
-        // cover of a tag-less "album", wearing one picture across unrelated songs; Hive never shows that.
-        val embedded = song?.let {
-            // The song's own front cover, read full-size from the file's tags; MediaMetadataRetriever (which can
-            // hand back a reduced-resolution rendition) is only the fallback, so the big player cover stays sharp.
-            ownPicture(it.uri)
-                ?: runCatching { MediaMetadataRetriever().use { r -> r.setDataSource(context, it.uri); r.embeddedPicture } }.getOrNull()?.let(::fitted)
-        }
-        if (embedded != null && longestSide(embedded) >= SMALL) runCatching { kept.writeBytes(embedded) }
+        // The cover is read from the album's own embedded pictures — never a stray image sitting in
+        // the song's folder. On Bandcamp-style albums where some tracks have individual single art,
+        // pick the majority album-wide cover so every song wears the album cover.
+        val embedded = extractAlbumCover(context, songs)
         val side = embedded?.let { longestSide(it) } ?: 0
+        if (embedded != null && side >= SMALL) {
+            runCatching { kept.writeBytes(embedded); smallKept.delete() }
+        } else if (embedded != null && side > 0) {
+            runCatching { smallKept.writeBytes(embedded) }
+        }
         // Thumbnails never fire an online lookup (a grid would start hundreds): they show the embedded
         // cover, or one already found online for this album, or nothing — never a folder image.
         if (isThumbnail()) return@withContext when {
@@ -95,42 +98,17 @@ class AlbumArtFetcher(private val context: Context, private val albumId: Long, p
         val kept = File(File(context.cacheDir, "embedded-art-v2").apply { mkdirs() }, "$albumId.img")
         if (kept.length() > 0) return result(kept.readBytes())
         val uri = ContentUris.withAppendedId(MediaStore.Audio.Media.EXTERNAL_CONTENT_URI, songId)
-        val picture = ownPicture(uri) ?: throw IllegalStateException("This song has no picture")
+        val picture = ownPicture(context, uri) ?: throw IllegalStateException("This song has no picture")
         runCatching { kept.writeBytes(picture) }
         return result(picture)
     }
-
-    /** The first of a song's own pictures that can be shown, read by Hive rather than Android. */
-    private fun ownPicture(uri: android.net.Uri): ByteArray? =
-        runCatching { context.contentResolver.openInputStream(uri)?.use { EmbeddedPictures.readTyped(it) } }.getOrNull()
-            ?.let(EmbeddedPictures::bestBytes)?.let(::fitted)
 
     private fun isThumbnail(): Boolean {
         fun px(d: coil3.size.Dimension) = (d as? coil3.size.Dimension.Pixels)?.px ?: Int.MAX_VALUE
         return maxOf(px(options.size.width), px(options.size.height)) <= THUMBNAIL_PX
     }
 
-    private data class Song(val uri: android.net.Uri, val album: String, val artist: String, val modifiedMs: Long = 0L)
-
-    private fun firstSong(): Song? = context.contentResolver.query(
-        MediaStore.Audio.Media.EXTERNAL_CONTENT_URI,
-        arrayOf(MediaStore.Audio.Media._ID, MediaStore.Audio.Media.ALBUM, MediaStore.Audio.Media.ARTIST, "album_artist", MediaStore.Audio.Media.DATE_MODIFIED),
-        android.os.Bundle().apply {
-            putString(android.content.ContentResolver.QUERY_ARG_SQL_SELECTION, "${MediaStore.Audio.Media.ALBUM_ID} = ?")
-            putStringArray(android.content.ContentResolver.QUERY_ARG_SQL_SELECTION_ARGS, arrayOf(albumId.toString()))
-            putStringArray(android.content.ContentResolver.QUERY_ARG_SORT_COLUMNS, arrayOf(MediaStore.Audio.Media.TRACK))
-            putInt(android.content.ContentResolver.QUERY_ARG_LIMIT, 1)
-        },
-        null,
-    )?.use { c ->
-        if (!c.moveToFirst()) null
-        else Song(
-            ContentUris.withAppendedId(MediaStore.Audio.Media.EXTERNAL_CONTENT_URI, c.getLong(0)),
-            c.getString(1).orEmpty(),
-            c.getString(3)?.ifBlank { null } ?: c.getString(2).orEmpty(),
-            modifiedMs = c.getLong(4) * 1000L,
-        )
-    }
+    internal data class Song(val uri: android.net.Uri, val album: String, val artist: String, val modifiedMs: Long = 0L)
 
     /** The album's cover from Apple Music, kept on the phone; a miss is remembered for a week. */
     private suspend fun upgraded(song: Song): ByteArray? {
@@ -183,6 +161,108 @@ class AlbumArtFetcher(private val context: Context, private val albumId: Long, p
 
         /** Covers past this size (longest side) are shrunk to it before they're kept and shown. */
         private const val LARGEST = 1600
+
+        internal fun isLooseCollection(album: String?): Boolean =
+            album.equals("beautiful sounds pc", ignoreCase = true) || album.isNullOrBlank() || album.equals("<unknown>", ignoreCase = true)
+
+        /**
+         * Picks the album-wide cover from a list of track covers: when tracks share a majority cover
+         * (e.g. a Bandcamp album where 6 of 9 songs share the album art and 3 carry track-specific
+         * single art), returns the majority cover — even if track 1 has its own single cover.
+         * Ties break by earliest track order.
+         */
+        fun pickMajorityCover(
+            covers: List<ByteArray>,
+            same: (ByteArray, ByteArray) -> Boolean = EmbeddedPictures::looksAlike,
+        ): ByteArray? {
+            if (covers.isEmpty()) return null
+            if (covers.size <= 2) return covers.first()
+            // Fast path (normal albums): if tracks 1 and 2 agree, that is the album cover.
+            if (same(covers[0], covers[1])) return covers[0]
+            val groups = mutableListOf<MutableList<ByteArray>>()
+            for (c in covers) {
+                val match = groups.firstOrNull { g -> same(g.first(), c) }
+                if (match != null) match += c else groups += mutableListOf(c)
+            }
+            return groups.maxByOrNull { it.size }?.first()
+        }
+
+        internal fun albumSongs(context: Context, albumId: Long, limit: Int = 10): List<Song> {
+            val out = mutableListOf<Song>()
+            context.contentResolver.query(
+                MediaStore.Audio.Media.EXTERNAL_CONTENT_URI,
+                arrayOf(MediaStore.Audio.Media._ID, MediaStore.Audio.Media.ALBUM, MediaStore.Audio.Media.ARTIST, "album_artist", MediaStore.Audio.Media.DATE_MODIFIED),
+                android.os.Bundle().apply {
+                    putString(android.content.ContentResolver.QUERY_ARG_SQL_SELECTION, "${MediaStore.Audio.Media.ALBUM_ID} = ?")
+                    putStringArray(android.content.ContentResolver.QUERY_ARG_SQL_SELECTION_ARGS, arrayOf(albumId.toString()))
+                    putStringArray(android.content.ContentResolver.QUERY_ARG_SORT_COLUMNS, arrayOf(MediaStore.Audio.Media.TRACK))
+                    putInt(android.content.ContentResolver.QUERY_ARG_LIMIT, limit)
+                },
+                null,
+            )?.use { c ->
+                while (c.moveToNext()) {
+                    out += Song(
+                        ContentUris.withAppendedId(MediaStore.Audio.Media.EXTERNAL_CONTENT_URI, c.getLong(0)),
+                        c.getString(1).orEmpty(),
+                        c.getString(3)?.ifBlank { null } ?: c.getString(2).orEmpty(),
+                        modifiedMs = c.getLong(4) * 1000L,
+                    )
+                }
+            }
+            return out
+        }
+
+        internal fun ownPicture(context: Context, uri: android.net.Uri): ByteArray? =
+            runCatching { context.contentResolver.openInputStream(uri)?.use { EmbeddedPictures.readTyped(it) } }.getOrNull()
+                ?.let(EmbeddedPictures::bestBytes)?.let(::fitted)
+
+        private fun readSongCover(context: Context, song: Song): ByteArray? =
+            ownPicture(context, song.uri)
+                ?: runCatching { MediaMetadataRetriever().use { r -> r.setDataSource(context, song.uri); r.embeddedPicture } }.getOrNull()?.let(::fitted)
+
+        internal fun extractAlbumCover(context: Context, songs: List<Song>): ByteArray? {
+            if (songs.isEmpty()) return null
+            val first = readSongCover(context, songs[0])
+            if (songs.size <= 2) return first ?: songs.getOrNull(1)?.let { readSongCover(context, it) }
+            val second = readSongCover(context, songs[1])
+            if (first != null && second != null && EmbeddedPictures.looksAlike(first, second)) return first
+            val collected = mutableListOf<ByteArray>()
+            if (first != null) collected += first
+            if (second != null) collected += second
+            for (i in 2 until songs.size) {
+                readSongCover(context, songs[i])?.let { collected += it }
+            }
+            return pickMajorityCover(collected)
+        }
+
+        /**
+         * Returns the cached file holding the album's displayed cover (extracting it once if not yet
+         * cached), or null when the album is a loose collection, hidden, or has no embedded/HQ cover.
+         */
+        fun albumCoverFile(context: Context, albumId: Long): File? {
+            if (albumId <= 0L) return null
+            val hidden = runCatching { AlbumCovers(context).hidden.value }.getOrDefault(emptySet())
+            if (albumId in hidden) return null
+            val dir = File(context.cacheDir, "embedded-art-v2").apply { mkdirs() }
+            val kept = File(dir, "$albumId.img")
+            val smallKept = File(dir, "$albumId.small.img")
+            val hqDir = File(context.cacheDir, "hq-art")
+            val hq = File(hqDir, "$albumId.jpg")
+            if (kept.length() > 0) return kept
+            if (hq.length() > 0 && !File(hqDir, "$albumId.differs").exists()) return hq
+            if (smallKept.length() > 0) return smallKept
+            val songs = albumSongs(context, albumId)
+            val first = songs.firstOrNull() ?: return null
+            if (isLooseCollection(first.album)) return null
+            val embedded = extractAlbumCover(context, songs) ?: return null
+            val side = longestSide(embedded)
+            if (side <= 0) return null
+            return if (side >= SMALL) {
+                runCatching { kept.writeBytes(embedded); kept }.getOrNull()
+            } else {
+                runCatching { smallKept.writeBytes(embedded); smallKept }.getOrNull()
+            }
+        }
 
         /**
          * A picture at a size worth keeping: as it is up to [LARGEST] px, shrunk past it (a poster-sized

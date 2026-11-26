@@ -167,12 +167,14 @@ const val COVER_ROTATE_MS = 4_000L
  * the bar and the album page change together. Other songs show [base].
  */
 @Composable
-fun rotatingCover(base: Any?, trackId: Long?): CoverFrame {
+fun rotatingCover(base: Any?, trackId: Long?, includeAlbumMismatch: Boolean = true): CoverFrame {
     val context = androidx.compose.ui.platform.LocalContext.current
-    // The album (from the base cover's address) brings its online cover when that one differs.
+    val generation = CoverGeneration.intValue
+    // The album (from the base cover's address) brings its shared cover (when a track embeds
+    // its own individual cover, e.g. Bandcamp releases) and its online alternate when different.
     val albumId = (base as? android.net.Uri ?: base as? String)?.toString()?.substringAfter("/audio/albumart/", "")?.toLongOrNull()
-    val pictures by androidx.compose.runtime.produceState(emptyList<java.io.File>(), trackId, albumId) {
-        value = trackId?.let { com.local.hive.mobile.data.EmbeddedPictures.forTrack(context, it, albumId) }.orEmpty()
+    val pictures by androidx.compose.runtime.produceState(emptyList<java.io.File>(), trackId, albumId, includeAlbumMismatch, generation) {
+        value = trackId?.let { com.local.hive.mobile.data.EmbeddedPictures.forTrack(context, it, albumId, includeAlbumMismatch) }.orEmpty()
     }
     val auras by androidx.compose.runtime.produceState(emptyMap<java.io.File, AuraColors?>(), pictures) {
         if (pictures.isEmpty()) {

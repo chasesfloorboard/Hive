@@ -153,4 +153,52 @@ class EmbeddedPicturesTest {
         val wrong = rows.filter { (path, count) -> File(path).exists() && EmbeddedPictures.read(File(path).inputStream()).distinctBy { it.contentHashCode() }.size != count.toInt() }
         println("picture audit: ${rows.size - wrong.size} of ${rows.size} match; e.g. ${wrong.take(5).map { it[0].substringAfterLast('/') + " (pc " + it[1] + ")" }}")
     }
+
+    @Test fun bandcampTrackWithOwnCoverRotatesAlbumCoverFirstThenEmbeddedCover() {
+        val albumArt = byteArrayOf(1, 2, 3, 4)
+        val songArt = byteArrayOf(9, 8, 7, 6)
+        val sameBytes: (ByteArray, ByteArray) -> Boolean = { a, b -> a.contentEquals(b) }
+
+        // A Bandcamp track whose embedded cover differs from the album cover rotates [albumArt, songArt].
+        val rotating = EmbeddedPictures.resolveTrackRotation(albumArt, listOf(songArt), same = sameBytes)
+        assertEquals(2, rotating.size)
+        assertArrayEquals(albumArt, rotating[0])
+        assertArrayEquals(songArt, rotating[1])
+
+        // A sibling track whose embedded cover matches the album cover does NOT rotate.
+        val normal = EmbeddedPictures.resolveTrackRotation(albumArt, listOf(albumArt.copyOf()), same = sameBytes)
+        assertEquals(0, normal.size)
+
+        // A track that already embeds [albumArt, backArt, singleArt] (like Charli XCX brat) keeps all 3 without duplicating albumArt.
+        val backArt = byteArrayOf(5, 5, 5, 5)
+        val multi = EmbeddedPictures.resolveTrackRotation(albumArt, listOf(albumArt.copyOf(), backArt, songArt), same = sameBytes)
+        assertEquals(3, multi.size)
+        assertArrayEquals(albumArt, multi[0])
+        assertArrayEquals(backArt, multi[1])
+        assertArrayEquals(songArt, multi[2])
+
+        // A coverless track on an album does not rotate.
+        assertEquals(0, EmbeddedPictures.resolveTrackRotation(albumArt, emptyList(), same = sameBytes).size)
+    }
+
+    @Test fun majorityCoverSelectorPicksSharedAlbumCoverEvenWhenTrackOneHasSingleArt() {
+        val albumArt = byteArrayOf(1, 1, 1, 1)
+        val single1 = byteArrayOf(2, 2, 2, 2)
+        val single2 = byteArrayOf(3, 3, 3, 3)
+        val sameBytes: (ByteArray, ByteArray) -> Boolean = { a, b -> a.contentEquals(b) }
+
+        // Track 1 has its own single cover, Tracks 2..5 share albumArt -> picks albumArt.
+        val picked = AlbumArtFetcher.pickMajorityCover(
+            listOf(single1, albumArt, albumArt, single2, albumArt, albumArt),
+            same = sameBytes,
+        )
+        assertArrayEquals(albumArt, picked)
+
+        // Normal album: Tracks 1 & 2 share albumArt -> picks albumArt immediately.
+        val normal = AlbumArtFetcher.pickMajorityCover(
+            listOf(albumArt, albumArt, single1, albumArt),
+            same = sameBytes,
+        )
+        assertArrayEquals(albumArt, normal)
+    }
 }
