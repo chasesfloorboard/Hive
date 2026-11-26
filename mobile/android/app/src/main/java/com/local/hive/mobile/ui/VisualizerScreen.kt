@@ -74,22 +74,28 @@ internal class VisualizerShaper {
         val out = FloatArray(count)
         val n = values.size
         if (n == 0 || count <= 0) return out
-        for (i in 0 until count) {
-            val start = i.toFloat() * n / count
-            val end = (i + 1).toFloat() * n / count
-            if (end - start >= 1f) {
+        if (count >= n) {
+            // Upsampling (e.g. 64 -> 64..128 bars): smooth linear interpolation between band centers.
+            for (i in 0 until count) {
+                val pos = if (count > 1) i.toFloat() * (n - 1) / (count - 1) else 0f
+                val lo = floor(pos).toInt().coerceIn(0, n - 1)
+                val hi = (lo + 1).coerceAtMost(n - 1)
+                out[i] = values[lo] + (values[hi] - values[lo]) * (pos - lo)
+            }
+        } else {
+            // Downsampling (e.g. 64 -> 16..63 bars): partition band centers (b + 0.5) cleanly into
+            // non-overlapping bar intervals [start, end) so every peak keeps 100% height without
+            // being duplicated onto two adjacent bars.
+            for (i in 0 until count) {
+                val start = i.toFloat() * n / count
+                val end = (i + 1).toFloat() * n / count
+                val lo = ceil(start - 0.5f).toInt().coerceIn(0, n - 1)
+                val hi = floor(end - 0.5f - 1e-5f).toInt().coerceIn(lo, n - 1)
                 var maxVal = 0f
-                val lo = floor(start).toInt().coerceIn(0, n - 1)
-                val hi = ceil(end).toInt().coerceIn(lo + 1, n)
-                for (b in lo until hi) {
+                for (b in lo..hi) {
                     if (values[b] > maxVal) maxVal = values[b]
                 }
                 out[i] = maxVal
-            } else {
-                val pos = ((start + end) / 2f - 0.5f).coerceIn(0f, (n - 1).toFloat())
-                val lo = floor(pos).toInt()
-                val hi = (lo + 1).coerceAtMost(n - 1)
-                out[i] = values[lo] + (values[hi] - values[lo]) * (pos - lo)
             }
         }
         return out
@@ -109,6 +115,28 @@ internal class VisualizerShaper {
         return out
     }
 
+    private fun smoothWaveCrests(values: FloatArray): FloatArray {
+        val n = values.size
+        if (n < 3) return values
+        var preMax = 0f
+        for (v in values) if (v > preMax) preMax = v
+        val out = FloatArray(n)
+        var postMax = 0f
+        for (i in 0 until n) {
+            val l = if (i > 0) values[i - 1] else values[i]
+            val r = if (i < n - 1) values[i + 1] else values[i]
+            val v = 0.20f * l + 0.60f * values[i] + 0.20f * r
+            out[i] = v
+            if (v > postMax) postMax = v
+        }
+        if (preMax > 0.001f && postMax > 0.001f) {
+            // Restore full crest headroom after smoothing sharp triangular shoulders into liquid waves.
+            val gain = (preMax / postMax).coerceIn(1f, 1.28f)
+            for (i in 0 until n) out[i] = (out[i] * gain).coerceIn(0f, 1f)
+        }
+        return out
+    }
+
     fun shapeFrame(
         levels: FloatArray,
         barCount: Int,
@@ -117,23 +145,34 @@ internal class VisualizerShaper {
         dtSeconds: Float,
     ): FloatArray {
         val count = barCount.coerceIn(16, 128)
-        val dbs = FloatArray(levels.size) { levelToDb(levels[it]) }
+        val lastIdx = (levels.size - 1).coerceAtLeast(1).toFloat()
+        val dbs = FloatArray(levels.size) { i ->
+            val rawDb = levelToDb(levels[i])
+            if (rawDb <= FLOOR_DB + 1f) rawDb
+            else (rawDb + HIGH_TILT_DB * (i / lastIdx).pow(0.85f)).coerceAtMost(0f)
+        }
         var peak = FLOOR_DB
         for (db in dbs) if (db > peak) peak = db
         if (peak < SILENCE_DB) return FloatArray(count)
         refDb = maxOf(peak, refDb - 6f * dtSeconds.coerceAtLeast(0f), MIN_REF_DB)
         val sens = sensitivityDb.coerceIn(15f, 70f)
         val bottom = refDb - sens
-        val normalized = FloatArray(dbs.size) { ((dbs[it] - bottom) / sens).coerceIn(0f, 1f) }
+        // Amplitude-style exponential curve (like After Effects / Monstercat) lifts traveling
+        // kick crests sharply above neighboring frequencies instead of forming a flat dB shelf.
+        val normalized = FloatArray(dbs.size) {
+            ((dbs[it] - bottom) / sens).coerceIn(0f, 1f).pow(BAR_CURVE_POWER)
+        }
         val bars = resample(normalized, count)
-        return if (monstercatSmoothing) monstercatSpread(bars) else bars
+        if (!monstercatSmoothing) return bars
+        return smoothWaveCrests(monstercatSpread(bars, factor = WAVE_SPREAD_FACTOR))
     }
 
     fun stepBars(current: FloatArray, target: FloatArray, dtSeconds: Float, decayMs: Float): FloatArray {
         val out = if (current.size == target.size) current else FloatArray(target.size)
         val dt = dtSeconds.coerceIn(0.001f, 0.1f)
-        val attack = 1f - exp(-dt / 0.008f)
-        val decay = 1f - exp(-dt / (decayMs.coerceIn(20f, 400f) / 1000f))
+        val attack = 1f - exp(-dt / 0.006f)
+        // Responsive decay lets trailing right-side bars fall cleanly as a kick pitch drops left.
+        val decay = 1f - exp(-dt / ((decayMs.coerceIn(20f, 400f) * 0.72f) / 1000f))
         for (i in target.indices) {
             val from = out[i]
             val to = target[i]
@@ -147,6 +186,9 @@ internal class VisualizerShaper {
         private const val FLOOR_DB = -80f
         private const val MIN_REF_DB = -36f
         private const val SILENCE_DB = -62f
+        private const val HIGH_TILT_DB = 8f
+        private const val BAR_CURVE_POWER = 2.15f
+        private const val WAVE_SPREAD_FACTOR = 1.85f
         const val GAP_RATIO = 7f / 18f
         const val MIN_BAR = 0.012f
     }

@@ -82,4 +82,41 @@ class SpectrumProcessorTest {
         assertEquals(false, timeline.sample(nowWallMs = 1_030L, isPlaying = false, speed = 1f, targetLagMs = 240.0, out = out))
         assertTrue(out.all { it == 0f })
     }
+
+    @Test
+    fun kickPitchSweepRollsSmoothlyFromRightToLeft() {
+        val rate = 48_000
+        val totalSamples = (rate * 0.4).toInt()
+        val kickStart = (rate * 0.08).toInt()
+        val pcm = FloatArray(totalSamples)
+        var phase = 0.0
+        for (i in kickStart until totalSamples) {
+            val tMs = (i - kickStart) * 1000.0 / rate
+            val freq = 46.0 + (220.0 - 46.0) * kotlin.math.exp(-tMs / 32.0)
+            val amp = minOf(1.0, tMs / 1.5) * kotlin.math.exp(-tMs / 150.0)
+            phase += 2.0 * PI * freq / rate
+            pcm[i] = (0.9 * amp * sin(phase)).toFloat()
+        }
+
+        val win = FloatArray(SpectrumFft.FFT_SIZE)
+        val half = SpectrumFft.FFT_SIZE / 2
+        val peakBands = mutableListOf<Int>()
+        for (tMs in 0..128 step 16) {
+            val center = kickStart + (tMs * rate / 1000)
+            for (i in 0 until SpectrumFft.FFT_SIZE) {
+                val idx = center - half + i
+                win[i] = if (idx in pcm.indices) pcm[idx] else 0f
+            }
+            val bands = SpectrumFft.compute64Bands(win, rate)
+            peakBands += bands.indices.maxByOrNull { bands[it] } ?: -1
+        }
+
+        // Kick punch starts high (~band 15..20) and smoothly rolls left down to sub-bass (~band 2..5).
+        assertTrue("kick starts at upper-bass band (${peakBands.first()})", peakBands.first() >= 14)
+        assertTrue("kick ends at sub-bass band (${peakBands.last()})", peakBands.last() <= 5)
+        for (i in 1 until peakBands.size) {
+            assertTrue("peak rolls non-increasingly right-to-left: $peakBands", peakBands[i] <= peakBands[i - 1])
+        }
+        assertTrue("sweep traverses >= 4 distinct bands: $peakBands", peakBands.distinct().size >= 4)
+    }
 }

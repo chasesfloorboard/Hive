@@ -190,6 +190,7 @@ object SpectrumBus {
     private val observerCount = AtomicInteger(0)
     private val nextProducerId = AtomicInteger(1)
     @Volatile private var activeProducerId = 0
+    @Volatile private var windowHalfMs = (SpectrumFft.FFT_SIZE * 500.0) / 48_000.0
 
     private val timeline = SpectrumTimeline()
     private val _levels = MutableStateFlow(FloatArray(BANDS))
@@ -198,6 +199,11 @@ object SpectrumBus {
     val active: Boolean get() = observerCount.get() > 0
 
     internal fun allocateProducerId(): Int = nextProducerId.getAndIncrement()
+
+    internal fun setSampleRate(sampleRate: Int) {
+        val sr = sampleRate.coerceAtLeast(8_000)
+        windowHalfMs = (SpectrumFft.FFT_SIZE * 500.0) / sr
+    }
 
     fun acquire() {
         if (observerCount.getAndIncrement() == 0) {
@@ -241,11 +247,14 @@ object SpectrumBus {
         targetLagMs: Double = BASE_AUDIO_TRACK_LEAD_MS,
         out: FloatArray = FloatArray(BANDS),
     ): FloatArray {
+        // Subtract the symmetric Hann window's half-length group delay so the 4096-sample bass
+        // resolution adds zero visual latency relative to the speakers/Bluetooth output.
+        val effectiveLagMs = (targetLagMs - windowHalfMs).coerceAtLeast(0.0)
         timeline.sample(
             nowWallMs = SystemClock.elapsedRealtime(),
             isPlaying = isPlaying,
             speed = speed,
-            targetLagMs = targetLagMs,
+            targetLagMs = effectiveLagMs,
             out = out,
         )
         return out
@@ -269,14 +278,20 @@ object SpectrumBus {
 }
 
 /**
- * Pure radix-2 FFT and log-spaced 64-band spectrum computation (20 Hz .. 16 kHz),
+ * Pure radix-2 FFT and log-spaced 64-band spectrum computation (35 Hz .. 12 kHz),
  * kept free of Android types so unit tests exercise the exact DSP math.
+ *
+ * Uses a 4096-sample Hann window (23.4 Hz main lobe at 48 kHz so low kick pitch sweeps
+ * resolve cleanly) zero-padded 2x to an 8192-point FFT (5.86 Hz/bin exact sinc interpolation)
+ * with fractional sub-bin interpolation on narrow bass bands so adjacent bars never clone
+ * the same FFT bin.
  */
 object SpectrumFft {
-    const val FFT_SIZE = 2048
+    const val FFT_SIZE = 4096
+    const val ZERO_PAD_SIZE = 8192
     const val BANDS = SpectrumBus.BANDS
-    private const val MIN_HZ = 20.0
-    private const val MAX_HZ = 16_000.0
+    private const val MIN_HZ = 35.0
+    private const val MAX_HZ = 12_000.0
     private const val FLOOR_DB = -80.0
 
     private val hann = FloatArray(FFT_SIZE) { i ->
@@ -332,40 +347,61 @@ object SpectrumFft {
     fun compute64Bands(
         mono: FloatArray,
         sampleRate: Int,
-        re: FloatArray = FloatArray(FFT_SIZE),
-        im: FloatArray = FloatArray(FFT_SIZE),
+        re: FloatArray = FloatArray(ZERO_PAD_SIZE),
+        im: FloatArray = FloatArray(ZERO_PAD_SIZE),
         out: FloatArray = FloatArray(BANDS),
     ): FloatArray {
-        val n = FFT_SIZE
-        val count = minOf(mono.size, n)
+        val n = ZERO_PAD_SIZE
+        val workRe = if (re.size == n) re else FloatArray(n)
+        val workIm = if (im.size == n) im else FloatArray(n)
+        val count = minOf(mono.size, FFT_SIZE)
         for (i in 0 until count) {
-            re[i] = mono[i] * hann[i]
-            im[i] = 0f
+            workRe[i] = mono[i] * hann[i]
+            workIm[i] = 0f
         }
         for (i in count until n) {
-            re[i] = 0f
-            im[i] = 0f
+            workRe[i] = 0f
+            workIm[i] = 0f
         }
-        fft(re, im)
+        fft(workRe, workIm)
 
-        val nyquist = (sampleRate.coerceAtLeast(8_000) / 2.0)
+        val sr = sampleRate.coerceAtLeast(8_000).toDouble()
+        val nyquist = sr / 2.0
         val hiHz = minOf(MAX_HZ, nyquist * 0.98)
         val loHz = minOf(MIN_HZ, hiHz * 0.5)
         val ratio = hiHz / loHz
-        val binHz = sampleRate.coerceAtLeast(8_000).toDouble() / n
+        val binHz = sr / n
         val maxBin = n / 2 - 1
-        // Hann window coherent gain is 0.5; multiply magnitude by 2/(N/2) = 4/N so full-scale sine ≈ 0 dB.
-        val scale = 4.0 / n
+        // Hann coherent gain is 0.5 over FFT_SIZE non-zero samples (unchanged by zero-padding),
+        // so multiplying magnitude by 4 / FFT_SIZE puts a full-scale sine wave at 0 dB.
+        val scale = 4.0 / FFT_SIZE
+
+        fun magAt(k: Int): Double {
+            val r = workRe[k].toDouble()
+            val j = workIm[k].toDouble()
+            return sqrt(r * r + j * j) * scale
+        }
 
         for (b in 0 until BANDS) {
             val f0 = loHz * ratio.pow(b.toDouble() / BANDS)
             val f1 = loHz * ratio.pow((b + 1).toDouble() / BANDS)
-            val loBin = (f0 / binHz).toInt().coerceIn(1, maxBin)
-            val hiBin = kotlin.math.ceil(f1 / binHz).toInt().coerceIn(loBin, maxBin)
-            var peakMag = 0.0
-            for (k in loBin..hiBin) {
-                val mag = sqrt((re[k] * re[k] + im[k] * im[k]).toDouble()) * scale
-                if (mag > peakMag) peakMag = mag
+            val peakMag = if ((f1 - f0) / binHz < 1.25) {
+                val fc = sqrt(f0 * f1)
+                val pos = (fc / binHz).coerceIn(1.0, (maxBin - 1).toDouble())
+                val lo = pos.toInt()
+                val frac = pos - lo
+                val m0 = magAt(lo)
+                val m1 = magAt(lo + 1)
+                m0 + (m1 - m0) * frac
+            } else {
+                val loBin = (f0 / binHz).toInt().coerceIn(1, maxBin)
+                val hiBin = kotlin.math.ceil(f1 / binHz).toInt().coerceIn(loBin, maxBin)
+                var best = 0.0
+                for (k in loBin..hiBin) {
+                    val m = magAt(k)
+                    if (m > best) best = m
+                }
+                best
             }
             val db = if (peakMag > 1e-6) 20.0 * log10(peakMag) else FLOOR_DB
             out[b] = ((db - FLOOR_DB) / -FLOOR_DB).toFloat().coerceIn(0f, 1f)
@@ -390,10 +426,10 @@ class SpectrumProcessor : BaseAudioProcessor() {
     private var hopCount = 0
     private var totalFramesProcessed = 0L
     private val ordered = FloatArray(SpectrumFft.FFT_SIZE)
-    private val fftRe = FloatArray(SpectrumFft.FFT_SIZE)
-    private val fftIm = FloatArray(SpectrumFft.FFT_SIZE)
+    private val fftRe = FloatArray(SpectrumFft.ZERO_PAD_SIZE)
+    private val fftIm = FloatArray(SpectrumFft.ZERO_PAD_SIZE)
     private val fftBands = FloatArray(SpectrumBus.BANDS)
-    private var hopSize = 512
+    private var hopSize = 640
 
     override fun onConfigure(inputAudioFormat: AudioProcessor.AudioFormat): AudioProcessor.AudioFormat {
         val supported = inputAudioFormat.encoding == C.ENCODING_PCM_16BIT ||
@@ -407,8 +443,9 @@ class SpectrumProcessor : BaseAudioProcessor() {
         channels = inputAudioFormat.channelCount.coerceAtLeast(1)
         rate = inputAudioFormat.sampleRate.coerceAtLeast(8_000)
         encoding = inputAudioFormat.encoding
-        // Scale FFT hop size to keep ~60 Hz cadence across 44.1 / 48 / 96 / 192 kHz Hi-Res tracks.
-        hopSize = (rate / 60).coerceIn(512, 4096)
+        // ~75 Hz FFT cadence captures fast EDM kick pitch drops across 44.1 / 48 / 96 / 192 kHz tracks.
+        hopSize = (rate / 75).coerceIn(512, 4096)
+        SpectrumBus.setSampleRate(rate)
         return inputAudioFormat
     }
 
