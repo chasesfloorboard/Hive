@@ -77,7 +77,11 @@ class PlaybackService : MediaLibraryService() {
     }
     private var screenOff: android.content.BroadcastReceiver? = null
     private var displayListener: android.hardware.display.DisplayManager.DisplayListener? = null
+    private var keyguardLockedListener: Any? = null
+    private var lastKeyguardLocked: Boolean = false
     private var lastDefaultDisplayState: Int = android.view.Display.STATE_UNKNOWN
+    private val mainHandler = android.os.Handler(android.os.Looper.getMainLooper())
+    private var wakeLockCheckRunnable: Runnable? = null
     private val replayGainTags = MutableStateFlow<Map<String, String>>(emptyMap())
     private val queueTick = MutableStateFlow(0)
     /** When music last played or stopped playing; paused this long ago or less, the lock player still shows. */
@@ -266,24 +270,67 @@ class PlaybackService : MediaLibraryService() {
                 }
             }
         })
-        // Hive's lock-screen player covers the lock screen whenever Hive is in use: opened as the
-        // screen goes off (so it's there when it comes on), again as it comes on locked (in case
-        // something closed it), and when music starts on a locked phone (from the car, or the
-        // phone's own lock-screen controls). Paused, it stays for a while, as Samsung Music's does.
+        // Hive's lock-screen player covers the lock screen whenever Hive is in use: opened on wake
+        // while locked, and when music starts on a locked awake phone. Paused, it stays for a while.
+        // In the car (Android Auto), virtual displays suppress ACTION_SCREEN_ON / ACTION_SCREEN_OFF,
+        // AND Pixel's AOD fade holds Display 0 in STATE_ON for ~4 seconds after locking — so we
+        // track ACTION_DREAMING_STARTED / ACTION_DREAMING_STOPPED, Display 0 state, AND API 34+
+        // KeyguardLockedStateListener so locking and waking always resets and re-shows cleanly.
+        fun isKeyguardLockedNow(): Boolean {
+            val km = getSystemService(KEYGUARD_SERVICE) as? KeyguardManager ?: return false
+            return km.isKeyguardLocked || km.inKeyguardRestrictedInputMode() || km.isDeviceLocked
+        }
+        fun cancelPostWakeLockCheck() {
+            wakeLockCheckRunnable?.let { mainHandler.removeCallbacks(it) }
+            wakeLockCheckRunnable = null
+        }
+        fun schedulePostWakeLockCheck(source: String) {
+            cancelPostWakeLockCheck()
+            val r = Runnable {
+                wakeLockCheckRunnable = null
+                if (!LockPlayerPolicy.isDefaultDisplayAwake(this@PlaybackService)) return@Runnable
+                val lockedNow = isKeyguardLockedNow()
+                if (wantsLockPlayer(player) && lockedNow) {
+                    CarLog.lockPlayer(this@PlaybackService, "post-wake ($source) locked; raising player")
+                    bridge.showLockPlayerIfWanted(this@PlaybackService, bridge.wasRecentlyForeground())
+                }
+            }
+            wakeLockCheckRunnable = r
+            mainHandler.postDelayed(r, LockPlayerPolicy.POST_WAKE_LOCK_CHECK_DELAY_MS)
+        }
+        fun handleWakeSignal(source: String) {
+            LockPlayerPolicy.isDreaming = false
+            val locked = isKeyguardLockedNow()
+            val wants = wantsLockPlayer(player)
+            CarLog.lockPlayer(this@PlaybackService, "$source; wants=$wants, locked=$locked")
+            if (wants && locked) {
+                cancelPostWakeLockCheck()
+                bridge.showLockPlayerIfWanted(this@PlaybackService, bridge.wasRecentlyForeground())
+            } else if (wants) {
+                // Keyguard can engage ~25–80 ms after DREAMING_STOPPED when re-locking & waking quickly.
+                schedulePostWakeLockCheck(source)
+            }
+        }
         screenOff = object : android.content.BroadcastReceiver() {
             override fun onReceive(context: Context, intent: Intent) {
                 when (intent.action) {
                     Intent.ACTION_SCREEN_OFF -> {
+                        LockPlayerPolicy.isDreaming = false
+                        cancelPostWakeLockCheck()
                         bridge.lockScreenChanged()
                         CarLog.lockPlayer(this@PlaybackService, "screen OFF received; wants=${wantsLockPlayer(player)}")
                     }
-                    Intent.ACTION_SCREEN_ON -> {
-                        val km = getSystemService(KEYGUARD_SERVICE) as KeyguardManager
-                        val locked = km.isKeyguardLocked || km.inKeyguardRestrictedInputMode() || km.isDeviceLocked
-                        CarLog.lockPlayer(this@PlaybackService, "screen ON received; wants=${wantsLockPlayer(player)}, locked=$locked")
-                        if (wantsLockPlayer(player) && locked) bridge.showLockPlayerIfWanted(this@PlaybackService, bridge.wasRecentlyForeground())
+                    Intent.ACTION_SCREEN_ON -> handleWakeSignal("screen ON received")
+                    Intent.ACTION_DREAMING_STARTED -> {
+                        LockPlayerPolicy.isDreaming = true
+                        cancelPostWakeLockCheck()
+                        bridge.lockScreenChanged()
+                        CarLog.lockPlayer(this@PlaybackService, "dreaming STARTED; wants=${wantsLockPlayer(player)}")
                     }
+                    Intent.ACTION_DREAMING_STOPPED -> handleWakeSignal("dreaming STOPPED")
                     Intent.ACTION_USER_PRESENT -> {
+                        LockPlayerPolicy.isDreaming = false
+                        cancelPostWakeLockCheck()
                         CarLog.lockPlayer(this@PlaybackService, "user PRESENT received")
                     }
                 }
@@ -294,10 +341,40 @@ class PlaybackService : MediaLibraryService() {
             screenOff,
             android.content.IntentFilter(Intent.ACTION_SCREEN_OFF).apply {
                 addAction(Intent.ACTION_SCREEN_ON)
+                addAction(Intent.ACTION_DREAMING_STARTED)
+                addAction(Intent.ACTION_DREAMING_STOPPED)
                 addAction(Intent.ACTION_USER_PRESENT)
             },
             androidx.core.content.ContextCompat.RECEIVER_EXPORTED,
         )
+        // Android 14+ (API 34+): track keyguard unlocked -> locked transitions directly so even if
+        // the phone locks without entering AOD/off (or locks right after DREAMING_STOPPED), sentAway
+        // is cleared immediately and the player comes up when the screen is awake.
+        if (Build.VERSION.SDK_INT >= 34) {
+            val km = getSystemService(KEYGUARD_SERVICE) as? KeyguardManager
+            if (km != null) {
+                lastKeyguardLocked = km.isKeyguardLocked
+                val kl = KeyguardManager.KeyguardLockedStateListener { locked ->
+                    val wasLocked = lastKeyguardLocked
+                    lastKeyguardLocked = locked
+                    if (!wasLocked && locked) {
+                        bridge.lockScreenChanged()
+                        val displayOn = LockPlayerPolicy.isDefaultDisplayOn(this@PlaybackService)
+                        val dreaming = LockPlayerPolicy.isDreaming
+                        val wants = wantsLockPlayer(player)
+                        CarLog.lockPlayer(this@PlaybackService, "keyguard LOCKED; wants=$wants, displayOn=$displayOn, dreaming=$dreaming")
+                        if (LockPlayerPolicy.shouldShowOnKeyguardLocked(wants, displayOn, dreaming)) {
+                            cancelPostWakeLockCheck()
+                            bridge.showLockPlayerIfWanted(this@PlaybackService, bridge.wasRecentlyForeground())
+                        }
+                    } else if (!locked) {
+                        cancelPostWakeLockCheck()
+                    }
+                }
+                keyguardLockedListener = kl
+                runCatching { km.addKeyguardLockedStateListener(androidx.core.content.ContextCompat.getMainExecutor(this), kl) }
+            }
+        }
         // Android Auto holds active virtual displays, so global PowerManager wakefulness stays Awake
         // all drive and Android suppresses ACTION_SCREEN_ON / ACTION_SCREEN_OFF even when the phone's
         // own screen sleeps and wakes for taps or notifications. Listen to Display 0 directly.
@@ -314,33 +391,31 @@ class PlaybackService : MediaLibraryService() {
                     lastDefaultDisplayState = state
                     when (LockPlayerPolicy.classifyDisplayTransition(prev, state)) {
                         DisplayTransition.TURNED_OFF -> {
+                            cancelPostWakeLockCheck()
                             bridge.lockScreenChanged()
                             CarLog.lockPlayer(this@PlaybackService, "display 0 OFF (${LockPlayerPolicy.displayStateName(prev)}->${LockPlayerPolicy.displayStateName(state)}); wants=${wantsLockPlayer(player)}")
                         }
                         DisplayTransition.TURNED_ON -> {
-                            val km = getSystemService(KEYGUARD_SERVICE) as KeyguardManager
-                            val locked = km.isKeyguardLocked || km.inKeyguardRestrictedInputMode() || km.isDeviceLocked
-                            CarLog.lockPlayer(this@PlaybackService, "display 0 ON (${LockPlayerPolicy.displayStateName(prev)}->on); wants=${wantsLockPlayer(player)}, locked=$locked")
-                            if (wantsLockPlayer(player) && locked) bridge.showLockPlayerIfWanted(this@PlaybackService, bridge.wasRecentlyForeground())
+                            handleWakeSignal("display 0 ON (${LockPlayerPolicy.displayStateName(prev)}->on)")
                         }
                         DisplayTransition.NONE -> Unit
                     }
                 }
             }
             displayListener = dl
-            displayManager.registerDisplayListener(dl, android.os.Handler(android.os.Looper.getMainLooper()))
+            displayManager.registerDisplayListener(dl, mainHandler)
         }
         player.addListener(object : Player.Listener {
             override fun onIsPlayingChanged(isPlaying: Boolean) {
                 lastPlayingAt = System.currentTimeMillis()
-                val km = getSystemService(KEYGUARD_SERVICE) as android.app.KeyguardManager
-                val locked = km.isKeyguardLocked || km.inKeyguardRestrictedInputMode() || km.isDeviceLocked
+                val locked = isKeyguardLockedNow()
                 val displayOn = LockPlayerPolicy.isDefaultDisplayOn(this@PlaybackService)
+                val dreaming = LockPlayerPolicy.isDreaming
                 if (isPlaying) {
-                    CarLog.lockPlayer(this@PlaybackService, "play started; locked=$locked, displayOn=$displayOn")
-                    // If the screen is already ON and locked (e.g. phone woke on car plug-in or a notification
+                    CarLog.lockPlayer(this@PlaybackService, "play started; locked=$locked, displayOn=$displayOn, dreaming=$dreaming")
+                    // If the screen is already awake and locked (e.g. phone woke on car plug-in or a notification
                     // right before Android Auto resumed playback), show the lock player without ever waking a sleeping screen.
-                    if (LockPlayerPolicy.shouldShowOnPlayStart(true, locked, displayOn)) {
+                    if (LockPlayerPolicy.shouldShowOnPlayStart(true, locked, displayOn, dreaming)) {
                         bridge.showLockPlayerIfWanted(this@PlaybackService, bridge.wasRecentlyForeground())
                     }
                 }
@@ -793,11 +868,21 @@ class PlaybackService : MediaLibraryService() {
 
     override fun onDestroy() {
         OpenSongs.ids = emptySet()
+        wakeLockCheckRunnable?.let { mainHandler.removeCallbacks(it) }
+        wakeLockCheckRunnable = null
         screenOff?.let { runCatching { unregisterReceiver(it) } }
+        if (Build.VERSION.SDK_INT >= 34 && keyguardLockedListener != null) {
+            runCatching {
+                (getSystemService(KEYGUARD_SERVICE) as? KeyguardManager)
+                    ?.removeKeyguardLockedStateListener(keyguardLockedListener as KeyguardManager.KeyguardLockedStateListener)
+            }
+            keyguardLockedListener = null
+        }
         displayListener?.let { dl ->
             runCatching { (getSystemService(DISPLAY_SERVICE) as? android.hardware.display.DisplayManager)?.unregisterDisplayListener(dl) }
         }
         displayListener = null
+        LockPlayerPolicy.isDreaming = false
         session?.player?.let { memory.saveCursor(it) }
         if (::crossfader.isInitialized) crossfader.close()
         scope.cancel()

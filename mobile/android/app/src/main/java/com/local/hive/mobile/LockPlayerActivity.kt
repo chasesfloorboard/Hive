@@ -82,7 +82,7 @@ class LockPlayerActivity : ComponentActivity() {
     private var touchedAt = 0L
     private val idleWatch = object : Runnable {
         override fun run() {
-            val awake = LockPlayerPolicy.isDefaultDisplayOn(this@LockPlayerActivity)
+            val awake = LockPlayerPolicy.isDefaultDisplayAwake(this@LockPlayerActivity)
             // The player no longer closes itself on unlock -- it stays until the user dismisses it. The one
             // automatic exit is this: left untouched well past the lock screen's own timeout, step aside so
             // the screen can sleep (the phone may not sleep a foreign window the way it sleeps its lock
@@ -221,10 +221,10 @@ class LockPlayerActivity : ComponentActivity() {
         super.onStop()
         mainHandler.removeCallbacks(idleWatch)
         if (leaving || isFinishing || isChangingConfigurations) return
-        val awake = LockPlayerPolicy.isDefaultDisplayOn(this)
+        val awake = LockPlayerPolicy.isDefaultDisplayAwake(this)
         val km = getSystemService(KEYGUARD_SERVICE) as KeyguardManager
         val isLocked = km.isKeyguardLocked || km.inKeyguardRestrictedInputMode() || km.isDeviceLocked
-        CarLog.lockPlayer(this, "stopped; isLocked=$isLocked, awake=$awake")
+        CarLog.lockPlayer(this, "stopped; isLocked=$isLocked, awake=$awake, dreaming=${LockPlayerPolicy.isDreaming}")
         if (!awake) {
             reassertRunnable?.let { mainHandler.removeCallbacks(it) }
             reassertRunnable = null
@@ -261,7 +261,7 @@ class LockPlayerActivity : ComponentActivity() {
             CarLog.lockPlayer(this, "covered ${elapsed}ms after open while locked; scheduling 1 re-assert")
             val r = Runnable {
                 reassertRunnable = null
-                val stillOn = LockPlayerPolicy.isDefaultDisplayOn(this@LockPlayerActivity)
+                val stillOn = LockPlayerPolicy.isDefaultDisplayAwake(this@LockPlayerActivity)
                 val kmNow = getSystemService(KEYGUARD_SERVICE) as KeyguardManager
                 val stillLocked = kmNow.isKeyguardLocked || kmNow.inKeyguardRestrictedInputMode() || kmNow.isDeviceLocked
                 if (stillOn && stillLocked && !resumed && !leaving && !sentAway && !isFinishing && !inCall(this@LockPlayerActivity)) {
@@ -343,6 +343,8 @@ class LockPlayerActivity : ComponentActivity() {
             activeInstance?.let { inst ->
                 inst.reassertRunnable?.let { inst.mainHandler.removeCallbacks(it) }
                 inst.reassertRunnable = null
+                inst.unlockReShowRunnable?.let { inst.mainHandler.removeCallbacks(it) }
+                inst.unlockReShowRunnable = null
                 if (!resumed && !inst.isFinishing) {
                     inst.finishAndRemoveTask()
                 }
@@ -403,8 +405,8 @@ class LockPlayerActivity : ComponentActivity() {
             freshWake: Boolean = false,
             bypassCooldown: Boolean = false,
         ) {
-            if (!LockPlayerPolicy.isDefaultDisplayOn(context)) {
-                CarLog.lockPlayer(context, "not shown: display 0 is off")
+            if (!LockPlayerPolicy.isDefaultDisplayAwake(context)) {
+                CarLog.lockPlayer(context, "not shown: display 0 is off/dreaming (dreaming=${LockPlayerPolicy.isDreaming})")
                 return
             }
             if (freshWake) {

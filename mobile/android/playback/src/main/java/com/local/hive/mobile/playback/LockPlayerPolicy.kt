@@ -33,6 +33,16 @@ object LockPlayerPolicy {
     /** Coalesces DisplayListener(STATE_ON) and ACTION_SCREEN_ON firing milliseconds apart on the same wake. */
     const val DUPLICATE_WAKE_DEBOUNCE_MS = 350L
 
+    /** Short post-wake recheck for the ~25–80 ms window where keyguard locks right after DREAMING_STOPPED. */
+    const val POST_WAKE_LOCK_CHECK_DELAY_MS = 150L
+
+    /**
+     * Tracks Android's AOD / Doze dream state (`ACTION_DREAMING_STARTED` / `ACTION_DREAMING_STOPPED`).
+     * On Pixel LTPO displays, entering AOD keeps `Display 0.state == STATE_ON` for ~4 seconds while
+     * `policy == DOZE`; tracking dream state distinguishes that sleep transition from an awake screen.
+     */
+    @Volatile var isDreaming: Boolean = false
+
     fun classifyDisplayTransition(previousState: Int, currentState: Int): DisplayTransition {
         val wasOn = previousState == STATE_ON
         val nowOn = currentState == STATE_ON
@@ -42,6 +52,20 @@ object LockPlayerPolicy {
             else -> DisplayTransition.NONE
         }
     }
+
+    /** Pure wakefulness check: Display 0 is ON and not currently in a Doze/AOD dream. */
+    fun isScreenAwake(displayOn: Boolean, dreaming: Boolean): Boolean = displayOn && !dreaming
+
+    /**
+     * Whether a keyguard `unlocked -> locked` transition should raise the lock player immediately:
+     * true only when Display 0 is awake (not entering AOD/sleep). Covers the race where
+     * `setKeyguardShown` engages ~25–80 ms after `ACTION_DREAMING_STOPPED`.
+     */
+    fun shouldShowOnKeyguardLocked(
+        wantsLockPlayer: Boolean,
+        displayOn: Boolean,
+        dreaming: Boolean,
+    ): Boolean = wantsLockPlayer && displayOn && !dreaming
 
     /**
      * Whether LockPlayerActivity should schedule a single bounded re-assert after being pushed behind
@@ -66,12 +90,16 @@ object LockPlayerPolicy {
             reassertAttempts < MAX_REASSERT_ATTEMPTS
 
     /**
-     * When playback begins while the phone is locked AND its built-in screen is already ON (for example,
+     * When playback begins while the phone is locked AND its built-in screen is already awake (for example,
      * plugging into the car or receiving a notification wakes the lock screen 1–3 s before Android Auto
-     * auto-resumes music), raise the lock player. Never raises when Display 0 is off/dozing.
+     * auto-resumes music), raise the lock player. Never raises when Display 0 is off or dozing.
      */
-    fun shouldShowOnPlayStart(isPlaying: Boolean, isLocked: Boolean, displayOn: Boolean): Boolean =
-        isPlaying && isLocked && displayOn
+    fun shouldShowOnPlayStart(
+        isPlaying: Boolean,
+        isLocked: Boolean,
+        displayOn: Boolean,
+        dreaming: Boolean = false,
+    ): Boolean = isPlaying && isLocked && displayOn && !dreaming
 
     /** Ground truth of whether the phone's own built-in screen (Display 0) is currently ON (not OFF/DOZE). */
     fun isDefaultDisplayOn(context: Context): Boolean {
@@ -81,6 +109,9 @@ object LockPlayerPolicy {
         val pm = context.getSystemService(Context.POWER_SERVICE) as? PowerManager
         return pm?.isInteractive == true
     }
+
+    /** True when Display 0 is physically ON and NOT dozing into Always-On Display. */
+    fun isDefaultDisplayAwake(context: Context): Boolean = isScreenAwake(isDefaultDisplayOn(context), isDreaming)
 
     /** Readable name for Display.state in diagnostic car-log entries. */
     fun displayStateName(state: Int): String = when (state) {

@@ -63,9 +63,26 @@ class LockPlayerPolicyTest {
 
     @Test
     fun playStartOnlyShowsWhenPlayingLockedAndDisplayAlreadyOn() {
-        assertTrue(LockPlayerPolicy.shouldShowOnPlayStart(isPlaying = true, isLocked = true, displayOn = true))
-        assertFalse(LockPlayerPolicy.shouldShowOnPlayStart(isPlaying = true, isLocked = true, displayOn = false))
-        assertFalse(LockPlayerPolicy.shouldShowOnPlayStart(isPlaying = true, isLocked = false, displayOn = true))
-        assertFalse(LockPlayerPolicy.shouldShowOnPlayStart(isPlaying = false, isLocked = true, displayOn = true))
+        assertTrue(LockPlayerPolicy.shouldShowOnPlayStart(isPlaying = true, isLocked = true, displayOn = true, dreaming = false))
+        assertFalse(LockPlayerPolicy.shouldShowOnPlayStart(isPlaying = true, isLocked = true, displayOn = true, dreaming = true))
+        assertFalse(LockPlayerPolicy.shouldShowOnPlayStart(isPlaying = true, isLocked = true, displayOn = false, dreaming = false))
+        assertFalse(LockPlayerPolicy.shouldShowOnPlayStart(isPlaying = true, isLocked = false, displayOn = true, dreaming = false))
+        assertFalse(LockPlayerPolicy.shouldShowOnPlayStart(isPlaying = false, isLocked = true, displayOn = true, dreaming = false))
+    }
+
+    @Test
+    fun dreamStateSeparatesPixelAodTransitionFromAwakeDisplayAndAllowsPostWakeKeyguardLock() {
+        // During Pixel's ~4s AOD fade-in, Display 0 stays STATE_ON while dreaming == true.
+        assertFalse(LockPlayerPolicy.isScreenAwake(displayOn = true, dreaming = true))
+        assertTrue(LockPlayerPolicy.isScreenAwake(displayOn = true, dreaming = false))
+        assertFalse(LockPlayerPolicy.isScreenAwake(displayOn = false, dreaming = false))
+
+        // Keyguard locking while entering AOD/sleep must NOT launch the player.
+        assertFalse(LockPlayerPolicy.shouldShowOnKeyguardLocked(wantsLockPlayer = true, displayOn = true, dreaming = true))
+        assertFalse(LockPlayerPolicy.shouldShowOnKeyguardLocked(wantsLockPlayer = true, displayOn = false, dreaming = false))
+
+        // Keyguard locking right after DREAMING_STOPPED (awake & not dreaming) MUST raise the player.
+        assertTrue(LockPlayerPolicy.shouldShowOnKeyguardLocked(wantsLockPlayer = true, displayOn = true, dreaming = false))
+        assertFalse(LockPlayerPolicy.shouldShowOnKeyguardLocked(wantsLockPlayer = false, displayOn = true, dreaming = false))
     }
 }
