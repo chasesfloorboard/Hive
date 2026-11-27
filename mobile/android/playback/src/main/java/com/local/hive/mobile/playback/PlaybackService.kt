@@ -594,10 +594,13 @@ class PlaybackService : MediaLibraryService() {
                     }
                     .setAvailableSessionCommands(MediaSession.ConnectionResult.DEFAULT_SESSION_AND_LIBRARY_COMMANDS.buildUpon()
                         .add(CMD_SHUFFLE).add(CMD_REPEAT).add(CMD_SKIP)
-                        // CMD_LOVE writes to the library and HIVE_PLAY_NEXT rewrites the queue. The session is
-                        // exported, so expose these mutating commands only to Hive's own UI — not to any app
-                        // that connects as a controller. Plain transport (shuffle/repeat/skip) stays open.
-                        .apply { if (controller.packageName == this@PlaybackService.packageName) { add(CMD_LOVE); add(HIVE_PLAY_NEXT) } }
+                        // CMD_LOVE is exposed to Hive's own UI, Android Auto, Automotive OS, SystemUI,
+                        // and trusted media controllers so the car/lock-screen heart button works.
+                        // HIVE_PLAY_NEXT rewrites the queue and stays strictly restricted to Hive's own UI.
+                        .apply {
+                            if (SessionCommandPolicy.canLove(session, controller, this@PlaybackService.packageName)) add(CMD_LOVE)
+                            if (SessionCommandPolicy.canMutateQueue(controller.packageName, this@PlaybackService.packageName)) add(HIVE_PLAY_NEXT)
+                        }
                         .build())
                     .build()
 
@@ -605,18 +608,36 @@ class PlaybackService : MediaLibraryService() {
                 CarLog.car(this@PlaybackService, controller.packageName, connected = false)
 
             override fun onCustomCommand(session: MediaSession, controller: MediaSession.ControllerInfo, customCommand: androidx.media3.session.SessionCommand, args: android.os.Bundle): ListenableFuture<androidx.media3.session.SessionResult> {
-                // Defence in depth: even though the mutating commands aren't advertised to other apps, re-check
-                // the caller here so a hand-rolled controller can't send CMD_LOVE/HIVE_PLAY_NEXT directly.
-                val ownUi = controller.packageName == this@PlaybackService.packageName
+                // Defence in depth: re-check caller policy on dispatch so untrusted apps cannot invoke mutating commands.
+                val canLove = SessionCommandPolicy.canLove(session, controller, this@PlaybackService.packageName)
+                val ownUi = SessionCommandPolicy.canMutateQueue(controller.packageName, this@PlaybackService.packageName)
                 when (customCommand.customAction) {
-                    CMD_LOVE.customAction -> if (ownUi) toggleLove(player)
+                    CMD_LOVE.customAction -> {
+                        if (!canLove) return com.google.common.util.concurrent.Futures.immediateFuture(androidx.media3.session.SessionResult(androidx.media3.session.SessionError.ERROR_PERMISSION_DENIED))
+                        CarLog.note(this@PlaybackService, controller.packageName, "love toggle")
+                        toggleLove(player)
+                    }
                     // Hive's own skip button: what the player does is reported back, instead of the app
                     // guessing the next song at once (it showed for a moment, then the crossfade's song).
                     CMD_SKIP.customAction -> if (!crossfader.skip()) player.seekToNext()
                     CMD_SHUFFLE.customAction -> player.shuffleModeEnabled = !player.shuffleModeEnabled
-                    HIVE_PLAY_NEXT.customAction -> if (ownUi) placeNext(player, args.getInt("count"), args.getString("first").orEmpty())
+                    HIVE_PLAY_NEXT.customAction -> {
+                        if (!ownUi) return com.google.common.util.concurrent.Futures.immediateFuture(androidx.media3.session.SessionResult(androidx.media3.session.SessionError.ERROR_PERMISSION_DENIED))
+                        placeNext(player, args.getInt("count"), args.getString("first").orEmpty())
+                    }
                     CMD_REPEAT.customAction -> player.repeatMode = when (player.repeatMode) { Player.REPEAT_MODE_OFF -> Player.REPEAT_MODE_ALL; Player.REPEAT_MODE_ALL -> Player.REPEAT_MODE_ONE; else -> Player.REPEAT_MODE_OFF }
                 }
+                return com.google.common.util.concurrent.Futures.immediateFuture(androidx.media3.session.SessionResult(androidx.media3.session.SessionResult.RESULT_SUCCESS))
+            }
+
+            override fun onSetRating(session: MediaSession, controller: MediaSession.ControllerInfo, rating: androidx.media3.common.Rating): ListenableFuture<androidx.media3.session.SessionResult> {
+                if (!SessionCommandPolicy.canLove(session, controller, this@PlaybackService.packageName)) {
+                    return com.google.common.util.concurrent.Futures.immediateFuture(androidx.media3.session.SessionResult(androidx.media3.session.SessionError.ERROR_PERMISSION_DENIED))
+                }
+                val target = SessionCommandPolicy.ratingToLoved(rating)
+                    ?: return com.google.common.util.concurrent.Futures.immediateFuture(androidx.media3.session.SessionResult(androidx.media3.session.SessionError.ERROR_NOT_SUPPORTED))
+                CarLog.note(this@PlaybackService, controller.packageName, "rating love=$target")
+                setLove(player, target)
                 return com.google.common.util.concurrent.Futures.immediateFuture(androidx.media3.session.SessionResult(androidx.media3.session.SessionResult.RESULT_SUCCESS))
             }
 
@@ -720,7 +741,14 @@ class PlaybackService : MediaLibraryService() {
         scope.launch { app.remoteMedia.lovedIds.collect { refreshButtons(player) } }
         player.addListener(object : Player.Listener {
             override fun onEvents(player: Player, events: Player.Events) {
-                if (events.containsAny(Player.EVENT_MEDIA_ITEM_TRANSITION, Player.EVENT_SHUFFLE_MODE_ENABLED_CHANGED, Player.EVENT_REPEAT_MODE_CHANGED)) refreshButtons(player)
+                if (events.containsAny(
+                        Player.EVENT_MEDIA_ITEM_TRANSITION,
+                        Player.EVENT_TIMELINE_CHANGED,
+                        Player.EVENT_MEDIA_METADATA_CHANGED,
+                        Player.EVENT_SHUFFLE_MODE_ENABLED_CHANGED,
+                        Player.EVENT_REPEAT_MODE_CHANGED,
+                    )
+                ) refreshButtons(player)
             }
         })
         refreshButtons(player)
@@ -741,6 +769,7 @@ class PlaybackService : MediaLibraryService() {
 
     private lateinit var libraryBrowser: LibraryBrowser
     private val lovedIds = MutableStateFlow<Set<Long>>(emptySet())
+    private var lastButtonState: Triple<Boolean?, Boolean, Int>? = null
 
     /**
      * The heart, shuffle and repeat buttons beside the transport controls in
@@ -754,24 +783,39 @@ class PlaybackService : MediaLibraryService() {
     private fun heart(player: Player): Boolean? {
         val item = player.currentMediaItem ?: return null
         if (item.mediaId.startsWith(hive.remoteMedia.mediaPrefix)) scope.launch { hive.remoteMedia.load() }
-        return com.local.hive.mobile.data.heartFor(item.mediaId, item.mediaMetadata.title?.toString().orEmpty(), item.mediaMetadata.artist?.toString().orEmpty(),
+        val title = (item.mediaMetadata.title ?: player.mediaMetadata.title)?.toString().orEmpty()
+        val artist = (item.mediaMetadata.artist ?: player.mediaMetadata.artist)?.toString().orEmpty()
+        return com.local.hive.mobile.data.heartFor(item.mediaId, title, artist,
             lovedIds.value, hive.streamLoves.loves.value, hive.remoteMedia.lovedIds.value)
     }
 
-    private fun toggleLove(player: Player) {
+    private fun setLove(player: Player, targetLoved: Boolean) {
         val item = player.currentMediaItem ?: return
-        val loved = heart(player) ?: return
+        if (heart(player) == null) return
         val id = item.mediaId.substringAfterLast('|').toLongOrNull()
-        if (id != null) scope.launch { hive.sync.setLoved(listOf(id), !loved) }
-        else item.mediaMetadata.let { m ->
-            hive.sync.setStreamLoved(m.title?.toString().orEmpty(), m.artist?.toString().orEmpty(), m.albumTitle?.toString().orEmpty(),
-                player.duration.coerceAtLeast(0), m.artworkUri?.toString().orEmpty(), item.mediaId, !loved)
+        if (id != null) scope.launch { hive.sync.setLoved(listOf(id), targetLoved) }
+        else {
+            val m = item.mediaMetadata
+            val title = (m.title ?: player.mediaMetadata.title)?.toString().orEmpty()
+            val artist = (m.artist ?: player.mediaMetadata.artist)?.toString().orEmpty()
+            val album = (m.albumTitle ?: player.mediaMetadata.albumTitle)?.toString().orEmpty()
+            val durationMs = player.duration.takeIf { it > 0 } ?: m.durationMs ?: 0L
+            val art = (m.artworkUri ?: player.mediaMetadata.artworkUri)?.toString().orEmpty()
+            hive.sync.setStreamLoved(title, artist, album, durationMs, art, item.mediaId, targetLoved)
         }
+    }
+
+    private fun toggleLove(player: Player) {
+        val loved = heart(player) ?: return
+        setLove(player, !loved)
     }
 
     private fun refreshButtons(player: Player) {
         val session = session ?: return
         val loved = heart(player)
+        val state = Triple(loved, player.shuffleModeEnabled, player.repeatMode)
+        if (state == lastButtonState) return
+        lastButtonState = state
         fun button(icon: Int, name: String, command: androidx.media3.session.SessionCommand) =
             androidx.media3.session.CommandButton.Builder(icon).setDisplayName(name).setSessionCommand(command).setSlots(androidx.media3.session.CommandButton.SLOT_OVERFLOW).build()
         val buttons = listOfNotNull(
