@@ -71,6 +71,7 @@ import kotlinx.coroutines.delay
 fun LyricsScreen(vm: MainViewModel, onClose: () -> Unit) {
     val c = Hive.colors
     val now by vm.nowPlaying.collectAsStateWithLifecycle()
+    val nowArt by vm.nowArtworkUri.collectAsStateWithLifecycle()
     val aura by vm.aura.collectAsStateWithLifecycle()
     var refresh by remember { mutableIntStateOf(0) }
 
@@ -79,7 +80,7 @@ fun LyricsScreen(vm: MainViewModel, onClose: () -> Unit) {
     }, overlay = {
         Column(Modifier.fillMaxSize().statusBarsPadding().navigationBarsPadding()) {
             Row(Modifier.fillMaxWidth().padding(start = 20.dp, end = 12.dp, top = 12.dp, bottom = 8.dp), verticalAlignment = Alignment.CenterVertically) {
-                Artwork(now.artworkUri, Modifier.size(46.dp), RoundedCornerShape(8.dp))
+                Artwork(nowArt, Modifier.size(46.dp), RoundedCornerShape(8.dp))
                 Column(Modifier.weight(1f).padding(horizontal = 12.dp)) {
                     Text(now.title, style = HiveText.rowStrong, color = c.text, maxLines = 1, overflow = TextOverflow.Ellipsis)
                     Text(now.artist, style = HiveText.small, color = c.textDim, maxLines = 1, overflow = TextOverflow.Ellipsis)

@@ -14,6 +14,7 @@ import coil3.fetch.SourceFetchResult
 import coil3.request.Options
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.sync.Semaphore
+import kotlinx.coroutines.sync.withLock
 import kotlinx.coroutines.sync.withPermit
 import kotlinx.coroutines.withContext
 import kotlinx.serialization.json.Json
@@ -64,9 +65,9 @@ class AlbumArtFetcher(private val context: Context, private val albumId: Long, p
         val embedded = extractAlbumCover(context, songs)
         val side = embedded?.let { longestSide(it) } ?: 0
         if (embedded != null && side >= SMALL) {
-            runCatching { kept.writeBytes(embedded); smallKept.delete() }
+            runCatching { writeAtomically(kept, embedded); smallKept.delete() }
         } else if (embedded != null && side > 0) {
-            runCatching { smallKept.writeBytes(embedded) }
+            runCatching { writeAtomically(smallKept, embedded) }
         }
         // Thumbnails never fire an online lookup (a grid would start hundreds): they show the embedded
         // cover, or one already found online for this album, or nothing — never a folder image.
@@ -99,7 +100,7 @@ class AlbumArtFetcher(private val context: Context, private val albumId: Long, p
         if (kept.length() > 0) return result(kept.readBytes())
         val uri = ContentUris.withAppendedId(MediaStore.Audio.Media.EXTERNAL_CONTENT_URI, songId)
         val picture = ownPicture(context, uri) ?: throw IllegalStateException("This song has no picture")
-        runCatching { kept.writeBytes(picture) }
+        runCatching { writeAtomically(kept, picture) }
         return result(picture)
     }
 
@@ -117,12 +118,18 @@ class AlbumArtFetcher(private val context: Context, private val albumId: Long, p
         val file = File(dir, "$albumId.jpg")
         val miss = File(dir, "$albumId.none")
         if (file.length() > 0) return file.readBytes()
-        if (miss.exists() && System.currentTimeMillis() - miss.lastModified() < 7 * 86_400_000L) return null
-        // Apple allows a few lookups a second; a screen of covers waits its turn.
-        val bytes = lookups.withPermit { runCatching { find(song.album, song.artist) }.getOrNull() }
-        if (bytes == null) { miss.writeText(""); return null }
-        file.writeBytes(bytes); miss.delete()
-        return bytes
+        val albumMutex = albumLocks.computeIfAbsent(albumId) { kotlinx.coroutines.sync.Mutex() }
+        return albumMutex.withLock {
+            if (file.length() > 0) return@withLock file.readBytes()
+            if (miss.exists() && System.currentTimeMillis() - miss.lastModified() < 7 * 86_400_000L) return@withLock null
+            // Apple allows a few lookups a second; a screen of covers waits its turn.
+            val bytes = lookups.withPermit { runCatching { find(song.album, song.artist) }.getOrNull() }
+            if (bytes == null) { miss.writeText(""); return@withLock null }
+            writeAtomically(file, bytes)
+            miss.delete()
+            _onlineCoverVersion.value += 1
+            bytes
+        }
     }
 
     private fun find(album: String, artist: String): ByteArray? {
@@ -158,9 +165,29 @@ class AlbumArtFetcher(private val context: Context, private val albumId: Long, p
         private const val THUMBNAIL_PX = 256
         private val http by lazy { com.local.hive.mobile.data.defaultHttp() }
         private val lookups = Semaphore(2)
+        private val albumLocks = java.util.concurrent.ConcurrentHashMap<Long, kotlinx.coroutines.sync.Mutex>()
+        private val _onlineCoverVersion = kotlinx.coroutines.flow.MutableStateFlow(0)
+        /** Incremented whenever a new online album cover is cached, so previously failed thumbnails retry. */
+        val onlineCoverVersion: kotlinx.coroutines.flow.StateFlow<Int> = _onlineCoverVersion
 
         /** Covers past this size (longest side) are shrunk to it before they're kept and shown. */
         private const val LARGEST = 1600
+
+        internal fun writeAtomically(target: File, bytes: ByteArray) {
+            val parent = target.parentFile ?: return
+            parent.mkdirs()
+            val tmp = File(parent, "${target.name}.${Thread.currentThread().id}.${System.nanoTime()}.tmp")
+            try {
+                tmp.writeBytes(bytes)
+                if (!tmp.renameTo(target)) {
+                    target.writeBytes(bytes)
+                    tmp.delete()
+                }
+            } catch (t: Throwable) {
+                tmp.delete()
+                throw t
+            }
+        }
 
         internal fun isLooseCollection(album: String?): Boolean =
             album.equals("beautiful sounds pc", ignoreCase = true) || album.isNullOrBlank() || album.equals("<unknown>", ignoreCase = true)

@@ -177,8 +177,9 @@ fun PlayerSheet(
     // The cover follows a sideways swipe on Now Playing; let go far or fast enough and the song changes.
     val swipe = remember { Animatable(0f) }
     val now by vm.nowPlaying.collectAsStateWithLifecycle()
+    val nowArt by vm.nowArtworkUri.collectAsStateWithLifecycle()
     val aura by vm.aura.collectAsStateWithLifecycle()
-    val frame = rotatingCover(now.artworkUri, now.trackId)
+    val frame = rotatingCover(nowArt, now.trackId)
     val activeAura = frame.aura ?: aura
     val density = LocalDensity.current
     val progress = remember { Animatable(if (open) 1f else 0f) }
@@ -467,9 +468,10 @@ private fun Playbar(vm: MainViewModel, now: NowPlaying, showArt: Boolean, modifi
                     .graphicsLayer { translationX = shift.value; alpha = 1f - (abs(shift.value) / size.width).coerceIn(0f, 1f) },
                 verticalAlignment = Alignment.CenterVertically,
             ) {
-                val barFrame = rotatingCover(now.artworkUri, now.trackId)
-                Crossfade(now.artworkUri, animationSpec = Motion.swap(), modifier = Modifier.alpha(if (showArt) 1f else 0f), label = "barArt") { art ->
-                    Artwork(if (art == now.artworkUri) barFrame.current else art, Modifier.size(MiniArt), RoundedCornerShape(8.dp), if (now.isLive) Icons.Rounded.Radio else Icons.Rounded.MusicNote, replacing = barFrame.previous)
+                val nowArt by vm.nowArtworkUri.collectAsStateWithLifecycle()
+                val barFrame = rotatingCover(nowArt, now.trackId)
+                Crossfade(nowArt, animationSpec = Motion.swap(), modifier = Modifier.alpha(if (showArt) 1f else 0f), label = "barArt") { art ->
+                    Artwork(if (art == nowArt) barFrame.current else art, Modifier.size(MiniArt), RoundedCornerShape(8.dp), if (now.isLive) Icons.Rounded.Radio else Icons.Rounded.MusicNote, replacing = barFrame.previous)
                 }
                 Crossfade(now.title to now.artist, animationSpec = Motion.swap(), modifier = Modifier.weight(1f), label = "barText") { (title, artist) ->
                     Column(Modifier.padding(horizontal = 12.dp), verticalArrangement = Arrangement.spacedBy(1.dp)) {
@@ -590,19 +592,20 @@ private fun FullPlayerContent(
         LaunchedEffect(now.trackId, now.queueIndex, now.queue.size) {
             current = now.trackId?.let { vm.tracksById(listOf(it)).firstOrNull() }
         }
+        val nowArt by vm.nowArtworkUri.collectAsStateWithLifecycle()
         val nowLoved by vm.nowLoved.collectAsStateWithLifecycle()
         val isLoved = nowLoved == true
 
         // Hold the cover to see it full size and save it; a tap shows the lyrics (below).
         val haptics = androidx.compose.ui.platform.LocalHapticFeedback.current
         var viewingCover by remember { mutableStateOf(false) }
-        if (viewingCover) CoverViewer(vm, listOfNotNull(current), now.artworkUri, now.title.ifBlank { now.artist }) { viewingCover = false }
+        if (viewingCover) CoverViewer(vm, listOfNotNull(current), nowArt, now.title.ifBlank { now.artist }) { viewingCover = false }
 
         HiveGlassLayers(Modifier.fillMaxSize(), content = {
             HiveAmbient(animatedPrimary, animatedSecondary, Modifier.fillMaxSize(), intensity = 1.25f)
             if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.S) {
                 // Blur a quarter-size copy of the active rotating cover and scale it up from the center to cover edge-to-edge
-                Crossfade(frame.current ?: now.artworkUri, modifier = Modifier.fillMaxSize(), animationSpec = tween(600), label = "blurredBackdrop") { artModel ->
+                Crossfade(frame.current ?: nowArt, modifier = Modifier.fillMaxSize(), animationSpec = tween(600), label = "blurredBackdrop") { artModel ->
                     Box(Modifier.fillMaxSize(), contentAlignment = Alignment.Center) {
                         BlurredBackdropArt(artModel, Modifier.fillMaxSize(0.25f).graphicsLayer { scaleX = 4.5f; scaleY = 4.5f; alpha = 0.22f }.blur(24.dp))
                     }
@@ -707,12 +710,12 @@ private fun FullPlayerContent(
                             .onGloballyPositioned { co -> onArtPlaced(Rect(co.localToRoot(Offset.Zero), co.localToRoot(Offset(co.size.width.toFloat(), co.size.height.toFloat())))) }
                             // Swipe the cover to change songs; tap it for the lyrics; hold it to view and save it.
                             .then(if (!queueOpen) Modifier.songSwipe(swipe, scope, onNext = { vm.player.next() }, onPrevious = { vm.player.previous() })
-                                .pointerInput(now.isLive) {
+                                .pointerInput(now.isLive, nowArt) {
                                     detectTapGestures(
                                         onTap = { if (!now.isLive) onOpenLyrics() },
                                         // Hold any cover with a picture — including a streaming song's (Apple Music, etc.),
                                         // which reads as "live" but still has art to view and save.
-                                        onLongPress = { if (now.artworkUri != null) { haptics.performHapticFeedback(androidx.compose.ui.hapticfeedback.HapticFeedbackType.LongPress); viewingCover = true } },
+                                        onLongPress = { if (nowArt != null) { haptics.performHapticFeedback(androidx.compose.ui.hapticfeedback.HapticFeedbackType.LongPress); viewingCover = true } },
                                     )
                                 } else Modifier.clickable { onQueueChange(false) }),
                     )

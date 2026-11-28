@@ -138,11 +138,19 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
     /** Installed plugins & per-plugin settings (Visualizer, verified & community plugins). */
     val plugins = app.plugins
 
+    /** Live cover URI for what is playing now (reconciled with Room so tag edits / rescans never leave a stale cover). */
+    val nowArtworkUri: StateFlow<String?> = combine(
+        nowPlaying.map { it.trackId to it.artworkUri }.distinctUntilChanged(),
+        tracks,
+        app.albumCovers.hidden,
+    ) { (trackId, playerArt), allTracks, hidden ->
+        val track = trackId?.let { id -> allTracks.firstOrNull { it.id == id } }
+        com.local.hive.mobile.data.NowArtworkResolver.resolve(playerArt, track, hidden)
+    }.distinctUntilChanged().state(null)
+
     /** Colours of what is playing now, for the aura and the accent. */
     @OptIn(kotlinx.coroutines.ExperimentalCoroutinesApi::class)
-    val aura: StateFlow<AuraColors?> = nowPlaying
-        .map { it.artworkUri }
-        .distinctUntilChanged()
+    val aura: StateFlow<AuraColors?> = nowArtworkUri
         .mapLatest { uri -> ArtColors.extract(app, uri?.let(android.net.Uri::parse)) }
         .state(null)
 
@@ -152,7 +160,10 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
         val loader = coil3.SingletonImageLoader.get(app)
         val px = app.resources.displayMetrics.widthPixels.coerceIn(480, 1440)
         viewModelScope.launch {
-            nowPlaying.map { s -> listOfNotNull(s.artworkUri, s.nextArtworkUri, s.previousArtworkUri) }
+            combine(
+                nowArtworkUri,
+                nowPlaying.map { s -> listOfNotNull(s.nextArtworkUri, s.previousArtworkUri) }.distinctUntilChanged(),
+            ) { cur, neighbors -> listOfNotNull(cur) + neighbors }
                 .distinctUntilChanged()
                 .collect { uris ->
                     uris.forEach { uri ->

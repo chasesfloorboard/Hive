@@ -96,6 +96,7 @@ internal fun FullPlayerLandscapeContent(
                 contentAlignment = Alignment.Center,
             ) {
                 val side = minOf(maxWidth, maxHeight - 8.dp).coerceAtLeast(120.dp)
+                val nowArt by vm.nowArtworkUri.collectAsStateWithLifecycle()
                 Box(
                     Modifier
                         .size(side)
@@ -108,11 +109,11 @@ internal fun FullPlayerLandscapeContent(
                             )
                         }
                         .songSwipe(swipe, scope, onNext = { vm.player.next() }, onPrevious = { vm.player.previous() })
-                        .pointerInput(now.isLive, now.artworkUri) {
+                        .pointerInput(now.isLive, nowArt) {
                             detectTapGestures(
                                 onTap = { if (!now.isLive) onOpenLyrics() },
                                 onLongPress = {
-                                    if (now.artworkUri != null) {
+                                    if (nowArt != null) {
                                         haptics.performHapticFeedback(HapticFeedbackType.LongPress)
                                         onOpenCoverViewer()
                                     }

@@ -55,13 +55,26 @@ fun Artwork(
 ) {
     val generation = CoverGeneration.intValue
     var failed by remember(model, generation) { mutableStateOf(false) }
+    var loadFailed by remember(model, generation) { mutableStateOf(false) }
+    var retry by remember(model, generation) { mutableStateOf(0) }
     if (failed && orElse != null) return Artwork(orElse, modifier, shape, fallback, glow, elevation, highQuality = highQuality)
+    if (loadFailed && model != null) {
+        androidx.compose.runtime.LaunchedEffect(model, generation) {
+            var seen = com.local.hive.mobile.data.AlbumArtFetcher.onlineCoverVersion.value
+            com.local.hive.mobile.data.AlbumArtFetcher.onlineCoverVersion.collect { v ->
+                if (v != seen) {
+                    seen = v
+                    retry++
+                }
+            }
+        }
+    }
     val c = Hive.colors
     val shadowed = if (elevation > 0.dp) modifier.softShadow(elevation, shape, glow ?: Color.Black) else modifier
     val context = androidx.compose.ui.platform.LocalContext.current
     // A cover already on screen at another size stands in while this size loads, so it never blinks;
     // the sharpest copy drawn so far, never a list row's thumbnail once a bigger one was shown.
-    val request = remember(model, generation, highQuality) {
+    val request = remember(model, generation, highQuality, retry) {
         val own = model?.toString()?.let { ShownCovers[it]?.first }
         val standIn = own ?: replacing?.toString()?.let { ShownCovers[it]?.first }
         coil3.request.ImageRequest.Builder(context).data(model).placeholderMemoryCacheKey(standIn)
@@ -72,17 +85,18 @@ fun Artwork(
                     size(coil3.size.Size.ORIGINAL)
                 }
                 if (generation > 0) memoryCacheKeyExtra("cover", generation.toString())
+                if (retry > 0) memoryCacheKeyExtra("retry", retry.toString())
             }
             // Only a cover that wasn't standing in fades up; a carousel frame fades over the last one.
             .crossfade(when { own != null -> 0; standIn != null -> 600; else -> 0 }).build()
     }
     // AsyncImage, not SubcomposeAsyncImage: a subcomposition per row made every
     // list row costly to compose while scrolling.
-    var shown by remember(model, generation) { mutableStateOf(request.placeholderMemoryCacheKey != null) }
+    var shown by remember(model, generation, retry) { mutableStateOf(request.placeholderMemoryCacheKey != null) }
     // The panel goes once the picture has faded up over it: left under a cover, it showed as a dark
     // rim around the cover's rounded corners, where both are only partly drawn.
-    var covered by remember(model, generation) { mutableStateOf(false) }
-    if (shown) androidx.compose.runtime.LaunchedEffect(model) { kotlinx.coroutines.delay(700); covered = true }
+    var covered by remember(model, generation, retry) { mutableStateOf(false) }
+    if (shown) androidx.compose.runtime.LaunchedEffect(model, retry) { kotlinx.coroutines.delay(700); covered = true }
     Box(shadowed.clip(shape), contentAlignment = Alignment.Center) {
         // Kept a pixel inside the cover's edge, so its rim never shows at the rounded corners.
         if (!covered) Box(Modifier.fillMaxSize().padding(1.dp).clip(shape).background(mix(c.panelStrong.copy(alpha = 1f), c.bg, 0.6f)))
@@ -93,6 +107,7 @@ fun Artwork(
             contentScale = ContentScale.Crop,
             modifier = Modifier.fillMaxSize(),
             onSuccess = { state ->
+                loadFailed = false
                 shown = true
                 // From memory there's no fade: the panel goes at once.
                 if (state.result.dataSource == coil3.decode.DataSource.MEMORY_CACHE) covered = true
@@ -102,6 +117,7 @@ fun Artwork(
             },
             onError = { state ->
                 android.util.Log.d("HiveArtwork", "Cover failed for $model: ${state.result.throwable.message}")
+                loadFailed = true
                 if (orElse != null) failed = true else { shown = false; covered = false }
             },
         )

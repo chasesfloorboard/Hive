@@ -73,8 +73,9 @@ import kotlin.math.abs
 fun LockPlayer(vm: MainViewModel, onUnlock: () -> Unit) {
     val c = Hive.colors
     val now by vm.nowPlaying.collectAsStateWithLifecycle()
+    val nowArt by vm.nowArtworkUri.collectAsStateWithLifecycle()
     val aura by vm.aura.collectAsStateWithLifecycle()
-    val frame = rotatingCover(now.artworkUri, now.trackId)
+    val frame = rotatingCover(nowArt, now.trackId)
     val activeAura = frame.aura ?: aura
     val animatedPrimary by androidx.compose.animation.animateColorAsState(
         activeAura?.primary?.copy(alpha = 0.7f) ?: c.ambientA,
@@ -117,7 +118,7 @@ fun LockPlayer(vm: MainViewModel, onUnlock: () -> Unit) {
             // Blur a fifth-size copy of the active rotating cover and scale it up: crossfading smoothly!
             if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.S) {
                 // Blur a quarter-size copy of the active rotating cover and scale it up from the center to cover edge-to-edge
-                Crossfade(frame.current ?: now.artworkUri, modifier = Modifier.fillMaxSize(), animationSpec = tween(600), label = "lockBackdrop") { artModel ->
+                Crossfade(frame.current ?: nowArt, modifier = Modifier.fillMaxSize(), animationSpec = tween(600), label = "lockBackdrop") { artModel ->
                     Box(Modifier.fillMaxSize(), contentAlignment = Alignment.Center) {
                         BlurredBackdropArt(artModel, Modifier.fillMaxSize(0.25f).graphicsLayer { scaleX = 4.5f; scaleY = 4.5f; alpha = 0.3f }.blur(24.dp))
                     }
