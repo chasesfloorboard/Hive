@@ -155,12 +155,13 @@ fun LockPlayer(vm: MainViewModel, onUnlock: () -> Unit) {
                         )
                     }
                 }
-                Crossfade(now.title to now.artist, label = "lockText", modifier = Modifier.padding(top = 26.dp)) { (title, artist) ->
-                    Column(horizontalAlignment = Alignment.CenterHorizontally) {
-                        Text(title.ifBlank { "Nothing playing" }, style = HiveText.npTitle, color = c.text, maxLines = 1, modifier = Modifier.padding(horizontal = 26.dp), overflow = TextOverflow.Ellipsis, textAlign = TextAlign.Center)
-                        Text(artist, style = HiveText.rowStrong, color = c.textDim, maxLines = 1, overflow = TextOverflow.Ellipsis, textAlign = TextAlign.Center, modifier = Modifier.padding(top = 4.dp))
-                    }
-                }
+                TrackMetaTransition(
+                    now = now,
+                    wentBack = { vm.player.wentBack() },
+                    centered = true,
+                    artistColor = c.textDim,
+                    modifier = Modifier.padding(top = 26.dp, start = 8.dp, end = 8.dp),
+                )
                 // The heart where the player has it: centred under the song.
                 NowHeart(vm, now.mediaId)
                 SeekBar(now, vm.position, onSeek = { vm.player.seekTo(it) })

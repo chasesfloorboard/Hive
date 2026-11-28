@@ -36,4 +36,11 @@ class TrackMetaTransitionTest {
         // Bluetooth / notification Previous doesn't go through UI previous(), so ordered index drop still resolves backward.
         assertEquals(-1, resolveTrackSkipDirection(wentBack = false, shuffle = false, fromIndex = 4, toIndex = 3, queueSize = 10))
     }
+
+    @Test
+    fun externalMediaWrapBackwardFromFirstToLastSlidesBackward() {
+        assertEquals(-1, resolveTrackSkipDirection(wentBack = false, shuffle = false, fromIndex = 0, toIndex = 9, queueSize = 10))
+        // In a 2-song queue, 0 -> 1 is a normal forward skip, not a wrap-backward.
+        assertEquals(1, resolveTrackSkipDirection(wentBack = false, shuffle = false, fromIndex = 0, toIndex = 1, queueSize = 2))
+    }
 }

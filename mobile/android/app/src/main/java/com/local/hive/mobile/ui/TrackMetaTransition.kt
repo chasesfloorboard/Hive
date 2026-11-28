@@ -52,9 +52,13 @@ internal fun resolveTrackSkipDirection(
     queueSize: Int,
 ): Int {
     if (wentBack) return -1
-    if (!shuffle && fromIndex >= 0 && toIndex >= 0 && toIndex < fromIndex) {
-        val wrappedForward = queueSize > 1 && fromIndex == queueSize - 1 && toIndex == 0
-        if (!wrappedForward) return -1
+    if (!shuffle && fromIndex >= 0 && toIndex >= 0) {
+        if (toIndex < fromIndex) {
+            val wrappedForward = queueSize > 1 && fromIndex == queueSize - 1 && toIndex == 0
+            if (!wrappedForward) return -1
+        } else if (queueSize > 2 && fromIndex == 0 && toIndex == queueSize - 1) {
+            return -1
+        }
     }
     return 1
 }
@@ -67,7 +71,7 @@ private data class TrackMetaSnapshot(
 )
 
 /**
- * Smooth directional slide for Now Playing's title and artist.
+ * Smooth directional slide for Now Playing and Lock Player title and artist.
  * Captures each track's title/artist immutably in AnimatedContent state (keyed directly on
  * [NowPlaying], never an asynchronously loaded Room Track) and disables SizeTransform with an
  * explicit full-width alignment so text never pins to the left edge before centering.
@@ -77,7 +81,8 @@ internal fun TrackMetaTransition(
     now: NowPlaying,
     wentBack: () -> Boolean,
     centered: Boolean,
-    onArtistClick: () -> Unit,
+    onArtistClick: (() -> Unit)? = null,
+    artistColor: Color = Hive.colors.text.copy(alpha = 0.86f),
     modifier: Modifier = Modifier,
 ) {
     val c = Hive.colors
@@ -183,13 +188,13 @@ internal fun TrackMetaTransition(
             Text(
                 snap.artist,
                 style = HiveText.rowStrong,
-                color = c.text.copy(alpha = 0.86f),
+                color = artistColor,
                 maxLines = 1,
                 overflow = TextOverflow.Ellipsis,
                 textAlign = if (centered) TextAlign.Center else TextAlign.Start,
                 modifier = Modifier
                     .then(if (centered) Modifier.fillMaxWidth() else Modifier)
-                    .clickable(onClick = onArtistClick),
+                    .then(if (onArtistClick != null) Modifier.clickable(onClick = onArtistClick) else Modifier),
             )
         }
     }
